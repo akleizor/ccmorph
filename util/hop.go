@@ -39,13 +39,29 @@ func processTableWithin(ctx context.Context) map[int]psRow {
 	return psProcessTable(ctx)
 }
 
+// psPipeGrace is how long a ps pass may keep its output pipe after the pass
+// itself has exited: a subprocess that inherited the pipe must not hold the
+// read to its own end (#449). The pass exits with the kernel's table, so the
+// flush the grace pays for is the pipe's own.
+const psPipeGrace = 100 * time.Millisecond
+
+// psCmd is one ps pass under ctx. WaitDelay closes the pass's pipe at
+// psPipeGrace when the pass exits but something it started still holds the
+// other end, so an orphan cannot outlive the bound; a pass that pays the grace
+// returns ErrWaitDelay and its output is discarded with the error.
+func psCmd(ctx context.Context, args ...string) *exec.Cmd {
+	cmd := exec.CommandContext(ctx, "ps", args...)
+	cmd.WaitDelay = psPipeGrace
+	return cmd
+}
+
 // psProcessTable is processTable through ps. The start times come from a read
 // of their own: a ps without lstart then costs the times and not the rows hop
 // needs, and a line that does not parse leaves its row at the cannot-tell zero.
 // Every pass runs under ctx, so a stalled ps is killed with the caller's
 // deadline rather than outliving the read.
 func psProcessTable(ctx context.Context) map[int]psRow {
-	raw, err := exec.CommandContext(ctx, "ps", "-axo", "pid=,ppid=,comm=").Output()
+	raw, err := psCmd(ctx, "-axo", "pid=,ppid=,comm=").Output()
 	if err != nil {
 		return nil
 	}
@@ -61,7 +77,7 @@ func psProcessTable(ctx context.Context) map[int]psRow {
 			rows[pid] = psRow{ppid: ppid, comm: strings.Join(f[2:], " ")}
 		}
 	}
-	if raw, err := exec.CommandContext(ctx, "ps", "-axo", "pid=,command=").Output(); err == nil {
+	if raw, err := psCmd(ctx, "-axo", "pid=,command=").Output(); err == nil {
 		for _, l := range strings.Split(string(raw), "\n") {
 			l = strings.TrimSpace(l)
 			p, rest, _ := strings.Cut(l, " ")
@@ -75,7 +91,7 @@ func psProcessTable(ctx context.Context) map[int]psRow {
 	// lstart is "Mon Jan _2 15:04:05 2006" in the locale's words, so the read
 	// pins LC_ALL and the fields are joined back for the one layout parsed. A
 	// ps that lacks lstart prints an error and exits non-zero: no times.
-	lstart := exec.CommandContext(ctx, "ps", "-axo", "pid=,lstart=")
+	lstart := psCmd(ctx, "-axo", "pid=,lstart=")
 	lstart.Env = append(os.Environ(), "LC_ALL=C")
 	if raw, err := lstart.Output(); err == nil {
 		for _, l := range strings.Split(string(raw), "\n") {
@@ -108,11 +124,21 @@ var shellComm = regexp.MustCompile(`^-?(zsh|bash|sh|dash)$`)
 // forwarded, which discards the queued switch.
 const launcherComm = "ccmorph-core"
 
+// ProcTable is one read of the process table, for a command that asks more
+// than one question of the same machine: a hop asks which profile this session
+// runs on and which Claude Code process to end, moments apart, and one read
+// answers both. The zero value is an empty table.
+type ProcTable map[int]psRow
+
+// ProcessTable is one read of the process table.
+func ProcessTable() ProcTable { return processTable() }
+
 // HopTarget is the Claude Code process to end for a hop: the first process below
 // the relay in pid's ancestry that is neither a shell nor the core launcher (the
 // shells between are the relay's forwarding subshells and the one Claude Code runs
-// the command in). 0 when there is none.
-func HopTarget(relay, pid int) int { return findHopTarget(processTable(), relay, pid) }
+// the command in). 0 when there is none. t is the read the command already made
+// for its first question.
+func HopTarget(t ProcTable, relay, pid int) int { return findHopTarget(t, relay, pid) }
 
 func findHopTarget(t map[int]psRow, relay, pid int) int {
 	var chain []int
@@ -137,6 +163,24 @@ func findHopTarget(t map[int]psRow, relay, pid int) int {
 	return 0
 }
 
+// underClaude says whether a Claude Code process is an ancestor of pid.
+func underClaude(t map[int]psRow, pid int) bool {
+	for n := 0; pid > 1 && n < 64; n++ {
+		r, ok := t[pid]
+		if !ok {
+			return false
+		}
+		argv := append(strings.Fields(r.args), "", "")
+		// native binary, a versioned install, an interpreted script, or npm's cli.js
+		if filepath.Base(r.comm) == "claude" || filepath.Base(argv[0]) == "claude" || filepath.Base(argv[1]) == "claude" ||
+			strings.Contains(r.args, "/claude/versions/") || strings.Contains(r.args, "@anthropic-ai/claude-code/") {
+			return true
+		}
+		pid = r.ppid
+	}
+	return false
+}
+
 var adapterArgv = regexp.MustCompile(`ccmorph-(?:core )?adapter\s+(\S+)`)
 
 // findSessionAdapter is the profile of the adapter <launcher> started. A session
@@ -158,8 +202,8 @@ func findSessionAdapter(t map[int]psRow, launcher int) string {
 }
 
 // SessionAdapter is the profile of the adapter the launcher pid started, read
-// from its argv; "" when there is none.
-func SessionAdapter(launcher int) string { return findSessionAdapter(processTable(), launcher) }
+// from its argv in t; "" when there is none.
+func SessionAdapter(t ProcTable, launcher int) string { return findSessionAdapter(t, launcher) }
 
 // adapterProfile is the profile an adapter's argv names: the core runs
 // `ccmorph-core adapter <profile>`, the older build `ccmorph-adapter <profile>`,

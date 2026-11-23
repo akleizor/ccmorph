@@ -6,10 +6,12 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"os/signal"
 	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
+	"syscall"
 	"unicode"
 
 	"github.com/akleizor/ccmorph/profile"
@@ -68,45 +70,33 @@ func (l *launcher) add(args []string) int {
 		// names the machine's own install step.
 		rows += "\nmore\tMore sign-ins\t" + browserLogins + " (cliproxyapi)"
 	}
-	choice, ok := l.choose("Sign-in method — "+name, rows)
+	choice, ok := l.menu("native", "Sign-in method — "+name, rows, func(v string) (string, string, bool) {
+		if _, _, ok := methodAction(v, providers, haveBridge); !ok {
+			return "", "not a sign-in method — enter a number from the list or a name", false
+		}
+		if !haveBridge && v == "4" {
+			v = "more"
+		}
+		return v, "", true
+	})
 	if !ok {
 		return 1
 	}
-	if !haveBridge && choice == "4" {
-		choice = "more"
-	}
+	kind, provider, _ := methodAction(choice, providers, haveBridge) // the menu guaranteed an answer
 	var rc int
-	switch choice {
-	case "1", "sub", "subscription":
+	switch kind {
+	case "sub":
 		rc = l.addSub(name)
-	case "2", "token", "oauth_token", "oauth-token":
+	case "token":
 		rc = l.addToken(name)
-	case "3", "apikey", "api_key", "api-key":
+	case "apikey":
 		rc = l.addAPIKey(name)
 	case "more":
 		fmt.Println("Browser sign-in to " + browserLogins + " needs cliproxyapi.")
 		fmt.Println("Install it: " + util.ClipInstallStep() + ", then run: ccmorph add " + name)
 		return 1
 	default:
-		matched := ""
-		if n, err := strconv.Atoi(choice); err == nil && n >= 4 && n < 4+len(providers) {
-			matched = providers[n-4]
-		} else {
-			for _, p := range providers {
-				if strings.EqualFold(choice, p) {
-					matched = p
-				}
-			}
-		}
-		if matched == "" && strings.HasPrefix(choice, "sub") {
-			rc = l.addSub(name)
-			break
-		}
-		if matched == "" {
-			l.err("cancelled")
-			return 1
-		}
-		rc = l.addProvider(name, matched)
+		rc = l.addProvider(name, provider)
 	}
 	if rc != 0 {
 		return rc
@@ -120,21 +110,102 @@ func (l *launcher) add(args []string) int {
 	return 0
 }
 
-// choose is a native menu on a terminal; piped input picks by number or ID.
-func (l *launcher) choose(title, rows string) (string, bool) {
+// menuTryLimit is how many wrong answers a piped menu re-asks for before it
+// gives up as cancelled: enough to recover from one answer typed from instinct,
+// few enough that a stream of wrong lines still ends the wizard.
+const menuTryLimit = 3
+
+// menu is a wizard menu: a native picker on a terminal, which cannot be
+// answered wrongly; on a pipe, the list and a loop (#727). Before, the piped
+// menu read one line and shared its exit with cancel, so the issue's typed
+// gateway URL ended the whole wizard. Now an answer that matches no row re-asks
+// — naming the limit it states — so every answer already given stands; the
+// deliberate ways out stay: EOF, and q, the word the numbered menu names.
+func (l *launcher) menu(mode, title, rows string, match func(string) (string, string, bool)) (string, bool) {
 	if isTTY(0) {
-		v, rc := uiSelect("native", title, rows, "")
+		v, rc := uiSelect(mode, title, rows, "")
 		return v, rc == 0
 	}
 	themeFor(2).list(title, splitRows(rows), "labels")
-	v, rc := uiInput("> ", false)
-	return v, rc == 0
+	for wrong := 1; ; wrong++ {
+		v, rc := uiInput("> ", false)
+		if rc != 0 {
+			return "", false
+		}
+		if v == "q" || v == "Q" {
+			l.err("cancelled")
+			return "", false
+		}
+		answer, hint, ok := match(v)
+		if ok {
+			return answer, true
+		}
+		if wrong >= menuTryLimit {
+			l.err(fmt.Sprintf("too many wrong answers at the menu (%d) — cancelled", menuTryLimit))
+			return "", false
+		}
+		if hint == "" {
+			hint = "not a menu answer — enter a number from the list or a name"
+		}
+		l.err(fmt.Sprintf("%s (try %d of %d)", hint, wrong, menuTryLimit))
+	}
+}
+
+// methodAction is what a sign-in menu answer chooses: the row's kind and, for
+// a browser login, its provider. The old inline switch's order is kept whole —
+// the fixed rows answer first, then a provider number, then a provider name,
+// then a "sub…" prefix — so a name a provider could also answer with keeps
+// resolving to the row it always did. Only the rows the menu prints are
+// answers: the More sign-ins row exists without the bridge alone, so `more`
+// with the bridge on PATH re-asks like any unlisted word (#727).
+func methodAction(choice string, providers []string, haveBridge bool) (kind, provider string, ok bool) {
+	if !haveBridge && choice == "4" {
+		choice = "more"
+	}
+	switch choice {
+	case "1", "sub", "subscription":
+		return "sub", "", true
+	case "2", "token", "oauth_token", "oauth-token":
+		return "token", "", true
+	case "3", "apikey", "api_key", "api-key":
+		return "apikey", "", true
+	case "more":
+		if haveBridge {
+			return "", "", false
+		}
+		return "more", "", true
+	}
+	if n, err := strconv.Atoi(choice); err == nil && n >= 4 && n < 4+len(providers) {
+		return "provider", providers[n-4], true
+	}
+	for _, p := range providers {
+		if strings.EqualFold(choice, p) {
+			return "provider", p, true
+		}
+	}
+	if strings.HasPrefix(choice, "sub") {
+		return "sub", "", true
+	}
+	return "", "", false
+}
+
+// urlHostShape is an address typed without its scheme: a dotted host, an
+// optional port and path — the way a gateway reads on a first read of the
+// question (#727). A preset id has no dot, so nothing a row answers with
+// carries this shape.
+var urlHostShape = regexp.MustCompile(`^[a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?(\.[a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?)+(:[0-9]{1,5})?(/\S*)?$`)
+
+// looksLikeURL reports an answer shaped like an endpoint a person meant to
+// give: it carries a scheme, or it reads as a dotted host (#727).
+func looksLikeURL(s string) bool {
+	return strings.Contains(s, "://") || urlHostShape.MatchString(s)
 }
 
 // rollback removes a half-made profile: private state and conf.
 func (l *launcher) rollback(name string) {
 	l.removeProfileDir(name)
 	os.Remove(l.conf(name))
+	delete(l.confReads, name) // what was half-made must not be read back (GH-561)
 }
 
 func (l *launcher) claudeAuth(dir string, args ...string) *exec.Cmd {
@@ -159,6 +230,30 @@ var emailRE = regexp.MustCompile(`"email": "([^"]*)"`)
 // a sign-in for the config dir it was pointed at.
 var claudeStatusRE = regexp.MustCompile(`"loggedIn":\s*(true|false)`)
 
+// handSignInSignals keeps SIGHUP and SIGTERM from killing this process while a
+// browser sign-in waits (GH-649). Closing a terminal or dropping SSH sends
+// those signals to the whole foreground process group, and a parent that dies
+// mid-wait never reaches the rollback that makes an interrupted sign-in clean
+// up the way a cancelled one does. While the returned release is pending, both
+// signals go on to the sign-in child — the child owns the wait and the terminal
+// sends it the signals too — so the child exits, the caller's failure path
+// runs, and a closed window ends like the Ctrl-C Claude Code handles itself.
+func handSignInSignals(child *os.Process) (release func()) {
+	sigs := make(chan os.Signal, 1)
+	signal.Notify(sigs, syscall.SIGHUP, syscall.SIGTERM)
+	go func() {
+		for s := range sigs {
+			if sig, ok := s.(syscall.Signal); ok {
+				_ = child.Signal(sig) // the child may already be gone
+			}
+		}
+	}()
+	return func() {
+		signal.Stop(sigs) // returns once no more signals can arrive
+		close(sigs)
+	}
+}
+
 // subBrowserLogin runs Claude Code's browser sign-in against the profile's
 // config dir and returns the signed-in email. add and login both put a Claude
 // account profile through it; the readback is what names the profile.
@@ -167,7 +262,14 @@ func (l *launcher) subBrowserLogin(name string) (string, bool) {
 	fmt.Println(l.dim + "Opening your browser to sign in — Ctrl-C to cancel." + l.reset)
 	login := l.claudeAuth(dir, "login")
 	login.Stdin, login.Stdout, login.Stderr = os.Stdin, os.Stdout, os.Stderr
-	if login.Run() != nil {
+	if login.Start() != nil {
+		l.err("login failed")
+		return "", false
+	}
+	release := handSignInSignals(login.Process)
+	err := login.Wait()
+	release()
+	if err != nil {
 		l.err("login failed")
 		return "", false
 	}
@@ -187,11 +289,14 @@ func (l *launcher) subBrowserLogin(name string) (string, bool) {
 	return email, true
 }
 
+// addSub signs in before it saves (GH-649): the conf appears only with its
+// email, the way addProvider signs in before writing type=provider. An early
+// `type=sub` stub made every abnormal exit — a closed terminal, a dropped SSH —
+// a self-contradictory wall: list read the stub as a broken profile and told
+// the user to re-create it while add called the same name taken and pointed at
+// login. A profile that was never signed in is not a profile, and no cleanup
+// can promise what a save that comes last simply never owes.
 func (l *launcher) addSub(name string) int {
-	if atomicWrite(l.conf(name), "type=sub\n") != nil {
-		l.err("could not save profile '" + name + "'")
-		return 1
-	}
 	if !l.setupDir(name, "sub", liveNote) {
 		l.rollback(name)
 		return 1
@@ -207,7 +312,7 @@ func (l *launcher) addSub(name string) int {
 		l.rollback(name)
 		return 1
 	}
-	if atomicWrite(l.conf(name), "type=sub\nemail="+email+"\n") != nil {
+	if l.writeConf(name, "type=sub\nemail="+email+"\n") != nil {
 		l.err("could not save profile '" + name + "'")
 		l.rollback(name)
 		return 1
@@ -287,10 +392,14 @@ func (l *launcher) setEmail(name, email string) error {
 	for i, line := range lines {
 		if strings.HasPrefix(line, "email=") {
 			lines[i] = "email=" + email
-			return atomicWrite(l.conf(name), strings.Join(lines, "\n"))
+			return l.writeConf(name, strings.Join(lines, "\n"))
 		}
 	}
-	return nil
+	// GH-649: the line can be absent, not just stale — that is what an
+	// interrupted sign-in used to leave behind, and silently reporting success
+	// over a conf it never repaired is the lie this verb may not tell. What a
+	// completed sign-in knows and the conf lacks, the conf gets.
+	return l.writeConf(name, strings.TrimSuffix(string(raw), "\n")+"\nemail="+email+"\n")
 }
 
 func (l *launcher) addToken(name string) int {
@@ -320,7 +429,7 @@ func (l *launcher) addToken(name string) int {
 		default:
 			fmt.Println(l.dim + "Anthropic answered HTTP " + code + ", so the token was not checked" + l.reset)
 		}
-		if atomicWrite(l.conf(name), "type=token\ntoken="+token+"\n") != nil {
+		if l.writeConf(name, "type=token\ntoken="+token+"\n") != nil {
 			l.err("could not save profile '" + name + "'")
 			return 1
 		}
@@ -350,6 +459,23 @@ func (l *launcher) presets() [][]string {
 	return out
 }
 
+// tierColumns maps a preset's three tier columns to the env lines the wizard
+// writes, each key built from its word in tier.TierWords. The words are the
+// ones after fable: no gateway column maps fable, which is left to `ccmorph
+// config set`, not given a fourth column here. add_test.go pins the three
+// columns to opus, sonnet and haiku by name, so reordering TierWords cannot
+// silently point a column at another tier (#449).
+func tierColumns(tiers []string) []string {
+	var lines []string
+	for i, word := range tier.TierWords[1:] {
+		if i >= len(tiers) {
+			break
+		}
+		lines = append(lines, "env."+tier.TierEnvKey(word)+"="+tiers[i])
+	}
+	return lines
+}
+
 func (l *launcher) addAPIKey(name string) int {
 	presets := l.presets()
 	// Anthropic's own API leads the list: the sign-in menu promises "Anthropic or
@@ -362,23 +488,29 @@ func (l *launcher) addAPIKey(name string) int {
 		}
 	}
 	rows = append(rows, "custom\tCustom endpoint\tAnthropic or any gateway URL")
-	var pick string
-	if isTTY(0) {
-		v, rc := uiSelect("search", "Provider — "+name, strings.Join(rows, "\n"), "")
-		if rc != 0 {
-			return 1
-		}
-		pick = v
-	} else {
-		themeFor(2).list("Provider — "+name, rows, "labels")
-		v, rc := uiInput("> ", false)
-		if rc != 0 {
-			return 1
-		}
-		pick = v
+	pick, ok := l.menu("search", "Provider — "+name, strings.Join(rows, "\n"), func(v string) (string, string, bool) {
+		p := v
 		if n, err := strconv.Atoi(v); err == nil && n >= 1 && n <= len(rows) {
-			pick = rowID(rows[n-1])
+			p = rowID(rows[n-1])
 		}
+		if p == "anthropic" || p == "custom" {
+			return p, "", true
+		}
+		for _, pr := range presets {
+			if pr[0] == p {
+				return p, "", true
+			}
+		}
+		hint := "not a provider — enter a number from the list or a provider id"
+		if looksLikeURL(v) {
+			// The question's own wording invites the URL; the row that takes
+			// one is pointed at by the number it is printed under (#727).
+			hint = fmt.Sprintf("unknown provider '%s' — for your own URL pick %d) Custom endpoint", v, len(rows))
+		}
+		return "", hint, false
+	})
+	if !ok {
+		return 1
 	}
 	label, url := "", ""
 	var tiers []string
@@ -387,17 +519,13 @@ func (l *launcher) addAPIKey(name string) int {
 		label = "Anthropic"
 	case "custom":
 	default:
-		found := false
+		// Reached with an id the list carries: the terminal picker answers with
+		// row IDs, and the pipe's loop only returns a matched one (#727).
 		for _, p := range presets {
 			if p[0] == pick {
-				found = true
 				p = append(p, "", "", "", "", "")
 				label, url, tiers = p[1], p[2], p[3:6]
 			}
-		}
-		if !found {
-			l.err("unknown provider '" + pick + "'")
-			return 1
 		}
 	}
 	prompt := "API key for " + name
@@ -443,18 +571,14 @@ func (l *launcher) addAPIKey(name string) int {
 		conf += "base_url=" + url + "\n"
 	}
 	// The presets' three tier columns are written as the env keys the store
-	// reads back, each key built from its word in tier.TierWords — the words
-	// after fable, which no gateway column maps. A word the list gains beyond
-	// the columns stays unwritten here rather than hand-spelled (#539).
+	// reads back through tierColumns. A word the list gains beyond the columns
+	// stays unwritten here rather than hand-spelled (#539).
 	if len(tiers) == 3 && tiers[0] != "" {
-		for i, word := range tier.TierWords[1:] {
-			if i >= len(tiers) {
-				break
-			}
-			conf += "env." + tier.TierEnvKey(word) + "=" + tiers[i] + "\n"
+		for _, line := range tierColumns(tiers) {
+			conf += line + "\n"
 		}
 	}
-	if atomicWrite(l.conf(name), conf) != nil {
+	if l.writeConf(name, conf) != nil {
 		l.err("could not save profile '" + name + "'")
 		return 1
 	}
@@ -526,7 +650,7 @@ func (l *launcher) addProvider(name, provider string) int {
 		os.RemoveAll(filepath.Join(l.dir, "auth", name))
 		return 1
 	}
-	if atomicWrite(l.conf(name), "type=provider\nprovider="+provider+"\n") != nil {
+	if l.writeConf(name, "type=provider\nprovider="+provider+"\n") != nil {
 		l.err("could not save profile '" + name + "'")
 		os.RemoveAll(filepath.Join(l.dir, "auth", name))
 		return 1
@@ -697,9 +821,21 @@ func (l *launcher) login(args []string) int {
 	if !l.requireProfile(&name, "login", "sub", "provider", "apikey") {
 		return 1
 	}
-	f, ok := l.readRaw(name)
-	if !ok {
-		return 1
+	// readRaw's reading, printed exactly as it prints it — with one exception
+	// (GH-649): the sub conf missing its email is login's own patient. A
+	// sign-in interrupted before that line left a refusal here that pointed
+	// away from this command, while `add` pointed at it — two repairs for one
+	// conf, and the profile was one sign-in from whole.
+	f, err := l.readProfile(name, func(line string) { fmt.Fprintln(os.Stderr, line) })
+	if err != nil {
+		if f["type"] != "sub" {
+			l.err(err.Error())
+			return 1
+		}
+		if rc, done := l.locked(name, []string{"login", name}); done {
+			return rc
+		}
+		return l.subLogin(name, f)
 	}
 	if f["type"] == "sub" {
 		// The sign-in rewrites the conf's email line, so it takes the profile
@@ -729,7 +865,7 @@ func (l *launcher) login(args []string) int {
 	if f["type"] != "provider" {
 		// Only a token profile is left, and its credential is replaced, not
 		// renewed: name the command that does that.
-		l.err("'" + name + "' is a " + profile.KindLabel(f["type"], f["provider"]) + " profile — replace its credential: ccmorph config " + name)
+		l.err("'" + name + "' is " + profile.KindPhrase(f["type"], f["provider"]) + " profile — replace its credential: ccmorph config " + name)
 		return 1
 	}
 	if !l.providerLogin(name, f["provider"]) {

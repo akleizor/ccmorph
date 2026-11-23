@@ -1,6 +1,7 @@
 package shim
 
 import (
+	"encoding/json"
 	"errors"
 	"os"
 	"strings"
@@ -22,6 +23,18 @@ const apiDoc = `{
 func usageOf(s string) usageRow {
 	in := []byte(s)
 	return bucketsOf(in, Span{0, len(in)}, true)
+}
+
+func TestCachedOwnedPriceLookup(t *testing.T) {
+	dir := stateHome(t)
+	seedOwnedPrices(t, dir, "any", map[string]price{"example": {Input: 0.15, Output: 0.6}})
+	book := CachedOwnedPriceBook("")
+	if in, out, ok := book.Lookup("example-FP8"); !ok || in != 0.15 || out != 0.6 {
+		t.Fatalf("got %v, %v, %v", in, out, ok)
+	}
+	if _, _, ok := book.Lookup("missing"); ok {
+		t.Fatal("missing model must be unpriced")
+	}
 }
 
 func TestEstimateIsTokenClassesTimesPrice(t *testing.T) {
@@ -151,6 +164,44 @@ func TestOwnedPricesPreferTheVendorOverAReseller(t *testing.T) {
 	}
 }
 
+// TestPriceTablesAreGolden pins the full parse of the fixture documents
+// byte-for-byte (#564): whatever walk serves both price tables must keep the
+// shared-model first-wins, the vendor-over-reseller preference and the
+// named-provider slice exactly as the two walks before it produced them.
+func TestPriceTablesAreGolden(t *testing.T) {
+	table := func(m map[string]price) string {
+		b, err := json.Marshal(m)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return string(b)
+	}
+	for _, tc := range []struct{ name, got, want string }{
+		{"host table, first sorted provider wins a shared id",
+			table(parsePrices([]byte(apiDoc), "api.deepseek.com")),
+			`{"deepseek-flash":{"input":0.15,"output":0.6,"cache_read":0.003,"cache_write":null},"deepseek-v4-pro":{"input":0.66,"output":1.98,"cache_read":0.022,"cache_write":null}}`},
+		{"host table of the other host",
+			table(parsePrices([]byte(apiDoc), "api.openai.com")),
+			`{"gpt":{"input":2,"output":10,"cache_read":0.1,"cache_write":2.5}}`},
+		{"host table of a reseller the vendors share ids with",
+			table(parsePrices([]byte(ownedDoc), "api.example.com")),
+			`{"claude-opus-5-5":{"input":9,"output":9,"cache_read":null,"cache_write":null},"gpt-5.6-sol":{"input":9,"output":9,"cache_read":null,"cache_write":null}}`},
+		{"any provider, no vendor nesting in the document",
+			table(parseOwnedPrices([]byte(apiDoc), "")),
+			`{"deepseek-flash":{"input":0.15,"output":0.6,"cache_read":0.003,"cache_write":null},"deepseek-v4-pro":{"input":0.66,"output":1.98,"cache_read":0.022,"cache_write":null},"gpt":{"input":2,"output":10,"cache_read":0.1,"cache_write":2.5}}`},
+		{"one named provider",
+			table(parseOwnedPrices([]byte(ownedDoc), "anthropic")),
+			`{"claude-haiku-5-5":{"input":1,"output":5,"cache_read":null,"cache_write":null},"claude-opus-5-5":{"input":4,"output":20,"cache_read":0.2,"cache_write":5}}`},
+		{"any provider, the vendor's own entry beats a reseller's",
+			table(parseOwnedPrices([]byte(ownedDoc), "")),
+			`{"claude-haiku-5-5":{"input":1,"output":5,"cache_read":null,"cache_write":null},"claude-opus-5-5":{"input":4,"output":20,"cache_read":0.2,"cache_write":5},"gpt-5.6-sol":{"input":2,"output":10,"cache_read":null,"cache_write":null}}`},
+	} {
+		if tc.got != tc.want {
+			t.Errorf("%s:\n got %s\nwant %s", tc.name, tc.got, tc.want)
+		}
+	}
+}
+
 func TestNewOwnedPriceBookKeysItsCacheByProvider(t *testing.T) {
 	stateHome(t)
 	b := newOwnedPriceBook("anthropic")
@@ -177,6 +228,18 @@ func TestLookupIgnoresADateSuffix(t *testing.T) {
 	}
 	if _, ok := b.lookup("claude-opus-5-5-notadate"); ok {
 		t.Fatal("a suffix that is not a date must not be stripped")
+	}
+}
+
+func TestLookupIgnoresAServedPrecisionSuffix(t *testing.T) {
+	table := map[string]price{"Qwen3.8-Flash-Next": {Input: 0, Output: 0}, "glm-5.3": {Input: 1, Output: 3}}
+	for _, m := range []string{"Qwen3.8-Flash-Next-FP8", "glm-5.3-NVFP4", "glm-5.3_awq"} {
+		if _, ok := lookupIn(table, m); !ok {
+			t.Fatalf("%s must price as its base model", m)
+		}
+	}
+	if _, ok := lookupIn(table, "glm-5.3-air"); ok {
+		t.Fatal("a suffix that is not a precision must not be stripped")
 	}
 }
 

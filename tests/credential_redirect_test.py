@@ -4,12 +4,12 @@ import os
 import socket
 import subprocess
 import threading
-import time
 import unittest
 import urllib.request
 from pathlib import Path
 
-from support import HANG_TIMEOUT, SHIM, needs_shim, port_outside_the_ephemeral_pool
+from support import (HANG_TIMEOUT, SHIM, needs_loopback, needs_shim,
+                     port_outside_the_ephemeral_pool, wait_until)
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -30,14 +30,13 @@ def serve(handler):
 
 
 def wait_port(port):
-    deadline = time.monotonic() + HANG_TIMEOUT
-    while time.monotonic() < deadline:
+    def listening():
         with socket.socket() as s:
-            if s.connect_ex(("127.0.0.1", port)) == 0:
-                return
-        time.sleep(0.1)
+            return s.connect_ex(("127.0.0.1", port)) == 0
+    assert wait_until(listening, HANG_TIMEOUT), f"port {port} never listened"
 
 
+@needs_loopback  # the origin and sink are real listeners: #611
 class CredentialRedirect(unittest.TestCase):
     def _redirect_fixture(self):
         seen = []

@@ -43,6 +43,8 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/akleizor/ccmorph/ctxwindow"
+	"github.com/akleizor/ccmorph/netroute"
 	"github.com/akleizor/ccmorph/profile"
 	"github.com/akleizor/ccmorph/shim"
 	"github.com/akleizor/ccmorph/util"
@@ -53,16 +55,19 @@ import (
 // Timings, overridable for tests (the Python tests rewrote the constants in a
 // copy of the script).
 var (
-	readyTimeout  = envSeconds("CCMORPH_ADAPTER_READY_TIMEOUT", 90)
-	selectTimeout = envSeconds("CCMORPH_ADAPTER_SELECT_DEADLINE", 30)
+	readyTimeout  = timeoutEnv("CCMORPH_ADAPTER_READY_TIMEOUT", 90)
+	selectTimeout = timeoutEnv("CCMORPH_ADAPTER_SELECT_DEADLINE", 30)
 	parentPoll    = 2 * time.Second
 )
 
-func envSeconds(name string, def int) time.Duration {
-	if n, err := strconv.Atoi(os.Getenv(name)); err == nil && n > 0 {
-		return time.Duration(n) * time.Second
+// timeoutEnv applies the adapter's error policy to util.EnvSeconds: an
+// unusable timeout keeps the documented default rather than stopping a launch.
+// Parsing and the range check belong to that owner (#770).
+func timeoutEnv(name string, def float64) time.Duration {
+	if d, err := util.EnvSeconds(os.Getenv, name, def); err == nil {
+		return d
 	}
-	return time.Duration(def) * time.Second
+	return time.Duration(def * float64(time.Second))
 }
 
 // Seams for the unit tests.
@@ -231,7 +236,23 @@ func kvs(m map[string]string) []string {
 	return out
 }
 
-func environWith(extra map[string]string) []string { return append(os.Environ(), kvs(extra)...) }
+// environWith is a spawned process's environment: the adapter's own plus extra.
+// CCMORPH_UPSTREAM_PROXY is the profile conf's route knob, so an inherited
+// spelling -- the launcher's shell exporting one -- is dropped unless extra
+// carries the profile's own: the probes and the translator read the profile
+// conf alone, and a child fed the shell's spelling would take a route they
+// ignored, the split GH-580 ended, mirrored (GH-773).
+func environWith(extra map[string]string) []string {
+	env := os.Environ()
+	out := make([]string, 0, len(env)+len(extra))
+	for _, kv := range env {
+		if strings.HasPrefix(kv, "CCMORPH_UPSTREAM_PROXY=") {
+			continue
+		}
+		out = append(out, kv)
+	}
+	return append(out, kvs(extra)...)
+}
 
 func mustJSON(v any) string {
 	raw, err := json.Marshal(v)
@@ -255,8 +276,9 @@ type cliArgs struct {
 	port           *int
 
 	// resolved during startup
-	token    string
-	reserved int // fd of the held --port, or -1
+	token       string
+	reserved    int  // fd of the held --port, or -1
+	probeFailed bool // --print-config only: classify failed, rows are the cache's (GH-592)
 }
 
 const usage = "usage: ccmorph-adapter [-h] [--parent-pid PARENT_PID] [--print-config] [--auto]\n" +
@@ -395,7 +417,7 @@ func frontDirectly(a *cliArgs, upstream, key, routeIdentity string, usable []Row
 	}
 	env := map[string]string{"CCMORPH_MODEL_ROUTE": mustJSON(map[string]any{
 		"profile": a.profile, "identity": routeIdentity, "upstream": upstream,
-		"models_url": apiURL(upstream, "/v1/models"), "models": models,
+		"models_url": ctxwindow.APIURL(upstream, "/v1/models"), "models": models,
 		"model_map": modelMap, "timeout": int(selectTimeout.Seconds()),
 		"key_sha256": hashHex(key)})}
 	// Profile request quirks ride as env for the shim's hooks module, never as
@@ -454,6 +476,37 @@ func frontDirectly(a *cliArgs, upstream, key, routeIdentity string, usable []Row
 		a.checkParent(shutdown)
 		time.Sleep(parentPoll)
 	}
+}
+
+// translatorChatModels is the ids of the rows the translator serves on its
+// chat-completions path ("chat" and "chat-noreason", as render lists them), in
+// row order: the routes on which the translator hands Claude Code a reasoning
+// carrier and reads it back (#646).
+func translatorChatModels(rows []Row) []string {
+	var ids []string
+	for _, r := range rows {
+		if r.Dialect == "chat" || r.Dialect == "chat-noreason" {
+			ids = append(ids, r.Model)
+		}
+	}
+	return ids
+}
+
+// chatModelsFile is the file beside the rendered translator config that names
+// the models its chat path serves, so the shim can read the list when a 400
+// needs the carrier decision (#646).
+func chatModelsFile(conf string) string { return conf + ".chat-models" }
+
+// writeChatModels records that list beside the config. It is rewritten on every
+// render and every mid-session prepare, so a model selected after the shim
+// started is seen by it.
+func writeChatModels(conf string, rows []Row) error {
+	ids := translatorChatModels(rows)
+	data := []byte(strings.Join(ids, "\n"))
+	if len(data) > 0 {
+		data = append(data, '\n')
+	}
+	return shim.AtomicWrite(chatModelsFile(conf), data, 0o600, ".chat-")
 }
 
 func newToken() string {
@@ -546,6 +599,9 @@ func Main(argv []string) int {
 		die("profile %s has no base_url to front", a.profile)
 	}
 	upstreamProxy := strings.TrimSpace(env["CCMORPH_UPSTREAM_PROXY"])
+	// An unparsable proxy leaves probes on the environment's proxy, as before;
+	// never echo it here, it may carry a password.
+	probeVia = netroute.Parse(upstreamProxy)
 	// Profile request quirks ride as CCMORPH_* env to the shim, not as shim flags.
 	// CCMORPH_SHIM_HOOKS names a shim binary built with the profile's own hooks,
 	// run in place of the stock one; validated before anything is spawned, so a
@@ -584,8 +640,34 @@ func Main(argv []string) int {
 		stop = abortAfter(selectTimeout, fmt.Sprintf("classifying %s on %s exceeded %ds",
 			shim.PyRepr(required), upstream, int(selectTimeout.Seconds())))
 	}
+	classifyFallback = nil // a stale fallback from an earlier pass never reaches this print
 	rows, err := classifyFn(upstream, key, cacheFile, required, a.auto)
 	stop()
+	// The --print-config contract (GH-592): --print-config is how a person
+	// confirms masking without a live session (#47, #65, #139, #164), so a
+	// failed compatibility probe -- the profile's upstream proxy not
+	// listening, the endpoint unreachable -- never preempts the print. The
+	// probe still takes the profile's proxy exactly as a launch's does (#580);
+	// only the consequence differs: the redacted config is printed from the
+	// classification cache, empty or not, the failure is named on stderr, and
+	// the exit is 0. A failed inventory that fell back to a cache of settled
+	// unusable rows is the same failure arriving with no error, so its cause
+	// is read from classifyFallback and treated identically. Every launch still
+	// fails on the error below, and a reachable endpoint where nothing is
+	// usable still refuses.
+	probeErr, fellBack := err, false
+	if probeErr == nil && classifyFallback != nil {
+		probeErr, fellBack = classifyFallback, true
+	}
+	classifyFallback = nil
+	if probeErr != nil && a.printConfig {
+		if !fellBack { // a fallback already holds the cache's rows, fresh probes included
+			rows = cachedRows(upstream, cacheFile)
+		}
+		logf("--print-config: compatibility probes failed (%v); printing the redacted config with %d cached model(s) instead", probeErr, len(rows))
+		a.probeFailed = true
+		err = nil
+	}
 	if err != nil {
 		// A launch with no model can discover one only from a listing; a
 		// refusal the endpoint answered must reach the ready-file reader as
@@ -654,7 +736,7 @@ func ensureConfig(a *cliArgs, required, upstream, key, routeIdentity, cacheFile,
 	conf := a.ensureConfig
 	stop := abortAfter(selectTimeout, "selected model routing timed out")
 	defer stop()
-	advertised, err := inventoryFn(upstream, key, nil)
+	_, advertised, err := inventoryFn(upstream, key, nil)
 	if err != nil {
 		die("%v", err)
 	}
@@ -669,20 +751,36 @@ func ensureConfig(a *cliArgs, required, upstream, key, routeIdentity, cacheFile,
 	if err != nil {
 		die("%v", err)
 	}
+	prevChat, chatErr := os.ReadFile(chatModelsFile(conf))
 	rendered := render(rows, key, a.ensurePort, upstream, filepath.Join(filepath.Dir(conf), "auth"),
 		upstreamProxy, shimBinary, environWith(extras), cloakNeverFn())
 	replace := func(data []byte) error {
 		return shim.AtomicWrite(conf, data, 0o600, ".route-")
 	}
+	// Any failure or timeout from here, the chat model list's own write among
+	// them, restores the previous config and chat model list. It is armed before
+	// either write, so no exit leaves the running translator on the new config
+	// (#646). A list that was absent is removed; one that could not be read is
+	// left alone.
+	restore := func() {
+		replace(previous)
+		switch {
+		case chatErr == nil:
+			shim.AtomicWrite(chatModelsFile(conf), prevChat, 0o600, ".chat-")
+		case errors.Is(chatErr, os.ErrNotExist):
+			os.Remove(chatModelsFile(conf))
+		}
+	}
+	atExit(restore)
 	if err := replace([]byte(rendered)); err != nil {
 		die("%v", err)
 	}
-	// Any failure or timeout from here restores the previous config.
-	restore := func() { replace(previous) }
-	atExit(restore)
+	if err := writeChatModels(conf, rows); err != nil {
+		die("cannot write the translator's chat model list: %v", err)
+	}
 	deadline := time.Now().Add(10 * time.Second)
 	for {
-		ids, err := inventoryFn("http://127.0.0.1:"+strconv.Itoa(a.ensurePort), key, loopback)
+		_, ids, err := inventoryFn("http://127.0.0.1:"+strconv.Itoa(a.ensurePort), key, loopback)
 		if err != nil {
 			die("%v", err)
 		}
@@ -705,7 +803,11 @@ func ensureConfig(a *cliArgs, required, upstream, key, routeIdentity, cacheFile,
 func serve(a *cliArgs, rows []Row, required, upstream, key, routeIdentity, upstreamProxy, shimBinary string,
 	extras map[string]string, env map[string]string, modelMap map[string]any) int {
 	usable, native, recyclesIDs := usableNative(rows)
-	if len(usable) == 0 {
+	// A degraded --print-config (Main's GH-592 branch: the probe failed and
+	// stderr named it) prints even an empty classification. A reachable
+	// endpoint with nothing usable still refuses, --print-config or not, and
+	// so does every launch.
+	if len(usable) == 0 && !a.probeFailed {
 		if a.auto && required == "" {
 			fmt.Printf("EXIT=no declared or cached model protocol; set a model with ccmorph set %s model <model-id> and retry (the compatibility check may incur a small charge)\n", a.profile)
 			return 1
@@ -759,17 +861,32 @@ func serve(a *cliArgs, rows []Row, required, upstream, key, routeIdentity, upstr
 		die("%v", err)
 	}
 	os.Chmod(conf, 0o600)
+	if err := writeChatModels(conf, rows); err != nil {
+		os.Remove(conf)
+		die("cannot write the translator's chat model list: %v", err)
+	}
 
 	if a.printConfig {
+		// The proxy goes first: its raw spelling can hold a character the key
+		// replace would rewrite (a key of "k" inside "token=qq"), and a spelling
+		// already cut in two no longer matches, leaving the proxy's own secret in
+		// the text. Redact the whole URL while it is still whole.
+		if upstreamProxy != "" {
+			// The translator is rendered the resolver's spelling, not the raw
+			// knob (a pasted password arrives re-encoded), so the whole URL the
+			// file holds is replaced while it is still whole.
+			spelled := upstreamProxy
+			if u := netroute.Parse(upstreamProxy); u != nil {
+				spelled = u.String()
+			}
+			text = strings.ReplaceAll(text, q(spelled), q(profile.RedactURL(spelled)))
+		}
 		// Redact both spellings: the key is on disk as a YAML scalar, so one with a
 		// quote or backslash is in its escaped form and a raw replace alone would
 		// walk straight past it.
 		quoted := q(key)
 		for _, spelling := range []string{quoted[1 : len(quoted)-1], key} {
 			text = strings.ReplaceAll(text, spelling, "<redacted>")
-		}
-		if upstreamProxy != "" {
-			text = strings.ReplaceAll(text, q(upstreamProxy), q(profile.RedactURL(upstreamProxy)))
 		}
 		os.Remove(conf)
 		fmt.Println(text)
@@ -860,6 +977,11 @@ func serve(a *cliArgs, rows []Row, required, upstream, key, routeIdentity, upstr
 	for k, v := range extras {
 		shimEnv[k] = v
 	}
+	// The 400 resend keeps the translator's reasoning carrier on the models its
+	// chat path serves: their next request needs it back (#646). The list is a
+	// file the adapter rewrites whenever it prepares a model, so one selected
+	// mid-session is seen by this shim too. A direct route never sets it.
+	shimEnv["CCMORPH_TRANSLATOR_CHAT_MODELS_FILE"] = chatModelsFile(conf)
 	if a.token != "" {
 		shimEnv["CCMORPH_INBOUND"] = mustJSON(map[string]any{"sha256": hashHex(a.token), "key": key})
 	}

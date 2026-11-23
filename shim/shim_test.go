@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/akleizor/ccmorph/ordjson"
+	"github.com/akleizor/ccmorph/util"
 )
 
 func TestCanonMatchesPythonDumps(t *testing.T) {
@@ -267,6 +268,18 @@ func TestTaskTags(t *testing.T) {
 	if g := tagsOf(h); g.task == nil || *g.task != "issue-42" || g.attempt != 3 {
 		t.Fatal(g)
 	}
+	// The boundaries of util's two validators, which the launcher writes by and
+	// this relay reads by (#638): the shapes must agree on both sides.
+	h.Set("x-ccmorph-task", strings.Repeat("a", 64))
+	h.Set("x-ccmorph-attempt", "999")
+	if g := tagsOf(h); g.task == nil || *g.task != strings.Repeat("a", 64) || g.attempt != 999 {
+		t.Fatalf("the longest tag the launcher writes was dropped: %v", g)
+	}
+	h.Set("x-ccmorph-task", strings.Repeat("a", 65))
+	h.Set("x-ccmorph-attempt", "1000")
+	if g := tagsOf(h); g.task != nil || g.attempt != 1 {
+		t.Fatalf("a tag past the launcher's shape was kept: %v", g)
+	}
 	for _, bad := range [][2]string{{"a/b", "0"}, {"x y", "²"}, {strings.Repeat("a", 65), "1000"}, {"", "-1"}} {
 		h.Set("x-ccmorph-task", bad[0])
 		h.Set("x-ccmorph-attempt", bad[1])
@@ -295,7 +308,7 @@ func TestTaskTags(t *testing.T) {
 	if g := tagsOf(h); g.session != nil {
 		t.Errorf("the request's own key must never become a session: %v", *g.session)
 	}
-	if taskRE.MatchString("x\n") {
+	if util.ValidTaskTag("x\n") {
 		t.Fatal("$ must not match before a trailing newline")
 	}
 }
@@ -897,7 +910,7 @@ func rowFilesOf(dir string) []string {
 
 func TestSidecarLifecycleAndModes(t *testing.T) {
 	dir := stateHome(t)
-	u := newSidecar("p", "identity").tagged(taskTags{nil, 1, nil})
+	u := newSidecar("p", "identity").tagged(noTags)
 	req := "claude-x"
 	rec := u.observe(parseDoc([]byte(`{"type":"message_start","message":{"id":"msg_1","model":"served","usage":{"input_tokens":11,"service_tier":"standard"}}}`)), nil, &req)
 	if rec == nil {
@@ -998,7 +1011,7 @@ func parseTimeRow(line string) bool {
 	}
 	task, _ := d.str("task")
 	outcome, _ := d.str("outcome")
-	return taskRE.MatchString(task) && (outcome == "accepted")
+	return util.ValidTaskTag(task) && (outcome == "accepted")
 }
 
 func TestParseTime(t *testing.T) {
@@ -1059,7 +1072,10 @@ func TestCatalogueEndpointsAndTTL(t *testing.T) {
 }
 
 func TestCatalogueFailuresSendAsAsked(t *testing.T) {
-	for name, body := range map[string]string{"bad json": `{`, "not object": `[1]`, "data number": `{"data":1}`, "oversize": `{"data":"` + strings.Repeat("x", catalogueMaxBytes) + `"}`} {
+	// The data-less rows are #558's replies: a proxy's error object on a 200, a
+	// 3xx body curl -f passes through — no model ids either way, so the shim
+	// sends the model as asked instead of ruling it out.
+	for name, body := range map[string]string{"bad json": `{`, "not object": `[1]`, "data number": `{"data":1}`, "error object": `{"error":"rate limited"}`, "redirect body": `{"message":"Moved Permanently"}`, "oversize": `{"data":"` + strings.Repeat("x", catalogueMaxBytes) + `"}`} {
 		hits := 0
 		c := catalogueServer(t, body, &hits)
 		if got := c.served("k", "claude-opus-5"); len(got) != 0 {

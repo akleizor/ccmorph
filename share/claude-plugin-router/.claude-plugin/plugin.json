@@ -1,0 +1,5 @@
+{
+  "name": "ccmorph-router",
+  "description": "ccmorph's subagent router: a delegate tool and Agent hooks that spread subagent work across your profiles. Loaded only while `ccmorph router on`.",
+  "author": {"name": "ccmorph"}
+}

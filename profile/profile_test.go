@@ -139,6 +139,26 @@ func TestValidNameCapsTheLength(t *testing.T) {
 	}
 }
 
+// GH-449: rm must still address a profile made before #373's length limit. The
+// legacy range ends where the longest derived file (".<name>.bridge.users",
+// +14) reaches NAME_MAX, and nothing past it was ever addressable.
+func TestRemovableNameAcceptsTheLegacyRange(t *testing.T) {
+	if !RemovableName(strings.Repeat("y", MaxNameLen+1)) {
+		t.Fatal("a name inside the legacy range must be removable")
+	}
+	if !RemovableName(strings.Repeat("y", LegacyMaxNameLen)) {
+		t.Fatal("the last name whose bridge file fits NAME_MAX must be removable")
+	}
+	if RemovableName(strings.Repeat("y", LegacyMaxNameLen+1)) {
+		t.Fatal("a name whose bridge file would exceed NAME_MAX must stay refused")
+	}
+	for _, name := range []string{"Active", "ccmorph", "a-b", "a.b", ""} {
+		if RemovableName(name) {
+			t.Fatalf("%q must stay invalid", name)
+		}
+	}
+}
+
 // BadNameMsg is the one reply every command gives a name that can never be a
 // profile (#373): the reason, the name shown short, and never a second line.
 func TestBadNameMsg(t *testing.T) {
@@ -241,6 +261,26 @@ func TestKindLabelNamesEveryProfileKindForPeople(t *testing.T) {
 	} {
 		if got := KindLabel(c.typ, c.provider); got != c.want {
 			t.Errorf("KindLabel(%q, %q) = %q, want %q", c.typ, c.provider, got, c.want)
+		}
+	}
+}
+
+// GH-790: three sentences read "is a API key profile" because the article was
+// hardcoded before KindLabel. The article now belongs with the label: the
+// refusal says "an API key profile", and the kinds that took "a" still do.
+func TestKindPhraseGivesEveryKindLabelItsArticle(t *testing.T) {
+	for _, c := range []struct{ typ, provider, want string }{
+		{"sub", "", "a Claude account"},
+		{"token", "", "a Claude token"},
+		{"apikey", "", "an API key"},
+		{"proxy", "", "an API key"},
+		{"provider", "codex", "a Codex"},
+		{"provider", "xai", "a xAI"},
+		{"provider", "", "a Provider"},
+		{"quantum", "", "a quantum"},
+	} {
+		if got := KindPhrase(c.typ, c.provider); got != c.want {
+			t.Errorf("KindPhrase(%q, %q) = %q, want %q", c.typ, c.provider, got, c.want)
 		}
 	}
 }

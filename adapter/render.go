@@ -3,17 +3,20 @@ package adapter
 import (
 	"context"
 	"fmt"
+	"net/url"
 	"os/exec"
-	"regexp"
 	"sort"
 	"strconv"
 	"strings"
 	"time"
 	"unicode/utf16"
 
+	"github.com/akleizor/ccmorph/ctxwindow"
+	"github.com/akleizor/ccmorph/netroute"
 	"github.com/akleizor/ccmorph/ordjson"
 	"github.com/akleizor/ccmorph/quirks"
 	"github.com/akleizor/ccmorph/shim"
+	"github.com/akleizor/ccmorph/util"
 )
 
 // q is a value as a YAML double-quoted scalar: Python's json.dumps escaping
@@ -128,7 +131,7 @@ func render(rows []Row, key string, port int, upstream, authdir, proxy, shimPath
 		claudeHdr = "    headers:\n      User-Agent: " + q(ua) + "\n"
 	}
 	chat, noreason := ids("chat", "chat-noreason"), ids("chat-noreason")
-	openaiBase := apiURL(upstream, "/v1")
+	openaiBase := ctxwindow.APIURL(upstream, "/v1")
 	caps := map[string]int{}
 	for _, r := range rows {
 		if r.capped() {
@@ -148,10 +151,20 @@ func render(rows []Row, key string, port int, upstream, authdir, proxy, shimPath
 	// env.CCMORPH_UPSTREAM_PROXY sends the translator's upstream calls through an
 	// HTTP CONNECT proxy. macOS denies a LAN gateway to a translator started under
 	// a launchd-owned tmux server ("connect: no route to host"); a loopback proxy
-	// holding a Local Network grant dials it instead.
+	// holding a Local Network grant dials it instead. The translator takes the
+	// route the resolver names, exactly as the probes and the shim do:
+	// netroute.Parse decides whether the knob is usable and returns the spelling
+	// every reader can parse -- a password pasted with a space, '/', '?', '#',
+	// '^', '%' or a brace is re-encoded -- and an unusable knob renders no
+	// proxy-url at all, so cliproxyapi keeps the environment's own resolution
+	// instead of a route the probes would never dial (GH-580). The exemptions
+	// come first: a gateway on this machine or under NO_PROXY is dialed
+	// directly, never sent to a remote proxy.
 	proxyLine := ""
-	if proxy != "" {
-		proxyLine = "proxy-url: " + q(proxy) + "\n"
+	if u := netroute.Parse(proxy); u != nil {
+		if up, err := url.Parse(upstream); err != nil || !netroute.Exempt(up) {
+			proxyLine = "proxy-url: " + q(u.String()) + "\n"
+		}
 	}
 	var out strings.Builder
 	fmt.Fprintf(&out, `host: "127.0.0.1"
@@ -190,6 +203,11 @@ api-keys:
 # rebuild-mid-system-message: Claude Code sends mid-conversation system content as
 # a messages entry with role "system", which vLLM-backed upstreams reject with a
 # literal_error on the role.
+# connection-pool: without it the translator builds a fresh transport per request
+# and never closes it, so every finished request leaves its upstream connection
+# idle for 90 s. Under a busy fleet those orphans outnumbered live streams and
+# exhausted the iPhone VPN relay (2026-11-21). The pool reuses one connection per
+# credential and multiplexes streams over HTTP/2 where the upstream offers it.
 # Cloaking: before 8.0.34 a client whose User-Agent is not claude-cli is cloaked by
 # default (billing header rewritten to a frozen cc_version, extra system reminder,
 # fake session ids), so "never" is written there. From 8.0.34 "never" instead
@@ -201,6 +219,7 @@ claude-api-key:
     base-url: %s
     disable-cooling: true
     rebuild-mid-system-message: true
+    connection-pool: {}
 %s%s    models:
 %s`, q(key), q(upstream), cloakLine, claudeHdr, block(passthrough))
 	}
@@ -213,6 +232,7 @@ codex-api-key:
   - api-key: %s
     base-url: %s
     disable-cooling: true
+    connection-pool: {}
     models:
 %s`, q(key), q(openaiBase), block(responses))
 	}
@@ -307,21 +327,9 @@ openai-compatibility:
 // 8.0.x alike. A missing or unparseable version counts as new: omitting the block
 // is the safe shape there.
 func cloakNeverFor(path string) bool {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	out, _ := exec.CommandContext(ctx, path, "-h").CombinedOutput()
-	return cloakNeverForBanner(string(out))
+	return cloakNeverForBanner(util.ClipBanner(path))
 }
 
-var bannerVersion = regexp.MustCompile(`CLIProxyAPI Version: v?(\d+)\.(\d+)\.(\d+)`)
-
 func cloakNeverForBanner(out string) bool {
-	m := bannerVersion.FindStringSubmatch(out)
-	if m == nil {
-		return false
-	}
-	maj, _ := strconv.Atoi(m[1])
-	min, _ := strconv.Atoi(m[2])
-	pat, _ := strconv.Atoi(m[3])
-	return maj < 8 || (maj == 8 && (min == 0 && pat < 34))
+	return util.BannerBelow(out, 8, 0, 34)
 }

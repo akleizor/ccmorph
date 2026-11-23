@@ -8,8 +8,10 @@ from pathlib import Path
 
 import pytest
 
+from support import load_script
+
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "addons" / "remote-control"))
-from rc_route import is_inference, reroute  # noqa: E402
+from rc_route import inference_target, is_inference, reroute  # noqa: E402
 
 OAUTH = "sk-ant-oat01-ACCOUNT-SECRET"
 
@@ -157,14 +159,8 @@ def test_pinned_tier_covers_full_ids(model, sent):
 
 
 def _launcher():
-    import importlib.machinery
-    import importlib.util
-    path = Path(__file__).resolve().parent.parent / "addons" / "remote-control" / "ccmorph-rc"
-    loader = importlib.machinery.SourceFileLoader("ccmorph_rc", str(path))
-    spec = importlib.util.spec_from_loader("ccmorph_rc", loader)
-    mod = importlib.util.module_from_spec(spec)
-    loader.exec_module(mod)
-    return mod
+    return load_script(Path(__file__).resolve().parent.parent / "addons" / "remote-control" / "ccmorph-rc",
+                       "ccmorph_rc")
 
 
 def test_a_folder_is_trusted_before_the_host_starts(tmp_path):
@@ -240,11 +236,13 @@ def test_adapter_is_told_the_route_model(tmp_path, monkeypatch):
     rc = _launcher()
     (tmp_path / "gw.conf").write_text("type=apikey\nmodel=claude-opus-5-5\n")
     monkeypatch.setattr(rc, "STATE_ROOT", tmp_path)
+    monkeypatch.setattr(rc, "STATE", tmp_path / "bridge")
     seen = {}
     class Stop(Exception):
         pass
     def popen(cmd, **kw):
         seen["cmd"] = cmd
+        seen["stderr"] = kw.get("stderr")
         raise Stop
     monkeypatch.setattr(rc.subprocess, "Popen", popen)
     try:
@@ -252,6 +250,8 @@ def test_adapter_is_told_the_route_model(tmp_path, monkeypatch):
     except Stop:
         pass
     assert seen["cmd"][-2:] == ["--model", "claude-opus-5-5"]
+    # the long-lived adapter must not inherit the caller's stderr (a --switch pipe hung on it)
+    assert seen["stderr"].name.endswith("adapter-gw.log")
 
 
 def test_route_behaviour_flags_reach_the_session_either_way():
@@ -313,10 +313,22 @@ def test_a_network_outage_does_not_take_the_shared_edge_down(monkeypatch):
 def test_shared_edge_carries_route_flags_for_later_hosts():
     # A host that reuses a live edge takes model ids AND route flags from the edge's
     # record, not from a fresh resolve — so an edge whose record omits a flag serves
-    # every later host without it.
+    # every later host without it. The record carries every key MODEL_ENV and ROUTE_ENV
+    # name, and no unrelated environment entry rides along.
     rc = _launcher()
-    src = Path(rc.__file__).read_text() if hasattr(rc, "__file__") else ""
-    assert 'for k in (*MODEL_ENV, *ROUTE_ENV)' in src
+    pinned = {
+        "ANTHROPIC_DEFAULT_FABLE_MODEL": "fable-x",
+        "ANTHROPIC_DEFAULT_OPUS_MODEL": "opus-x",
+        "ANTHROPIC_DEFAULT_SONNET_MODEL": "sonnet-x",
+        "ANTHROPIC_DEFAULT_HAIKU_MODEL": "haiku-x",
+        "ANTHROPIC_SMALL_FAST_MODEL": "small-x",
+        "CLAUDE_CODE_SUBAGENT_MODEL": "subagent-x",
+        "CLAUDE_CODE_DISABLE_ADVISOR_TOOL": "0",
+        "CLAUDE_CODE_MODEL_CAPABILITIES": "-mid_conv_effort",
+    }
+    unrelated = {"PATH": "/bin", "ANTHROPIC_BASE_URL": "http://u", "HOME": "/home/u"}
+    record = rc.edge_record(1, 47100, "/ca.pem", "http://u", {**pinned, **unrelated}, {})
+    assert record["route_env"] == pinned
 
 
 def test_the_edge_record_names_the_tiers_its_proxy_pins():
@@ -405,6 +417,39 @@ def test_event_uploads_keep_only_what_the_phone_shows():
     assert len(second["content"]) < TEXT_MAX + 100
     assert result["tool_use_result"] == {"structuredPatch": [{"lines": ["-a", "+b"]}]}   # the diff stays
     assert not slim_events(body, lambda data, kind: None)   # already slim: nothing to do
+    # A tool_result without `content` has always gained `content: null`; that key
+    # insertion is a change the flag has to carry, like any rewrite of its value.
+    bare = {"events": [{"payload": {"type": "user", "message": {"content": [
+        {"type": "tool_result", "tool_use_id": "v"}]}}}]}
+    assert slim_events(bare, lambda data, kind: None)
+    assert bare["events"][0]["payload"]["message"]["content"][0]["content"] is None
+    assert not slim_events(bare, lambda data, kind: None)
+
+
+def test_one_event_upload_is_serialized_at_most_once(monkeypatch):
+    """slim_events knows what it changed while it walks the body; re-encoding a
+    multi-MB upload to diff it against itself doubled every session open."""
+    import rc_route
+    serialized = []
+    real_encode = rc_route.encode_json
+
+    def counting(obj, ensure_ascii=False):
+        serialized.append(1)
+        return real_encode(obj, ensure_ascii=ensure_ascii)
+
+    monkeypatch.setattr(rc_route, "encode_json", counting)
+    body = {"events": [
+        {"payload": {"type": "user", "message": {"content": [
+            {"type": "tool_result", "tool_use_id": "t", "content": [
+                {"type": "image", "source": {"type": "base64", "media_type": "image/png",
+                                             "data": "A" * 200_000}},
+                {"type": "text", "text": "x" * 10_000}]}]},
+         "tool_use_result": {"stdout": "y" * 10_000}}}]}
+    assert rc_route.slim_events(body, lambda data, kind: ("C" * 9, "image/jpeg"))
+    assert len(serialized) <= 1, f"one upload serialized the body {len(serialized)} times"
+    serialized.clear()
+    assert not rc_route.slim_events(body, lambda data, kind: ("C" * 9, "image/jpeg"))
+    assert len(serialized) <= 1, f"an already-slim upload serialized the body {len(serialized)} times"
 
 
 def test_the_proxy_inherits_a_raised_open_file_limit(monkeypatch):
@@ -492,3 +537,219 @@ def test_default_account_names_claude_account_profiles(tmp_path, monkeypatch, ca
     err = capsys.readouterr().err
     assert "Claude account profiles found" in err
     assert "subscription" not in err
+
+
+def test_inference_switch_is_read_live_and_defaults_to_the_route(tmp_path):
+    switch = tmp_path / "inference"
+    assert inference_target(None) == "route"
+    assert inference_target(str(switch)) == "route"          # no file: the route, as before
+    switch.write_text("account\n")
+    assert inference_target(str(switch)) == "account"        # the next turn sees it, no restart
+    switch.write_text("route\n")
+    assert inference_target(str(switch)) == "route"
+    switch.write_text("oli\n")
+    assert inference_target(str(switch)) == "oli"            # a profile --switch brought up
+    switch.write_text("../etc/x\n")
+    assert inference_target(str(switch)) == "route"          # not a profile name: the route
+
+
+ADDON = Path(__file__).resolve().parent.parent / "addons" / "remote-control" / "rc_addon.py"
+
+
+def _addon(monkeypatch, tmp_path, word):
+    """The addon loaded with a stub mitmproxy: its decision, not the proxy, is
+    what these tests read. The end-to-end path is rc_bridge_failclosed_test.py,
+    which needs a real mitmdump; this table runs wherever the suite does."""
+    import types
+    http = types.ModuleType("mitmproxy.http")
+    http.HTTPFlow = type("HTTPFlow", (), {})
+    package = types.ModuleType("mitmproxy")
+    package.http = http
+    monkeypatch.setitem(sys.modules, "mitmproxy", package)
+    monkeypatch.setitem(sys.modules, "mitmproxy.http", http)
+    key = tmp_path / "route-key"
+    key.write_text("route-key")
+    switch = tmp_path / "inference"
+    switch.write_text(word + "\n")
+    monkeypatch.setenv("RC_UPSTREAM", "http://127.0.0.1:5000")
+    monkeypatch.setenv("RC_KEY_FILE", str(key))
+    monkeypatch.setenv("RC_INFERENCE", str(switch))
+    for name in ("RC_TIERS", "RC_LOG"):
+        monkeypatch.delenv(name, raising=False)
+    return load_script(ADDON, "rc_addon_decision")
+
+
+class _Flow:
+    """What requestheaders touches: the request and the flow's metadata."""
+
+    class Request:
+        pretty_host = "api.anthropic.com"
+        path = "/v1/messages"
+        method = "POST"
+        scheme, host, port = "https", "api.anthropic.com", 443
+
+        def __init__(self):
+            self.headers = {"authorization": "Bearer ACCOUNT"}
+
+    def __init__(self):
+        self.request = self.Request()
+        self.metadata = {}
+
+
+@pytest.mark.parametrize("word, first_party", [("account", True), ("route", False)])
+def test_the_account_word_marks_what_it_leaves_first_party(word, first_party, tmp_path, monkeypatch):
+    """GH-594: the account word hands the call to Anthropic untouched, on the
+    destination the fail-closed guard closes. It must mark that flow, and the
+    route word must not: only the addon's mark tells a legitimate account call
+    from one no addon ever saw."""
+    addon = _addon(monkeypatch, tmp_path, word)
+    flow = _Flow()
+    addon.requestheaders(flow)
+    assert (flow.metadata.get(addon.ACCOUNT_METADATA) is True) == first_party
+    if first_party:
+        assert (flow.request.scheme, flow.request.host) == ("https", "api.anthropic.com")
+        assert flow.request.headers == {"authorization": "Bearer ACCOUNT"}
+    else:
+        assert flow.metadata["rc_route"] is True
+        assert flow.request.headers["x-api-key"] == "route-key"
+
+
+def test_the_guard_exempts_the_mark_the_account_branch_sets(tmp_path, monkeypatch):
+    """The launcher's block_list and the addon name one metadata key: the guard
+    closes the account destination for every flow without it, and the account
+    branch is the only code that sets it."""
+    addon = _addon(monkeypatch, tmp_path, "account")
+    assert f"!~meta {addon.ACCOUNT_METADATA}" in _launcher().FAIL_CLOSED
+
+
+def test_a_pinned_tier_reaches_the_backend_without_the_context_marker():
+    """oli pins opus to claude-opus-5-5[1m]; its backend 404s on the marker (2026-11-16)."""
+    from rc_route import normalize_body
+    body = {"model": "claude-opus-5-5"}
+    normalize_body(body, {"opus": "claude-opus-5-5[1m]"})
+    assert body["model"] == "claude-opus-5-5"
+    body = {"model": "claude-opus-5-5[1m]"}
+    assert normalize_body(body, {"opus": "claude-opus-5-5[1m]"})
+    assert body["model"] == "claude-opus-5-5"
+
+
+def test_an_rc_session_loads_the_router_plugin_while_the_router_is_on(tmp_path, monkeypatch):
+    """`claude remote-control` is exec'd directly, not through `ccmorph run`, so
+    the session took no plugin path and never saw the router's delegate tool."""
+    rc = _launcher()
+    if not rc.ADAPTER.exists():
+        pytest.skip(f"{rc.ADAPTER} is not built: run `make shim` first")
+    env = {"PATH": "/usr/bin:/bin", "HOME": str(tmp_path), "CCMORPH_STATE_DIR": str(tmp_path),
+           "CCMORPH_LIB_DIR": str(rc.LIB_DIR)}
+    share = rc.LIB_DIR.parent / "share"
+    assert rc.plugin_dirs(env) == str(share / "claude-plugin")
+    (tmp_path / "router.json").write_text('{"enabled": true}')
+    assert rc.plugin_dirs(env) == f"{share / 'claude-plugin'}:{share / 'claude-plugin-router'}"
+
+
+def _switch_state(tmp_path, monkeypatch):
+    """The launcher set up for `switch()` to bring the route profile "gw" up beside the
+    one live shared edge: edge liveness, the route resolve and the adapter spawn are the
+    outside world here, so each answers exactly what a healthy host would. A conf that
+    pins sonnet through the window marker is the #584 shape: the marker is ccmorph's own
+    and belongs to no model id the proxy may pin."""
+    monkeypatch.setenv("CCMORPH_STATE_DIR", str(tmp_path))
+    rc = _launcher()
+    (tmp_path / "gw.conf").write_text("type=apikey\n")
+    (rc.STATE / "edges").mkdir(parents=True)
+    (rc.STATE / "edges" / "main.json").write_text("{}")     # the one shared edge switch() demands
+    monkeypatch.setattr(rc, "live_edge", lambda r: {"pid": 4242} if r == "main" else None)
+    route_env = {"ANTHROPIC_BASE_URL": "https://gw", "ANTHROPIC_API_KEY": "route-key",
+                 "ANTHROPIC_DEFAULT_SONNET_MODEL": "claude-sonnet-5-5[1m]",
+                 "CCMORPH_ROUTE_HANDLE": "provider|1|/t|/a"}
+    monkeypatch.setattr(rc, "resolve_route", lambda profile: route_env)
+    monkeypatch.setattr(rc, "retire_route_with", lambda pid, handle: None)
+    monkeypatch.setattr(rc, "adapter_env", lambda: {})
+    monkeypatch.setattr(rc, "start_adapter", lambda profile, owner, env: "http://127.0.0.1:54505")
+    return rc, route_env
+
+
+# The edge's own route map, as ccmorph-rc hands it to the proxy at start (RC_TIERS). It differs
+# from every handoff below, so a test can tell which of the two maps a turn used.
+_BOOT_TIERS = {"sonnet": "boot-route-sonnet"}
+
+
+def _switch_addon(monkeypatch, state):
+    """rc_addon loaded the way ccmorph-rc loads it: a private copy configured through
+    the environment alone. mitmproxy only ever appears in the hook signatures, and the
+    suite runs without it, so where it is not installed the name resolves to a stub;
+    neither the handoff read nor the routing decision reaches past it."""
+    from types import ModuleType, SimpleNamespace
+    key = state / "route-key"
+    key.parent.mkdir(parents=True, exist_ok=True)
+    key.write_text("route-key\n")
+    monkeypatch.setenv("RC_UPSTREAM", "http://127.0.0.1:60111")
+    monkeypatch.setenv("RC_KEY_FILE", str(key))
+    monkeypatch.setenv("RC_INFERENCE", str(state / "inference"))
+    monkeypatch.setenv("RC_LOG", str(state / "addon.log"))
+    # Every RC_* the add-on reads at import is pinned here, never inherited from the
+    # suite's environment (REVIEW.md: a test that cannot fail).
+    monkeypatch.setenv("RC_TIERS", json.dumps(_BOOT_TIERS))
+    monkeypatch.delenv("RC_PARENT_PID", raising=False)
+    try:
+        import mitmproxy  # noqa: F401
+    except ImportError:
+        mitm = ModuleType("mitmproxy")
+        mitm.http = SimpleNamespace(HTTPFlow=object)
+        monkeypatch.setitem(sys.modules, "mitmproxy", mitm)
+    path = Path(__file__).resolve().parent.parent / "addons" / "remote-control" / "rc_addon.py"
+    return load_script(path, "rc_addon_switch")
+
+
+def test_a_switch_handoff_pins_its_tiers_through_pinned_tiers(tmp_path, monkeypatch):
+    """issue #584: switch() spelled the tier map inline — pinned_tiers() minus that
+    function's [1m] strip — so a profile whose conf pinned claude-…[1m] carried the
+    marker verbatim into switch-<profile>.json, and the switched phone's bare `sonnet`
+    came back rewritten to a model id wearing ccmorph's own window marker."""
+    rc, route_env = _switch_state(tmp_path, monkeypatch)
+    rc.switch("gw", "me")
+    hand = rc.STATE / "switch-gw.json"
+    assert json.loads(hand.read_text())["tiers"] == rc.pinned_tiers(route_env) == {"sonnet": "claude-sonnet-5-5"}
+    assert hand.stat().st_mode & 0o777 == 0o600
+    assert "[1m]" not in hand.read_text()
+    assert (rc.STATE / "inference").read_text() == "gw\n"   # the word every host follows next turn
+
+
+def test_the_addon_reads_a_handoff_once_and_keeps_it_thereafter(tmp_path, monkeypatch):
+    """The handoff is the whole of a bring-up: read once, deleted with the read, then
+    remembered for every later turn — and its tiers are exactly what pinned_tiers says."""
+    rc, route_env = _switch_state(tmp_path, monkeypatch)
+    rc.switch("gw", "me")
+    addon = _switch_addon(monkeypatch, rc.STATE)
+    got = addon._switched("gw")
+    assert got == ("http://127.0.0.1:54505", "route-key", rc.pinned_tiers(route_env))
+    assert not (rc.STATE / "switch-gw.json").exists()      # the key lived one hop, never on disk
+    assert addon._switched("gw") == got                    # brought up once; every turn follows
+
+
+@pytest.mark.parametrize("handoff,port,log", [
+    pytest.param(None, 60111, "was never brought up", id="never-brought-up-keeps-the-route"),
+    pytest.param({"upstream": "http://127.0.0.1:54505", "key": "route-key",
+                  "tiers": {"sonnet": "claude-sonnet-5-5"}}, 54505, "via gw",
+                 id="brought-up-moves-the-turn"),
+])
+def test_a_switch_word_moves_the_turn_only_where_a_profile_was_brought_up(tmp_path, monkeypatch,
+                                                                          handoff, port, log):
+    """A word file can name a profile `--switch` never raised; the turn then stays on
+    the edge's route with a named reason — never guessed at, never failed."""
+    from types import SimpleNamespace
+    state = tmp_path / "state"
+    state.mkdir()
+    (state / "inference").write_text("gw\n")
+    if handoff:
+        (state / "switch-gw.json").write_text(json.dumps(handoff))
+    addon = _switch_addon(monkeypatch, state)
+    flow = SimpleNamespace(metadata={}, request=SimpleNamespace(
+        pretty_host="api.anthropic.com", path="/v1/messages", method="POST",
+        headers={"authorization": "Bearer ACCOUNT-SECRET"},
+        scheme="https", host="api.anthropic.com", port=443))
+    addon.requestheaders(flow)
+    assert flow.request.port == port                        # the handoff's adapter, or the route
+    assert log in (state / "addon.log").read_text()
+    assert flow.metadata["rc_route"] is True
+    assert flow.metadata["rc_tiers"] == (handoff["tiers"] if handoff else _BOOT_TIERS)

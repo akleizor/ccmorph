@@ -28,6 +28,21 @@ func StateDir() string {
 	return filepath.Join(home, ".local", "state", "ccmorph")
 }
 
+// SpelledFromHome is path cleaned and spelled ~/… under the home directory, the
+// way a page names a path a person will type: the default roots spell
+// themselves ~/.config/ccmorph and ~/.local/state/ccmorph, and only a
+// redirected root changes the page. Elsewhere, and the home itself, it is the
+// cleaned path.
+func SpelledFromHome(path string) string {
+	root := filepath.Clean(path)
+	if home, err := os.UserHomeDir(); err == nil {
+		if rel, ok := strings.CutPrefix(root, home+string(filepath.Separator)); ok {
+			return "~/" + rel
+		}
+	}
+	return root
+}
+
 // AccountHome is the passwd entry's home, for a process started with HOME
 // unset. A variable so a test can pin the account the way a real one cannot.
 var AccountHome = func() string {
@@ -123,6 +138,31 @@ func IsSymlink(path string) bool {
 // Lexists reports whether path itself can be lstat'ed: a broken symlink
 // lexists, where Exists follows the link and answers no.
 func Lexists(path string) bool { _, err := os.Lstat(path); return err == nil }
+
+// SameFile is whether the two paths name one file, links followed: a symlink
+// at either path is the file it points at, so a native link to a history file
+// and the file itself are one file — the follow keepHistory's "a native link
+// to the same file gives way" needs. A path that cannot be stat'ed is never
+// the same file (#562).
+func SameFile(a, b string) bool {
+	fa, err1 := os.Stat(a)
+	fb, err2 := os.Stat(b)
+	return err1 == nil && err2 == nil && os.SameFile(fa, fb)
+}
+
+// SameInode is whether both paths each hold one file: the same inode under
+// both names, the claim a move's hardlink pair leaves. A symlink is its own
+// file here — it does not count as the file it points at, where SameFile
+// follows it — so a link sitting at a taken name is another row's, never the
+// claim (#562).
+func SameInode(a, b string) bool {
+	ia, err := os.Lstat(a)
+	if err != nil {
+		return false
+	}
+	ib, err := os.Lstat(b)
+	return err == nil && os.SameFile(ia, ib)
+}
 
 // Resolve is p with every symlink along it evaluated — Path.resolve() with a
 // missing tail kept: a path EvalSymlinks cannot follow (nothing is named, or

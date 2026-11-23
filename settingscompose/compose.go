@@ -60,6 +60,10 @@ var (
 	ownedEnv = []string{"ANTHROPIC_MODEL", "CLAUDE_CODE_EFFORT_LEVEL"}
 	// Deny rules only ever accumulate.
 	permissionLists = [][]string{{"permissions", "deny"}}
+	// Every canonical rule list survives a tombstone: the person's guard rails
+	// are not the profile's, so deleting a materialized block may not delete
+	// them (#750).
+	permissionRuleLists = [][]string{{"permissions", "deny"}, {"permissions", "allow"}, {"permissions", "ask"}}
 )
 
 // failure is a panic carrying why a projection failed; Main recovers it. A policy
@@ -421,16 +425,50 @@ func mergeInto(result, override *obj, path []string) {
 // lists: the launch's own usage-row writer.
 const usageHookMark = "usage-row"
 
-// usageWord matches one shell word of that command the way the launcher writes
-// it: bare, or single-quoted as cli's shQuote does, where an embedded quote is
-// written as the escape shQuote emits.
-const usageWord = `(?:[A-Za-z0-9_./~$-]+|'(?:[^']|'\\'')*')`
+// shSafeChars is the character class a word keeps bare in a hook command,
+// without the dash: each class that adds it places it last, where it stays a
+// literal instead of starting a range. Any other word is written
+// single-quoted, with an embedded quote as the shQuotedWord escape.
+const shSafeChars = `A-Za-z0-9_./`
 
-// usageCommandRE is the whole command the launcher builds (cli's usageHookFor):
-// the core path, the verb and the two flags it passes. A user's own hook that
-// wraps the verb, redirects from it, or runs something after it is not this
-// command and stays the user's.
-var usageCommandRE = regexp.MustCompile(`^(` + usageWord + `) ` + usageHookMark + ` --profile ` + usageWord + ` --pricing ` + usageWord + `$`)
+// shSafeWord is shSafeChars as a whole word, dash included.
+const shSafeWord = `[` + shSafeChars + `-]+`
+
+// shQuotedWord is the shape shQuote writes for a word shSafeWord does not
+// cover: single-quoted, with an embedded quote written as shQuote's one escape.
+const shQuotedWord = `'(?:[^']|'\\'')*'`
+
+var (
+	shSafe = regexp.MustCompile(`^` + shSafeWord + `$`)
+	// usageWord matches one shell word of that command. It accepts the words
+	// shQuote writes, bare or single-quoted, and the wider bare spelling a
+	// user's hook may already carry: $HOME or ~ left unquoted for the shell to
+	// expand. The builder quotes those now, but the matcher must still read the
+	// hook it wrote before as ccmorph's own (#638), so its bare word is
+	// shSafeChars plus the two expansion characters.
+	usageWord = `(?:[` + shSafeChars + `~$-]+|` + shQuotedWord + `)`
+	// usageCommandRE is the whole command UsageHookCommand builds: the core
+	// path, the verb and the two flags it passes. A user's own hook that wraps
+	// the verb, redirects from it, or runs something after it is not this
+	// command and stays the user's.
+	usageCommandRE = regexp.MustCompile(`^(` + usageWord + `) ` + usageHookMark + ` --profile ` + usageWord + ` --pricing ` + usageWord + `$`)
+)
+
+// shQuote is the one quoting a usage hook command uses.
+func shQuote(s string) string {
+	if shSafe.MatchString(s) {
+		return s
+	}
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
+}
+
+// UsageHookCommand is the one command ccmorph puts in a profile's hook lists:
+// the core's usage-row writer, for this profile and pricing slice. The matcher
+// below is built from the same word shapes, so what this writes is exactly what
+// ccmorph recognizes as its own (#638).
+func UsageHookCommand(corePath, profile, pricing string) string {
+	return shQuote(corePath) + " " + usageHookMark + " --profile " + shQuote(profile) + " --pricing " + shQuote(pricing)
+}
 
 // isUsageCommand is true for that command and no other: its first word, once
 // unquoted, names the ccmorph-core binary.
@@ -702,10 +740,30 @@ func withoutTombstones(layer *obj) *obj {
 	return out
 }
 
-// applyTombstones deletes what the layer tombstones. Hooks are exempt: they only accumulate.
+// accumulates reports whether path names a list a tombstone must never delete:
+// hooks, or a canonical permission rule list (permissions.deny, .allow or .ask).
+// merge() appends to hooks and deny, so a tombstone on those — or on a path
+// above or below them — would delete what it combined; allow and ask replace
+// layer by layer, but their canonical entries are the person's guard rails and
+// must survive a tombstone too (#750).
+func accumulates(path []string) bool {
+	if path[0] == "hooks" {
+		return true
+	}
+	for _, list := range permissionRuleLists {
+		if hasPrefix(path, list) || hasPrefix(list, path) {
+			return true
+		}
+	}
+	return false
+}
+
+// applyTombstones deletes what the layer tombstones. Two guards are exempt:
+// hooks and permissionRuleLists paths, whose canonical entries merge() adds
+// back and a tombstone would delete.
 func applyTombstones(doc, layer *obj) {
 	for _, p := range tombstones(layer) {
-		if p[0] != "hooks" {
+		if !accumulates(p) {
 			deletePath(doc, p)
 		}
 	}

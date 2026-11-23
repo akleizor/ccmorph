@@ -10,6 +10,9 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"github.com/akleizor/ccmorph/netroute"
+	"github.com/akleizor/ccmorph/util"
 )
 
 func die(msg string) {
@@ -17,17 +20,9 @@ func die(msg string) {
 	os.Exit(1)
 }
 
-func envSeconds(getenv func(string) string, name string, def float64) (time.Duration, error) {
-	v := getenv(name)
-	if v == "" {
-		return time.Duration(def * float64(time.Second)), nil
-	}
-	f, err := strconv.ParseFloat(strings.TrimSpace(v), 64)
-	if err != nil || f < 0 {
-		return 0, fmt.Errorf("shim: %s must be a number of seconds, got %q", name, v)
-	}
-	return time.Duration(f * float64(time.Second)), nil
-}
+// listenFn binds the shim's loopback port; a test may replace it to build a
+// server without a socket.
+var listenFn = net.Listen
 
 // Options is one shim's command line.
 type Options struct {
@@ -43,12 +38,13 @@ func Listen(h Hooks, o Options, getenv func(string) string) (*http.Server, net.L
 	var err error
 	s := NewServer(o.Target)
 	s.Hooks = h
-	if s.Stall, err = envSeconds(getenv, "CCMORPH_STALL_TIMEOUT", 300); err != nil {
-		return nil, nil, err
+	if s.Stall, err = util.EnvSeconds(getenv, "CCMORPH_STALL_TIMEOUT", 300); err != nil {
+		return nil, nil, fmt.Errorf("shim: %w", err)
 	}
-	if s.RetryBase, err = envSeconds(getenv, "CCMORPH_RETRY_BASE", 0.5); err != nil {
-		return nil, nil, err
+	if s.RetryBase, err = util.EnvSeconds(getenv, "CCMORPH_RETRY_BASE", 0.5); err != nil {
+		return nil, nil, fmt.Errorf("shim: %w", err)
 	}
+	s.Upstream = netroute.Parse(getenv("CCMORPH_UPSTREAM_PROXY"))
 	s.setClients()
 	if spec := getenv("CCMORPH_MODEL_ROUTE"); spec != "" {
 		if s.Routes, err = newModelRoutes(spec, s.remote); err != nil {
@@ -80,7 +76,7 @@ func Listen(h Hooks, o Options, getenv func(string) string) (*http.Server, net.L
 		s.Breaker = NewBreaker()
 	}
 	// Loopback only; no reverse lookup of the name (it can stall startup on macOS).
-	ln, err := net.Listen("tcp4", "127.0.0.1:"+strconv.Itoa(o.Port))
+	ln, err := listenFn("tcp4", "127.0.0.1:"+strconv.Itoa(o.Port))
 	if err != nil {
 		return nil, nil, fmt.Errorf("shim: %w", err)
 	}

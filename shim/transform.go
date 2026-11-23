@@ -3,6 +3,8 @@ package shim
 import (
 	"encoding/hex"
 	"encoding/json/jsontext"
+	"fmt"
+	"os"
 	"regexp"
 	"strconv"
 	"sync/atomic"
@@ -199,6 +201,67 @@ func unwrapGatewayError(body []byte) []byte {
 		return nil
 	}
 	return errorJSON("invalid_request_error", msg)
+}
+
+// geminiMissingSignature is Gemini's own refusal of a tool turn whose
+// functionCall came back without its thought_signature: the Gemini API and
+// Vertex both begin the message with this sentence (Vertex relays it behind
+// "Google Vertex bad request: "). Anchored at the start of the upstream's
+// message, so a 400 that merely quotes the sentence — an invalid tool enum
+// value carrying the phrase, say — is not mistaken for it.
+var geminiMissingSignature = regexp.MustCompile(`^(?:Google Vertex bad request: )?Function call is missing a thought_signature in functionCall parts\.`)
+
+// upstreamMessage is the error message of a JSON error body:
+// {"error":{"message":...}} (Vertex, the Gemini API) or
+// {"type":"error","error":{"message":...}} (Anthropic-shaped), else "".
+func upstreamMessage(body []byte) string {
+	d := parseDoc(body)
+	if d == nil {
+		return ""
+	}
+	sp, ok := d.last("error")
+	if !ok || body[sp.Start] != '{' {
+		return ""
+	}
+	e := docAt(body, sp)
+	if msg, ok := e.str("message"); ok {
+		return msg
+	}
+	if sp, ok := e.last("error"); ok && body[sp.Start] == '{' {
+		msg, _ := docAt(body, sp).str("message")
+		return msg
+	}
+	return ""
+}
+
+// docAt is the doc of the object at span sp.
+func docAt(b []byte, sp Span) *doc {
+	ms, _ := Object(b, sp.Start)
+	return &doc{b: b, ms: ms}
+}
+
+// thoughtSignatureRefusal is a one-line Anthropic error for a 400 whose message
+// is Gemini's missing-signature refusal, else body unchanged. The raw Vertex
+// text runs to a paragraph, names a tool position, and says nothing to do.
+// Reading the upstream's words is deliberate here and only here: this is a
+// diagnostic, not a repair, so the structural rule above is untouched. The line
+// names the hop that can drop the signature: behind the translator, a
+// cliproxyapi older than akleizor/CLIProxyAPI v8.0.76-akleizor.4; on a direct
+// route, the gateway, since the shim relays the history unchanged.
+func thoughtSignatureRefusal(body []byte, translator bool) []byte {
+	if !geminiMissingSignature.MatchString(upstreamMessage(body)) {
+		return body
+	}
+	if translator {
+		fmt.Fprintln(os.Stderr, "shim: upstream refused a tool call for a missing thought_signature; the translator did not send it back")
+		return errorJSON("invalid_request_error",
+			"Gemini refused the tool call because its thought_signature was not sent back: the translator sends it back only from "+
+				"cliproxyapi 8.0.76-akleizor.4; if cliproxyapi -h shows an older version, run brew install akleizor/tap/cliproxyapi (macOS arm64)")
+	}
+	fmt.Fprintln(os.Stderr, "shim: upstream refused a tool call for a missing thought_signature; this route has no translator")
+	return errorJSON("invalid_request_error",
+		"Gemini refused the tool call because its thought_signature was not sent back: this route has no translator and "+
+			"the shim relays the history unchanged, so the gateway did not carry it")
 }
 
 // errorJSON is json.dumps({"type":"error","error":{"type":t,"message":m}}) with

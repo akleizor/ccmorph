@@ -3,16 +3,21 @@ package util
 import (
 	"strings"
 	"testing"
+
+	"github.com/akleizor/ccmorph/ctxwindow"
 )
 
+// #563: the join this pin exercised is the one home now — these rows are
+// what util's listings rely on: a versioned base in either case gets no
+// second /v1, a bare or trailing-slash base gains its first.
 func TestAPIURLAddsV1OnlyToAnUnversionedBase(t *testing.T) {
 	for base, want := range map[string]string{
 		"https://provider.invalid/api/v4": "https://provider.invalid/api/v4/models",
 		"https://provider.invalid/api/V4": "https://provider.invalid/api/V4/models",
 		"https://provider.invalid/":       "https://provider.invalid/v1/models",
 	} {
-		if got := apiURL(base, "/v1/models"); got != want {
-			t.Errorf("apiURL(%q) = %q, want %q", base, got, want)
+		if got := ctxwindow.APIURL(base, "/v1/models"); got != want {
+			t.Errorf("ctxwindow.APIURL(%q) = %q, want %q", base, got, want)
 		}
 	}
 }

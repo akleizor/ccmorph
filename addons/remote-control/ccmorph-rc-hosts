@@ -34,7 +34,10 @@ and never restarts it (a restart would un-archive it). After idle_days (default
 from the app. Unarchived conversations are never retired: idle only means "not
 used lately".
 
-Every active phone session keeps a process, so a message never waits. A session's
+An active phone session keeps a process until it has had no event for
+park_hours (default 6, 0 = never): then an idle one's process is ended and the
+session is parked, so it holds no memory; its next message wakes it in about
+RECOVER_EVERY seconds (below). A session's
 process can end while it stays active (archive then unarchive, an idle exit, a
 crash), and neither Claude Code nor the server reliably restarts it, so the app
 would show it working forever. Every RECOVER_EVERY seconds the supervisor lists
@@ -54,7 +57,7 @@ a login failure there, with the account login still valid, restarts that folder'
 host (stop, then the usual relaunch), so the row and the sessions' ids survive and
 their processes are handed back as above. One restart per host per
 LOGIN_RESTART_AFTER; each event is one log line naming the folder. A logged-out
-account is left alone: /login fixes that, a restart loop does not.
+account is left alone: ccmorph login fixes that, a restart loop does not.
 
 An archived session is retired in two steps. After idle_days (default 1) its kept
 worktree is removed, with its branch; unarchiving still resumes it, in a fresh
@@ -71,6 +74,7 @@ import getpass
 import hashlib
 import http.client
 import importlib.machinery
+import importlib.util
 import json
 import os
 import re
@@ -92,21 +96,18 @@ STATE_ROOT = Path(os.environ.get("CCMORPH_STATE_DIR") or
                   Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config") / "ccmorph")
 LOGS = STATE_ROOT / "profiles" / ".rc-bridge" / "logs"
 EDGES = STATE_ROOT / "profiles" / ".rc-bridge" / "edges"
+INFERENCE = STATE_ROOT / "profiles" / ".rc-bridge" / "inference"   # ccmorph-rc reads the same file
 
 
 def edge_ready(route: str) -> dict | None:
-    """The route's shared edge (ccmorph-rc --edge) is up: alive and its proxy answers.
+    """The route's shared edge (ccmorph-rc --edge) is up and usable: alive, its proxy
+    answers, and its TLS material is still there.
 
-    Its record is the only account of what an edge started before this run serves,
-    so the caller gets that record, not just a verdict.
+    The rule is ccmorph-rc's live_edge, which is also what refuses to serve from an
+    edge (#638): a supervisor that adopted a record the launcher rejects would keep
+    every host on an edge whose CA is gone, and a phone pointed at it fails closed.
     """
-    try:
-        edge = json.loads((EDGES / f"{route}.json").read_text())
-        os.kill(int(edge["pid"]), 0)
-        with socket.create_connection(("127.0.0.1", int(edge["port"])), timeout=1):
-            return edge
-    except (OSError, ValueError, KeyError, TypeError):
-        return None
+    return rc_module().live_edge(route)
 
 
 def is_our_edge(pid: int, route: str) -> bool:
@@ -133,6 +134,7 @@ GRACE_TERM = 5         # seconds more before SIGKILL, if the interrupt was ignor
 STOP_POLL = 0.1        # seconds between liveness probes while a stop waits for its pid
 IDLE_CHECK = 600
 LOG_CAP = 5_000_000   # a log past this is rotated to .log.1 (at start, and while running)
+LOG_KEEP_DAYS = 7     # session records stay a week: enough to debug a turn, and nothing reads an older file
 # Terminal from the app side: archived (409) or the session itself is gone (404).
 # A network outage says "Could not reach the server" and must not match.
 ARCHIVED_SIGNAL = re.compile(
@@ -157,6 +159,28 @@ TAIL = 64_000          # bytes of a log worth reading: what a bridge printed las
 
 def log(msg: str) -> None:
     print(time.strftime("%F %T"), msg, flush=True)
+
+
+def sweep_logs(now: float | None = None) -> None:
+    """Delete this bridge's session records older than LOG_KEEP_DAYS.
+
+    Every Remote Control session leaves a transcript and, through --debug-file, a
+    debug log here, and a repo host keeps its sessions' logs. Nothing reads an old
+    one: a session that resumes has its own record unlinked when its host starts.
+    Without a retention rule the directory only grows -- on 2026-11-21 it held 239
+    files and 2.8 GB, the largest written on 11-20, and the internal disk was under
+    its swap floor."""
+    cutoff = (time.time() if now is None else now) - LOG_KEEP_DAYS * 86400
+    try:
+        files = [f for f in LOGS.glob("*") if f.is_file()]
+    except OSError:
+        return
+    for f in files:
+        try:
+            if f.stat().st_mtime < cutoff:
+                f.unlink()
+        except OSError:
+            pass
 
 
 def resolve(path: str) -> str | None:
@@ -204,6 +228,43 @@ def permission_mode(text: str) -> str | None:
     """
     m = re.search(r"^\s*permission=(\S+)", text, re.M)
     return m.group(1) if m and m.group(1) in PERMISSION_MODES else None
+
+
+INFERENCE_LINE = re.compile(r"^\s*inference=(\S+)", re.M)
+
+
+def inference_name(text: str) -> str | None:
+    """The profile a real `inference=<profile>` line names, or None when the
+    config carries none. The line-start anchor is the whole rule: a comment
+    that merely mentions `inference=` is not a mapping and may not reach
+    account resolution (issue #596)."""
+    m = INFERENCE_LINE.search(text)
+    return m.group(1) if m else None
+
+
+def inference_account(text: str) -> str:
+    """The account name `inference=<account>` compares against, or "" when no
+    single account can be named. Resolved only when the config actually maps
+    inference, through account_name() -- the supervisor's one account
+    resolution, whose ambiguity notice it shares (one line per episode) -- and
+    never by dying: the one-shot account helper exits the process with its
+    refusal, addressed to a human holding a terminal, and two Claude account
+    profiles took this supervisor down at every config reload (#596). With none
+    or several there is no account match: the word is taken as a profile name,
+    and a bring-up of one refuses in its own switch.log beside the edge."""
+    if inference_name(text) is None:
+        return ""
+    return account_name()
+
+
+def inference(text: str, routes: set[str], account: str) -> str:
+    """`inference=<profile>` -- where every host's model calls go: "account" for the
+    account profile the phone signs in with, "route" for a route the config names (or
+    no line), else the profile itself, which `ccmorph-rc <profile> --switch` brings up
+    beside the edge. Each proxy reads the result on every turn: nothing restarts.
+    A "" account (none, or an ambiguous set: see inference_account) matches no word."""
+    name = inference_name(text)
+    return "account" if name == account else "route" if name is None or name in routes else name
 
 
 def tier_map(text: str) -> dict[str, str]:
@@ -259,7 +320,7 @@ def parse(text: str) -> dict[str, tuple[str, tuple[str, ...]]]:
         if line.startswith("route="):
             route = line[6:].strip()
             continue
-        if line.startswith(("idle_days=", "purge_days=", "permission=", "retire=", "archived=")) or line.startswith(TIER_PREFIX):
+        if line.startswith(("idle_days=", "purge_days=", "park_hours=", "permission=", "retire=", "archived=")) or line.startswith(TIER_PREFIX):
             continue                         # settings, not folders
         head, _, args = line.partition(" -- ")
         path, _, rest = head.partition(" ")
@@ -542,8 +603,8 @@ class Host:
         self.proc = None
 
     def bound_logs(self) -> None:
-        """Cap the debug logs of a running repo host: claude appends to them for the
-        life of the process. Copy then truncate in place; the writer's O_APPEND
+        """Cap a running host's own log and its debug logs: claude appends to them for
+        the life of the process, and LOG_CAP at start alone let one reach 300 MB. Copy then truncate in place; the writer's O_APPEND
         position follows the new end.
 
         Truncating gives the file a new head, and fresh output can regrow it past
@@ -553,7 +614,7 @@ class Host:
         (#417). So the moment a log is truncated, the whole file is marked as
         this run's: the reader starts over at its new head.
         """
-        for f in self.debug_logs():
+        for f in (self.logfile, *self.debug_logs()):
             try:
                 if f.stat().st_size > LOG_CAP:
                     shutil.copyfile(f, f.with_suffix(".log.1"))
@@ -602,6 +663,10 @@ def idle_days(text: str) -> float:
 
 def purge_days(text: str) -> float:
     return days_setting(text, "purge_days", 7.0)
+
+
+def park_hours(text: str) -> float:
+    return days_setting(text, "park_hours", 6.0)   # 0 keeps every idle session's process
 
 
 ARCHIVED_RE = re.compile(r"^\s*archived=(\S+)", re.M)
@@ -659,14 +724,60 @@ def rc_module():
     """The launcher module (ccmorph-rc), loaded once: its pinned_tiers() is the one
     description of the tier map this supervisor shares with a live edge."""
     loader = importlib.machinery.SourceFileLoader("ccmorph_rc", str(HERE / "ccmorph-rc"))
-    return loader.load_module()
+    spec = importlib.util.spec_from_loader("ccmorph_rc", loader)
+    module = importlib.util.module_from_spec(spec)
+    loader.exec_module(module)  # load_module() is gone in 3.15 (GH-812); this is the shape tests/support.py load_script uses
+    return module
+
+
+_ambiguous_accounts: tuple[str, ...] | None = None
+
+
+def account_name() -> str:
+    """The one Claude account profile this run resolves against, or "" when no
+    single account can be named.
+
+    Resolved through account_candidates(), never through the one-shot account
+    helper: that helper refuses by exiting the process, addressed to a human at a
+    terminal, and a long-lived supervisor's guard around it only swallows the
+    refusal -- deleting both the message and the work after it (#596, GH-807).
+    One profile names the account. Zero is a silent no-op: nothing is signed in
+    yet. Several get ONE operator-facing line naming them per episode (the same
+    candidate set) -- shared with inference_account(), so a config reload and
+    the recovery loop resolving the same set name the cause once, however often
+    either runs -- so the line reaches the operator instead of burying them.
+    """
+    global _ambiguous_accounts
+    accounts = rc_module().account_candidates()
+    if len(accounts) == 1:
+        _ambiguous_accounts = None
+        return accounts[0]
+    if not accounts:
+        _ambiguous_accounts = None
+        return ""
+    if tuple(accounts) != _ambiguous_accounts:
+        log(f"no unique Claude account profile ({', '.join(accounts)}); "
+            "account login checks, the login refresh and inference= need exactly one")
+        _ambiguous_accounts = tuple(accounts)
+    return ""
 
 
 @functools.lru_cache(maxsize=None)
 def keychain_service() -> str:
-    """Claude Code's keychain entry for the account profile (fixed for this run)."""
+    """Claude Code's keychain entry for the account profile (fixed for this run).
+
+    No unique account profile is a ValueError naming the candidates, not the
+    helper's die(): every caller reads this from a channel that reaches the
+    operator, and a SystemExit's str is a bare `1` (#807). A raise caches
+    nothing, so a run that becomes unambiguous later resolves on its next read.
+    """
     rc = rc_module()
-    account_dir = rc.profile_env(rc.default_account())["CLAUDE_CONFIG_DIR"]
+    name = account_name()
+    if not name:
+        candidates = rc.account_candidates()
+        raise ValueError(f"no unique Claude account profile ({', '.join(candidates)})" if candidates
+                         else "no Claude account profile found — create one with 'ccmorph add <name>'")
+    account_dir = rc.profile_env(name)["CLAUDE_CONFIG_DIR"]
     return "Claude Code-credentials-" + hashlib.sha256(account_dir.encode()).hexdigest()[:8]
 
 
@@ -687,6 +798,10 @@ def account_token() -> str:
     return account_login()["accessToken"]
 
 
+signed_out_reported = False
+signed_out_session_reported = False
+
+
 def keep_login_fresh(clock: "Clock", now: float) -> None:
     """Have Claude Code refresh the account login before its access token expires.
 
@@ -701,6 +816,7 @@ def keep_login_fresh(clock: "Clock", now: float) -> None:
     A turn that runs past LOGIN_REFRESH_DEADLINE is killed, so one stuck
     claude never blocks every later refresh.
     """
+    global signed_out_reported, signed_out_session_reported
     p = clock.refresher
     if p is not None:
         if p.poll() is None:
@@ -722,21 +838,36 @@ def keep_login_fresh(clock: "Clock", now: float) -> None:
     if now < clock.next_login_check or now - clock.last_refresh < LOGIN_REFRESH_RETRY:
         return
     try:
-        left = account_login()["expiresAt"] / 1000 - time.time()
+        login = account_login()
+        if not login.get("refreshToken"):
+            if not signed_out_reported:
+                profile = account_name()
+                log(f"account {profile} is signed out; fix: ccmorph login {profile}" if profile
+                    else "account is signed out; fix: ccmorph login")
+                signed_out_reported = True
+            return
+        signed_out_reported = signed_out_session_reported = False
+        left = login["expiresAt"] / 1000 - time.time()
         if left > LOGIN_REFRESH_BEFORE:
             # Fresh: nothing to do until the refresh-before window opens, so the
             # keychain is not queried again on every 20 s recovery cycle.
             clock.next_login_check = now + left - LOGIN_REFRESH_BEFORE
             return
+        profile = account_name()
+        if not profile:
+            # The shared resolution already named why (once per episode). Refuse
+            # before Popen and leave last_refresh unset, so the next recovery
+            # cycle tries again instead of starving the refresh forever (#807).
+            return
         rc = rc_module()
-        account = rc.profile_env(rc.default_account())
+        account = rc.profile_env(profile)
         # The one backend/credential list (`ccmorph _backend_env`), read through
         # ccmorph-rc's strip_env(): a Bedrock- or Vertex-routed profile must not send
         # this turn to that backend. The proxy half stays -- a host behind a proxy
         # needs it to reach the account endpoint.
         backend = set(rc.strip_env()) - set(rc.PROXY_ENV)
     except LOGIN_ERRORS:
-        return                     # logged out or unreadable: /login fixes that
+        return                     # login unreadable: try again next cycle
     clock.last_refresh = now
     env = {k: v for k, v in os.environ.items()
            if k not in backend and not k.startswith("ANTHROPIC_")}
@@ -803,6 +934,7 @@ def host_sessions(folders: list[str], status: str) -> tuple[str, list[tuple[str,
 
     Nothing is fetched, not even the login, when no repo host has registered.
     """
+    global signed_out_session_reported
     envs = host_envs(folders)
     if not envs:
         return "", []
@@ -810,6 +942,19 @@ def host_sessions(folders: list[str], status: str) -> tuple[str, list[tuple[str,
         token = account_token()
         found = sessions(token, status)
     except LOGIN_ERRORS as e:
+        if status == "active" and isinstance(e, urllib.error.HTTPError) and e.code == 401:
+            try:
+                signed_out = not account_login().get("refreshToken")
+            except LOGIN_ERRORS:
+                signed_out = False
+            if signed_out:
+                if not signed_out_session_reported:
+                    profile = account_name()
+                    fix = (f"fix: ccmorph login {profile}" if profile
+                           else "fix: ccmorph login")
+                    log(f"{status} session check failed: {e}; {fix}")
+                    signed_out_session_reported = True
+                return "", []
         log(f"{status} session check failed: {e}")
         return "", []
     return token, [(envs[s["environment_id"]], s) for s in found
@@ -916,7 +1061,7 @@ def restart_logged_out(hosts: "dict[str, Host]", now: float) -> list[str]:
 
     Only a running host whose current run printed the failure is restarted, and
     only while the account login itself reads valid: a logged-out account is
-    fixed by /login, never by a restart loop. One restart per host per
+    fixed by ccmorph login, never by a restart loop. One restart per host per
     LOGIN_RESTART_AFTER, so a host the restart did not fix is retried slowly.
     Every event is one log line naming the folder. Returns the folders restarted;
     the loop's one-start-per-tick rule spaces their relaunches. A host an
@@ -969,9 +1114,69 @@ def restart_logged_out(hosts: "dict[str, Host]", now: float) -> list[str]:
     return restarted
 
 
+def session_pid(sid: str) -> int | None:
+    """The pid of the host child serving session `sid` (`--session-id <sid>` in its argv)."""
+    try:
+        out = subprocess.run(["ps", "-Ao", "pid=,command="], capture_output=True, text=True,
+                             errors="replace", timeout=10).stdout
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return None
+    for line in out.splitlines():
+        pid, _, cmd = line.strip().partition(" ")
+        words = cmd.split()
+        if "--session-id" in words and words[words.index("--session-id") + 1:][:1] == [sid] \
+                and "--sdk-url" in words:
+            return int(pid)
+    return None
+
+
+def woke(s: dict, mark: tuple) -> bool:
+    """Whether a parked session got input since it was parked: a new user message
+    (count) or any new event on the server (a phone message reaches the server
+    even with no process to read it)."""
+    count, last = mark
+    return (s.get("user_message_count") or 0) > count or (stamp(s.get("last_event_at")) or 0) > last
+
+
+def park_idle(folders: list[str], now: float, parked: dict[str, tuple], limit: float) -> list[str]:
+    """End the process of every idle repo-host session with no event for `limit`
+    seconds and remember it in `parked` ({session id: (user messages, last event)}),
+    so recover_processless leaves it processless until it gets input. Only an idle
+    worker is parked: one running or waiting on a permission prompt keeps its process.
+
+    shortcut: `parked` lives in memory, so a supervisor restart respawns parked
+    sessions once and they park again after `limit`; persist it if restarts get frequent.
+    """
+    out: list[str] = []
+    if limit <= 0:
+        return out
+    _, found = host_sessions(folders, "active")
+    for folder, s in found:
+        sid, last = s.get("id", ""), stamp(s.get("last_event_at"))
+        if (sid in parked or s.get("connection_status") != "connected"
+                or s.get("worker_status") != "idle" or last is None or now - last < limit):
+            continue
+        pid = session_pid(sid)
+        if pid is None:
+            continue
+        try:
+            os.kill(pid, signal.SIGTERM)
+        except ProcessLookupError:
+            pass
+        except OSError:
+            continue
+        if not gone_within(pid, GRACE_TERM):
+            continue
+        parked[sid] = (s.get("user_message_count") or 0, last)
+        out.append(sid)
+        log(f"{folder}: {sid} idle {(now - last) / 3600:.0f}h; process ended, parked until its next message")
+    return out
+
+
 def recover_processless(folders: list[str], done: dict[tuple[str, int], float],
                         up: set[str],
-                        failed: "set[tuple[str, int]] | None" = None) -> dict[str, bool]:
+                        failed: "set[tuple[str, int]] | None" = None,
+                        parked: "dict[str, tuple] | None" = None) -> dict[str, bool]:
     """Hand every active, processless session of a repo host back to it.
 
     A phone session must answer whenever it is opened. Its process can end while
@@ -1010,9 +1215,16 @@ def recover_processless(folders: list[str], done: dict[tuple[str, int], float],
         return sent
     token, found = host_sessions(folders, "active")
     now = time.time()
+    parked = {} if parked is None else parked
     for folder, s in found:
         if s.get("connection_status") == "connected":
+            parked.pop(s.get("id", ""), None)      # woken some other way: no longer parked
             continue
+        if s.get("id") in parked:
+            if not woke(s, parked[s["id"]]):
+                continue                           # parked and nothing new: stay processless
+            parked.pop(s["id"])
+            log(f"{folder}: {s['id']} got input; waking it")
         key = (s.get("id", ""), (s.get("external_metadata") or {}).get("unarchived_epoch") or 0)
         if now - done.get(key, float("-inf")) < REWAKE_AFTER:
             if key in failed:
@@ -1406,6 +1618,7 @@ class Clock:
         self.last_recover = self.last_idle_check  # ditto: hosts start one per tick, so nothing is up yet
         self.recovered: dict = {}
         self.hand_back_failed: set = set()   # keys in `recovered` whose last hand-back failed
+        self.parked: dict = {}               # session id -> (user messages, last event) when parked
         self.refresher: subprocess.Popen | None = None   # the running account login refresh
         self.last_refresh = float("-inf")
         self.refresher_started = 0.0   # when the running refresh turn was started
@@ -1420,12 +1633,13 @@ def cycle(hosts: "dict[str, Host]", repos: list[str], now: float, clock: Clock) 
         keep_login_fresh(clock, now)     # nothing else refreshes the account login (route sessions)
         restart_logged_out(hosts, now)   # a host that cannot log its sessions in: replace it
         up = {h.folder for h in hosts.values() if h.proc and now - h.started >= RECOVER_EVERY}
-        handed_back = recover_processless(repos, clock.recovered, up, clock.hand_back_failed)
+        handed_back = recover_processless(repos, clock.recovered, up, clock.hand_back_failed,
+                                          clock.parked)
         recover_interrupted(repos, up, handed_back)
     if now - clock.last_idle_check < IDLE_CHECK:
         return False
     for h in hosts.values():
-        if h.proc and not h.edge and not h.session_id:
+        if h.proc:
             h.bound_logs()     # archived and unused: drop its line
     clock.last_idle_check = now
     return True
@@ -1456,11 +1670,13 @@ def main(argv: list[str]) -> int:
     unrecorded: set[str] = set()   # retired here, marker not in the file yet (#355)
     seen = None
     text = ""
+    switched = None
     clock = Clock()
     stopping = []
     signal.signal(signal.SIGTERM, lambda *_: stopping.append(1))
     signal.signal(signal.SIGINT, lambda *_: stopping.append(1))
     log(f"watching {config}")
+    sweep_logs()   # once per supervisor start; the hosts it starts only append
     while not stopping:
         stamp = mtime_of(config)
         if stamp != seen:
@@ -1477,6 +1693,21 @@ def main(argv: list[str]) -> int:
                 # `tier.<alias>=` line changes what no host runs and must restart nothing.
                 tiers = {a: m for a, m in tier_map(text).items() if a in ALIAS_ENV}
                 perm = permission_mode(text)
+                # live in every proxy: no host restarts for it
+                target = inference(text, {r for r, _ in want.values()}, inference_account(text))
+                if target in ("account", "route"):
+                    rc_module().write_inference(target, INFERENCE)
+                elif target != switched:   # a profile is brought up once per change, not on every reload
+                    # LOGS is created by the first Host.start, later in this same tick:
+                    # a fresh state dir whose first config carries inference=<profile>
+                    # died FileNotFoundError on this open, before any edge had started
+                    # -- the same past-the-early-returns hole the #419 comment names (#596).
+                    LOGS.mkdir(parents=True, exist_ok=True)
+                    subprocess.Popen([str(HERE / "ccmorph-rc"), target, "--switch"], stdin=subprocess.DEVNULL,
+                                     stdout=subprocess.DEVNULL, stderr=open(LOGS / "switch.log", "a"),
+                                     start_new_session=True)
+                    log(f"inference: bringing up {target}")
+                switched = target
                 routes = {r for r, _ in want.values()}
                 # --permission-mode and the ANTHROPIC_DEFAULT_*_MODEL pins are fixed when
                 # a host's process starts, so a host whose permission or tiers changed has
@@ -1537,6 +1768,8 @@ def main(argv: list[str]) -> int:
         # cannot be undone. The pass waits for a reload to commit the file's
         # mtime (indefinitely, while the file stays unreadable: fail closed)
         # and retries on its next interval once one does.
+        if idle_due:
+            park_idle(repos, now, clock.parked, park_hours(text) * 3600)
         if idle_due and mtime_of(config) == seen:
             limit = idle_days(text) * 86400
             clean_archived(repos, now, limit, purge_days(text) * 86400,

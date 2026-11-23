@@ -278,7 +278,10 @@ API-key profiles.
 Use `rm` and `mv` instead of deleting or renaming `.conf` files by hand. Both
 manual context overrides and discovered context data live in the one `.conf`, so
 these commands move or remove them along with everything else — no separate
-registry file, no prefix bookkeeping. The profile's conversation
+registry file, no prefix bookkeeping. `rm` always confirms first, defaulting to
+**No**: a terminal is asked **No / Yes**, a pipe answers the `[y/N]` prompt with
+one line (`printf 'y' | ccmorph rm <profile>`), and a stdin holding no answer
+removes nothing, naming the command that confirms. The profile's conversation
 history is not deleted: shared sessions already live in `~/.claude/projects`,
 and a profile still on its own history moves into it, where any profile can
 still resume a session by id. If a `.conf` was removed manually, `rm` recognizes any
@@ -286,11 +289,15 @@ leftover runtime or auth state for that name, lists the exact paths, and asks
 **No / Yes** (or `[y/N]` with piped input) before touching them — no manual filesystem surgery needed, and nothing
 is removed without that confirmation.
 
+`ccmorph price <model>... [--json]` shows cached list prices per million tokens; models without a cached price are unpriced.
+
 Each profile can carry its own default model and effort, used by every new
 session on it. `get` reads one setting; `set` writes one:
 
 ```sh
 ccmorph get <profile> model             # or effort
+ccmorph get <profile> base_url          # or api_key (a secret); scripts never read the .conf
+ccmorph get <profile> --json            # every field above in one JSON object
 ccmorph set <profile> model kimi-k3
 ccmorph set <profile> effort xhigh      # low | medium | high | xhigh | max
 ccmorph set <profile> model -i          # choose from what the endpoint serves
@@ -410,7 +417,10 @@ chat-capable gateway catalogue, including models excluded from selection.
 Matching is exact and case-sensitive; derived `[1m]` variants and configured tier
 aliases targeting an excluded ID are excluded too. Cached rows are filtered even
 when discovery is offline. An exclusion that leaves no rows stops launch rather
-than accidentally restoring Claude's unrestricted picker.
+than accidentally restoring Claude's unrestricted picker. That refusal is for a
+gateway that answered; a gateway that answers nothing gets the wait and the
+retry-later exit status (75) that names the unreachable route instead — its
+silence is never reported as a picker to revise.
 
 This is picker configuration, not gateway access control. It does not delete model
 metadata or silently change the saved default. Remove the `.conf` field to stop
@@ -423,7 +433,10 @@ old tool result whose tool is no longer declared in the request (the gateway's
 `Tool reference '…' not found in available tools`) is sent as text naming the tool;
 declared references and saved transcripts are untouched. A `400` on a message
 request that carries `thinking` blocks is retried once without them (one line on the
-shim's stderr each time); whatever the second answer is, you get it.
+shim's stderr each time); if the retry is refused with another 4xx, you get the first
+refusal. On
+a model the translator serves on its chat path, the retry keeps the block that
+carries Gemini's thought signatures.
 
 Three optional profile keys, relaunch to apply:
 
@@ -481,11 +494,20 @@ version or newer — never an older one, and through unchanged when none exists 
 replies carry that Anthropic id, and hex-wrapped gateway errors are unwrapped so
 Code's own recovery can run. A gateway silent for `env.CCMORPH_STALL_TIMEOUT`
 seconds (default 300), before its reply or mid-stream, ends the turn with an error
-Claude Code can retry instead of a reply that never comes. A gateway that already
+Claude Code can retry instead of a reply that never comes; launch waits up to
+`env.CCMORPH_ADAPTER_START_TIMEOUT` seconds (default 600) for the translator to
+become ready. Both take a whole or fractional number of seconds from 0.000000001 to
+9223372036; any other value stops what reads it — the shim refuses to start and
+names the knob, while the launcher keeps its default. A gateway that already
 speaks Anthropic is fronted by the shim alone, with no translator.
-Set `env.CCMORPH_UPSTREAM_PROXY` (an `http://` CONNECT proxy) to send the
-translator's upstream calls through a proxy, e.g. a loopback bridge holding the
-macOS Local Network grant for a gateway on the LAN.
+Set `env.CCMORPH_UPSTREAM_PROXY` (an `http://` CONNECT proxy) to route the
+profile's session through a proxy, e.g. a loopback bridge holding the macOS
+Local Network grant for a gateway on the LAN. It covers the compatibility
+probes that admit a launch, the translator, and the request shim on either
+serve path — one resolver for all of them. It never overrides `NO_PROXY`
+or sends a loopback gateway through the proxy. Reads that are not the session's
+requests — a context window, quota, a listing, the price book — keep the
+ambient `HTTPS_PROXY`/`NO_PROXY` contract under "Reaching a private endpoint".
 
 ### Gateway startup
 
@@ -563,6 +585,13 @@ ccmorph run work mcp list    # the work profile's
 ccmorph run doctor           # diagnose the default profile's install
 ```
 
+None of these opens a session, so none asks the route for anything: a Claude
+subcommand, `--help`, or a version request starts no adapter and waits on no
+readiness, and answers while the profile's endpoint is down. `ccmorph run work
+version`, `ccmorph run work --version` and `ccmorph run work -v` all print Claude
+Code's version the same way: Claude Code has no `version` command of its own, so
+ccmorph reads the lone word as the version request.
+
 An *unrecognised* top-level word is an error. If it matches a profile, ccmorph
 prints the explicit replacement: `ccmorph run <profile>`.
 
@@ -624,6 +653,11 @@ Codex subscriptions
 cx  Plus
   5h       ██████░░░░░░░░░░  35%  in 2h 14m
 
+Google AI plans
+gpro
+  5h gemini ░░░░░░░░░░░░░░░░   0%  in 4h 59m
+  7d claude █████████░░░░░░░  59%  Tue 14:29
+
 Budget accounts
 main
   month    ███░░░░░░░░░░░░░  20%  Nov 1
@@ -647,23 +681,32 @@ spare
 A plan tier (Pro, Max 5x, Max 20x, Team, Plus, Pro for Codex) is read from the
 provider's own account data, never guessed. Claude account usage is read from
 claude.ai's usage endpoint (the one `/usage` shows) with the profile's own sign-in,
-Codex subscriptions from Codex's own usage endpoint; no inference, nothing billed. An
-expired sign-in is reported, not refreshed; the next session on that profile refreshes
+Codex subscriptions from Codex's own usage endpoint, and Google AI plans (an
+`antigravity` provider profile) from Antigravity's own model list; no inference, nothing
+billed. A Google plan keeps separate pools (Gemini models, and a weekly pool the Claude
+and gpt-oss models share); each pool is one window, and `--json` lists its `models`.
+An expired sign-in is reported, not refreshed; the next session on that profile refreshes
 it. A missing sign-in is reported with the command that restores it, and a
 Claude token is not allowed to read plan usage.
 
 When a read is rate-limited or unreachable, the last good reading stays on screen,
 dimmed, with its age ("12 min old"); only a profile never read shows the error. Gateways
 and API keys show today's and this month's billed spend from the receipts at
-`~/.local/state/ccmorph/usage/<YYYY-MM-DD>/` (the day folder of each receipt's
-UTC stamp, so a time-window read opens only the folders its window touches),
+`~/.local/state/ccmorph/usage/<YYYY-MM-DD>/` — under
+`$XDG_STATE_HOME/ccmorph/usage` when `XDG_STATE_HOME` is set, and the view's
+last line prints the receipts folder it read — the day folder of each receipt's
+UTC stamp, so a time-window read opens only the folders its window touches,
 marked `(est.)` when a row carried only a list-price
 estimate, and a profile with `monthly_budget_usd` adds a bar against that budget.
 A turn whose model had no price is never read as free: when no turn of the month carried
 a cost, the profile shows the turns and tokens it served and `cost unknown`, and its
 budget bar says `cost unknown` in place of a percent — never the 0% of a month with no
 spend; when only some did, a second line says how many turns had no price; and a profile
-with no receipts this month says `not used this month`.
+with no receipts this month says `not used this month`. An API-key gateway's own endpoint
+is also asked whether it answers (its model list, a free GET, the way doctor asks it):
+when it answers nothing, the row adds `gateway not reachable — spend from local receipts
+only` and names `ccmorph doctor`, so the zero of a dead gateway never reads as a free
+month.
 A Claude account, Claude token or provider profile writes the same receipts: a Claude account is not
 billed per token, so its row carries `estimated_cost` at the models.dev list price and
 the screen marks it `(est.)`. `usage_route=direct` turns that off for one profile.
@@ -674,7 +717,8 @@ never sent to any other host.
 
 `ccmorph quota --json` prints the same data for tools (profile, kind, plan, windows with
 `used` as a fraction and `resets_at` as a Unix second, `read_at`, `age_seconds`, `stale`,
-`error`, `spend`, and `balance`).
+`error`, `spend`, `balance`, and, on a gateway row, `checked`: `false` when the endpoint
+answered nothing this run, so the spend beside it is local receipts only).
 
 ## What is isolated, and what is shared
 
@@ -695,12 +739,23 @@ people. `ARCHITECTURE.md` §2 has the reasoning and the full table.
 
 ### Where state lives
 
-Everything ccmorph stores is under one root: profile `.conf` files sit in it,
-and profile runtime state sits in `profiles/<name>` beneath it. The root is
+Everything ccmorph configures is under one root: profile `.conf` files sit in
+it, and profile runtime state sits in `profiles/<name>` beneath it, with the
+registry and router settings beside them. The root is
 `$CCMORPH_STATE_DIR` if you set it, otherwise `$XDG_CONFIG_HOME/ccmorph`,
 otherwise `~/.config/ccmorph`. The launcher, adapter, and context migration derive the profile directory from
 that root. These variables select a location; changing them after migration does
 not automatically move an existing state tree.
+
+Derived state lives under a second root, and a different variable moves it:
+the usage receipts and `ccmorph quota`'s spend cache resolve against the XDG
+state root — `$XDG_STATE_HOME/ccmorph`, else `~/.local/state/ccmorph`.
+`CCMORPH_STATE_DIR` does not move them, so setting both keeps your settings in
+one tree and your receipts in the other; `ccmorph quota` prints the receipts
+folder it read, and `usage-export --help` prints the folder it reads. The
+receipts and the spend cache are derived: deleting that tree loses no
+configuration, no profile and no credential, and the spend cache rebuilds from
+whatever receipts remain.
 
 Profile state used to live in `~/.claude-profiles`. Upgrading moves it for you,
 once:
@@ -838,6 +893,11 @@ metadata discovery. Its own loopback health checks never go through a proxy.
 No launch sets or clears them: a usage receipt is read from the session's own
 transcript instead. `ARCHITECTURE.md` has the detail.
 
+`env.CCMORPH_UPSTREAM_PROXY` is narrower than this ambient contract: it names
+the route for one profile's session only, and its exemptions are part of it.
+The model-window read, quota, listings and the price book do not read it; they
+resolve through `HTTPS_PROXY`/`NO_PROXY` as above.
+
 ## Evidence markers in ARCHITECTURE.md
 
 `ARCHITECTURE.md` marks claims by evidence: **[wire]** observed in a captured
@@ -848,11 +908,11 @@ changing behavior — most of its sections exist because something was once a bu
 ## Tests
 
 ```sh
-make test                        # everything below
+make test                        # every suite, at once
 zsh tests/ccmorph_test.zsh      # profiles, launch, routing, model choosers
 zsh tests/install_test.zsh       # the installer against a throwaway $HOME
 go test ./...                   # Go units: adapter, shim, helpers
-python3 -m pytest tests/         # black-box suite against the built binaries
+CCMORPH_LIB_DIR="$PWD/lib" uv run python -m pytest tests/ -q  # black-box suite against the built binaries
 ```
 
 TDD is the convention here: a behavior worth keeping gets a test that fails

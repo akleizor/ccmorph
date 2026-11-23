@@ -7,6 +7,90 @@
 
 ## Unreleased
 
+### Added
+
+- **`ccmorph router on` routes subagent work across your profiles.** Off by default. With it on, sessions get a `delegate` tool and Agent hooks: free gateways first, then the subscription furthest behind its pace, then paid keys, and inside a profile the cheapest model that fits the task's kind and tier. `ccmorph router status`, `dispatch` (`--dry-run` to see the pick only) and `report` show and check it. `dispatch` also serves scripts and services: `--timeout` bounds the whole run, flags after `--` reach the worker's claude, and the caller's `CCMORPH_TASK` tags its spend. The hooks never deny an Agent call: when no pick fits the session, the call runs as written.
+- **`ccmorph get <profile> <field|--json>` is the one public read of a profile.** `api_key` prints the key or token (the same as `cred`, which stays), and `--json` prints profile, type, base_url, api_key, model and effort in one object.
+- **`ccmorph price <model>... [--json]`** reads cached list prices per million tokens, using the same model lookup as usage pricing.
+- Adapter usage rows record the launching session as `parent` when available.
+- **`ccmorph quota` reads Google AI plans.** An `antigravity` profile shows each quota pool (Gemini, and the weekly pool the Claude and gpt-oss models share) with its reset; `--json` windows carry the `models` that draw on them.
+
+### Fixed
+
+- **The installer no longer breaks under options set in `~/.zshenv`.** zsh reads
+  that file before any script, so `unsetopt bareglobqual` or `setopt
+  ignorebraces` there stopped `./install.sh`, `ccmorph update` and the one-line
+  install before anything was copied. The installer now resets zsh's options
+  before its first zsh line, as `ccmorph` itself does (#778).
+- **One damaged day no longer wedges, splits or hangs the usage store.**
+  Compaction passes over a day it cannot rebuild instead of stopping, and
+  moves a row no reader counts to `usage-dropped/` with its bytes kept.
+  Quota, the report and the export now share one merge rule, so they give the
+  same totals. A receipt that is there but cannot be read (wrong permissions,
+  or a FIFO under its name) is skipped and named by all three, which still
+  total every other receipt. The statusline's quota read waits at most a
+  second for the store lock, and its own compaction is capped in time,
+  entries and bytes (#654).
+- **`ccmorph update <tag>` no longer leaves a new library beside the old
+  core.** A GitHub tag archive carries no `ccmorph-core`. The updater now
+  checks the download for the binary before it runs that tag's installer,
+  and the installer resolves it before its first copy, so the update is
+  refused and the install stays as it was. `ccmorph update` with no ref
+  (the release tarball) is unchanged, and a standalone
+  `install.sh --uninstall` still works from a tag archive (#721).
+- **A Gemini 4 tool call keeps its thought signature when the shim retries
+  it, and a refusal for a missing one says so in one line.** On a model the
+  translator serves on its chat path, the retry after a 400 keeps the block
+  that carries Gemini's signatures; a direct route and Anthropic models still
+  get the full strip. Only Gemini's own missing-signature 400 is rewritten,
+  into one line that names the translator upgrade (or, on a direct route, the
+  gateway). Only that refusal is rewritten: one that merely quotes the sentence
+  passes through. A retry refused with a non-retryable 4xx delivers the
+  upstream's first 400; a 429 passes through and counts against the breaker
+  (#646).
+- **A `uv run` without memorized flags can no longer run the pytest suite
+  serially.** The pytest packages ride in pyproject.toml's default `test`
+  group, so the command a session types from memory — without
+  `--with pytest-xdist` — still gets xdist and conftest.py's every-core
+  default: about 35 s instead of the four-minute serial crawl of 1300+
+  spawn-bound cases, which the 60 s ceiling pytest.ini states exists to
+  prevent. CI's pip installs keep running the suite serially on purpose.
+- **`make test` runs every suite at once.** One after another the suites take
+  about three minutes, over the one-minute ceiling; they work in disjoint
+  scratch homes and mostly wait on process spawns, so the parallel gate runs
+  them in about a minute on a quiet host. The docs no longer send a
+  contributor down the sequential path.
+- **The pytest Checks in INTENT.md and the test command in the guide run as
+  written again.** They still taught a pytest command outside `uv run`, which
+  ends in "No module named pytest" now that the pytest packages come from
+  pyproject.toml's default uv `test` group; they now say
+  `CCMORPH_LIB_DIR="$PWD/lib" uv run python -m pytest`, the form the Makefile
+  and CONTRIBUTING use. A docs test pins it.
+- **Closing the terminal mid Claude-account sign-in no longer strands a
+  half-made profile.** `add` wrote the profile's conf the moment the sign-in
+  method was chosen, so a closed window or dropped SSH — signals Ctrl-C never
+  sends — left a profile with no email and no sign-in, and `list` and `add`
+  disagreed about the repair. The conf is now written only once the sign-in
+  has completed, and a closed terminal's SIGHUP/SIGTERM reach the sign-in
+  child so the rollback runs: an interrupted sign-in leaves nothing, like a
+  cancelled one. A half-made profile left by an older version hears one
+  repair everywhere — `ccmorph login <profile>` — and that command now really
+  completes such a conf.
+
+## v0.5.13 — 2026-11-17
+
+Cut from v0.5.12 plus this fix only; the Unreleased entries above are not in it.
+
+### Fixed
+
+- **Claude Code sessions on an Antigravity profile no longer get 429 on
+  every turn.** Antigravity answers RESOURCE_EXHAUSTED to a request whose
+  system prompt carries any of four Claude Code lines: the two identity
+  lines, the security-testing line and the pasted-content line. The bridge
+  now uses cliproxyapi's own `antigravity.sensitive-patterns-replace` to
+  rewrite each of them to a neutral line wherever it sits, replacing the
+  exact-match payload overrides, which missed lines inside a longer block.
+
 ## v0.5.12 — 2026-11-12
 
 ### Fixed

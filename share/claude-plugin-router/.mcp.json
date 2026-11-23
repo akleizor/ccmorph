@@ -1,0 +1,5 @@
+{
+  "mcpServers": {
+    "ccmorph-router": {"command": "ccmorph", "args": ["router", "mcp"]}
+  }
+}

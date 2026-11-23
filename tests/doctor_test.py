@@ -15,7 +15,7 @@ from unittest.mock import patch
 
 import pytest
 
-from support import CLAUDE_MISSING, FAKE_SERVER_NO_DNS, HANG_TIMEOUT
+from support import CLAUDE_MISSING, FAKE_SERVER_NO_DNS, HANG_TIMEOUT, needs_loopback, wait_until
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -421,21 +421,20 @@ def _adapter_tree(tmp_path, profile, shape):
             [str(fake / "decoy"), "ccmorph-core", "adapter", profile],
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, env=env)
         adapter, decoy = started["adapter"], started["decoy"]
-        deadline = time.monotonic() + HANG_TIMEOUT
-        while True:
-            kids = {}
-            if pids_path.exists():
-                kids = json.loads(pids_path.read_text())
-            up = (set(kids) == set(wanted)
-                  and all((ready / str(pid)).exists()
-                          for pid in [decoy.pid, *kids.values()]))
-            if up:
-                break
+        kids = {}
+
+        def came_up():
+            nonlocal kids
+            kids = json.loads(pids_path.read_text()) if pids_path.exists() else {}
+            if (set(kids) == set(wanted)
+                    and all((ready / str(pid)).exists()
+                            for pid in [decoy.pid, *kids.values()])):
+                return True
             if adapter.poll() is not None or decoy.poll() is not None:
                 raise AssertionError("the fake session exited before it came up")
-            if time.monotonic() > deadline:
-                raise AssertionError("the fake session never came up")
-            time.sleep(0.01)
+            return False
+        if not wait_until(came_up, HANG_TIMEOUT):
+            raise AssertionError("the fake session never came up")
     except BaseException:
         stop()
         raise
@@ -1002,7 +1001,7 @@ printf '%s\\n' '__CCMORPH_STATUS__{code}'
     result, _, bindir = run_doctor(tmp_path, "type=sub\nemail=test@example.test\n", curl)
     if code == "401":
         assert ("WARN credentials: Anthropic rejected the stored sign-in (HTTP 401); "
-                "the next session refreshes it if it can, else it opens the login menu") in result.stdout
+                "the next session refreshes it if it can, else sign in again: ccmorph login demo") in result.stdout
         assert not result.stdout.splitlines()[-1].startswith("OK ready"), result.stdout
     elif code == "200":
         assert result.returncode == 0, result.stdout
@@ -1032,8 +1031,8 @@ def test_doctor_on_a_sub_profile_without_a_readable_sign_in_does_not_vouch(tmp_p
     status word."""
     curl = "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$CURL_ARGS\"\n[ \"$1\" = -K ] && cat >> \"$CURL_ARGS\"\nexit 1\n"
     result, _, bindir = run_doctor(tmp_path, "type=sub\nemail=test@example.test\n", curl)
-    assert ("WARN credentials: the sign-in was not checked (Claude Code keeps it "
-            "outside the profile home; the next session refreshes it if it can)") in result.stdout
+    assert ("WARN credentials: the sign-in was not checked (no stored sign-in could be read; "
+            "the next session refreshes it if it can)") in result.stdout
     assert result.stdout.splitlines()[-1].startswith("WARN may not start"), result.stdout
     assert result.returncode == 0, result.stdout
     # The report keeps its shape with no sign-in to read: the endpoint is
@@ -1140,6 +1139,9 @@ SIGNED_OUT = ('#!/bin/sh\n[ "$1 $2" = "auth status" ] && '
     ("token-rejected", "type=token\ntoken=sk-ant-oat01-issue-282\n", status_curl(401),
      "replace the token: ccmorph config demo"),
     ("signed-out", "type=sub\nemail=demo@example.test\n", OK_CURL, "sign in again: ccmorph login demo"),
+    # #649: a sign-in interrupted before its email line is half-made, and the
+    # repair named here must be the one `add`, `run` and `login` already name.
+    ("half-made-sub", "type=sub\n", None, "sign in again: ccmorph login demo"),
     ("key-refused-by-claude", f"type=apikey\napi_key={REFUSED_KEY}\n", OK_CURL,
      "let Claude Code use the key again: ccmorph login demo"),
     ("settings-invalid", GW, OK_CURL, "fix the JSON in {settings}"),
@@ -1233,6 +1235,7 @@ def test_doctor_healthy_profile_has_no_skip_lines(tmp_path, case):
         assert not line.startswith("SKIP"), result.stdout
 
 
+@needs_loopback  # the provider stub binds a port: #611
 def test_run_doctor_remains_native_passthrough(tmp_path):
     state = tmp_path / "state"
     home = tmp_path / "home"
@@ -1291,6 +1294,7 @@ def test_run_doctor_remains_native_passthrough(tmp_path):
         process.wait(timeout=HANG_TIMEOUT)
 
 
+@needs_loopback  # the passthrough act it guards needs a bound port: #611
 @pytest.mark.skipif(sys.platform != "darwin",
                     reason="only macOS refuses to signal a group whose only member has exited")
 def test_run_doctor_cleanup_reports_the_bound_not_a_refused_killpg_issue_5(tmp_path):
@@ -1310,13 +1314,14 @@ def test_run_doctor_cleanup_reports_the_bound_not_a_refused_killpg_issue_5(tmp_p
         # per-test cap.
         if not spent:
             spent.append(True)
-            stop = time.monotonic() + min(timeout, 30)
-            while time.monotonic() < stop:
+
+            def refusing():
                 try:
                     os.killpg(process.pid, 0)
-                    time.sleep(0.02)
                 except PermissionError:
-                    break
+                    return True
+                return False
+            wait_until(refusing, min(timeout, 30), interval=0.02)
             raise subprocess.TimeoutExpired(process.args, timeout)
         return communicate(process, timeout=timeout)
 

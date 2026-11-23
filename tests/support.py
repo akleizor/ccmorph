@@ -1,11 +1,15 @@
-"""The suite's shared hang-detection bound; imported by the tests that wait on a real process."""
+"""The suite's shared helpers: one hang-detection bound, one poll loop, one script
+loader; imported by the tests that wait on a real process."""
 import atexit
+import importlib.machinery
+import importlib.util
 import os
 import random
 import shlex
 import shutil
 import socket
 import tempfile
+import time
 from pathlib import Path
 
 
@@ -17,6 +21,38 @@ from pathlib import Path
 # over, where the cap would fire in the middle of the polling.
 # Override with CCMORPH_TEST_HANG_TIMEOUT.
 HANG_TIMEOUT = float(os.environ.get("CCMORPH_TEST_HANG_TIMEOUT", "120"))
+
+
+def wait_until(pred, timeout, interval=0.05):
+    """Poll `pred` until it answers true, giving up after `timeout` seconds.
+
+    Returns whether it was seen true, so the caller names its own failure. The
+    give-up semantics live here once: a monotonic deadline, a short sleep between
+    looks, and one last look past the bound. `timeout` is the suite's shared hang
+    bound, never a literal a test picked (hang_bound_test.py holds that line)."""
+    deadline = time.monotonic() + timeout
+    while True:
+        if pred():
+            return True
+        if time.monotonic() >= deadline:
+            return False
+        time.sleep(interval)
+
+
+def load_script(path, name):
+    """Load an extensionless script as a module under `name`, without importing it
+    through sys.path or keeping it in sys.modules.
+
+    The add-ons and the usage exporter ship as scripts, not as importable .py
+    modules, so a test that exercises one runs it by path. Each call returns a
+    fresh module, so a test may change the environment before loading."""
+    loader = importlib.machinery.SourceFileLoader(name, str(path))
+    spec = importlib.util.spec_from_loader(name, loader)
+    module = importlib.util.module_from_spec(spec)
+    loader.exec_module(module)
+    return module
+
+
 # The one sentence, with the one link, for a claude no PATH search can find
 # (#282). The installer, `ccmorph run` and `ccmorph doctor` print these same
 # bytes, so a missing Claude Code meets a person with one answer wherever it
@@ -149,6 +185,46 @@ def port_outside_the_ephemeral_pool() -> int:
     raise RuntimeError("no port below the ephemeral ranges is free on 127.0.0.1")
 
 
+# Issue #611: a hive sandbox refuses loopback binds at the syscall, so every
+# listener-based test errors inside its own fixture and a Handoff spends its
+# lines re-discovering the same environment fact. The probe below answers that
+# fact once per process, and the `needs_loopback` marker turns the refusal
+# into one loud SKIP line per test instead of a wall of identical failures.
+# Only the sandbox's own permission refusal (EPERM/EACCES) is a capability
+# fact: every other bind error — an exhausted fd table, a full backlog — is a
+# transient resource failure and must stay the visible failure it was, never
+# a skipped suite. Where binds are allowed — every CI job, and any session
+# with sandbox.network.allowLocalBinding — the probe answers True and nothing
+# skips.
+LOOPBACK_SKIP = "SKIP: loopback bind denied in this sandbox (runs in CI)"
+
+_LOOPBACK_BIND = None  # None until the probe's one answer; then True/False.
+
+
+def can_bind_loopback():
+    """Whether a test may bind a loopback port here. Draws port 0, releases
+    it, and remembers the answer — one bind per process, because a permission
+    refusal is stable for the life of the process (the sandbox's policy, or
+    its absence) and a bind that once succeeded on the machine keeps working.
+    A permission refusal (EPERM/EACCES, which Python both map to
+    PermissionError) is the only thing cached as False: any other error
+    propagates with its own face and caches nothing, so a transient resource
+    failure retries and surfaces instead of quietly skipping a suite."""
+    global _LOOPBACK_BIND
+    if _LOOPBACK_BIND is None:
+        try:
+            s = socket.socket()
+            try:
+                s.bind(("127.0.0.1", 0))
+            finally:
+                s.close()
+        except PermissionError:
+            _LOOPBACK_BIND = False
+        else:
+            _LOOPBACK_BIND = True
+    return _LOOPBACK_BIND
+
+
 # The compiled core (`make shim`): adapter, shim and helper verbs are its subcommands.
 CORE = Path(__file__).resolve().parent.parent / "libexec/ccmorph-core"
 # argv prefix of the stock shim.
@@ -170,4 +246,7 @@ def __getattr__(name):
     if name == "needs_shim":
         import pytest
         return pytest.mark.skipif(not CORE.exists(), reason=f"{CORE} is not built: run `make shim` first")
+    if name == "needs_loopback":
+        import pytest
+        return pytest.mark.skipif(not can_bind_loopback(), reason=LOOPBACK_SKIP)
     raise AttributeError(name)

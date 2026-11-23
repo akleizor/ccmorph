@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/akleizor/ccmorph/router"
 	"io"
 	"math/rand/v2"
 	"os"
@@ -16,7 +17,9 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/akleizor/ccmorph/ctxwindow"
 	"github.com/akleizor/ccmorph/profile"
+	"github.com/akleizor/ccmorph/settingscompose"
 	"github.com/akleizor/ccmorph/shim"
 	"github.com/akleizor/ccmorph/util"
 	"github.com/akleizor/ccmorph/util/paths"
@@ -99,6 +102,8 @@ type launchPlan struct {
 	needsAdapter bool // the route is a gateway the adapter fronts
 	isProvider   bool // the profile's route is a provider bridge
 	tag          string
+
+	opensSession bool // the argv opens a session: neither a Claude subcommand nor a print-and-exit printout
 
 	relayFile string   // the hop relay this pass owns and must clean up
 	common    []string // env every pass carries
@@ -247,6 +252,12 @@ func (l *launcher) resolveLaunch(name string, interactive, native bool, argv []s
 			args = append(args[:d-1:d-1], args[end:]...)
 		}
 	}
+	// The one decision every route-facing step reads: does this argv open a
+	// session at all? A Claude subcommand or a print-and-exit printout opens
+	// none, so it judges no route, starts no route process, and passes its
+	// arguments through untouched (INTENT promise 6, #650); the arity-aware
+	// walk (#334) tells both from a flag-shaped option value.
+	opensSession := !subcommand && !util.OpensNoSession(args, table)
 
 	if needsAdapter && askMissing && !subcommand && explicit == "" && defaultModel == "" && isTTY(0) && isTTY(2) {
 		interactive = true
@@ -329,7 +340,7 @@ func (l *launcher) resolveLaunch(name string, interactive, native bool, argv []s
 	common := []string{
 		"CCMORPH_RELAY_ID=" + relayID,
 		"CCMORPH_LIB_DIR=" + l.libDir,
-		"CLAUDE_CODE_PLUGIN_DIRS=" + prefixed(os.Getenv("CLAUDE_CODE_PLUGIN_DIRS")) + filepath.Join(filepath.Dir(l.libDir), "share", "claude-plugin"),
+		"CLAUDE_CODE_PLUGIN_DIRS=" + pluginDirs(l.libDir),
 	}
 	plan := &launchPlan{
 		name: name, native: native, args: args, arity: table,
@@ -337,7 +348,8 @@ func (l *launcher) resolveLaunch(name string, interactive, native bool, argv []s
 		explicit: explicit, resume: resume, launchModel: launchModel,
 		defaultModel: defaultModel, askedModel: askedModel, resumeCarried: resumeCarried,
 		needsAdapter: needsAdapter, isProvider: isProvider, tag: tag,
-		relayFile: relayFile, common: common,
+		opensSession: opensSession,
+		relayFile:    relayFile, common: common,
 	}
 	if name != "" {
 		// A named profile runs on its own route and credential: nothing the Remote
@@ -374,7 +386,7 @@ func (l *launcher) resolveLaunch(name string, interactive, native bool, argv []s
 				// the same arity-aware walk the flags get (#334) — passes its
 				// arguments through untouched (INTENT promise 6) and has no first
 				// message for a rejected key to kill, so it keeps out of the way too.
-				if !subcommand && !util.OpensNoSession(args, table) {
+				if opensSession {
 					base, _ := envGet(penv, "ANTHROPIC_BASE_URL")
 					if !needsAdapter {
 						base, _ = nativeBase(base)
@@ -417,6 +429,7 @@ func (l *launcher) runLaunch(p *launchPlan) (*relayNext, int) {
 	explicit, resume, launchModel := p.explicit, p.resume, p.launchModel
 	defaultModel, askedModel, resumeCarried := p.defaultModel, p.askedModel, p.resumeCarried
 	needsAdapter, isProvider, native := p.needsAdapter, p.isProvider, p.native
+	opensSession := p.opensSession
 	tag, common, relayFile := p.tag, p.common, p.relayFile
 	relayArgs := flags.Relay
 	fail := func() (*relayNext, int) { os.Remove(relayFile); return nil, 1 }
@@ -426,7 +439,10 @@ func (l *launcher) runLaunch(p *launchPlan) (*relayNext, int) {
 		var ok bool
 		l.foldSettings(name)
 		l.stopForeignBridge(name, isProvider)
-		if isProvider {
+		// A launch that opens no session starts no route process: the bridge and
+		// the adapter exist to serve the session, and there is none (#650). Its
+		// arguments reach claude on the profile's own environment.
+		if isProvider && opensSession {
 			if l.providerActive != name {
 				if !l.providerStart(name) {
 					return fail()
@@ -445,8 +461,8 @@ func (l *launcher) runLaunch(p *launchPlan) (*relayNext, int) {
 		// --resume. `_ccm_launch -a ... --resume` is the relaunch entry point other
 		// tools call, whose unserved id still starts Claude Code, and an in-process
 		// hop already judged its model in cli/hop.go. A subcommand's --model belongs
-		// to claude's own verb.
-		if askedModel != "" && needsAdapter && !subcommand && (resume == "" || native) {
+		// to claude's own verb, as does a printout's (#650).
+		if askedModel != "" && needsAdapter && opensSession && (resume == "" || native) {
 			if cf, ok := l.readQuiet(name); ok {
 				if listing, ok := l.listing(base, key); ok {
 					if msg, refuse := util.ServedRefusal(listing, askedModel, cf["model_map"], name); refuse {
@@ -456,17 +472,45 @@ func (l *launcher) runLaunch(p *launchPlan) (*relayNext, int) {
 				}
 			}
 		}
-		if listing, ok := l.listing(base, key); ok {
-			if unsized, ok := try(l, "listing-has-unsized", func() bool { return util.ListingHasUnsized(l.conf(name), listing) }); !ok || unsized {
-				l.logInit()
-				l.core([]string{"CCMORPH_STATE_DIR=" + l.dir, "ANTHROPIC_BASE_URL=" + base, "ANTHROPIC_API_KEY=" + key},
-					listing+"\n", "context-probe", "--listing-stdin", "--profile", name)
+		// The listing fetch, its unsized probe and the picker all speak to the
+		// session about to open: a launch that opens none asks the route nothing,
+		// so a dead endpoint cannot stall or refuse it (#650).
+		if opensSession {
+			if listing, ok := l.listing(base, key); ok {
+				if unsized, ok := try(l, "listing-has-unsized", func() bool { return util.ListingHasUnsized(l.conf(name), listing) }); !ok || unsized {
+					l.logInit()
+					// The sizing save waits on the profile lock, which a person at
+					// `ccmorph rm`'s confirm can hold for as long as they think:
+					// the deadline keeps that wait from holding the launch with no
+					// output (#757). It matches the probe's own default, so the
+					// launch ceiling holds even if the verb forgets it.
+					l.core([]string{"CCMORPH_STATE_DIR=" + l.dir, "ANTHROPIC_BASE_URL=" + base, "ANTHROPIC_API_KEY=" + key},
+						listing+"\n", "context-probe", "--listing-stdin", "--profile", name, "--deadline", "30")
+					// The probe's save rewrites a conf that still carries its
+					// discovered record inline, so the next read must not be the
+					// memoized one (GH-561).
+					delete(l.confReads, name)
+				}
+			}
+			switch l.projectPicker(name, base, key, defaultModel, tag, explicit) {
+			case pickerUnreached:
+				// A gateway that answers nothing empties the picker only for the
+				// length of its silence (#723): the listing is waited on, and if the
+				// route never speaks the pass ends naming it, in the class a caller
+				// can tell from a crash — never with the picker's config message.
+				if !l.awaitListing(name, base, key) {
+					l.err(listingFailure(name, profile.RedactURL(base), 0))
+					fmt.Fprintf(os.Stderr, "  Check the route: ccmorph doctor %s\n", name)
+					return nil, util.RCGatewayDown
+				}
+				if l.projectPicker(name, base, key, defaultModel, tag, explicit) != pickerDone {
+					return nil, 1
+				}
+			case pickerRefused:
+				return nil, 1
 			}
 		}
-		if !l.projectPicker(name, base, key, defaultModel, tag, explicit) {
-			return nil, 1
-		}
-		if needsAdapter {
+		if needsAdapter && opensSession {
 			if l.adapterProfile != name {
 				l.adapterStop()
 				model, ok := l.adapterModel(name, penv, explicit, defaultModel)
@@ -480,7 +524,7 @@ func (l *launcher) runLaunch(p *launchPlan) (*relayNext, int) {
 			if penv, ok = l.route(penv, "", "", true); !ok {
 				return fail()
 			}
-		} else {
+		} else if !needsAdapter {
 			l.adapterStop()
 		}
 		if len(penv) == 0 {
@@ -490,6 +534,11 @@ func (l *launcher) runLaunch(p *launchPlan) (*relayNext, int) {
 		var ok2 bool
 		if penv, ok2 = l.contextEnv(name, penv, explicit, defaultModel, launchModel, resumeCarried, needsAdapter, isProvider, subcommand); !ok2 {
 			return nil, 1
+		}
+		// The route stands up beside the session, so only a launch that opens one
+		// may say it is ready (#650).
+		if opensSession && (needsAdapter || isProvider) && isTTY(2) {
+			os.Stderr.WriteString("ccmorph: Gateway ready; starting Claude Code…\n")
 		}
 		if resume != "" {
 			l.carrySession(resume, filepath.Join(l.profileDirs, name, "projects"))
@@ -526,7 +575,7 @@ func (l *launcher) runLaunch(p *launchPlan) (*relayNext, int) {
 		if effortModel == "" {
 			effortModel = launchModel
 		}
-		if !flags.UserEffort && !flags.Resuming && !subcommand && !util.OpensNoSession(args, table) {
+		if !flags.UserEffort && !flags.Resuming && opensSession {
 			if lvl := l.savedEffort(name, effortModel); lvl != "" {
 				if table == nil {
 					table = l.claudeArity()
@@ -597,7 +646,7 @@ func (l *launcher) runLaunch(p *launchPlan) (*relayNext, int) {
 	} else {
 		next.fresh = true
 	}
-	next.crossed = name == "" || !sameFile(l.conf(name), l.conf(to))
+	next.crossed = name == "" || !paths.SameFile(l.conf(name), l.conf(to))
 	return next, 0
 }
 
@@ -654,6 +703,34 @@ func yesNo(b bool) string {
 	return "no"
 }
 
+// pluginDirs is the session's plugin path: ccmorph's own plugin, and the
+// router's hooks and delegate tool only while it is on and never in its own
+// workers. A worker inherits the parent session's value, which names the
+// router plugin there, so the inherited entries are filtered first: the guard
+// below owns that entry alone.
+func pluginDirs(libDir string) string {
+	share := filepath.Join(filepath.Dir(libDir), "share")
+	dirs := prefixed(withoutOwn(os.Getenv("CLAUDE_CODE_PLUGIN_DIRS"), share)) + filepath.Join(share, "claude-plugin")
+	if os.Getenv(router.WorkerEnv) != "1" && router.Enabled() {
+		dirs += ":" + filepath.Join(share, "claude-plugin-router")
+	}
+	return dirs
+}
+
+// withoutOwn drops ccmorph's own plugin entries from an inherited plugin path,
+// keeping every other entry: a nested session re-adds them below, so they are
+// never duplicated, and the router's entry is the guard's alone.
+func withoutOwn(value, share string) string {
+	own := map[string]bool{filepath.Join(share, "claude-plugin"): true, filepath.Join(share, "claude-plugin-router"): true}
+	kept := []string{}
+	for _, d := range strings.Split(value, ":") {
+		if d != "" && !own[d] {
+			kept = append(kept, d)
+		}
+	}
+	return strings.Join(kept, ":")
+}
+
 func prefixed(s string) string {
 	if s == "" {
 		return ""
@@ -666,12 +743,6 @@ func tmpDir() string {
 		return t
 	}
 	return "/tmp"
-}
-
-func sameFile(a, b string) bool {
-	fa, err1 := os.Stat(a)
-	fb, err2 := os.Stat(b)
-	return err1 == nil && err2 == nil && os.SameFile(fa, fb)
 }
 
 func authKey(env []string) string {
@@ -833,18 +904,49 @@ func (l *launcher) migrateState() bool {
 	}
 	l.migrated = l.migrateOnce()
 	// Migration can rewrite the confs — a keychain move rewrites them
-	// in-process — so the memoized reads read the store's files again (#478).
+	// in-process — so the memoized reads read the store's files again (#478)
+	// and the conf's (GH-561).
 	l.storeReads = nil
+	l.confReads = nil
 	return l.migrated
 }
 
 func (l *launcher) migrateOnce() bool {
-	legacy := []string{filepath.Join(l.dir, "model-registry"), filepath.Join(l.dir, "model-registry.conf")}
+	legacy, plain := l.legacyContextState()
+	if plain && isDarwin() {
+		if err := util.KeychainMigrate(l.dir); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+		}
+	}
+	return l.migrateContextPaths(legacy)
+}
+
+// migrateContextState is the context half of migrateState, for a caller that
+// must not also move credentials: doctor stays read-only outside the effort
+// row's context read (#556), so it runs the same model-window --migrate the
+// launch does and never util.KeychainMigrate, which rewrites every profile's
+// plain credentials. The migrate can still rewrite a conf that carries its
+// discovered record inline, so the conf's memoized reads drop (GH-561).
+func (l *launcher) migrateContextState() bool {
+	if os.Getenv("CCMORPH_CONTEXT_LOCKED") != "" {
+		return true
+	}
+	legacy, _ := l.legacyContextState()
+	ok := l.migrateContextPaths(legacy)
+	l.confReads = nil
+	return ok
+}
+
+// legacyContextState lists the paths whose presence means legacy context state
+// still needs migration, and reports whether a conf also holds a plaintext
+// credential that secureDirs moves to the Keychain.
+func (l *launcher) legacyContextState() (legacy []string, plain bool) {
+	legacy = []string{filepath.Join(l.dir, "model-registry"), filepath.Join(l.dir, "model-registry.conf")}
 	g1, _ := filepath.Glob(filepath.Join(globQuote(l.profileDirs), "*", "cache", "context-window"))
 	g2, _ := filepath.Glob(filepath.Join(globQuote(l.dir), "*.conf.lock"))
 	legacy = append(append(legacy, g1...), g2...)
 	confs, _ := filepath.Glob(filepath.Join(globQuote(l.dir), "*.conf"))
-	inline, plain := false, false
+	inline := false
 	for _, c := range confs {
 		b, err := os.ReadFile(c)
 		if err != nil {
@@ -863,11 +965,11 @@ func (l *launcher) migrateOnce() bool {
 	if inline {
 		legacy = append(legacy, l.dir)
 	}
-	if plain && isDarwin() {
-		if err := util.KeychainMigrate(l.dir); err != nil {
-			fmt.Fprintln(os.Stderr, err)
-		}
-	}
+	return legacy, plain
+}
+
+// migrateContextPaths runs the context migration when any legacy path remains.
+func (l *launcher) migrateContextPaths(legacy []string) bool {
 	for _, p := range legacy {
 		if _, err := os.Lstat(p); err == nil {
 			if _, _, rc := l.core([]string{"CCMORPH_STATE_DIR=" + l.dir}, "", "model-window", "--migrate"); rc != 0 {
@@ -922,12 +1024,15 @@ func (l *launcher) tierAlias(name, word string) (string, bool) {
 	return v, rc == 0 && v != ""
 }
 
+// listingKey is the memo's one key for a route's listing.
+func listingKey(base, key string) string { return base + "\x1f" + key }
+
 // listing is _ccm_models_listing: one /v1/models answer per (base, key) per run.
 func (l *launcher) listing(base, key string) (string, bool) {
 	if base == "" || key == "" {
 		return "", false
 	}
-	mk := base + "\x1f" + key
+	mk := listingKey(base, key)
 	if v, ok := l.memo[mk]; ok && v != "" {
 		return v, true
 	}
@@ -940,23 +1045,84 @@ func (l *launcher) listing(base, key string) (string, bool) {
 	return v, true
 }
 
-func (l *launcher) projectPicker(name, base, key, own, tag, launch string) bool {
+// forgetListing drops the memoized listing for (base, key). A 200 that is not a
+// listing is no answer, so a retry must reach the gateway again instead of
+// re-reading the malformed body the first ask stored (#747).
+func (l *launcher) forgetListing(base, key string) {
+	delete(l.memo, listingKey(base, key))
+}
+
+// pickerOutcome is one project-picker pass as the launch reads it: done, refused
+// (the picker said why), or unreached — the listing the pruning needs never
+// arrived and the cache judged nothing, which is the gateway's state and not the
+// profile's config error (#723).
+type pickerOutcome int
+
+const (
+	pickerDone pickerOutcome = iota
+	pickerRefused
+	pickerUnreached
+)
+
+// gatewayListingRetries and gatewayListingPause bound the wait in front of the
+// outage class: a gateway that has not answered yet may answer in a moment, and
+// the launch waits that long — no longer, because a hang is exactly what a
+// session may never be (INTENT promise 8).
+const (
+	gatewayListingRetries = 2
+	gatewayListingPause   = time.Second
+)
+
+// awaitListing is the wait the picker's silence earns: the model listing is
+// asked again a few seconds apart, and the first answer that is a listing ends
+// it — the memo then carries it to the picker and every later reader. A 200
+// whose body is not a listing (a proxy's error object) is no more an answer
+// than silence is, so each attempt drops the memoized body and asks the
+// gateway again: a route that answered wrongly once and then serves a listing
+// recovers in the window, and one that never serves walks the same path as
+// silence to the gateway class (#747).
+func (l *launcher) awaitListing(name, base, key string) bool {
+	for i := 1; i <= gatewayListingRetries; i++ {
+		// What the picker's ask memoized is the body that made the pass
+		// unreached; a retry's own malformed answer would be just as useless.
+		l.forgetListing(base, key)
+		fmt.Fprintf(os.Stderr, "ccmorph: Waiting for '%s' gateway (%ds)…\n", name, int(time.Duration(i)*gatewayListingPause/time.Second))
+		time.Sleep(gatewayListingPause)
+		if body, ok := l.listing(base, key); ok {
+			if _, verdict := ctxwindow.ListingShapeBody(body); verdict != ctxwindow.ListingNotAListing {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func (l *launcher) projectPicker(name, base, key, own, tag, launch string) pickerOutcome {
 	home := filepath.Join(l.profileDirs, name)
 	if fi, err := os.Lstat(filepath.Join(home, ".claude.json")); err != nil || !fi.Mode().IsRegular() {
-		return true
+		return pickerDone
 	}
 	if base == "" || key == "" {
-		return true
+		return pickerDone
 	}
 	body, _ := l.listing(base, key)
 	if tag == "" {
 		tag = "Gateway"
 	}
-	done, ok := try(l, "project-picker", func() bool {
-		return util.ProjectPicker(util.PickerIn{Home: home, Conf: l.conf(name), Own: own, Tag: tag, Profile: name,
-			Layer: l.profileLayer(name), Launch: launch, ModelsJSON: body}, os.Stderr)
+	out, ok := try(l, "project-picker", func() pickerOutcome {
+		switch util.ProjectPicker(util.PickerIn{Home: home, Conf: l.conf(name), Own: own, Tag: tag, Profile: name,
+			Layer: l.profileLayer(name), Launch: launch, ModelsJSON: body}, os.Stderr) {
+		case util.PickerDone:
+			return pickerDone
+		case util.PickerUnreached:
+			return pickerUnreached
+		}
+		return pickerRefused
 	})
-	return ok && done
+	if !ok {
+		return pickerRefused
+	}
+	return out
 }
 
 // profileEnvironment is `ccmorph _env`: the profile's launch env, after
@@ -1137,7 +1303,7 @@ func (l *launcher) settingsArgv(verb, name string, rest ...string) []string {
 }
 
 func (l *launcher) route(penv []string, port, key string, adapter bool) ([]string, bool) {
-	return util.LaunchEnv(penv, port, key, adapter, l.adapterPort, os.Getenv("CCMORPH_TASK"), os.Getenv("CCMORPH_ATTEMPT")), true
+	return util.LaunchEnv(penv, port, key, adapter, l.adapterPort, os.Getenv("CCMORPH_TASK"), os.Getenv("CCMORPH_ATTEMPT"), os.Getenv("CLAUDE_CODE_SESSION_ID")), true
 }
 
 // usageHookFor is the Stop hook a launch installs to record its own usage. A
@@ -1150,13 +1316,15 @@ func (l *launcher) route(penv []string, port, key string, adapter bool) ([]strin
 // command is frozen into the profile's settings for the sessions that outlive
 // this launch, so under Homebrew it names brew's stable opt path, not the
 // versioned Cellar dir this process runs from (stableCore, #287); the next
-// launch's materialize replaces whatever hook it finds with this one.
+// launch's materialize replaces whatever hook it finds with this one. The
+// command is built by settingscompose's one builder, which also matches it, so
+// the spelling and the recognition cannot drift (#638).
 func (l *launcher) usageHookFor(name, typ, usageRoute string) string {
 	pricing := usagePricing(typ, usageRoute)
 	if pricing == "" {
 		return ""
 	}
-	return shQuote(stableCore(l.libexec)) + " usage-row --profile " + shQuote(name) + " --pricing " + shQuote(pricing)
+	return settingscompose.UsageHookCommand(stableCore(l.libexec), name, pricing)
 }
 
 // brewCellarRE is Homebrew's versioned install prefix, <prefix>/Cellar/ccmorph/

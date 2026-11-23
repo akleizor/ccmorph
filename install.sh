@@ -64,6 +64,29 @@ if [ "$_ccm_local" = 0 ] || [ "${1:-}" = "--remote" ]; then
     [ -r "${_ccm_d}lib/ccmorph.sh" ] && [ -r "${_ccm_d}install.sh" ] && _ccm_src="$_ccm_d"
   done
   [ -n "$_ccm_src" ] || _ccm_fail "the download is not a ccmorph source tree: $_ccm_url"
+  # The download must carry the core binary its own installer will place. A
+  # GitHub tag archive carries only libexec/.gitkeep, and a tag's installer may
+  # be an older release that copies lib/ before it looks for the binary — the
+  # failure then leaves a new library beside the old core (#721). Validated
+  # HERE, before that installer runs, so a failed update changes nothing. A
+  # release tarball names the binary per platform (<name>-<os>-<arch>, from
+  # `make dist`); a checkout's archive carries the plain one.
+  # Only an install needs it: `--uninstall` places nothing, so a standalone
+  # install.sh --uninstall still hands a coreless tag archive to its own
+  # installer, which removes the command without a core.
+  if [ "${1:-}" != "--uninstall" ]; then
+    _ccm_os="$(uname -s | tr '[:upper:]' '[:lower:]')"
+    _ccm_arch="$(uname -m)"
+    case "$_ccm_arch" in
+      x86_64) _ccm_arch=amd64 ;;
+      aarch64) _ccm_arch=arm64 ;;
+    esac
+    _ccm_core=0
+    for _ccm_f in "${_ccm_src}libexec/ccmorph-core-${_ccm_os}-${_ccm_arch}" "${_ccm_src}libexec/ccmorph-core"; do
+      if [ -f "$_ccm_f" ] && [ -x "$_ccm_f" ]; then _ccm_core=1; break; fi
+    done
+    [ "$_ccm_core" = 1 ] || _ccm_fail "No ccmorph-core binary for ${_ccm_os}-${_ccm_arch} in the download: $_ccm_url — nothing was changed; install a release, which ships the binary for your platform."
+  fi
   echo "ccmorph: installing from $_ccm_url"
   sh "${_ccm_src}install.sh" "$@"
   _ccm_rc=$?
@@ -110,6 +133,16 @@ if [ -z "${ZSH_VERSION:-}" ]; then
   exit 1
 fi
 
+# From here on this file is zsh, and it runs under the options it was written
+# for. zsh reads the user's ~/.zshenv before the first line of any script, and
+# options set there change this file's own syntax: `unsetopt bareglobqual` made
+# the (N:t) module glob below fatal, and `setopt ignorebraces` broke the
+# layout's brace list and every `{ ...; break }` (#778). The same reset as
+# bin/ccmorph and lib/ccmorph-launch.zsh:15-18; the setopt lines name what this
+# file relies on.
+emulate -L zsh
+setopt bare_glob_qual
+unsetopt ignore_braces ignore_close_braces extended_glob
 set -eu
 
 # This installer keeps code and state in ONE directory, which is right for a
@@ -144,6 +177,8 @@ DATA_FILES=(share/model-catalogue.json share/window-sources.json share/provider-
   share/claude-plugin/.claude-plugin/plugin.json
   share/claude-plugin/commands/hop.md share/claude-plugin/commands/profile.md
   share/claude-plugin/hooks/hooks.json
+  share/claude-plugin-router/.claude-plugin/plugin.json share/claude-plugin-router/.mcp.json
+  share/claude-plugin-router/hooks/hooks.json share/claude-plugin-router/skills/router/SKILL.md
   share/zsh/site-functions/_ccmorph)
 COMPONENTS=($LIBS $EXECUTABLES $DATA_FILES)
 
@@ -426,37 +461,18 @@ if ! command -v fzf >/dev/null 2>&1; then
   if (( ${#reply} )); then _offer "${reply[@]}" || true; fi
 fi
 
-# ---- copy infrastructure --------------------------------------------------
-mkdir -p "$CONFIG_DIR" "$BIN_DIR"
-
-# "Already home" is a question about DIRECTORIES, not strings. SRC is resolved
-# by :A, so CONFIG_DIR must be resolved too — otherwise /tmp vs /private/tmp (a
-# symlink on macOS), or any symlinked $HOME, compares unequal while naming one
-# directory. Every copy then becomes a copy onto itself, which cp refuses, and
-# `set -e` turns that into an install that aborted before wiring the rc. Resolved
-# after mkdir so the path exists, and only for this comparison: the literal
-# CONFIG_DIR is what gets written into the rc, where a readable ~ path matters.
-CONFIG_REAL="${CONFIG_DIR:A}"
-
-# If running from inside the target dir, files are already home; otherwise copy.
-if [[ "$SRC" != "$CONFIG_REAL" ]]; then
-  mkdir -p "$CONFIG_DIR"/{bin,lib,libexec,share/claude-plugin/{.claude-plugin,commands,hooks},share/zsh/site-functions}
-  for _f in "${COMPONENTS[@]}"; do cp "$SRC/$_f" "$CONFIG_DIR/$_f"; done
-fi
-cp "$SRC/bin/ccmorph" "$BIN_DIR/ccmorph"
-# The opt-in reference, so a host can see every seam without reading the source.
-# Copied, never activated: local.sh itself stays absent until someone writes it.
-# Same directory guard as above: in-place, this is a copy onto itself.
-if [[ "$SRC" != "$CONFIG_REAL" ]]; then
-  cp "$SRC/share/local.sh.example" "$CONFIG_DIR/local.sh.example"
-  cp "$SRC/share/profile.conf.example" "$CONFIG_DIR/profile.conf.example"
-fi
-chmod +x "${EXECUTABLES[@]/#/$CONFIG_DIR/}"
 # ccmorph-core is compiled Go, so it is the component that is not a tracked
 # file. A release tarball carries one prebuilt binary per
 # platform (<name>-<os>-<arch>, from `make dist`); a checkout carries the ones
 # `make shim` built. Nothing is compiled here: an installer that needs a Go
 # toolchain on a user's machine is a second dependency for one helper.
+#
+# Resolved BEFORE the first copy. A tree without it (a GitHub tag archive
+# carries only libexec/.gitkeep) is refused with the install it found still
+# whole — lib and core the old pair — not after the copy loop swapped lib/ and
+# then died on the missing binary (#721). The remote block above makes the same
+# check on a download before handing it to its own installer, which may be an
+# older release's.
 _shim_os="${$(uname -s):l}"
 _shim_arch="$(uname -m)"
 case "$_shim_arch" in x86_64) _shim_arch=amd64 ;; aarch64) _shim_arch=arm64 ;; esac
@@ -471,8 +487,40 @@ for _name in ccmorph-core; do
     c_r "No $_name binary for $_shim_os-$_shim_arch beside this installer."
     c_dim "  From a checkout: run 'make shim' (needs Go), then re-run ./install.sh."
     c_dim "  Otherwise install a release: it ships the binary for your platform."
+    c_dim "  Nothing was changed."
     exit 1
   fi
+done
+
+# ---- copy infrastructure --------------------------------------------------
+mkdir -p "$CONFIG_DIR" "$BIN_DIR"
+
+# "Already home" is a question about DIRECTORIES, not strings. SRC is resolved
+# by :A, so CONFIG_DIR must be resolved too — otherwise /tmp vs /private/tmp (a
+# symlink on macOS), or any symlinked $HOME, compares unequal while naming one
+# directory. Every copy then becomes a copy onto itself, which cp refuses, and
+# `set -e` turns that into an install that aborted before wiring the rc. Resolved
+# after mkdir so the path exists, and only for this comparison: the literal
+# CONFIG_DIR is what gets written into the rc, where a readable ~ path matters.
+CONFIG_REAL="${CONFIG_DIR:A}"
+
+# If running from inside the target dir, files are already home; otherwise copy.
+if [[ "$SRC" != "$CONFIG_REAL" ]]; then
+  mkdir -p "$CONFIG_DIR"/{bin,lib,libexec,share/claude-plugin/{.claude-plugin,commands,hooks},share/claude-plugin-router/{.claude-plugin,hooks,skills/router},share/zsh/site-functions}
+  for _f in "${COMPONENTS[@]}"; do cp "$SRC/$_f" "$CONFIG_DIR/$_f"; done
+fi
+cp "$SRC/bin/ccmorph" "$BIN_DIR/ccmorph"
+# The opt-in reference, so a host can see every seam without reading the source.
+# Copied, never activated: local.sh itself stays absent until someone writes it.
+# Same directory guard as above: in-place, this is a copy onto itself.
+if [[ "$SRC" != "$CONFIG_REAL" ]]; then
+  cp "$SRC/share/local.sh.example" "$CONFIG_DIR/local.sh.example"
+  cp "$SRC/share/profile.conf.example" "$CONFIG_DIR/profile.conf.example"
+fi
+chmod +x "${EXECUTABLES[@]/#/$CONFIG_DIR/}"
+# Place the core resolved above, once its directory exists.
+for _name in ccmorph-core; do
+  _shim="$_core_src"
   # Remove first: copying over a running-signed Mach-O in place keeps the kernel's stale
   # code-signature cache for the old bytes, and macOS then kills the new binary (exit 137).
   [[ "${_shim:A}" == "${CONFIG_REAL}/libexec/$_name" ]] \
@@ -556,20 +604,37 @@ _login_shell="${SHELL:-}"
 case "${_login_shell:t}" in
   bash|fish) _comp_wanted=0 ;;
 esac
-_comp_dir_in_rc=0
+_comp_dir_bound=0
 _compinit_in_rc=0
-if [[ -f "$_zshrc" ]]; then
-  grep -qF 'ccmorph/share/zsh/site-functions' "$_zshrc" && _comp_dir_in_rc=1
-  grep -qE 'compinit|oh-my-zsh' "$_zshrc" && _compinit_in_rc=1
+# Doctor's one fpath rule, asked of the core that owns it (#638): the rc names
+# the directory (or ccmorph's site-functions), or the live FPATH already holds
+# it or a directory with a _ccmorph file. An absent rc reads as empty, as
+# doctor reads it, so an FPATH exported from .zshenv still counts.
+if "$_core_src" util fpath-bound "$_zshrc" "$_comp_dir"; then
+  _comp_dir_bound=1
 fi
-(( _comp_dir_in_rc && _compinit_in_rc )) && _comp_wanted=0
+if [[ -f "$_zshrc" ]]; then
+  # What the rc runs, not what it mentions (#449): a # that begins a word
+  # starts a comment, so a commented-out compinit starts nothing, and only the
+  # Oh My Zsh loader — not the directory's name — runs compinit for the rc.
+  # Asked of the core that owns the rule, doctor's parser (#555): a zsh
+  # re-spelling of the scan here once disagreed with doctor on an rc whose
+  # last line has no trailing newline, on extendedglob from the user's .zshenv
+  # (this installer runs under zsh, so it applies here), and on a # inside
+  # quotes. The source core — the bytes just placed, so macOS does not
+  # revalidate a fresh copy's signature — answers by exit status.
+  if "$_core_src" util compinit-runs "$_zshrc"; then
+    _compinit_in_rc=1
+  fi
+fi
+(( _comp_dir_bound && _compinit_in_rc )) && _comp_wanted=0
 if (( _comp_wanted )); then
   print ""
   if (( _compinit_in_rc )); then
     c_y "Tab completion for ccmorph is in $_comp_dir, which zsh does not search yet."
     c_dim "  Add this line to $_zshrc yourself, above the line that runs compinit (or loads Oh My Zsh); Tab completes in the next zsh you start:"
     print -r -- "  fpath=(${(q)_comp_dir} \$fpath)"
-  elif (( _comp_dir_in_rc )); then
+  elif (( _comp_dir_bound )); then
     c_y "$_zshrc puts $_comp_dir on fpath, but nothing in it starts zsh's completion system."
     c_dim "  Add this line to $_zshrc yourself, under the fpath line; Tab completes in the next zsh you start:"
     print -r -- "  autoload -Uz compinit && compinit"

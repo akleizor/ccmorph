@@ -32,7 +32,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from unittest import mock
 
-from support import HANG_TIMEOUT, SHIM, needs_shim
+from support import HANG_TIMEOUT, SHIM, needs_loopback, needs_shim, wait_until
 
 pytestmark = needs_shim
 
@@ -111,6 +111,7 @@ def dead_port():
     return s.getsockname()[1]
 
 
+@needs_loopback  # the shim and its upstream really listen: #611
 class ShimParentDeathTest(unittest.TestCase):
     def test_shim_dies_with_the_process_that_launched_it(self):
         """--parent-pid must hold when the launcher is killed outright: six
@@ -131,6 +132,7 @@ class ShimParentDeathTest(unittest.TestCase):
             self.fail("the shim outlived the process that launched it")
 
 
+@needs_loopback  # the shim and its upstream really listen: #611
 class ShimStartupTest(unittest.TestCase):
     def test_startup_prints_its_banner_with_the_bound_port(self):
         """The shim binds loopback only and resolves no name for it (a reverse
@@ -190,6 +192,7 @@ def serve(handler):
     return srv
 
 
+@needs_loopback  # the shim and its upstream really listen: #611
 class ShimTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -241,6 +244,7 @@ class ShimTest(unittest.TestCase):
         self.assertIsNone(Upstream.seen_xff[-1],
                           "the shim added an X-Forwarded-For header on its own")
 
+@needs_loopback  # the shim and its upstream really listen: #611
 class ProcessRestartTest(unittest.TestCase):
     """FIX 1 (CRITICAL) — the counter restarts at 1 in every process, but a
     Claude Code transcript OUTLIVES the shim: every relaunch, profile hop or
@@ -313,11 +317,12 @@ class BlockedUpstream(BaseHTTPRequestHandler):
              "content": [], "usage": {"input_tokens": 1, "output_tokens": 1}}).encode())
 
 
+@needs_loopback  # the shim and its upstream really listen: #611
 class TransportRetryTest(unittest.TestCase):
     """--retry-transport end to end. The Go suite (shim/retry_test.go) pins the
     jitter bounds, the breaker clock and the stall rule with injected time; here
-    the binary's own flags and CCMORPH_RETRY_BASE=0 (no waits) show what a
-    provider and a client see."""
+    the binary's own flags and CCMORPH_RETRY_BASE=0.001 (no measurable waits;
+    zero is refused, #770) show what a provider and a client see."""
 
     def setUp(self):
         BlockedUpstream.failures_left = 0
@@ -328,7 +333,7 @@ class TransportRetryTest(unittest.TestCase):
 
     def shim(self, target=None, flags=("--retry-transport",)):
         _, port = start_shim(self, target or f"http://127.0.0.1:{self.upstream.server_address[1]}",
-                             env={"CCMORPH_RETRY_BASE": "0"}, flags=flags)
+                             env={"CCMORPH_RETRY_BASE": "0.001"}, flags=flags)
         return port
 
     def post(self, port):
@@ -368,6 +373,7 @@ class SlowUpstream(BaseHTTPRequestHandler):
         time.sleep(30)   # hold the connection open like cliproxyapi does
 
 
+@needs_loopback  # the shim and its upstream really listen: #611
 class KeepAliveHangTest(unittest.TestCase):
     def test_stream_completes_at_message_stop_under_keepalive(self):
         body, elapsed = read_stream(self, SlowUpstream)
@@ -450,6 +456,7 @@ def read_stream(case, upstream_cls):
     return body, time.monotonic() - start
 
 
+@needs_loopback  # the shim and its upstream really listen: #611
 class StreamTerminationTest(unittest.TestCase):
     def test_upstream_eof_midstream_closes_the_client(self):
         """FIX 4 — the bare `return` on upstream EOF left close_connection
@@ -508,10 +515,12 @@ class ShimFlagTest(unittest.TestCase):
         with urllib.request.urlopen(req, timeout=HANG_TIMEOUT) as r:
             return body, r.read()
 
+    @needs_loopback  # echoes through a live shim listener: #611
     def test_request_body_is_byte_identical_when_nothing_dangles(self):
         body, got = self.echoed("Bash")
         self.assertEqual(got, body)
 
+    @needs_loopback  # echoes through a live shim listener: #611
     def test_a_dangling_tool_reference_goes_upstream_as_text(self):
         _, got = self.echoed("Monitor")
         inner = json.loads(got)["messages"][0]["content"][0]["content"]
@@ -529,6 +538,7 @@ class ShimFlagTest(unittest.TestCase):
                 self.assertNotEqual(out.returncode, 0)
                 self.assertIn("usage", out.stdout + out.stderr)
 
+    @needs_loopback  # the preserved ids ride a live shim listener: #611
     def test_preserve_tool_ids_stops_response_id_rewriting(self):
         srv = serve(Upstream)
         self.addCleanup(srv.shutdown)
@@ -601,6 +611,7 @@ class RecordingUpstream(BaseHTTPRequestHandler):
         self.wfile.write(b"{}")
 
 
+@needs_loopback  # the shim and its upstream really listen: #611
 class InboundTokenTest(unittest.TestCase):
     """With CCMORPH_INBOUND the client holds only a token; the real key goes upstream."""
 
@@ -625,6 +636,7 @@ class InboundTokenTest(unittest.TestCase):
         self.assertEqual(got["x-api-key"], "real")
         self.assertEqual(got["authorization"], "Bearer real")
 
+@needs_loopback  # the shim and its upstream really listen: #611
 class IdentifierTest(unittest.TestCase):
     """The client's schema goes upstream as sent; identifiers change only on a
     profile's opt-in (--random-device-id)."""
@@ -764,6 +776,7 @@ def upstream_bytes(case, body):
     return body.replace(minted[0].encode(), b"Bash_0")
 
 
+@needs_loopback  # the shim and its upstream really listen: #611
 class UsageSidecarTest(unittest.TestCase):
     def setUp(self):
         CaptureUpstream.mode = "json"
@@ -798,16 +811,17 @@ class UsageSidecarTest(unittest.TestCase):
         """Find the single row file for a response id, regardless of the
         turn-id suffix in the filename or the day folder it landed in. Polls
         until the row appears."""
-        deadline = time.monotonic() + HANG_TIMEOUT
         rows = []
-        while time.monotonic() < deadline:
+
+        def landed():
+            nonlocal rows
             store = self.state / "ccmorph" / "usage"
             rows = [p for pattern in ("*.json", "*/*.json") for p in store.glob(pattern)
                     if json.loads(p.read_text()).get("response_id") == response_id]
-            if len(rows) == 1:
-                return rows[0]
-            time.sleep(0.05)
-        self.fail(f"expected 1 row for {response_id}, got {len(rows)}")
+            return len(rows) == 1
+        if not wait_until(landed, HANG_TIMEOUT):
+            self.fail(f"expected 1 row for {response_id}, got {len(rows)}")
+        return rows[0]
 
     def rows(self):
         store = self.state / "ccmorph" / "usage"
@@ -822,14 +836,18 @@ class UsageSidecarTest(unittest.TestCase):
     def wait_for(self, path, predicate=bool):
         """The shim writes the row after the client has its bytes, so every row
         assertion polls rather than racing the client's last read."""
-        deadline = time.monotonic() + HANG_TIMEOUT
-        while time.monotonic() < deadline:
+        matched = []
+
+        def ready():
             if path.exists():
                 row = json.loads(path.read_text())
                 if predicate(row):
-                    return row
-            time.sleep(0.05)
-        self.fail(f"no row at {path} within 5s")
+                    matched.append(row)
+                    return True
+            return False
+        if not wait_until(ready, HANG_TIMEOUT):
+            self.fail(f"no row at {path}")
+        return matched[0]
 
     def post(self, port, path="/v1/messages", body=REQUEST_BODY, headers=None):
         request = urllib.request.Request(
@@ -876,7 +894,7 @@ class UsageSidecarTest(unittest.TestCase):
         # Two upstream 503s, then the real message: the row records both retries,
         # and `attempt` is still the launcher's tag, not the shim's count.
         CaptureUpstream.fail_first = 2
-        port = self.shim(env={"CCMORPH_MODEL_ROUTE": ROUTE_SPEC, "CCMORPH_RETRY_BASE": "0"},
+        port = self.shim(env={"CCMORPH_MODEL_ROUTE": ROUTE_SPEC, "CCMORPH_RETRY_BASE": "0.001"},
                          flags=("--retry-transport",))
         with self.post(port) as r:
             self.assertEqual(upstream_bytes(self, r.read()), CAPTURE_JSON)
@@ -1004,13 +1022,13 @@ class UsageSidecarTest(unittest.TestCase):
 
     def test_task_tags_the_row_and_never_changes_the_model(self):
         h = {"x-ccmorph-task": "issue-42", "x-ccmorph-attempt": "2",
-             "x-claude-code-session-id": "sess-1"}
+             "x-claude-code-session-id": "sess-1", "x-ccmorph-parent": "test-parent-1"}
         port = self.tag_shim()
         with self.post(port, headers=h) as r:
             r.read()
         self.assertEqual(self.seen[0], REQUEST_BODY)
         row = self.row()
-        self.assertEqual((row["task"], row["attempt"], row["session"]), ("issue-42", 2, "sess-1"))
+        self.assertEqual((row["task"], row["attempt"], row["session"], row["parent"]), ("issue-42", 2, "sess-1", "test-parent-1"))
         self.assertNotIn("role", row)
         self.assertEqual((row["requested_model"], row["response_model"]), ("m", "m-served"))
 
@@ -1025,9 +1043,10 @@ class UsageSidecarTest(unittest.TestCase):
 
     def test_a_malformed_session_id_is_left_out_of_the_row(self):
         port = self.tag_shim()
-        with self.post(port, headers={"x-claude-code-session-id": "a b/c"}) as r:
+        with self.post(port, headers={"x-claude-code-session-id": "a b/c", "x-ccmorph-parent": "a b/c"}) as r:
             r.read()
         self.assertNotIn("session", self.row())
+        self.assertNotIn("parent", self.row())
 
     def test_malformed_values_are_not_trusted(self):
         port = self.tag_shim()
@@ -1037,9 +1056,8 @@ class UsageSidecarTest(unittest.TestCase):
                 r.read()
             self.assertEqual(self.seen[0], REQUEST_BODY, task)
         # Every request answers with the same response id, so each spills to its own row.
-        deadline = time.monotonic() + HANG_TIMEOUT
-        while len(self.rows()) < 3 and time.monotonic() < deadline:
-            time.sleep(0.05)
+        self.assertTrue(wait_until(lambda: len(self.rows()) >= 3, HANG_TIMEOUT),
+                        "each of the three requests must land its own row")
         self.assertEqual(sorted(str(r["task"]) for r in self.rows().values()), ["None", "None", "ok"])
 
 
@@ -1109,6 +1127,7 @@ class GatewayEdgeUpstream(BaseHTTPRequestHandler):
         self._send(200, "application/json", json.dumps(message).encode())
 
 
+@needs_loopback  # the shim and its upstream really listen: #611
 class GatewayEdgeTest(unittest.TestCase):
     """Anthropic ids in and out, whatever the gateway calls its models."""
 
@@ -1199,6 +1218,7 @@ class StallUpstream(BaseHTTPRequestHandler):
         time.sleep(20)
 
 
+@needs_loopback  # the shim and its upstream really listen: #611
 class StallDeadlineTest(unittest.TestCase):
     """A silent gateway ends the turn with an error Claude Code can read and retry,
     never a reply that never comes."""

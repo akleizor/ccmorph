@@ -73,6 +73,10 @@ readonly REAL_HOME="$HOME"
 typeset -gi tests_run=0
 typeset -gi tests_failed=0
 typeset -gi tests_seen=0
+# Tests the filter passed, before the shard decides who runs them: the
+# summary-time guard distinguishes 'matched no test anywhere' from 'this
+# shard holds no copy of a test the filter matched elsewhere'.
+typeset -gi _ccm_test_filter_hits=0
 
 # A wait ends on an event, never on a deadline: a bound that competes with the
 # other lanes' CPU fails a healthy run whatever number it picks (#398 saw 8.9 s
@@ -95,8 +99,12 @@ _ccm_test_jobs() {
 if [[ -z "${CCMORPH_TEST_SHARD:-}" ]] && (( ${CCMORPH_TEST_JOBS:-$(_ccm_test_jobs)} > 1 )); then
   typeset -i jobs=${CCMORPH_TEST_JOBS:-$(_ccm_test_jobs)} shard rc=0
   typeset -a pids
+  # CCMORPH_TEST_SHARD_AUTO marks this suite's own workers: an empty shard is
+  # a product of the fan-out, not a selection the operator requested, so the
+  # summary guard exempts these workers from the shard arm only. It is set
+  # nowhere else; scrub_runner_env keeps CCMORPH_TEST* through to each worker.
   for (( shard = 0; shard < jobs; shard++ )); do
-    CCMORPH_TEST_SHARD="$shard/$jobs" zsh "$0" "$@" & pids+=($!)
+    CCMORPH_TEST_SHARD="$shard/$jobs" CCMORPH_TEST_SHARD_AUTO=1 zsh "$0" "$@" & pids+=($!)
   done
   for pid in $pids; do wait $pid || rc=1; done
   exit $rc
@@ -350,7 +358,7 @@ setup_home() {
   export HOME="$1"
   # The runner may export tuning keys (or be a Claude Code session itself);
   # the launcher passes them through, so scrub them for a hermetic fixture.
-  unset CLAUDE_CODE_SIMPLE MAX_THINKING_TOKENS CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC CCMORPH_SET_ENV CLAUDECODE CLAUDE_CODE_CHILD_SESSION
+  unset CLAUDE_CODE_SIMPLE MAX_THINKING_TOKENS CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC CCMORPH_SET_ENV CLAUDECODE CLAUDE_CODE_CHILD_SESSION CLAUDE_CODE_SESSION_ID
   export CCMORPH_TEST_LOG="$HOME/claude.log"
   # The machine's provider bridge is hidden from the PATH every home gets:
   # bridgeless_path replaces a bridge-carrying entry with a mirror of its
@@ -1322,6 +1330,115 @@ test_set_model_refuses_an_unserved_id_and_saves_only_on_confirm_issue_267() {
   return $rc
 }
 
+# GH-728: `set gw effort bananas` was refused while `set gw model bogus-id-xyz-42`
+# saved blindly, and the typo surfaced only at launch. When the endpoint answers
+# its listing, #267 adjudicates; when it cannot, the save still stands (custom
+# ids stay allowed) but must say so, the way the add says an unchecked key was
+# not checked — and the note must tell the three states apart: nothing answered,
+# answered in a shape that is no listing (an empty 204, a {} body), or answered
+# with a refused status. stdout keeps carrying the value alone, for scripts.
+test_set_model_says_saved_unchecked_when_the_endpoint_cannot_answer_issue_728() {
+  local test_home
+  test_home=$(mktemp -d)
+  setup_home "$test_home"
+  export _CCMORPH_PROFILE_DIRS="$HOME/.config/ccmorph/profiles"
+  write_apikey_conf gw 'api_key=sk_prod_test' 'base_url=https://api.example.invalid'
+  mkdir -p "$HOME/.config/ccmorph/profiles/gw"
+  print -r -- '{"model":"kept-model"}' > "$HOME/.config/ccmorph/profiles/gw/settings.json"
+  source "$CCMORPH_SOURCE"
+
+  local rc=0 out err still
+  # Nothing answers: the id saves, exit 0, stdout the value alone -- and the
+  # save names what nobody could do.
+  write_curl_mock 'exit 7'
+  out=$(ccmorph set gw model bogus-id-xyz-42 </dev/null 2>/dev/null) || {
+    print -u2 -- 'an unchecked save must still succeed'
+    rc=1
+  }
+  [[ "$out" == bogus-id-xyz-42 ]] || {
+    print -u2 -- "stdout must carry the saved value alone (got: $out)"
+    rc=1
+  }
+  err=$(ccmorph set gw model another-typo </dev/null 2>&1 >/dev/null)
+  assert_contains "$err" 'saved unchecked' \
+    'a save no endpoint could check must be named as unchecked (got: '"$err"')' || rc=1
+  assert_contains "$err" 'https://api.example.invalid did not answer, so the model was not checked' \
+    'the note must blame the silent endpoint, like the add blames it for a key (got: '"$err"')' || rc=1
+  still=$(ccmorph get gw model 2>/dev/null)
+  [[ "$still" == another-typo ]] || {
+    print -u2 -- "an unchecked save must still save (got: $still)"
+    rc=1
+  }
+  # An endpoint that answered without a listing is not a silent one: the note
+  # says what answered.
+  write_curl_mock 'print -u2 -- "curl: (22) The requested URL returned error: 404"; exit 22'
+  err=$(ccmorph set gw model third-try </dev/null 2>&1 >/dev/null)
+  assert_contains "$err" 'answered HTTP 404, so the model was not checked' \
+    'an answered refusal must be reported as answered, not as silence (got: '"$err"')' || rc=1
+  # Keeping the saved id changes nothing, so nothing new goes unchecked: no
+  # note on a save that is not a save (#279).
+  err=$(ccmorph set gw model third-try </dev/null 2>&1 >/dev/null)
+  assert_not_contains "$err" 'saved unchecked' \
+    'keeping the saved model must not claim an unchecked save (got: '"$err"')' || rc=1
+  # A 200 whose body is no listing judged nothing either: it answered, it did
+  # not check. The save stands and says what could not be read.
+  write_curl_mock '[ "${1-}" = -K ] && cat >/dev/null; print -r -- "{}"'
+  err=$(ccmorph set gw model curly-brace </dev/null 2>&1 >/dev/null) || {
+    print -u2 -- 'an unusable listing answer must not block the save'
+    rc=1
+  }
+  assert_contains "$err" 'answered without a usable model listing, so the model was not checked' \
+    'a body that is no listing must be named as uncheckable (got: '"$err"')' || rc=1
+  assert_not_contains "$err" 'did not answer' \
+    'an endpoint that answered must never be called silent (got: '"$err"')' || rc=1
+  # An empty 204 exits curl -f 0 with no body and no word of its own: that
+  # exit is the answer. This is the merge gate's fixture: the listing request
+  # answers empty and any request after it finds nothing, so a note built from
+  # a second request would blame silence on an endpoint that answered.
+  rm -f "$HOME/curl.calls"
+  write_curl_mock '[ "${1-}" = -K ] && cat >/dev/null
+print -r -- call >> "$HOME/curl.calls"
+[[ $(wc -l < "$HOME/curl.calls") -gt 1 ]] && exit 7
+exit 0'
+  err=$(ccmorph set gw model empty-answer </dev/null 2>&1 >/dev/null) || {
+    print -u2 -- 'an empty 204 answer must not block the save'
+    rc=1
+  }
+  assert_contains "$err" 'answered without a usable model listing, so the model was not checked' \
+    'a 204 must be reported as an empty answer, not silence (got: '"$err"')' || rc=1
+  assert_not_contains "$err" 'did not answer' \
+    'a 204 is an answer: the note must not blame silence (got: '"$err"')' || rc=1
+  local calls=$(wc -l < "$HOME/curl.calls")
+  (( calls == 1 )) || {
+    print -u2 -- "set must judge the save on its one listing request, never a second (curl ran $calls times)"
+    rc=1
+  }
+  # A body cut short after the status line is still an answer: curl exits 18
+  # when the transfer breaks, after writing out the status it met. Calling
+  # that silence would blame the network for an endpoint that spoke, so the
+  # note names the answer whose listing did not arrive.
+  write_curl_mock '[ "${1-}" = -K ] && cat >/dev/null
+print -r -- "{\"data\":["
+print -r -- "__CCMORPH_STATUS__200"
+print -u2 -- "curl: (18) transfer closed with 42 bytes remaining to read"
+exit 18'
+  err=$(ccmorph set gw model cut-short </dev/null 2>&1 >/dev/null) || {
+    print -u2 -- 'a truncated answer must not block the save'
+    rc=1
+  }
+  assert_contains "$err" 'answered without a usable model listing, so the model was not checked' \
+    'a truncated 200 is an answer: the note must say so (got: '"$err"')' || rc=1
+  assert_not_contains "$err" 'did not answer' \
+    'a truncated transfer answered: the note must not blame silence (got: '"$err"')' || rc=1
+  # And real silence is still called silence.
+  write_curl_mock 'exit 7'
+  err=$(ccmorph set gw model quiet-again </dev/null 2>&1 >/dev/null)
+  assert_contains "$err" 'did not answer, so the model was not checked' \
+    'silence must still be called silence (got: '"$err"')' || rc=1
+  rm -rf "$test_home"
+  return $rc
+}
+
 # GH-267: an unserved --model id must stop the launch before Claude Code opens.
 # Claude Code's own answer to a model it cannot reach is the wrong explanation
 # ("restricted by your organization's settings") plus a silent swap to another
@@ -1567,7 +1684,12 @@ fake_claude_help() {
   # looked right and tested nothing.
   {
     print -r -- '#!/bin/sh'
-    print -r -- 'if [ "$1" = "--help" ]; then'
+    # A help probe is argv EXACTLY ["--help"] -- that is how the launcher probe
+    # calls it. --help with any other word tacked on is a launch, not a probe,
+    # so it falls through to the logging stub and the exact argv is recorded.
+    # Answering usage for a mutated argv is how the probe would swallow words
+    # the matrix exists to pin.
+    print -r -- 'if [ "$1" = "--help" ] && [ "$#" = 1 ]; then'
     print -r -- '  echo "Usage: claude [options] [command]"'
     print -r -- '  echo ""'
     # The Options section is what the arity reader parses: one value-taking
@@ -1586,6 +1708,14 @@ fake_claude_help() {
               mcp plugin project respawn rm setup-token stop ultrareview update; do
       print -r -- "  echo \"  $_v   stub\""
     done
+    print -r -- '  exit 0'
+    print -r -- 'fi'
+    # Claude Code answers a version request with its version and exits; without
+    # this the pass-through answer is silent and the test proves only the status.
+    # The logging stub still sees the argv, so a test can pin what reached claude.
+    print -r -- 'if [ "$1" = "--version" ] || [ "$1" = "-v" ]; then'
+    print -r -- "  \"$logged\" \"\$@\""
+    print -r -- '  echo "2.1.329 (Claude Code)"'
     print -r -- '  exit 0'
     print -r -- 'fi'
     print -r -- "exec \"$logged\" \"\$@\""
@@ -1741,6 +1871,94 @@ test_arguments_reach_claude_exactly_as_given() {
       "'$argv' must still carry the profile's endpoint" || rc=1
   done
 
+  # The run-recognized shapes belong to Claude Code once they sit behind run's
+  # own `--`: #751 shipped when the #650 lone-word rewrite read `version` after
+  # the separator had been stripped. Every such shape must reach Claude Code
+  # untouched, so a future rewrite on this verb that crosses the separator --
+  # or forwards the separator itself -- fails this matrix.
+  local out2 words2 tab=$'\t'
+  for argv in '-- version' '-- --help' '-- -v'; do
+    : > "$CCMORPH_TEST_LOG"
+    out2=$(ccmorph run gw ${=argv} 2>&1) || {
+      print -u2 -- "FAIL: ccmorph run gw $argv must succeed"
+      rc=1; continue
+    }
+    words2=${argv#-- }
+    if [[ "$words2" == '--help' ]]; then
+      # The fake answers a BARE --help probe (argv exactly ["--help"]) with
+      # Claude's own usage and exits WITHOUT opening a session. So the exact
+      # argv is pinned two ways: the usage must print, and the launch log must
+      # stay empty. If run forwarded --help with a tacked-on word, the fake
+      # would treat it as a launch -- no usage, a logged ARG row -- and both
+      # halves below fail. This is the check that catches a rewrite or an
+      # extra word slipping past the separator.
+      assert_contains "$out2" 'Usage: claude [options] [command]' \
+        "'$argv' must reach Claude Code as its own bare --help" || rc=1
+      [[ ! -s "$CCMORPH_TEST_LOG" ]] || {
+        print -u2 -- "FAIL: '$argv' did not reach Claude Code as a bare --help (a session opened on: $(<"$CCMORPH_TEST_LOG"))"
+        rc=1
+      }
+    else
+      assert_contains "$(<"$CCMORPH_TEST_LOG")" "ARG${tab}${words2}"$'\nSUBAGENT' \
+        "'$argv' must reach Claude Code as '$words2', untouched" || rc=1
+    fi
+    if grep -qxF -- "ARG${tab}--version" "$CCMORPH_TEST_LOG" ||
+       grep -qxF -- "ARG${tab}--" "$CCMORPH_TEST_LOG"; then
+      print -u2 -- "FAIL: a word behind run's -- was rewritten: $(<"$CCMORPH_TEST_LOG")"
+      rc=1
+    fi
+  done
+
+  rm -rf "$test_home"
+  return $rc
+}
+
+test_a_word_behind_runs_own_separator_is_never_rewritten_issue_751() {
+  # #751: the #650 lone-word `version` rewrite ran AFTER run stripped its own
+  # `--`, so `ccmorph run gw -- version` rewrote the user's word and printed
+  # Claude Code's version instead of opening a session on the prompt
+  # `version` (INTENT promise 6). What sits behind run's separator belongs to
+  # Claude Code; the rewrite reads the BARE lone word, and only there.
+  local test_home
+  test_home=$(mktemp -d)
+  setup_home "$test_home"
+  export _CCMORPH_PROFILE_DIRS="$HOME/.config/ccmorph/profiles"
+  write_apikey_conf gw 'api_key=k' 'base_url=https://gateway.invalid' 'model=gw-model'
+  fake_claude_help
+  source "$CCMORPH_SOURCE"
+
+  local rc=0 out st actual tab=$'\t'
+  : > "$CCMORPH_TEST_LOG"; st=0
+  out=$(ccmorph run gw -- version 2>&1) || st=$?
+  [[ "$st" == 0 ]] || {
+    print -u2 -- "FAIL: 'ccmorph run gw -- version' opens a session and must succeed, status $st: $out"
+    rc=1
+  }
+  actual="$(<"$CCMORPH_TEST_LOG")"
+  assert_contains "$actual" "ARG${tab}version"$'\nSUBAGENT' \
+    "'-- version' must reach Claude Code as the prompt 'version'" || rc=1
+  if grep -qxF -- "ARG${tab}--version" "$CCMORPH_TEST_LOG"; then
+    print -u2 -- "FAIL: the word behind run's -- was rewritten into --version: $actual"
+    rc=1
+  fi
+  assert_contains "$actual" 'MODEL_ENV=gw-model' \
+    "the session behind -- must still carry the profile's model" || rc=1
+
+  # The control: the BARE lone word keeps its #650 answer — Claude Code's own
+  # --version, printed and exited, not a prompt.
+  : > "$CCMORPH_TEST_LOG"; st=0
+  out=$(ccmorph run gw version 2>&1) || st=$?
+  [[ "$st" == 0 ]] || {
+    print -u2 -- "FAIL: bare 'ccmorph run gw version' must answer with the version, status $st: $out"
+    rc=1
+  }
+  assert_contains "$out" '2.1.329 (Claude Code)' \
+    "a bare version request must print Claude Code's version" || rc=1
+  grep -qxF -- "ARG${tab}--version" "$CCMORPH_TEST_LOG" || {
+    print -u2 -- "FAIL: the bare version request did not reach claude as --version: $(<"$CCMORPH_TEST_LOG")"
+    rc=1
+  }
+
   rm -rf "$test_home"
   return $rc
 }
@@ -1770,6 +1988,99 @@ test_run_with_a_profile_keeps_claudes_native_help() {
   assert_not_contains "$output" 'Usage: ccmorph run' \
     'run gw --help must not print ccmorph page instead of forwarding' || rc=1
 
+  rm -rf "$test_home"
+  return $rc
+}
+
+test_a_launch_that_opens_no_session_answers_while_the_endpoint_is_down_issue_650() {
+  # See #650: a Claude subcommand or a print-and-exit printout opens no session,
+  # so it must not start the adapter or wait for the route's readiness. With the
+  # endpoint down and an adapter that dies at once, every such launch still
+  # answers, passes its argv to claude untouched, and prints no session refusal.
+  # The lone word `version` is the version request the issue names: ccmorph
+  # answers it as Claude Code's own --version, which prints and exits, so it
+  # needs no session and no route either.
+  local test_home
+  test_home=$(mktemp -d)
+  setup_home "$test_home"
+  write_apikey_conf gw650 'api_key=k' 'base_url=http://127.0.0.1:9'
+  write_fake_adapter ': > "$HOME/adapter.ran"' 'exit 1'
+  fake_claude_help
+  printf '%s\n' '#!/bin/sh' 'exit 7' > "$HOME/bin/curl"
+  chmod +x "$HOME/bin/curl"
+  source "$CCMORPH_SOURCE"
+
+  local rc=0 out st c w want
+  for c in 'mcp list' 'doctor' '--help' '-- --help' '--version' '-v'; do
+    : > "$CCMORPH_TEST_LOG"; rm -f "$HOME/adapter.ran"; st=0
+    out=$(ccmorph run gw650 ${=c} 2>&1) || st=$?
+    [[ "$st" == 0 ]] || {
+      print -u2 -- "FAIL: 'ccmorph run gw650 $c' opens no session and must answer with the endpoint down, status $st: $out"
+      rc=1
+    }
+    [[ ! -e "$HOME/adapter.ran" ]] || {
+      print -u2 -- "FAIL: 'ccmorph run gw650 $c' started the adapter, yet it opens no session"
+      rc=1
+    }
+    assert_not_contains "$out" 'adapter exited before readiness' \
+      "'ccmorph run gw650 $c' must not wait on the route's readiness" || rc=1
+    assert_not_contains "$out" 'session not started' \
+      "'ccmorph run gw650 $c' opens no session, so none can fail to start" || rc=1
+    if [[ "$c" == *--help ]]; then
+      assert_contains "$out" 'Usage: claude [options] [command]' \
+        "'ccmorph run gw650 $c' must print Claude Code's own usage" || rc=1
+    else
+      want=ARG
+      for w in ${=c}; do want+=$'\t'"$w"; done
+      grep -qxF -- "$want" "$CCMORPH_TEST_LOG" || {
+        print -u2 -- "FAIL: claude did not receive '$c' untouched: $(<"$CCMORPH_TEST_LOG")"
+        rc=1
+      }
+    fi
+  done
+
+  : > "$CCMORPH_TEST_LOG"; rm -f "$HOME/adapter.ran"; st=0
+  out=$(ccmorph run gw650 version 2>&1) || st=$?
+  [[ "$st" == 0 ]] || {
+    print -u2 -- "FAIL: 'ccmorph run gw650 version' must answer with the endpoint down, status $st: $out"
+    rc=1
+  }
+  [[ ! -e "$HOME/adapter.ran" ]] || {
+    print -u2 -- 'FAIL: a bare version request opens no session, so it must start no adapter'
+    rc=1
+  }
+  assert_not_contains "$out" 'adapter exited before readiness' \
+    'a bare version request must not wait on the route' || rc=1
+  assert_not_contains "$out" 'session not started' \
+    'a bare version request opens no session, so none can fail to start' || rc=1
+  assert_contains "$out" '2.1.329 (Claude Code)' \
+    "a bare version request must print Claude Code's version" || rc=1
+  grep -qxF -- $'ARG\t--version' "$CCMORPH_TEST_LOG" || {
+    print -u2 -- "FAIL: the version request did not reach claude: $(<"$CCMORPH_TEST_LOG")"
+    rc=1
+  }
+
+  # Only the public `ccmorph run` verb reads the lone word as the version
+  # request. Agent dispatch, `_ccm_launch -a <profile> <args>`, hands Claude
+  # Code its arguments exactly as given (INTENT promise 6): there `version` is
+  # a one-word prompt, so it opens a session, takes the route path, and keeps
+  # the true refusal on a dead route.
+  : > "$CCMORPH_TEST_LOG"; rm -f "$HOME/adapter.ran"; st=0
+  out=$(_ccm_launch -a gw650 version 2>&1) || st=$?
+  (( st != 0 )) || {
+    print -u2 -- "FAIL: '_ccm_launch -a gw650 version' is a prompt; its session cannot start on a dead route: $out"
+    rc=1
+  }
+  [[ -e "$HOME/adapter.ran" ]] || {
+    print -u2 -- "FAIL: '_ccm_launch -a gw650 version' opens a session, so it must take the route path"
+    rc=1
+  }
+  assert_contains "$out" 'adapter exited before readiness; session not started.' \
+    'a session launch on a dead route keeps its refusal' || rc=1
+  if grep -q -- '--version' "$CCMORPH_TEST_LOG"; then
+    print -u2 -- "FAIL: agent dispatch rewrote the prompt 'version' into --version: $(<"$CCMORPH_TEST_LOG")"
+    rc=1
+  fi
   rm -rf "$test_home"
   return $rc
 }
@@ -4082,12 +4393,13 @@ test_absent_local_sh_is_a_clean_noop() {
   setup_home "$test_home"
 
   # Vanilla install: no local.sh. Sourcing must succeed, run to completion, and
-  # leave the opt-in unset. Drop the driver first so its presence afterward proves
-  # THIS source reached the end (it is defined on the last lines of ccmorph.sh),
-  # not a stale definition left by an earlier test in this shell.
+  # leave the opt-in unset. Clear the completion marker first so its presence
+  # afterward proves THIS source reached the end (it is set on the last line of
+  # the launcher library), not a stale assignment left by an earlier test in
+  # this shell.
   rm -f "$HOME/.config/ccmorph/local.sh"
   unset CCMORPH_PRELAUNCH
-  unfunction _ccm_launch_driver 2>/dev/null
+  unset _CCMORPH_LAUNCH_SOURCED
   source "$CCMORPH_SOURCE" || {
     print -u2 -- 'sourcing must succeed with no local.sh present'
     rm -rf "$test_home"; return 1
@@ -4097,12 +4409,8 @@ test_absent_local_sh_is_a_clean_noop() {
     'a vanilla install leaves the prelaunch opt-in unset' || {
     rm -rf "$test_home"; return 1
   }
-  # typeset -f, not whence -w: the noglob alias shadows the name in whence's precedence
-  # order while the function is still defined and still what runs.
-  assert_contains \
-    "$(typeset -f _ccm_launch_driver >/dev/null && print function || print missing)" \
-    "function" \
-    'a vanilla source must run to completion, defining the final launcher'
+  assert_contains "[${_CCMORPH_LAUNCH_SOURCED:-<missing>}]" "[1]" \
+    'a vanilla source must run to completion, setting the launcher marker'
   local rc=$?
   rm -rf "$test_home"
   return $rc
@@ -4115,32 +4423,32 @@ test_broken_local_sh_does_not_abort_the_source() {
 
   # local.sh is trusted host config, but a parse error in it must not brick the
   # rest of ccmorph: the failed nested `source` (line ~16) must not abort the
-  # outer source, so the driver on the LAST lines of ccmorph.sh must still be
-  # defined. Drop it first, and run in a subshell with default zsh
-  # options (no inherited ERR_EXIT) — the documented guarantee holds under
-  # ordinary interactive options, which is what a fresh user runs.
+  # outer source, so the completion marker on the LAST line of the launcher
+  # library must still be set. Clear it first, and run in a subshell with
+  # default zsh options (no inherited ERR_EXIT) — the documented guarantee
+  # holds under ordinary interactive options, which is what a fresh user runs.
   printf '%s\n' 'this is (not valid zsh' \
     > "$HOME/.config/ccmorph/local.sh"
 
   unset CCMORPH_PRELAUNCH
   local result
-  # -f: no startup files, so no inherited definition or option (e.g. ERR_EXIT) can
-  # taint the result — fully hermetic, the source under test is the only thing that
-  # can define the driver.
+  # -f: no startup files, so no inherited assignment or option (e.g. ERR_EXIT)
+  # can taint the result — fully hermetic, the source under test is the only
+  # thing that can set the marker.
   result=$(zsh -fc "
     CCMORPH_SOURCE=${(q)CCMORPH_SOURCE}
-    unfunction _ccm_launch_driver 2>/dev/null
+    unset _CCMORPH_LAUNCH_SOURCED
     source \"\$CCMORPH_SOURCE\" 2>/dev/null
     print -r -- \"src_rc=\$?\"
-    print -r -- \"launcher=\$(typeset -f _ccm_launch_driver >/dev/null && print function || print missing)\"
+    print -r -- \"launcher=\${_CCMORPH_LAUNCH_SOURCED:-missing}\"
   ")
 
   assert_contains "$result" "src_rc=0" \
     'a parse error in local.sh must not fail the outer source of ccmorph' || {
     rm -rf "$test_home"; return 1
   }
-  assert_contains "$result" "launcher=function" \
-    'a broken local.sh must not prevent ccmorph from reaching its final launcher'
+  assert_contains "$result" "launcher=1" \
+    'a broken local.sh must not prevent ccmorph from reaching the end of its launcher library'
   local rc=$?
   rm -rf "$test_home"
   return $rc
@@ -4186,8 +4494,8 @@ test_shipped_surface_never_names_the_transport_product() {
 
 test_no_context_window_is_written_into_the_source() {
   local rc=0 f hits
-  # Any 6+ digit run in executable code, minus the two named schema bounds and
-  # minus the log-rotation size. Comments and blank lines are stripped first.
+  # Any 6+ digit run in executable code. Comments and blank lines are stripped
+  # first.
   # One file at a time, never the concatenation: a hit is reported against the
   # file that holds it and carries that file's own line number. Joined, a hit in
   # a module would be reported at an offset that exists in no file — the same
@@ -4195,7 +4503,6 @@ test_no_context_window_is_written_into_the_source() {
   for f in "${CCMORPH_LIBRARY[@]}"; do
     hits=$(sed -e 's/#.*$//' "$f" \
            | grep -nE '\b[0-9]{6,}\b' \
-           | grep -vE '_CCMORPH_(ACW_(MIN|MAX)|LOG_MAX)=' \
            || true)
     [[ -z "$hits" ]] && continue
     print -u2 -- "FAIL: a context window is written into ${f:t}; probe it into the registry instead:"
@@ -5807,6 +6114,7 @@ task_stub_claude() {
   printf '%s\n' '#!/bin/sh' \
     '{ printf "HDRS=<%s>\n" "${ANTHROPIC_CUSTOM_HEADERS-unset}"' \
     '  printf "TASK=<%s> ATTEMPT=<%s>\n" "${CCMORPH_TASK-unset}" "${CCMORPH_ATTEMPT-unset}"' \
+    '  printf "PARENT_ENV=<%s>\n" "${CLAUDE_CODE_SESSION_ID-unset}"' \
     '  printf "PCT=<%s>\n" "${CLAUDE_AUTOCOMPACT_PCT_OVERRIDE-unset}"' \
     '} >> "$CCMORPH_TEST_LOG"' > "$HOME/bin/claude"
   chmod +x "$HOME/bin/claude"
@@ -5821,10 +6129,12 @@ test_task_env_becomes_request_headers_on_an_adapter_launch() {
   task_stub_claude
   write_apikey_conf gw 'api_key=sk_prod_test' 'base_url=https://gateway.invalid' 'adapter=true'
   source "$CCMORPH_SOURCE"
-  CCMORPH_TASK=issue-42 CCMORPH_ATTEMPT=2 _ccm_launch -a gw prompt || rc=1
+  CLAUDE_CODE_SESSION_ID=test-parent-1 CCMORPH_TASK=issue-42 CCMORPH_ATTEMPT=2 _ccm_launch -a gw prompt || rc=1
   local actual="$(<"$CCMORPH_TEST_LOG")"
   assert_contains "$actual" 'x-ccmorph-task: issue-42' 'the task header' || rc=1
-  assert_contains "$actual" 'x-ccmorph-attempt: 2>' 'the attempt header' || rc=1
+  assert_contains "$actual" 'x-ccmorph-attempt: 2' 'the attempt header' || rc=1
+  assert_contains "$actual" 'x-ccmorph-parent: test-parent-1' 'the parent header' || rc=1
+  assert_contains "$actual" 'PARENT_ENV=<unset>' 'the child must not inherit the parent session id' || rc=1
   assert_contains "$actual" 'TASK=<unset> ATTEMPT=<unset>' 'the session must not inherit the variables' || rc=1
   rm -rf "$test_home"
   return $rc
@@ -5895,7 +6205,7 @@ test_no_task_means_no_headers_and_bad_shapes_are_dropped() {
   write_apikey_conf gw 'api_key=sk_prod_test' 'base_url=https://gateway.invalid' 'adapter=true'
   source "$CCMORPH_SOURCE"
   _ccm_launch -a gw prompt || rc=1
-  CCMORPH_TASK=/etc/passwd CCMORPH_ATTEMPT=x _ccm_launch -a gw prompt || rc=1
+  CLAUDE_CODE_SESSION_ID='bad/session' CCMORPH_TASK=/etc/passwd CCMORPH_ATTEMPT=x _ccm_launch -a gw prompt || rc=1
   [[ "$(grep -c '^HDRS=<unset>$' "$CCMORPH_TEST_LOG")" == 2 ]] || {
     print -u2 -- 'no task, or only malformed values, must leave the headers unset'; rc=1; }
   rm -rf "$test_home"
@@ -9377,6 +9687,102 @@ esac'
   return $rc
 }
 
+test_add_wrong_menu_answer_reasks_instead_of_exiting_issue_727() {
+  # Issue #727: typing the gateway URL at the Provider menu printed
+  # "unknown provider" and exited, losing every answer already given; the same
+  # class — free text at the sign-in-method menu — printed "cancelled". A
+  # wrong menu answer now re-asks with a stated try limit, a URL-shaped
+  # provider answer additionally points at Custom endpoint, and the wizard
+  # carries on with the answers it has. The deliberate cancels (EOF, q) still
+  # cancel, and a stream of wrong answers still ends at the stated limit.
+  local test_home rc=0 out st
+  test_home=$(mktemp -d)
+  setup_home "$test_home"
+  export _CCMORPH_PROFILE_DIRS="$HOME/.config/ccmorph/profiles"
+  source "$CCMORPH_SOURCE"
+  command cp "$REPO_ROOT/share/provider-presets.tsv" "$HOME/.config/ccmorph/share/"
+  # The issue's gateway answers nothing: the key is said not-checked and the
+  # add saves.
+  write_curl_mock 'exit 1'
+  # The issue's exact opening — '3' then the URL typed where a menu number
+  # goes — then the answer its hint teaches: the wizard must re-ask with the
+  # pointer, keep the earlier answers, and complete.
+  out=$(print -l 3 'https://api.example.invalid' custom https://api.example.invalid sk-gw-not-real \
+    | ccmorph add t1 2>&1) \
+    || { print -u2 -- 'a URL at the provider menu must re-ask, not exit: '"$out"; rc=1; }
+  assert_contains "$out" "unknown provider 'https://api.example.invalid'" \
+    'the answer that matched no row must still be named back' || rc=1
+  assert_contains "$out" 'for your own URL pick' \
+    'a URL-shaped provider answer must point at the row that takes a URL' || rc=1
+  assert_contains "$out" ') Custom endpoint' \
+    'the pointer must name the Custom endpoint row' || rc=1
+  assert_contains "$out" 'try 1 of 3' \
+    'the re-ask must state its try limit' || rc=1
+  assert_contains "$out" 'Added t1' \
+    'the wizard must finish after the re-ask — a wrong menu answer loses no progress' || rc=1
+  [[ -e "$HOME/.config/ccmorph/t1.conf" ]] \
+    || { print -u2 -- 'the re-asked wizard must save the profile'; rc=1; }
+  # The same class at the sign-in-method menu: free text re-asks, and the
+  # answer that follows completes the wizard.
+  out=$(print -l gateway 3 anthropic sk-m-not-real | ccmorph add m1 2>&1) \
+    || { print -u2 -- 'free text at the method menu must re-ask, not exit: '"$out"; rc=1; }
+  assert_contains "$out" 'not a sign-in method' \
+    'a wrong method answer must name what the menu takes' || rc=1
+  assert_contains "$out" 'try 1 of 3' \
+    'the method re-ask must state its try limit' || rc=1
+  assert_contains "$out" 'Added m1' 'the method menu must carry on after a wrong answer' || rc=1
+  # A stream of wrong answers still ends — at the stated limit, not before:
+  # the second miss is still a re-ask, and nothing saves.
+  out=$(print -l nope nope nope nope | ccmorph add exhaust 2>&1)
+  st=$?
+  (( st != 0 )) || { print -u2 -- 'wrong answers past the try limit must end the add'; rc=1; }
+  assert_contains "$out" 'try 2 of 3' \
+    'every answer up to the limit must be re-asked, not the first exit' || rc=1
+  [[ ! -e "$HOME/.config/ccmorph/exhaust.conf" ]] \
+    || { print -u2 -- 'an exhausted menu must save nothing'; rc=1; }
+  # The deliberate cancel paths still cancel: q — the word the numbered menu
+  # names — leaves with nothing saved, as EOF always did.
+  out=$(print -l apikey q | ccmorph add quit 2>&1)
+  st=$?
+  (( st != 0 )) || { print -u2 -- 'q at the provider menu must cancel'; rc=1; }
+  assert_contains "$out" 'cancelled' 'the deliberate cancel still says cancelled' || rc=1
+  [[ ! -e "$HOME/.config/ccmorph/quit.conf" ]] \
+    || { print -u2 -- 'a cancelled provider menu must save nothing'; rc=1; }
+  out=$(print -l apikey custom | ccmorph add eof 2>&1)
+  st=$?
+  (( st != 0 )) || { print -u2 -- 'EOF at the endpoint question must cancel'; rc=1; }
+  [[ ! -e "$HOME/.config/ccmorph/eof.conf" ]] \
+    || { print -u2 -- 'a cancelled add must save nothing'; rc=1; }
+  # Without the bridge the fourth row is More sign-ins, and choosing it still
+  # names the install step and saves nothing — the gate follows the printed
+  # row, not the word.
+  out=$(print -l 4 | ccmorph add more 2>&1)
+  st=$?
+  (( st != 0 )) || { print -u2 -- 'the printed More row must stop before any login'; rc=1; }
+  assert_contains "$out" 'needs cliproxyapi' \
+    'choosing the printed More row must still name the bridge' || rc=1
+  [[ ! -e "$HOME/.config/ccmorph/more.conf" ]] \
+    || { print -u2 -- 'the More row must save nothing'; rc=1; }
+  # With the bridge on PATH the More sign-ins row is not printed — every
+  # browser login is a row of its own — so `more` is not a menu answer there:
+  # it must re-ask like any other unlisted word, not exit with the install step
+  # that would throw away the answers already given.
+  printf '%s\n' '#!/bin/sh' \
+    'if [ "$1" = --help ]; then print -- "  -codex-login"; exit 0; fi' \
+    'exit 1' > "$HOME/bin/cliproxyapi"
+  chmod +x "$HOME/bin/cliproxyapi"
+  out=$(print -l more 3 anthropic sk-bridge-not-real | ccmorph add bridged 2>&1) \
+    || { print -u2 -- 'with the bridge present, "more" must re-ask, not exit: '"$out"; rc=1; }
+  assert_contains "$out" 'try 1 of 3' \
+    'an answer whose row the menu does not print must re-ask' || rc=1
+  assert_not_contains "$out" 'needs cliproxyapi' \
+    'the unprinted More row must not send a bridged machine to an install step' || rc=1
+  assert_contains "$out" 'Added bridged' \
+    'the method menu must carry on after the unprinted answer' || rc=1
+  rm -rf "$test_home"
+  return $rc
+}
+
 test_launch_refuses_a_key_claude_code_was_told_to_refuse() {
   # A profile made before #236 (or one whose question was answered No) has its
   # key stored as refused; Claude Code would open its login menu and never use
@@ -10960,6 +11366,234 @@ test_add_sub_auth_calls_scrub_securestorage_dir() {
   return $rc
 }
 
+# GH-649: closing the terminal mid Claude-account sign-in left a `type=sub`
+# stub behind -- the conf `add` wrote the moment the method was chosen, before
+# the browser ever opened. A killed parent never reaches the rollback, so the
+# next `list` answered with a wall of three contradictory lines and `add`
+# refused the name with a different repair than `list` had given. The stub was
+# never needed: add now saves the conf only once the sign-in has completed, so
+# even a parent that gets no cleanup at all cannot leave a half-made profile.
+test_add_sub_sigkilled_mid_login_leaves_no_profile() {
+  local test_home
+  test_home=$(mktemp -d)
+  setup_home "$test_home"
+  # The fake signs in only once $HOME/go exists, so the test controls when the
+  # wait ends; it records its own pid and the core's so both can be reaped.
+  printf '%s\n' \
+    '#!/bin/sh' \
+    'case "$1 $2" in' \
+    '  "auth logout") exit 0 ;;' \
+    '  "auth login")' \
+    '    echo $$ > "$HOME/claude.pid"; echo $PPID > "$HOME/core.pid"' \
+    '    : > "$HOME/login.ran"' \
+    '    i=0' \
+    '    while [ ! -e "$HOME/go" ] && [ $i -lt 100 ]; do sleep 0.1; i=$((i+1)); done' \
+    '    [ -e "$HOME/go" ] || exit 1' \
+    '    exit 0 ;;' \
+    '  "auth status") printf '"'"'{"loggedIn": true, "authMethod": "claude.ai", "email": "a@example.com"}\n'"'"' ;;' \
+    'esac' \
+    'exit 0' \
+    > "$HOME/bin/claude"
+  chmod +x "$HOME/bin/claude"
+  source "$CCMORPH_SOURCE"
+
+  local rc=0 i=0 corepid claudpid out
+  ( print 1 | ccmorph add demo >"$HOME/add.out" 2>&1 ) &
+  local job=$!
+  while (( ++i <= CCMORPH_TEST_HANG_TIMEOUT * 10 )); do [[ -s "$HOME/core.pid" ]] && break; command sleep 0.1; done
+  if [[ ! -s "$HOME/core.pid" ]]; then
+    kill -TERM $job 2>/dev/null; touch "$HOME/go"; wait $job 2>/dev/null
+    print -u2 -- 'the browser sign-in never started'
+    rm -rf "$test_home"
+    return 1
+  fi
+  corepid=$(<"$HOME/core.pid")
+  kill -9 "$corepid"
+  touch "$HOME/go"
+  wait $job 2>/dev/null
+  claudpid=$(<"$HOME/claude.pid")
+  i=0
+  while (( ++i <= 30 )); do kill -0 $claudpid 2>/dev/null || break; command sleep 0.1; done
+
+  [[ ! -e "$HOME/.config/ccmorph/demo.conf" ]] || {
+    print -u2 -- 'a killed sign-in must not leave a profile conf'
+    rc=1
+  }
+  out=$(ccmorph list 2>&1)
+  assert_not_contains "$out" 'has no email' \
+    'list must not mourn a profile that was never saved' || rc=1
+  assert_not_contains "$out" 'demo' \
+    'a killed sign-in leaves no profile for list to show' || rc=1
+  # The one repair the messages name must close the loop: review the private
+  # state away, and the same name adds cleanly.
+  out=$(print y | ccmorph rm demo 2>&1) || { print -u2 -- "$out"; rc=1; }
+  out=$(print 1 | ccmorph add demo 2>&1) || { print -u2 -- "$out"; rc=1; }
+  assert_not_contains "$out" 'already exists' \
+    'a killed sign-in must not hold the name' || rc=1
+  command grep -qx 'email=a@example.com' "$HOME/.config/ccmorph/demo.conf" ||
+    { print -u2 -- 'the retried add must save the signed-in account'; rc=1; }
+  rm -rf "$test_home"
+  return $rc
+}
+
+# GH-649, second half: even without a conf to strand, SIGHUP/SIGTERM used to
+# kill `add` mid sign-in before its rollback — the failure path that Ctrl-C
+# reaches only survives because a raw-mode terminal hands Ctrl-C to Claude
+# Code, not to us. Closing a window sends real signals instead, so add hands
+# HUP and TERM to the sign-in child and stays alive to clean up: the child
+# dies, the failure path runs, and the outcome matches a cancelled login.
+test_add_sub_terminal_signal_mid_login_cleans_up() {
+  local test_home
+  test_home=$(mktemp -d)
+  setup_home "$test_home"
+  printf '%s\n' \
+    '#!/bin/sh' \
+    'case "$1 $2" in' \
+    '  "auth logout") exit 0 ;;' \
+    '  "auth login")' \
+    '    echo $$ > "$HOME/claude.pid"; echo $PPID > "$HOME/core.pid"' \
+    '    : > "$HOME/login.ran"' \
+    '    i=0' \
+    '    while [ ! -e "$HOME/go" ] && [ $i -lt 100 ]; do sleep 0.1; i=$((i+1)); done' \
+    '    exit 0 ;;' \
+    'esac' \
+    'exit 0' \
+    > "$HOME/bin/claude"
+  chmod +x "$HOME/bin/claude"
+  source "$CCMORPH_SOURCE"
+
+  local rc=0 i=0 corepid claudpid out
+  ( print 1 | ccmorph add demo >"$HOME/add.out" 2>&1 ) &
+  local job=$!
+  while (( ++i <= CCMORPH_TEST_HANG_TIMEOUT * 10 )); do [[ -s "$HOME/core.pid" ]] && break; command sleep 0.1; done
+  if [[ ! -s "$HOME/core.pid" ]]; then
+    kill -TERM $job 2>/dev/null; touch "$HOME/go"; wait $job 2>/dev/null
+    print -u2 -- 'the browser sign-in never started'
+    rm -rf "$test_home"
+    return 1
+  fi
+  corepid=$(<"$HOME/core.pid")
+  kill -TERM "$corepid"
+  i=0
+  while (( ++i <= CCMORPH_TEST_HANG_TIMEOUT * 10 )); do kill -0 $job 2>/dev/null || break; command sleep 0.1; done
+  wait $job 2>/dev/null
+  touch "$HOME/go"
+  claudpid=$(<"$HOME/claude.pid")
+  i=0
+  while (( ++i <= 30 )); do kill -0 $claudpid 2>/dev/null || break; command sleep 0.1; done
+  kill -TERM $claudpid 2>/dev/null
+
+  out=$(<"$HOME/add.out")
+  assert_contains "$out" 'login failed' \
+    'a SIGTERM mid sign-in must end as a failed login, not as a dead process' || rc=1
+  [[ ! -e "$HOME/.config/ccmorph/demo.conf" ]] || {
+    print -u2 -- 'the rollback must still run after SIGTERM'
+    rc=1
+  }
+  [[ ! -e "$HOME/.config/ccmorph/profiles/demo" ]] || {
+    print -u2 -- 'the profile home must not survive the rolled-back sign-in'
+    rc=1
+  }
+  # The next command must be the healthy one, not the wall of contradictions
+  # the stranded stub used to produce: list succeeds, shows the profile the
+  # home already had, and never mourns a sign-in that was rolled back.
+  out=$(ccmorph list 2>&1) || {
+    print -u2 -- "list must succeed after the rollback: $out"
+    rc=1
+  }
+  assert_not_contains "$out" 'has no email' \
+    'list must not mourn a profile the SIGTERM rollback removed' || rc=1
+  assert_not_contains "$out" 'skipping invalid profile' \
+    'list must not skip a profile the SIGTERM rollback removed' || rc=1
+  assert_not_contains "$out" 'demo' \
+    'a rolled-back sign-in leaves no profile for list to show' || rc=1
+  assert_contains "$out" 'proxy (API key: http://proxy.invalid' \
+    'list must still show the profiles the home already had' || rc=1
+  rm -rf "$test_home"
+  return $rc
+}
+
+# GH-649's wall pointed at two repairs for one conf: list said "re-create it:
+# ccmorph rm && ccmorph add", add said "sign in to it again: ccmorph login" —
+# and login was the lie, because setEmail could only replace an email line the
+# stub conf never had, so it rewrote nothing and still claimed success. The
+# repair that keeps the profile must be both the only one named and a real
+# one: login now appends the missing line, and the validator names login too
+# (the same verdict `doctor` already gives a signed-out account profile).
+test_login_repairs_a_sub_profile_that_never_got_an_email() {
+  local test_home
+  test_home=$(mktemp -d)
+  setup_home "$test_home"
+  printf '%s\n' \
+    '#!/bin/sh' \
+    'case "$1 $2" in' \
+    '  "auth login") : > "$HOME/login.ran"; exit 0 ;;' \
+    '  "auth status") printf '"'"'{"loggedIn": true, "authMethod": "claude.ai", "email": "new@example.com"}\n'"'"'; exit 0 ;;' \
+    'esac' \
+    'exit 0' \
+    > "$HOME/bin/claude"
+  chmod +x "$HOME/bin/claude"
+  printf '%s\n' 'type=sub' > "$HOME/.config/ccmorph/s.conf"
+  mkdir -p "$HOME/.config/ccmorph/profiles/s"
+  source "$CCMORPH_SOURCE"
+
+  local rc=0 out
+  # One conf, one repair: the refusal names login, not a re-create.
+  out=$(ccmorph run s 2>&1) && {
+    print -u2 -- 'a sub profile with no email must not launch'
+    rc=1
+  }
+  assert_contains "$out" 'has no email' 'the refusal must say what is missing' || rc=1
+  assert_contains "$out" 'Claude account profile' \
+    'the refusal must name what is half-made in plain words' || rc=1
+  assert_not_contains "$out" 'sub profile' \
+    'the refusal must not use internal jargon a first-timer cannot read' || rc=1
+  assert_contains "$out" 'ccmorph login s' \
+    'the refusal must name the same repair add names' || rc=1
+  assert_not_contains "$out" 'ccmorph rm s' \
+    'one conf must not be pointed at two different repairs' || rc=1
+  # doctor is the third voice about this conf (#649): the invalid-schema row
+  # it shares with broken confs must still name login, not a re-create.
+  out=$(ccmorph doctor s 2>&1) && {
+    print -u2 -- 'a sub profile with no email must not pass doctor'
+    rc=1
+  }
+  assert_contains "$out" 'sign in again: ccmorph login s' \
+    'doctor must name the repair every other verb names' || rc=1
+  assert_not_contains "$out" 'ccmorph rm s' \
+    'doctor must not point a half-made sign-in at a re-create' || rc=1
+  # list and add are the two voices the issue caught disagreeing (#649): on
+  # the same half-made conf both must name login, in plain words.
+  out=$(ccmorph list 2>&1)
+  assert_contains "$out" "Claude account profile 's' has no email" \
+    'list must say what is half-made in plain words' || rc=1
+  assert_contains "$out" 'ccmorph login s' \
+    'list must name the one repair' || rc=1
+  assert_not_contains "$out" 'sub profile' \
+    'list must not use internal jargon' || rc=1
+  assert_not_contains "$out" 'ccmorph rm s' \
+    'list must not point a half-made sign-in at a re-create' || rc=1
+  out=$(ccmorph add s </dev/null 2>&1) && {
+    print -u2 -- 'add must refuse a name a half-made profile holds'
+    rc=1
+  }
+  assert_contains "$out" 'Sign in to it again: ccmorph login s' \
+    'add must name the same repair list names' || rc=1
+  assert_not_contains "$out" 'ccmorph rm s' \
+    'add must not point a half-made sign-in at a re-create' || rc=1
+  # And that repair must close the loop on a conf that never had the line.
+  out=$(ccmorph login s 2>&1) || { print -u2 -- "$out"; rc=1; }
+  assert_contains "$out" 'Signed in to Claude as new@example.com' \
+    'login must complete the sign-in it was pointed at' || rc=1
+  [[ -e "$HOME/login.ran" ]] || { print -u2 -- 'the browser login never ran'; rc=1; }
+  command grep -qx 'email=new@example.com' "$HOME/.config/ccmorph/s.conf" ||
+    { print -u2 -- 'login must add the email line a stub profile never had'; rc=1; }
+  command grep -qx 'type=sub' "$HOME/.config/ccmorph/s.conf" ||
+    { print -u2 -- 'the repair must not rewrite the profile type'; rc=1; }
+  rm -rf "$test_home"
+  return $rc
+}
+
 # One spelling of "ask me", everywhere, with the retired ones deleted rather than
 # left accepted-but-undocumented -- two vocabularies for one idea is how a user ends
 # up guessing which one this version wants.
@@ -11062,6 +11696,7 @@ test_every_credential_type_states_how_it_authenticates() {
 run_test() {
   local name="$1" rc=0
   [[ -z "${CCMORPH_TEST_FILTER:-}" || "$name" == *"$CCMORPH_TEST_FILTER"* ]] || return 0
+  (( ++_ccm_test_filter_hits ))
   [[ -z "${CCMORPH_TEST_SHARD:-}" ]] ||
     (( tests_seen++ % ${CCMORPH_TEST_SHARD#*/} == ${CCMORPH_TEST_SHARD%/*} )) || return 0
   (( ++tests_run ))
@@ -11355,6 +11990,7 @@ run_test test_add_apikey_profile_approves_its_key
 run_test test_add_cleans_a_pasted_credential_issue_254
 run_test test_add_reports_a_rejected_key_in_the_same_step_issue_254
 run_test test_add_flags_a_malformed_token_and_checks_a_shaped_one_issue_254
+run_test test_add_wrong_menu_answer_reasks_instead_of_exiting_issue_727
 run_test test_launch_refuses_a_key_claude_code_was_told_to_refuse
 run_test test_launch_carries_the_persons_answers_to_the_next_profile
 run_test test_hop_lands_on_the_resumed_conversation_not_the_questions
@@ -11433,7 +12069,9 @@ run_test test_menu_returns_a_bare_model_id
 run_test test_the_former_pick_name_still_works
 run_test test_claude_subcommands_are_asked_for_never_hardcoded
 run_test test_arguments_reach_claude_exactly_as_given
+run_test test_a_word_behind_runs_own_separator_is_never_rewritten_issue_751
 run_test test_run_with_a_profile_keeps_claudes_native_help
+run_test test_a_launch_that_opens_no_session_answers_while_the_endpoint_is_down_issue_650
 run_test test_a_missing_argument_prints_usage_under_nounset
 run_test test_claude_subcommands_reach_claude_through_the_launch_pipeline
 run_test test_a_retired_verb_is_rejected_not_merely_undocumented
@@ -11460,6 +12098,7 @@ run_test test_effort_command_sets_the_profiles_default_effort
 run_test test_effort_command_refuses_a_level_claude_code_would_drop
 run_test test_set_model_refuses_a_flag_shaped_value
 run_test test_set_model_refuses_an_unserved_id_and_saves_only_on_confirm_issue_267
+run_test test_set_model_says_saved_unchecked_when_the_endpoint_cannot_answer_issue_728
 run_test test_run_model_flag_refuses_an_unserved_id_before_claude_opens_issue_267
 run_test test_set_adapter_is_rejected_as_automatic
 run_test test_effort_interactive_still_requires_a_real_profile
@@ -11602,6 +12241,9 @@ run_test test_add_sub_completes_the_browser_login
 run_test test_login_signs_a_signed_out_account_profile_in_again
 run_test test_launch_skips_the_sizer_when_nothing_is_new
 run_test test_add_sub_auth_calls_scrub_securestorage_dir
+run_test test_add_sub_sigkilled_mid_login_leaves_no_profile
+run_test test_add_sub_terminal_signal_mid_login_cleans_up
+run_test test_login_repairs_a_sub_profile_that_never_got_an_email
 run_test test_one_interactive_flag_is_the_only_way_to_ask
 run_test test_every_credential_type_states_how_it_authenticates
 
@@ -11690,7 +12332,8 @@ run_test test_context_verb_reads_sets_and_clears_one_models_window
 # A model the profile does not list has nothing to discover, so the default it
 # would run at is all it can ever answer (#268): the read names the model
 # instead of answering, while a served unpinned model still answers and a pin
-# still reads back.
+# still reads back. A reply that is not a listing cannot rule a model out
+# either (#558): an error object or a 3xx body keeps the read answering.
 test_context_names_a_model_the_profile_does_not_list() {
   local test_home; test_home=$(mktemp -d); setup_home "$test_home"
   fake_gateway
@@ -11714,6 +12357,23 @@ test_context_names_a_model_the_profile_does_not_list() {
   [[ "$out" == "gw: zeta-chat context 200,000 tokens · left at Claude Code's default" ]] || {
     print -u2 -- "a served model with no pin must answer the default it runs at: ${(qqq)out}"; rc=1
   }
+
+  # A reply that parses but lists nothing — a proxy's error object on a 200, or
+  # a 3xx body, which curl -f passes through because it fails only an HTTP
+  # error — says nothing about what the route serves (#558): the read keeps
+  # answering the default instead of refusing the model.
+  for body in '{"error":{"message":"rate limited","type":"upstream_error"}}' \
+              '{"message":"Moved Permanently","location":"https://other.invalid/v1/models"}'; do
+    printf '%s\n' '#!/bin/sh' "cat <<'JSON'" "$body" 'JSON' > "$HOME/bin/curl"
+    chmod +x "$HOME/bin/curl"
+    make_fake_curl_probe_aware
+    out=$(ccmorph context gw nosuch-model 2>/dev/null)
+    [[ "$out" == "gw: nosuch-model context 200,000 tokens · left at Claude Code's default" ]] || {
+      print -u2 -- "a reply without a data list must not refuse the model: ${(qqq)out}"
+      rc=1
+    }
+  done
+  fake_gateway
 
   write_profile_context gw nosuch-model=128000
   out=$(ccmorph context gw nosuch-model 2>/dev/null)
@@ -11886,6 +12546,32 @@ test_context_save_warns_only_for_models_the_listing_leaves_out_issue_370() {
     print -u2 -- 'the save itself must not depend on the listing'
     rc=1
   fi
+
+  # A reply that parses but lists nothing is the same ignorance (#558): a
+  # proxy's error object on a 200, or a 3xx body curl -f passes through — the
+  # save stays silent, and the models verb still refuses to print it as a list.
+  for body in '{"error":{"message":"rate limited","type":"upstream_error"}}' \
+              '{"message":"Moved Permanently","location":"https://other.invalid/v1/models"}'; do
+    printf '%s\n' '#!/bin/sh' "cat <<'JSON'" "$body" 'JSON' > "$HOME/bin/curl"
+    chmod +x "$HOME/bin/curl"
+    make_fake_curl_probe_aware
+    if err=$(ccmorph context gw nosuch-model 100000 2>&1 >/dev/null); then
+      [[ "$err" == '' ]] || {
+        print -u2 -- "a reply without a data list must not guess a warning: ${(qqq)err}"
+        rc=1
+      }
+    else
+      print -u2 -- 'the save itself must not depend on the listing'
+      rc=1
+    fi
+    assert_contains "$(<"$HOME/.config/ccmorph/gw.conf")" \
+      'context_window.nosuch-model=100000' \
+      'the pin still saves under a reply that lists nothing' || rc=1
+    ccmorph models gw >/dev/null 2>&1 && {
+      print -u2 -- 'the models verb must refuse a reply with no data list'
+      rc=1
+    }
+  done
 
   rm -rf "$test_home"
   return $rc
@@ -12484,6 +13170,19 @@ test_private_session_keeps_exit_status_after_interrupt() {
 }
 run_test test_private_session_keeps_exit_status_after_interrupt
 
+# GH-779: the counter and the counted code must share a process. zsh passes no
+# plain functions to a `zsh -c` child (only `functions -x` exports ride the
+# environment), so a `sleep` override defined in the test's shell never reaches
+# the launcher and a parent-side count is structurally pinned at 0. This stub
+# runs in the same child shape the launch tests use -- source, define the
+# override, call it -- and writes the marker once, proving the witness can fire.
+_ccm_test_sleep_witness() {
+  local marker="$1"
+  zsh -c 'source "$1"; marker="$2"; sleep() { print -r -- stub >> "$marker"; }; sleep 0.1' \
+    _ "$CCMORPH_SOURCE" "$marker"
+  [[ -s "$marker" ]] && (( $(wc -l < "$marker") == 1 ))
+}
+
 test_launcher_forwards_term_and_hup_to_claude() {
   # A foreground child defers the launcher's traps until it exits, so a TERM/HUP
   # sent to the top-level launcher pid (agent-dispatch, a user's kill) never
@@ -12506,17 +13205,25 @@ test_launcher_forwards_term_and_hup_to_claude() {
   # fix: reproduced at load 153-283, that shape lost both signals to "claude
   # did not start"; this shape passed TERM and HUP twice at load 339-353.
   local test_home; test_home=$(mktemp -d); setup_home "$test_home"
-  local rc=0 sig pid st cpid fifo fd crutch clock_waits=0
+  local rc=0 sig pid st cpid fifo fd crutch marker
   zmodload zsh/zselect || { rm -rf "$test_home"; return 1; }
   local -i hang=$(( CCMORPH_TEST_HANG_TIMEOUT * 100 ))
-  # Counted, never slept: a wait that polls the clock must fail this test on an
-  # idle machine too, where before it could only fail under load - how #398 hid.
-  sleep() { (( ++clock_waits )); }
+  # GH-398: the waits are events, never deadlines. The witness is written by a
+  # `sleep` function inside the launcher's own `zsh -c` child, the only process
+  # whose sleeps are the launcher's: a real-clock poll there must leave a line
+  # and fail this test on an idle machine too, where before it could only fail
+  # under load - how #398 hid. The stub proves the marker mechanism fires before
+  # an empty marker is allowed to mean "no polling".
+  _ccm_test_sleep_witness "$test_home/sleep-witness" || {
+    print -u2 -- "GH-779: the sleep witness did not fire in a zsh -c child, so the GH-398 guard cannot fail"
+    rc=1
+  }
   printf '%s\n' '#!/bin/sh' 'trap '\''echo got > "$SEEN"; exit 7'\'' TERM HUP' 'printf "%s\n" "$$" >&3' 'while :; do sleep 0.1; done' > "$HOME/bin/claude"
   chmod +x "$HOME/bin/claude"
   for sig in TERM HUP; do
     export SEEN="$test_home/seen.$sig"
     fifo="$test_home/started.$sig"
+    marker="$test_home/launcher-sleeps.$sig"
     mkfifo "$fifo"
     # Opened RDWR before the fork (GH-434): neither open can block on a peer
     # that never comes, and holding the handle across the readiness read keeps
@@ -12526,7 +13233,7 @@ test_launcher_forwards_term_and_hup_to_claude() {
     # the auto-started adapter that inherited fd 3.
     exec {crutch}<>"$fifo"
     exec {fd}<"$fifo"
-    zsh -c 'source "$1"; _ccm_launch -a proxy prompt' _ "$CCMORPH_SOURCE" 3>"$fifo" &
+    zsh -c 'source "$1"; marker="$2"; sleep() { print -r -- . >> "$marker"; }; _ccm_launch -a proxy prompt' _ "$CCMORPH_SOURCE" "$marker" 3>"$fifo" &
     pid=$!
     # No budget, a backstop: claude's pid line, or a launcher that never
     # produced one - dead or wedged, killed and reported either way.
@@ -12556,9 +13263,8 @@ test_launcher_forwards_term_and_hup_to_claude() {
     kill -0 $cpid 2>/dev/null && { print -u2 -- "$sig: claude still running after the launcher exited"; rc=1; kill -KILL $cpid 2>/dev/null; }
     [[ -s "$SEEN" ]] || { print -u2 -- "$sig: claude never got the signal"; rc=1; }
     (( st == 7 )) || { print -u2 -- "$sig: status $st, want claude's 7"; rc=1; }
+    [[ ! -s "$marker" ]] || { print -u2 -- "$sig: GH-398: the launcher's wait used real-clock polling"; rc=1; }
   done
-  (( clock_waits == 0 )) || { print -u2 -- "GH-398: the waits used real-clock polling"; rc=1; }
-  unfunction sleep
   rm -rf "$test_home"
   return $rc
 }
@@ -12611,11 +13317,17 @@ test_signal_with_a_queued_hop_ends_the_launch() {
   # A TERM/HUP is the user ending the session: a hop queued before it must not
   # relaunch claude, and its relay file must not be left behind.
   local test_home; test_home=$(mktemp -d); setup_home "$test_home"
-  local rc=0 st pid cpid relay started crutch clock_waits=0
+  local rc=0 st pid cpid relay started crutch marker="$test_home/launcher-sleeps"
   local -i hang=$(( CCMORPH_TEST_HANG_TIMEOUT * 100 ))
   zmodload zsh/zselect || { rm -rf "$test_home"; return 1; }
   # GH-303: scheduling must not decide whether the signal contract passes.
-  sleep() { (( ++clock_waits )); command sleep "$@"; }
+  # GH-779: the counter and the counted code share a process - the override is
+  # defined inside the launcher's `zsh -c` child below, and this stub proves it
+  # writes the marker before an empty marker is allowed to mean "no polling".
+  _ccm_test_sleep_witness "$test_home/sleep-witness" || {
+    print -u2 -- "GH-779: the sleep witness did not fire in a zsh -c child, so the GH-303 guard cannot fail"
+    rc=1
+  }
   export READY="$test_home/ready"
   mkfifo "$test_home/started" "$READY.hold"
   printf '%s\n' '#!/bin/sh' 'trap "exit 9" TERM' \
@@ -12634,7 +13346,7 @@ test_signal_with_a_queued_hop_ends_the_launch() {
   # EOF still means everyone holding the write end is gone.
   exec {crutch}<>"$test_home/started"
   exec {started}< "$test_home/started"
-  zsh -c 'source "$1"; _ccm_launch -a proxy prompt' _ "$CCMORPH_SOURCE" 3>"$test_home/started" 2>/dev/null &
+  zsh -c 'source "$1"; marker="$2"; sleep() { print -r -- . >> "$marker"; }; _ccm_launch -a proxy prompt' _ "$CCMORPH_SOURCE" "$marker" 3>"$test_home/started" 2>/dev/null &
   pid=$!
   # The hang bound as a backstop (GH-434), not a readiness deadline: the pid
   # line, or a launcher that never produced one, killed either way.
@@ -12643,7 +13355,6 @@ test_signal_with_a_queued_hop_ends_the_launch() {
     kill -KILL $pid 2>/dev/null
     wait $pid 2>/dev/null
     exec {started}<&-; exec {crutch}>&-
-    unfunction sleep
     rm -rf "$test_home"
     return 1
   fi
@@ -12661,8 +13372,7 @@ test_signal_with_a_queued_hop_ends_the_launch() {
   (( st == 9 )) || { print -u2 -- "status $st, want claude's 9"; rc=1; }
   [[ -s "$READY" ]] && (( $(wc -l < "$READY") == 1 )) || { print -u2 -- "claude was relaunched or did not start"; rc=1; }
   [[ -n $relay && ! -e "$HOME/.config/ccmorph/.reswitch.$relay" ]] || { print -u2 -- "relay file left behind"; rc=1; }
-  (( clock_waits == 0 )) || { print -u2 -- "GH-303: signal synchronization used real-clock polling"; rc=1; }
-  unfunction sleep
+  [[ ! -s "$marker" ]] || { print -u2 -- "GH-303: signal synchronization used real-clock polling"; rc=1; }
   rm -rf "$test_home"
   return $rc
 }
@@ -13244,9 +13954,75 @@ test_the_suite_refuses_an_empty_env_key_list() {
 }
 run_test test_the_suite_refuses_an_empty_env_key_list
 
+# GH-614: a filter or shard that matched no test ended the run exactly like a
+# green one -- nothing printed, exit 0 -- so the documented per-iteration unit
+# (.github/CONTRIBUTING.md) read as a pass for a typo'd, renamed or deleted
+# test name. The refusal must name the offending value, and it must cover
+# every zero-test selection an operator asked for: a filter matching nothing
+# anywhere, and any explicitly-requested shard that selects no test -- not
+# just a degenerate numerator, since 999999/1000000 also runs nothing. The
+# dispatcher's own workers are exempt from the shard arm only: INTENT.md
+# promise 4 runs CCMORPH_TEST_FILTER=hop across every shard, and most workers
+# legitimately own no hop test -- refused, that Check turns red. The children
+# select one test at most, so this stays a few source passes, not a second
+# suite; each clears CCMORPH_TEST_SHARD_AUTO so its result does not depend on
+# whether the pin itself runs inside a dispatcher worker.
+test_the_suite_refuses_a_selection_that_matched_no_test() {
+  local rc=0 out st
+  out=$(CCMORPH_TEST_FILTER=gh614_no_such_test CCMORPH_TEST_SHARD=0/1 \
+    CCMORPH_TEST_SHARD_AUTO= zsh "$SCRIPT_DIR/ccmorph_test.zsh" 2>&1)
+  st=$?
+  (( st != 0 )) || { print -u2 -- 'the zero-test filtered run exited 0'; rc=1 }
+  assert_contains "$out" 'gh614_no_such_test' \
+    'the refusal must name the filter value that matched no test' || rc=1
+  # The shard arm: an explicit shard selecting no test in this file, yet
+  # used to exit 0. 999999/1000000 is a well-formed expression whose class
+  # this file cannot fill -- exactly the miss a typed shard number is.
+  out=$(CCMORPH_TEST_SHARD=999999/1000000 CCMORPH_TEST_SHARD_AUTO= \
+    zsh "$SCRIPT_DIR/ccmorph_test.zsh" 2>&1)
+  st=$?
+  (( st != 0 )) || { print -u2 -- 'the never-selecting shard exited 0'; rc=1 }
+  assert_contains "$out" "CCMORPH_TEST_SHARD='999999/1000000'" \
+    'the refusal must name the shard value that selects no test' || rc=1
+  # The green arm: a dispatcher worker that holds no copy of a matched test.
+  # AUTO=1 says the fan-out, not an operator, asked for this shard.
+  out=$(CCMORPH_TEST_FILTER=test_the_launcher_fifo_reads_are_bounded \
+    CCMORPH_TEST_SHARD=1/2 CCMORPH_TEST_SHARD_AUTO=1 \
+    zsh "$SCRIPT_DIR/ccmorph_test.zsh" 2>&1)
+  st=$?
+  (( st == 0 )) || { print -u2 -- 'a dispatcher worker holding no copy of a matched test failed'; rc=1 }
+  assert_not_contains "$out" 'not a green run' \
+    'an empty auto worker for a matched filter must stay green' || rc=1
+  return $rc
+}
+run_test test_the_suite_refuses_a_selection_that_matched_no_test
+
 if (( tests_failed > 0 )); then
   print -u2 -- "$tests_failed of $tests_run tests failed"
   exit 1
+fi
+
+# GH-614: a selection that matched nothing used to end exactly like a green
+# run -- nothing printed, exit 0 -- so the documented per-iteration unit
+# (.github/CONTRIBUTING.md) laundered a typo'd, renamed or deleted test name
+# into a pass. Refuse, naming the value. The two arms share tests_run == 0 but
+# not a cause: the filter matched no name in the file -- a typo'd name is a
+# typo in every process, dispatcher workers included -- or the operator asked
+# for a shard that selects no test here, whatever the expression (999999/1000000
+# runs nothing just as 1/1 does). Only the shard arm spares the dispatcher's
+# own workers (CCMORPH_TEST_SHARD_AUTO, set at the fan-out above): an empty
+# shard is a product of the fan-out, and every filtered parallel run --
+# INTENT.md promise 4's CCMORPH_TEST_FILTER=hop -- has workers with nothing of
+# theirs to run. The unfiltered zero-test exit 0 is left alone: that is the
+# door checks' own regression signal, not a missed test.
+if (( tests_run == 0 )); then
+  if [[ -n "${CCMORPH_TEST_FILTER:-}" ]] && (( _ccm_test_filter_hits == 0 )); then
+    print -u2 -- "no test matched CCMORPH_TEST_FILTER='$CCMORPH_TEST_FILTER' — a typo'd, renamed or deleted test name is not a green run"
+    exit 1
+  elif [[ -n "${CCMORPH_TEST_SHARD:-}" ]] && [[ -z "${CCMORPH_TEST_SHARD_AUTO:-}" ]]; then
+    print -u2 -- "CCMORPH_TEST_SHARD='$CCMORPH_TEST_SHARD' selected no test to run — this is not a green run"
+    exit 1
+  fi
 fi
 
 (( tests_run == 0 )) || print -- "All $tests_run tests passed"

@@ -1,13 +1,18 @@
 package quota
 
 // Window is one plan window as both the text view and `--json` carry it: Used
-// is the fraction of the window spent (0.12 is 12%), ResetsAt the Unix second
-// the provider says it resets, nil when the provider did not say.
+// is the fraction of the window spent (0.12 is 12%), nil when there is no share
+// to show — a budget month whose turns all carried no price, so its cost is
+// unknown, never 0 — and ResetsAt the Unix second the provider says it resets,
+// nil when the provider did not say.
 type Window struct {
-	ID       string  `json:"id"`
-	Label    string  `json:"label"`
-	Used     float64 `json:"used"`
-	ResetsAt *int64  `json:"resets_at"`
+	ID       string   `json:"id"`
+	Label    string   `json:"label"`
+	Used     *float64 `json:"used"`
+	ResetsAt *int64   `json:"resets_at"`
+	// Models names the models that draw on this window when the plan keeps
+	// separate pools (Antigravity); empty means every model on the profile.
+	Models []string `json:"models,omitempty"`
 }
 
 // Reading is what one usage endpoint answered, and when. It is also what the
@@ -36,17 +41,23 @@ type Spend struct {
 	TodayTokens   int64 `json:"today_tokens"`
 	MonthTokens   int64 `json:"month_tokens"`
 	UnpricedTurns int   `json:"unpriced_turns"`
+	// UnreadableReceipts is how many receipts the store still holds that this
+	// run could not read: their cost and profile are unknown, so every total
+	// above leaves them out, and the entry's error names them (#654).
+	UnreadableReceipts int `json:"unreadable_receipts,omitempty"`
 }
 
-// allUnpriced reports whether the profile served turns this month and not one
+// AllUnpriced reports whether the profile served turns this month and not one
 // of them carried a price: the money lines then say the cost is unknown (#234),
 // and a budget bar has no share to show, so it says so too instead of 0% (#301).
+// It is the exported owner of that answer: quota's own lines and the router's
+// month bar consult it, and no reader re-derives it from the counts (#776).
 // A nil spend — a plan window's entry, never a spend's — is never all-unpriced.
-func (s *Spend) allUnpriced() bool {
+func (s *Spend) AllUnpriced() bool {
 	return s != nil && s.MonthTurns > 0 && s.UnpricedTurns == s.MonthTurns
 }
 
-// Entry is one profile's row. Kind is "claude", "codex", "budget" or "gateway";
+// Entry is one profile's row. Kind is "claude", "codex", "antigravity", "budget" or "gateway";
 // budget and gateway entries carry Spend and never a network reading.
 type Entry struct {
 	Profile    string   `json:"profile"`
@@ -61,4 +72,14 @@ type Entry struct {
 	// Balance is what is left on the account behind an API key, "¥40.75", where
 	// the provider publishes it (balance.go); empty otherwise.
 	Balance string `json:"balance,omitempty"`
+	// Checked answers, for a gateway or budget row, whether the endpoint
+	// answered this run. false says it answered nothing: the spend beside it
+	// comes from local receipts alone, the text row says so, and `--json`
+	// carries the same honesty as checked:false — the row's zero is not a
+	// reading that found no spend (#726). true says the endpoint answered (any
+	// answer, even a refusal, proves it is there) while the receipts stay the
+	// only spend. nil, and absent from the JSON, says the row has no endpoint
+	// to ask: no base URL, no key, Anthropic's own base, or a plan row, which
+	// carries its own reading and its own Stale.
+	Checked *bool `json:"checked,omitempty"`
 }

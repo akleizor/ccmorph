@@ -30,6 +30,7 @@ import (
 	"unicode/utf16"
 	"unicode/utf8"
 
+	"github.com/akleizor/ccmorph/profile"
 	"github.com/akleizor/ccmorph/util/paths"
 	"github.com/akleizor/ccmorph/util/tier"
 )
@@ -50,13 +51,13 @@ var DeclaredFields = []string{"max_input_tokens", "max_context_length", "context
 var routeFields = []string{"type", "base_url", "provider", "adapter", "api_key", "token"}
 
 var (
-	profileName = regexp.MustCompile(`^[A-Za-z0-9_]+$`)
 	// Env keys that choose which model answers, not where requests go.
 	modelChoiceEnv = regexp.MustCompile(`^(?:env\.ANTHROPIC_(?:DEFAULT_[A-Z]+_MODEL(?:_NAME|_DESCRIPTION)?|SMALL_FAST_MODEL|MODEL))$`)
 )
 
-// ValidProfileName reports whether s may name a profile.
-func ValidProfileName(s string) bool { return profileName.MatchString(s) }
+// ValidProfileName reports whether s may name a profile. The rule is profile's
+// one gate (#638): a name the launcher refuses is refused here too.
+func ValidProfileName(s string) bool { return profile.ValidProfileName(s) }
 
 // StateDir is where ccmorph keeps profiles and the registry.
 func StateDir() string {
@@ -516,6 +517,21 @@ func missesOf(doc obj) map[string]string {
 	return out
 }
 
+// Discovered is a conf's discovered record as one parse reads it: the three
+// tables the Discovered* wrappers above would each parse the record again to
+// produce, for a caller outside this package that reads more than one (GH-561).
+type Discovered struct {
+	Values  map[string]int64
+	Sources map[string]obj
+	Misses  map[string]string
+}
+
+// ParseDiscovered is the three tables of one parse of fields' discovered record.
+func ParseDiscovered(fields map[string]string) Discovered {
+	doc := discoveredDoc(fields)
+	return Discovered{Values: valuesOf(doc), Sources: sourcesOf(doc), Misses: missesOf(doc)}
+}
+
 // ManualValues are the user's context_window.<model> pins.
 func ManualValues(fields map[string]string) map[string]int64 {
 	const prefix = "context_window."
@@ -531,9 +547,9 @@ func ManualValues(fields map[string]string) map[string]int64 {
 	return out
 }
 
-// MappedTarget is the id the shim serves for bare, or bare when nothing rewrites
+// mappedTargetFromFields is the id the shim serves for bare, or bare when nothing rewrites
 // it: the map's target is final, so it sizes the session.
-func MappedTarget(fields map[string]string, bare string) string {
+func mappedTargetFromFields(fields map[string]string, bare string) string {
 	return mappedTarget(fields, parseModelMap(fields), bare)
 }
 
@@ -552,7 +568,7 @@ func parseModelMap(fields map[string]string) obj {
 	return mapping
 }
 
-// mappedTarget is MappedTarget over an already-parsed mapping.
+// mappedTarget is mappedTargetFromFields over an already-parsed mapping.
 func mappedTarget(fields map[string]string, mapping obj, bare string) string {
 	base := strings.TrimRight(fields["base_url"], "/")
 	if base == "" || base == "https://api.anthropic.com" {
@@ -575,7 +591,7 @@ func mappedTarget(fields map[string]string, mapping obj, bare string) string {
 // readable with the profile's own credentials — the probe that fills this
 // table is the evidence the route offers.
 func RouteKnown(fields map[string]string, model string) bool {
-	target := MappedTarget(fields, model)
+	target := mappedTargetFromFields(fields, model)
 	discovered := DiscoveredValues(fields)
 	if _, ok := discovered[target]; ok {
 		return true
@@ -603,14 +619,14 @@ func ProfileWindows(profile string) (map[string]int64, error) {
 	return out, nil
 }
 
-// ProfileLock runs fn holding the profile's lock; a caller that already holds
+// profileLock runs fn holding the profile's lock; a caller that already holds
 // it (CCMORPH_PROFILE_LOCK_HELD) passes straight through.
-func ProfileLock(profile string, fn func() error) error {
+func profileLock(profile string, fn func() error) error {
 	_, err := ProfileLockCtx(context.Background(), profile, fn)
 	return err
 }
 
-// ProfileLockCtx is ProfileLock for a caller with a deadline: it stops waiting
+// ProfileLockCtx is profileLock for a caller with a deadline: it stops waiting
 // at ctx.Done and reports whether fn ran. A lock held by another ccmorph must
 // not make a run outlive the deadline that asked it to write.
 func ProfileLockCtx(ctx context.Context, profile string, fn func() error) (bool, error) {
@@ -881,8 +897,12 @@ func SaveDiscoveredCtx(ctx context.Context, profile string, values map[string]in
 			return err
 		}
 		fields := snap.Fields
-		merged := DiscoveredValues(fields)
-		mergedSources := DiscoveredSources(fields)
+		// One parse, as priorWalk's doc promises: all three tables read the
+		// already-parsed doc, where the Discovered* wrappers would each re-run
+		// discoveredDoc — three parses of the one read the save holds (#539, GH-561).
+		doc := discoveredDoc(fields)
+		merged := valuesOf(doc)
+		mergedSources := sourcesOf(doc)
 		valid := map[string]int64{}
 		for m, v := range values {
 			if ValidModel(m) && v > 0 {
@@ -920,7 +940,7 @@ func SaveDiscoveredCtx(ctx context.Context, profile string, values map[string]in
 			record["sources"] = kept
 		}
 		keptMisses := obj{}
-		allMisses := DiscoveredMisses(fields)
+		allMisses := missesOf(doc)
 		maps.Copy(allMisses, misses)
 		for m, d := range allMisses {
 			if _, ok := merged[m]; !ok { // any value for the model retires its miss
@@ -988,7 +1008,7 @@ func SetContext(profile, model, value string) error {
 	if value != "auto" && !ok {
 		return errors.New("context tokens must be a positive integer of at most 10 digits, with an optional k or m suffix (for example 100000, 100k or 2m), or auto")
 	}
-	return ProfileLock(profile, func() error {
+	return profileLock(profile, func() error {
 		expected := ProfileIdentity(profile)
 		path, err := ProfilePath(profile)
 		if err != nil {

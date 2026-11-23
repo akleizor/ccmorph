@@ -439,7 +439,7 @@ func ProbeAll(parent context.Context, profiles []string, o Options) Run {
 						sources[scoped] = priorTag
 					}
 					if d, ok := declared[model]; ok && d != known {
-						reason := fmt.Sprintf("kept saved limit %s; gateway now declares %s", commas(known), commas(d))
+						reason := fmt.Sprintf("kept saved limit %s; gateway now declares %s", Commas(known), Commas(d))
 						notes = append(notes, Note{Reason: reason, Subject: model, Profile: profile})
 					}
 					continue
@@ -453,7 +453,7 @@ func ProbeAll(parent context.Context, profiles []string, o Options) Run {
 					check(ctx)
 					if found != nil {
 						values[scoped] = found.Value
-						sources[scoped] = CatalogueTag(found)
+						sources[scoped] = catalogueTag(found)
 					} else {
 						notes = append(notes, Note{Reason: Unresolved, Subject: model, Profile: profile})
 					}
@@ -463,7 +463,7 @@ func ProbeAll(parent context.Context, profiles []string, o Options) Run {
 				// report, so a narrow terminal never breaks a word in it.
 				wrapLine(stderr, fmt.Sprintf("[%s] %s: paid probe enabled.", profile, model), "", "  ")
 				wrapLine(stderr, fmt.Sprintf("The first %s-character prompt may be billed in full.",
-					commas(OvershootChars)), "  ", "  ")
+					Commas(OvershootChars)), "  ", "  ")
 				wrapLine(stderr, "Confirmation and search requests add cost; rates and tokenization "+
 					"depend on the gateway. A timeout does not undo billing.", "  ", "  ")
 				if blob == "" {
@@ -471,6 +471,7 @@ func ProbeAll(parent context.Context, profiles []string, o Options) Run {
 				}
 				res := probeFn(ctx, base, key, model, blob, time.Duration(o.ProbeTimeout*float64(time.Second)), op, o.Bisect)
 				check(ctx)
+				noteInReport := false
 				if (strings.HasSuffix(res.Kind, ":declared") || strings.HasSuffix(res.Kind, ":truncated") || strings.HasSuffix(res.Kind, ":bisected")) && res.Value > 0 {
 					values[scoped] = res.Value
 				} else {
@@ -479,13 +480,18 @@ func ProbeAll(parent context.Context, profiles []string, o Options) Run {
 						why = res.Kind
 					}
 					notes = append(notes, Note{Reason: why, Subject: model, Profile: profile, Failed: true})
+					noteInReport = true
 				}
 				shown := "-"
 				if res.Value != 0 {
 					shown = fmt.Sprint(res.Value)
 				}
 				fmt.Fprintf(stderr, "  %s %s %s\n", pad(model, 30), pad(res.Kind, 12), shown)
-				if res.Note != "" {
+				// A failure's note is reportProfiles' to print after the run; saying it
+				// here as well made one report carry the same sentence twice (#449). A
+				// sized probe's note — what a bisect or a declaration left open — is
+				// said only here.
+				if res.Note != "" && !noteInReport {
 					fmt.Fprintf(stderr, "    %s\n", res.Note)
 				}
 			}

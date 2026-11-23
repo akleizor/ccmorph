@@ -131,6 +131,25 @@ func (h home) runSavedRaw(saved string, extra ...string) map[string]any {
 
 func listOf(v any) []any { l, _ := v.([]any); return l }
 
+// readFixture returns a testdata file's contents. Fixtures that must pin the
+// established on-disk tombstone key verbatim live there, outside the test
+// sources the literal-key gate reads (#740).
+func readFixture(t *testing.T, name string) string {
+	t.Helper()
+	b, err := os.ReadFile(filepath.Join("testdata", name))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(b)
+}
+
+// establishedTombstoneKey is the key layers on disk already carry: what
+// tombstones() must read and fold must write.
+func establishedTombstoneKey(t *testing.T) string {
+	t.Helper()
+	return strings.TrimSpace(readFixture(t, "tombstone-key.txt"))
+}
+
 func (h home) fold() {
 	h.t.Helper()
 	if rc, stderr := h.main("fold", h.profile, "--canonical", h.canonical); rc != 0 {
@@ -175,7 +194,7 @@ func TestComposeHooks(t *testing.T) {
 	t.Run("profile tombstones cannot remove the canonical guard", func(t *testing.T) { // test_profile_hook_tombstones_cannot_remove_canonical_guard
 		h := newHome(t)
 		h.put(h.canonical, `{"hooks":{"PreToolUse":[`+guard+`]}}`)
-		h.put(h.p("settings.profile.json"), `{"__unset__":[["hooks"],["hooks","PreToolUse"]]}`)
+		h.put(h.p("settings.profile.json"), `{"`+unsetKey+`":[["hooks"],["hooks","PreToolUse"]]}`)
 		same(t, "settings", h.run()["hooks"], `{"PreToolUse":[`+guard+`]}`)
 	})
 	t.Run("an existing layer cannot duplicate an inherited hook", func(t *testing.T) { // test_existing_layer_cannot_duplicate_inherited_hook
@@ -253,6 +272,68 @@ func TestComposeHooks(t *testing.T) {
 		if _, ok := h.get(h.p("settings.profile.json"))["hooks"]; ok {
 			t.Fatal("canonical's hooks were folded into the layer")
 		}
+	})
+}
+
+// Permissions the canonical carries are the person's guard rails, not the
+// profile's: deleting one from settings.json may never delete them (#740).
+func TestComposePermissions(t *testing.T) {
+	t.Run("deleting the materialized permissions block keeps the canonical deny rules", func(t *testing.T) {
+		h := newHome(t)
+		h.put(h.canonical, `{"permissions":{"deny":["Bash(rm *)"]}}`)
+		same(t, "first projection", h.run()["permissions"], `{"deny":["Bash(rm *)"]}`)
+		// The person deletes the block from the file they were shown.
+		h.edit(h.p("settings.json"), func(m map[string]any) { delete(m, "permissions") })
+		h.fold()
+		same(t, "after the edit", h.run()["permissions"], `{"deny":["Bash(rm *)"]}`)
+	})
+	t.Run("a deny tombstone cannot remove the canonical deny rules", func(t *testing.T) {
+		h := newHome(t)
+		h.put(h.canonical, `{"permissions":{"deny":["Bash(rm *)"]}}`)
+		h.put(h.p("settings.profile.json"), `{"`+unsetKey+`":[["permissions","deny"]]}`)
+		same(t, "settings", h.run()["permissions"], `{"deny":["Bash(rm *)"]}`)
+	})
+	t.Run("a permissions tombstone cannot remove the canonical permission rules", func(t *testing.T) {
+		h := newHome(t)
+		h.put(h.canonical, `{"permissions":{"deny":["Bash(rm *)"],"allow":["Read"],"ask":["Bash(git push)"]}}`)
+		h.put(h.p("settings.profile.json"), `{"`+unsetKey+`":[["permissions"]]}`)
+		same(t, "settings", h.run()["permissions"],
+			`{"deny":["Bash(rm *)"],"allow":["Read"],"ask":["Bash(git push)"]}`)
+	})
+	t.Run("an exact-path tombstone cannot remove any canonical permission rule list", func(t *testing.T) {
+		const canon = `{"deny":["Bash(rm *)"],"allow":["Read"],"ask":["Bash(git push)"]}`
+		for _, list := range []string{"deny", "allow", "ask"} {
+			t.Run(list, func(t *testing.T) {
+				h := newHome(t)
+				h.put(h.canonical, `{"permissions":`+canon+`}`)
+				h.put(h.p("settings.profile.json"), `{"`+unsetKey+`":[["permissions",`+quote(list)+`]]}`)
+				same(t, "settings", h.run()["permissions"], canon)
+			})
+		}
+	})
+	t.Run("deleting the materialized allow block keeps the canonical allow rules", func(t *testing.T) {
+		h := newHome(t)
+		h.put(h.canonical, `{"permissions":{"deny":["Bash(rm *)"],"allow":["Read"],"ask":["Bash(git push)"]}}`)
+		same(t, "first projection", h.run()["permissions"],
+			`{"deny":["Bash(rm *)"],"allow":["Read"],"ask":["Bash(git push)"]}`)
+		// The person deletes the allow list from the file they were shown.
+		h.edit(h.p("settings.json"), func(m map[string]any) {
+			delete(m["permissions"].(map[string]any), "allow")
+		})
+		h.fold()
+		same(t, "after the edit", h.run()["permissions"],
+			`{"deny":["Bash(rm *)"],"allow":["Read"],"ask":["Bash(git push)"]}`)
+	})
+	t.Run("deleting one of the profile's own deny rules keeps only it out", func(t *testing.T) {
+		h := newHome(t)
+		h.put(h.canonical, `{"permissions":{"deny":["Bash(rm *)"]}}`)
+		h.put(h.p("settings.profile.json"), `{"permissions":{"deny":["Bash(ls:*)"]}}`)
+		same(t, "both rules", h.run()["permissions"], `{"deny":["Bash(rm *)","Bash(ls:*)"]}`)
+		h.edit(h.p("settings.json"), func(m map[string]any) {
+			m["permissions"] = map[string]any{"deny": []any{"Bash(rm *)"}}
+		})
+		h.fold()
+		same(t, "canonical rule back", h.run()["permissions"], `{"deny":["Bash(rm *)"]}`)
 	})
 }
 
@@ -527,9 +608,9 @@ func TestComposePolicy(t *testing.T) {
 	t.Run("a tombstone in the shared policy never reaches settings", func(t *testing.T) { // test_a_tombstone_in_the_shared_policy_never_reaches_settings
 		h := newHome(t)
 		h.put(h.canonical, `{"theme":"dark"}`)
-		h.linkPolicy(`{"$ccmorphUnset":[["theme"]],"verbose":true}`)
+		h.linkPolicy(`{"` + unsetKey + `":[["theme"]],"verbose":true}`)
 		doc := h.run()
-		if _, ok := doc["$ccmorphUnset"]; ok || doc["theme"] != "dark" || doc["verbose"] != true {
+		if _, ok := doc[unsetKey]; ok || doc["theme"] != "dark" || doc["verbose"] != true {
 			t.Fatal(doc)
 		}
 	})
@@ -559,7 +640,7 @@ func (h home) breakTheProjection(broken string) {
 	case "deep-canonical":
 		h.put(h.canonical, tooDeepToDecode())
 	case "malformed-tombstones":
-		h.put(h.p("settings.profile.json"), `{"$ccmorphUnset": null}`)
+		h.put(h.p("settings.profile.json"), readFixture(h.t, "layer-null-tombstones.json"))
 	default:
 		h.put(h.canonical, "{")
 	}
@@ -571,7 +652,7 @@ func TestComposeAFailedProjection(t *testing.T) {
 		{"invalid-canonical-issue-319", "canonical", sandboxPolicy, "invalid JSON"},
 		{"lock-unopenable-hooks-issue-319", "lock", sandboxAndHook, "is a directory"},
 		{"deep-canonical-crash-issue-420", "deep-canonical", sandboxPolicy, "max depth"},
-		{"malformed-tombstones-crash-issue-420", "malformed-tombstones", sandboxPolicy, "$ccmorphUnset"},
+		{"malformed-tombstones-crash-issue-420", "malformed-tombstones", sandboxPolicy, establishedTombstoneKey(t)},
 	} {
 		t.Run("refuses old settings without the policy: "+c.name, func(t *testing.T) { // test_a_failed_projection_refuses_old_settings_without_the_policy
 			h := newHome(t)
@@ -629,7 +710,7 @@ func TestComposeAFailedProjection(t *testing.T) {
 			t.Fatal(rc, stderr)
 		}
 		before := h.bytes(h.p("settings.json"))
-		h.put(h.p("settings.profile.json"), `{"$ccmorphUnset":[["sandbox","enabled"]]}`)
+		h.put(h.p("settings.profile.json"), `{"`+unsetKey+`":[["sandbox","enabled"]]}`)
 		h.breakTheLock()
 		rc, stderr := h.materialize("{}")
 		if rc != 3 || !strings.Contains(stderr, "settings.policy.json") || !bytes.Equal(h.bytes(h.p("settings.json")), before) {
@@ -650,7 +731,7 @@ func TestComposeAFailedProjection(t *testing.T) {
 				os.Symlink(deep, h.p("settings.policy.json"))
 			} else {
 				h.linkPolicy(sandboxPolicy)
-				h.put(h.p("settings.profile.json"), `{"$ccmorphUnset": null}`)
+				h.put(h.p("settings.profile.json"), readFixture(t, "layer-null-tombstones.json"))
 			}
 			h.breakTheLock()
 			rc, stderr := h.materialize("{}")

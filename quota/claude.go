@@ -1,26 +1,20 @@
 package quota
 
 import (
-	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"net/http"
 	"os"
-	"os/exec"
-	"os/user"
-	"path/filepath"
-	"runtime"
 	"strings"
 	"time"
+
+	"github.com/akleizor/ccmorph/util"
 )
 
 // readKeychain is swapped by tests.
-var readKeychain = func(service, account string) ([]byte, error) {
-	return exec.Command("/usr/bin/security", "find-generic-password", "-a", account, "-s", service, "-w").Output()
-}
+var readKeychain = util.ReadSigninKeychain
 
 // tokenNoPlanUsage is a token profile's row whenever its read does not come back
 // as usage. A pasted long-lived token is not allowed to read plan usage, and the
@@ -84,14 +78,16 @@ func claudeWindows(body []byte) ([]Window, error) {
 			continue
 		}
 		id := windowID(l.Kind)
-		ws = append(ws, Window{ID: id, Label: windowLabel(id), Used: *l.Percent / 100, ResetsAt: epoch(l.ResetsAt)})
+		used := *l.Percent / 100
+		ws = append(ws, Window{ID: id, Label: windowLabel(id), Used: &used, ResetsAt: epoch(l.ResetsAt)})
 	}
 	if len(ws) == 0 {
 		add := func(id string, w *claudeWindow) {
 			if w == nil || w.Utilization == nil {
 				return
 			}
-			ws = append(ws, Window{ID: id, Label: windowLabel(id), Used: *w.Utilization / 100, ResetsAt: epoch(w.ResetsAt)})
+			used := *w.Utilization / 100
+			ws = append(ws, Window{ID: id, Label: windowLabel(id), Used: &used, ResetsAt: epoch(w.ResetsAt)})
 		}
 		add("5h", u.FiveHour)
 		add("7d", u.SevenDay)
@@ -158,33 +154,11 @@ func claudePlan(subscriptionType, rateLimitTier string) string {
 	return ""
 }
 
-// keychainAccount is the account name of the user's keychain item. The service
-// name is shared with an MCP-only item under another account, so the lookup
-// names the user's account, as addons/remote-control/ccmorph-rc-hosts does.
-func keychainAccount() string {
-	for _, k := range []string{"LOGNAME", "USER", "LNAME", "USERNAME"} {
-		if v := os.Getenv(k); v != "" {
-			return v
-		}
-	}
-	if u, err := user.Current(); err == nil {
-		return u.Username
-	}
-	return ""
-}
-
 // subscriptionToken is the profile's claude.ai access token and the plan tier
 // recorded beside it, from the keychain item Claude Code keeps for that config
 // dir (macOS) or its .credentials.json.
 func subscriptionToken(dir string) (string, string, error) {
-	var raw []byte
-	var err error
-	if runtime.GOOS == "darwin" {
-		sum := sha256.Sum256([]byte(dir))
-		raw, err = readKeychain("Claude Code-credentials-"+hex.EncodeToString(sum[:])[:8], keychainAccount())
-	} else {
-		raw, err = os.ReadFile(filepath.Join(dir, ".credentials.json"))
-	}
+	raw, err := util.ReadSigninCredentials(dir, readKeychain)
 	if err != nil {
 		return "", "", errors.New("not signed in")
 	}

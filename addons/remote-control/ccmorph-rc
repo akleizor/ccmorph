@@ -47,9 +47,13 @@ import tempfile
 import time
 import urllib.parse
 import zlib
+from contextlib import suppress
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
+# the routing decision beside this script, however it was loaded (test, install, exec)
+sys.path.insert(0, str(HERE))
+from rc_route import ACCOUNT_METADATA  # noqa: E402
 LIB_DIR = Path(os.environ.get("CCMORPH_LIB_DIR") or HERE.parent.parent / "lib")
 CCMORPH = LIB_DIR / "ccmorph.sh"
 ADAPTER = LIB_DIR.parent / "libexec" / "ccmorph-core"
@@ -62,6 +66,8 @@ STATE = STATE_ROOT / "profiles" / ".rc-bridge"
 # starting their own. Its port is fixed per route so a restarted edge keeps every
 # bridge's HTTPS_PROXY valid; while it is down, bridges fail closed (refused).
 EDGES = STATE / "edges"
+# "account", "route" or a profile: where every host's inference goes, read by the proxy on each turn (--switch).
+INFERENCE = STATE / "inference"
 
 
 def edge_port(route: str) -> int:
@@ -166,6 +172,15 @@ def adapter_env() -> dict[str, str]:
             if k not in strip_env() or k in PROXY_ENV}
 
 
+def plugin_dirs(env) -> str:
+    """The session's plugin path, as `ccmorph run` would set it."""
+    out = subprocess.run([str(ADAPTER), "cli", "_plugin_dirs"], env=env,
+                         capture_output=True, text=True)
+    if out.returncode != 0 or not out.stdout.strip():
+        die(f"ccmorph-core cli _plugin_dirs failed: {out.stderr.strip() or out.returncode}")
+    return out.stdout.strip()
+
+
 def session_env(base, route_env: dict, route_models: bool) -> dict:
     """The session's env: no inherited credentials, model aliases left to Claude Code
     (1:1 real Claude ids) unless --route-models asks for the route's map, and the
@@ -221,8 +236,17 @@ def profile_type(profile: str) -> str:
     return profile_field(profile, "type")
 
 
+def account_candidates() -> list[str]:
+    """The Claude account profiles on the machine, listed without refusing.
+    The rc-hosts supervisor resolves `inference=<account>` from its reload
+    branch, where default_account()'s refusal would exit a long-lived process
+    over a config edit (issue #596); a CLI caller that ends anyway still uses
+    default_account()."""
+    return sorted(p.stem for p in STATE_ROOT.glob("*.conf") if profile_type(p.stem) == "sub")
+
+
 def default_account() -> str:
-    subs = sorted(p.stem for p in STATE_ROOT.glob("*.conf") if profile_type(p.stem) == "sub")
+    subs = account_candidates()
     if not subs:
         # There is nothing to pass --as yet, so the refusal names the command that
         # creates the profile instead (issue #276).
@@ -315,10 +339,14 @@ def start_adapter(route: str, parent: int, env: dict[str, str]) -> str:
     # (cached) model. Without it every launch re-probes the whole gateway inventory,
     # which overruns the adapter's 30s budget as soon as a few bridges start at once.
     model = profile_field(route, "model")
-    proc = subprocess.Popen([str(ADAPTER), "adapter", route, "--auto", "--parent-pid", str(parent),
-                             *(["--model", model] if model else [])],
-                            env=env, stdin=subprocess.DEVNULL, stdout=ready,
-                            start_new_session=True)
+    # The adapter outlives this command; an inherited stderr would hold the caller's
+    # pipe open (`ccmorph-rc X --switch 2>&1 | tail` never returned), so it gets a log.
+    (STATE / "logs").mkdir(parents=True, exist_ok=True)
+    with open(STATE / "logs" / f"adapter-{route}.log", "ab") as log:
+        proc = subprocess.Popen([str(ADAPTER), "adapter", route, "--auto", "--parent-pid", str(parent),
+                                 *(["--model", model] if model else [])],
+                                env=env, stdin=subprocess.DEVNULL, stdout=ready, stderr=log,
+                                start_new_session=True)
     deadline = time.monotonic() + 120
     try:
         while time.monotonic() < deadline:
@@ -345,8 +373,11 @@ def start_adapter(route: str, parent: int, env: dict[str, str]) -> str:
 # credential. So the proxy runs a private copy that nothing else writes, and a
 # built-in block_list answers 502 to any /v1/messages still addressed to
 # api.anthropic.com. A rerouted request carries the route's host, so it never
-# matches; only a request the addon did not handle does.
-FAIL_CLOSED = r"|~d ^api\.anthropic\.com$ & ~u /v1/messages|502"
+# matches. The account word is a legitimate first-party call on that very
+# destination: the addon marks the flow it leaves untouched, and the guard exempts
+# that mark. Only the addon sets it, so a missing addon still matches and closes.
+FAIL_CLOSED = (rf"|(~d ^api\.anthropic\.com$ & ~u /v1/messages & !~meta {ACCOUNT_METADATA})"
+               "|502")
 
 
 def private_addon(parent: Path) -> Path:
@@ -388,7 +419,7 @@ def own_edge(route: str, me: int, args, fixed_port: int | None):
     mitmdump = shutil.which("mitmdump") or die("mitmdump not found: brew install mitmproxy")
     proxy_env = {k: v for k, v in os.environ.items() if k not in strip_env()}
     proxy_env.update(RC_UPSTREAM=upstream, RC_KEY_FILE=key_file, RC_PARENT_PID=str(me),
-                     RC_TIERS=json.dumps(pinned_tiers(os.environ)))
+                     RC_TIERS=json.dumps(pinned_tiers(os.environ)), RC_INFERENCE=str(INFERENCE))
     if args.debug:
         proxy_env["RC_LOG"] = str(STATE / "debug.log")
     proxy = subprocess.Popen(
@@ -444,6 +475,54 @@ def edge_record(me: int, port: int, ca, upstream: str, route_env: dict, env) -> 
                           for k in (*MODEL_ENV, *ROUTE_ENV) if k in route_env}}
 
 
+def write_inference(word: str, path: Path = INFERENCE) -> None:
+    """The one writer of the switch file; rc-hosts calls it too. The temp name
+    is unique per write because the supervisor and a manual `--switch` both
+    land here: one shared `<target>.tmp` let each writer's replace() rename the
+    other's half-written temp away, or the two O_TRUNC opens interleave into a
+    torn word that inference_target silently reads as "route" (issue #596)."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=path.name + ".", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w") as fh:    # mkstemp's 0600: unique names, no umask race
+            fh.write(word + "\n")
+        os.replace(tmp, path)   # atomic: a proxy never reads half a word
+    except OSError:
+        with suppress(OSError):
+            os.unlink(tmp)      # a failed write leaves no temp beside the switch file
+        raise
+
+
+def switch(profile: str, account: str) -> None:
+    """Send every host's inference to `profile` from the next turn, with no restart:
+    the account profile (Anthropic on the phone's own login), a profile that has a live
+    edge (that edge's route), or any other route or provider profile, which is brought
+    up beside the edge and handed to its proxy."""
+    word = "account" if profile == account else "route" if live_edge(profile) else profile
+    if word == profile:
+        if profile_type(profile) == "sub":
+            die(f"'{profile}' is a Claude account profile, but the hosts sign in as '{account}'")
+        live = [e for f in (EDGES.glob("*.json") if EDGES.exists() else ()) if (e := live_edge(f.stem))]
+        # shortcut: one shared edge (rc-hosts runs one route); a second edge would need its own handoff.
+        if len(live) != 1:
+            die(f"--switch needs exactly one live shared edge, found {len(live)}")
+        owner = int(live[0]["pid"])          # the profile lives as long as the edge that serves it
+        route_env = resolve_route(profile)
+        retire_route_with(owner, route_env.get("CCMORPH_ROUTE_HANDLE", ""))
+        key = route_env.get("ANTHROPIC_API_KEY") or die(f"profile '{profile}' has no key")
+        # a provider's bridge already speaks the Anthropic API; a key profile goes through the adapter
+        upstream = (route_env.get("ANTHROPIC_BASE_URL") or die(f"profile '{profile}' has no endpoint")
+                    if profile_type(profile) == "provider" else start_adapter(profile, owner, adapter_env()))
+        tiers = pinned_tiers(route_env)
+        hand = STATE / f"switch-{profile}.json"
+        fd = os.open(hand.with_suffix(".tmp"), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        os.write(fd, json.dumps({"upstream": upstream, "key": key, "tiers": tiers}).encode())
+        os.close(fd)
+        hand.with_suffix(".tmp").replace(hand)
+    write_inference(word)
+    print(f"ccmorph-rc: inference now goes to '{profile}' from the next turn", file=sys.stderr)
+
+
 def main(argv: list[str]) -> None:
     raise_nofile()
     rc_args: list[str] = []
@@ -458,12 +537,16 @@ def main(argv: list[str]) -> None:
                     help="use the route profile's model aliases instead of real Claude ids")
     ap.add_argument("--edge", action="store_true",
                     help="run the route's shared adapter+proxy for other bridges to use, and stay up")
+    ap.add_argument("--switch", action="store_true",
+                    help="send every host's inference to this profile from the next turn, with no restart")
     ap.add_argument("--probe", action="store_true",
                     help="send one prompt through the same wiring (claude -p) instead of Remote Control")
     args = ap.parse_args(argv)
 
     claude = shutil.which("claude") or die("claude not found on PATH")
     account = args.account or default_account()
+    if args.switch:
+        return switch(args.route, account)
     if profile_type(account) != "sub":
         die(f"'{account}' is not a Claude account profile")
     if (route_type := profile_type(route := args.route)) == "sub":
@@ -495,6 +578,8 @@ def main(argv: list[str]) -> None:
                HTTPS_PROXY=f"http://127.0.0.1:{port}",
                NO_PROXY="localhost,127.0.0.1,::1",
                NODE_EXTRA_CA_CERTS=str(ca))
+    # ccmorph's own plugin and, while it is on, the router's: the core owns the rule.
+    env["CLAUDE_CODE_PLUGIN_DIRS"] = plugin_dirs(env)
     seed_trust(account_dir, os.getcwd())
     print(f"ccmorph-rc: Remote Control as '{account}', inference via '{route}' ({upstream})",
           file=sys.stderr)

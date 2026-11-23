@@ -36,7 +36,11 @@ jobs:
         run: |
           for f in bin/ccmorph lib/ccmorph.sh lib/ccmorph-*.zsh install.sh \
                    tests/ccmorph_test.zsh tests/install_test.zsh; do
-            zsh -n "$f" && echo "ok  $f"
+            # Bare, not `zsh -n "$f" && echo ok`: under Actions' default
+            # bash -e a command followed by && is errexit-exempt, so a
+            # parse error here once walked on and the step still exited 0.
+            zsh -n "$f"
+            echo "ok  $f"
           done
       - name: byte-compile every python file
         run: |
@@ -102,6 +106,12 @@ jobs:
         run: zsh tests/ccmorph_test.zsh
       - name: installer suite
         run: zsh tests/install_test.zsh
+      - name: configure suite
+        # INTENT promises 6 and 8 name this Check, but no workflow ran it: the
+        # Makefile gate covers Hive landings, while a direct push to main — the
+        # route that broke main this week — passed CI with a broken configure
+        # path (#600). Needs libexec/ccmorph-core, built by `make shim` above.
+        run: zsh tests/cli_configure_test.zsh
       # pytest was never installed here, so this step had never run a test. The
       # runner's own python3 is externally managed on macOS (PEP 668), so use a
       # setup-python interpreter that pip may install into.

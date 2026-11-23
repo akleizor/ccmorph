@@ -1,6 +1,7 @@
 package shim
 
 import (
+	"context"
 	jsonv2 "encoding/json/v2"
 	"fmt"
 	"io"
@@ -9,11 +10,13 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/akleizor/ccmorph/util/modelsdev"
 	"github.com/akleizor/ccmorph/util/paths"
 	"github.com/akleizor/ccmorph/util/tier"
 )
@@ -29,7 +32,6 @@ import (
 // exactly as before. A billed cost always wins.
 
 const (
-	pricesURL    = "https://models.dev/api.json"
 	pricesMaxAge = 24 * time.Hour
 	pricesWait   = 3 * time.Second
 )
@@ -100,11 +102,25 @@ func newPriceBook(upstream string) *priceBook {
 	return &priceBook{done: make(chan struct{}), host: strings.ToLower(u.Hostname()), path: filepath.Join(paths.StateDir(), "prices-"+strings.ToLower(u.Hostname())+".json"), fetch: fetchPrices, now: time.Now}
 }
 
+// fetchPrices reads the catalogue through modelsdev.Get, which owns the
+// request and this book's right to serve a day-old copy of it. exchange is
+// this side's transport: a background refresh with nothing waiting on it gets
+// one budget over the whole transfer.
 func fetchPrices() ([]byte, error) {
-	client := &http.Client{Timeout: 20 * time.Second}
-	req, _ := http.NewRequest("GET", pricesURL, nil)
-	req.Header.Set("User-Agent", "ccmorph-shim") // models.dev answers 403 to Go's default
-	resp, err := client.Do(req)
+	return modelsdev.Get(context.Background(), 20*time.Second, exchange)
+}
+
+// exchange is the price book's transport for the catalogue: a plain client
+// whose timeout caps the whole exchange, and a 64 MB read cap.
+func exchange(ctx context.Context, url string, header [][2]string, timeout time.Duration) ([]byte, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return nil, err
+	}
+	for _, h := range header {
+		req.Header.Set(h[0], h[1])
+	}
+	resp, err := (&http.Client{Timeout: timeout}).Do(req)
 	if err != nil {
 		return nil, err
 	}
@@ -115,49 +131,30 @@ func fetchPrices() ([]byte, error) {
 	return io.ReadAll(io.LimitReader(resp.Body, 64<<20))
 }
 
+// priceProvider is one provider row of models.dev/api.json: the api host the
+// host-keyed table matches on, the npm package that marks a first-party
+// vendor, and that provider's models.
+type priceProvider struct {
+	API    string                `json:"api"`
+	NPM    string                `json:"npm"`
+	Models map[string]priceModel `json:"models"`
+}
+
+// priceModel is one model of a provider; only its cost is read.
+type priceModel struct {
+	Cost *price `json:"cost"`
+}
+
 // priceDoc is the slice of models.dev/api.json both price parsers read.
-type priceDoc = map[string]struct {
-	API    string `json:"api"`
-	NPM    string `json:"npm"`
-	Models map[string]struct {
-		Cost *price `json:"cost"`
-	} `json:"models"`
-}
+type priceDoc = map[string]priceProvider
 
-// parsePrices is the models of every models.dev provider whose api host is host
-// that state a price, first provider id winning a shared model id.
-func parsePrices(api []byte, host string) map[string]price {
-	var doc priceDoc
-	if jsonv2.Unmarshal(api, &doc) != nil {
-		return nil
-	}
-	out := map[string]price{}
-	ids := make([]string, 0, len(doc))
-	for id := range doc {
-		ids = append(ids, id)
-	}
-	slices.Sort(ids)
-	for _, id := range ids {
-		if u, err := url.Parse(doc[id].API); err != nil || strings.ToLower(u.Hostname()) != host {
-			continue
-		}
-		for m, v := range doc[id].Models {
-			if _, taken := out[m]; !taken && v.Cost != nil {
-				out[m] = *v.Cost
-			}
-		}
-	}
-	return out
-}
-
-// parseOwnedPrices is the models of the models.dev provider named only, or of
-// every provider when only is empty, first provider id winning a shared model id.
-// models.dev gives a first-party vendor (anthropic, openai) no `api` host, so the
-// host lookup above can never price a subscription's Claude models; this one asks
-// by provider id instead. With no id, a vendor's own entry is preferred to a
-// reseller's: models.dev nests a vendor under `npm: "@ai-sdk/<vendor>"`, and the
-// first sorted id otherwise wins.
-func parseOwnedPrices(api []byte, only string) map[string]price {
+// walkPrices is the one pass over api.json both price tables read: the
+// providers keep accepts, first provider id winning a shared model id.
+// vendorsFirst is the vendor-nesting rule, in this one place: models.dev
+// nests a first-party vendor under `npm: "@ai-sdk/<vendor>"` and gives it no
+// `api` host, so when no provider is named a vendor's own entry is preferred
+// to a reseller's; the first sorted id otherwise wins.
+func walkPrices(api []byte, vendorsFirst bool, keep func(id string, p priceProvider) bool) map[string]price {
 	var doc priceDoc
 	if jsonv2.Unmarshal(api, &doc) != nil {
 		return nil
@@ -167,7 +164,7 @@ func parseOwnedPrices(api []byte, only string) map[string]price {
 		ids = append(ids, id)
 	}
 	slices.Sort(ids)
-	if only == "" {
+	if vendorsFirst {
 		vendor := func(id string) bool {
 			npm := doc[id].NPM
 			return strings.HasPrefix(npm, "@ai-sdk/") && npm != "@ai-sdk/openai-compatible"
@@ -185,7 +182,7 @@ func parseOwnedPrices(api []byte, only string) map[string]price {
 	}
 	out := map[string]price{}
 	for _, id := range ids {
-		if only != "" && id != only {
+		if !keep(id, doc[id]) {
 			continue
 		}
 		for m, v := range doc[id].Models {
@@ -195,6 +192,27 @@ func parseOwnedPrices(api []byte, only string) map[string]price {
 		}
 	}
 	return out
+}
+
+// parsePrices is the models of every models.dev provider whose api host is host
+// that state a price, first provider id winning a shared model id.
+func parsePrices(api []byte, host string) map[string]price {
+	return walkPrices(api, false, func(_ string, p priceProvider) bool {
+		u, err := url.Parse(p.API)
+		return err == nil && strings.ToLower(u.Hostname()) == host
+	})
+}
+
+// parseOwnedPrices is the models of the models.dev provider named only, or of
+// every provider when only is empty, first provider id winning a shared model id.
+// models.dev gives a first-party vendor (anthropic, openai) no `api` host, so the
+// host lookup above can never price a subscription's Claude models; this one asks
+// by provider id instead. With no id, the vendor-nesting rule in walkPrices
+// prefers a vendor's own entry to a reseller's.
+func parseOwnedPrices(api []byte, only string) map[string]price {
+	return walkPrices(api, only == "", func(id string, _ priceProvider) bool {
+		return only == "" || id == only
+	})
 }
 
 // newOwnedPriceBook prices by models.dev provider id: only names one provider
@@ -224,12 +242,11 @@ type priceCache struct {
 }
 
 func (b *priceBook) load() {
-	var c priceCache
-	if data, err := os.ReadFile(b.path); err == nil && jsonv2.Unmarshal(data, &c) == nil && c.Host == b.host {
+	if c, ok := b.readCacheDoc(); ok {
 		b.set(c.Models)
-	}
-	if c.Host == b.host && b.now().Sub(time.Unix(c.Fetched, 0)) < pricesMaxAge {
-		return
+		if b.now().Sub(time.Unix(c.Fetched, 0)) < pricesMaxAge {
+			return
+		}
 	}
 	api, err := b.fetch()
 	if err != nil {
@@ -266,18 +283,39 @@ func CachedOwnedPriceBook(only string) *priceBook {
 	return b
 }
 
+// HasCachedPrices reports whether this provider slice has any cached model
+// prices. It never fetches the catalogue.
+func (b *priceBook) HasCachedPrices() bool {
+	return len(b.readCache()) > 0
+}
+
+// Lookup returns the input and output list prices per million tokens for model.
+func (b *priceBook) Lookup(model string) (input, output float64, ok bool) {
+	p, ok := b.lookup(model)
+	return p.Input, p.Output, ok
+}
+
 // RefreshOwnedPrices fetches the models.dev slice and caches it, so a later
 // hook can price a turn. The launcher calls it in the background at launch.
 func RefreshOwnedPrices(only string) { newOwnedPriceBook(only).load() }
 
-// readCache is the cached slice for this book, or an empty table.
-func (b *priceBook) readCache() map[string]price {
+// readCacheDoc is the cache read load and readCache share: this book's slice
+// on disk, or false when it is missing, corrupt or another book's.
+func (b *priceBook) readCacheDoc() (priceCache, bool) {
 	var c priceCache
 	data, err := os.ReadFile(b.path)
 	if err != nil || jsonv2.Unmarshal(data, &c) != nil || c.Host != b.host {
-		return map[string]price{}
+		return priceCache{}, false
 	}
-	return c.Models
+	return c, true
+}
+
+// readCache is the cached slice for this book, or an empty table.
+func (b *priceBook) readCache() map[string]price {
+	if c, ok := b.readCacheDoc(); ok {
+		return c.Models
+	}
+	return map[string]price{}
 }
 
 // lookup is the price of model, starting the load on first use.
@@ -310,8 +348,9 @@ func (b *priceBook) lookup(model string) (price, bool) {
 }
 
 // lookupIn finds model in one price table. Claude Code can name a dated id
-// (claude-opus-4-5-20251101) for a model models.dev lists undated too; the date
-// is spelling, not another model.
+// (claude-opus-4-5-20251101) for a model models.dev lists undated too, and a
+// gateway names the weights it serves (Qwen3.8-Flash-Next-FP8); the date and the
+// precision are spelling, not another model.
 func lookupIn(table map[string]price, model string) (price, bool) {
 	name := tier.TrimWindowMarker(model)
 	if p, ok := table[name]; ok {
@@ -321,5 +360,12 @@ func lookupIn(table map[string]price, model string) (price, bool) {
 		p, ok := table[name[:i]]
 		return p, ok
 	}
+	if base := precision.ReplaceAllString(name, ""); base != name {
+		p, ok := table[base]
+		return p, ok
+	}
 	return price{}, false
 }
+
+// precision is a served-weights suffix: -FP8, -NVFP4, -BF16, -INT4, -AWQ, -GPTQ.
+var precision = regexp.MustCompile(`(?i)[-_](?:(?:nv|mx)?fp\d+|bf16|int\d+|awq|gptq)$`)

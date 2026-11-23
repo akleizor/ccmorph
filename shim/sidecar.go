@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"sort"
 	"strconv"
 	"time"
 
@@ -121,6 +122,7 @@ type record struct {
 	masked             map[string]int
 	task               *string
 	session            *string
+	parent             *string
 	attempt            int
 	responseModel      *string
 	timestamp          string
@@ -167,7 +169,7 @@ func (u *UsageSidecar) tagged(t taskTags) *UsageSidecar {
 func (u *UsageSidecar) start(id string, requested *string, model *string, usage usageRow) *record {
 	return &record{
 		responseID: id, turnID: randHex(16), requested: requested, servedModel: u.served,
-		retries: u.retries, masked: u.masked, task: u.tags.task, session: u.tags.session, attempt: u.tags.attempt, responseModel: model,
+		retries: u.retries, masked: u.masked, task: u.tags.task, session: u.tags.session, parent: u.tags.parent, attempt: u.tags.attempt, responseModel: model,
 		timestamp: utcStamp(time.Now().UTC()), usage: usage,
 	}
 }
@@ -205,6 +207,10 @@ func (u *UsageSidecar) row(r *record) []byte {
 	if r.session != nil {
 		out = append(out, `,"session":`...)
 		out = append(out, optStr(r.session)...)
+	}
+	if r.parent != nil {
+		out = append(out, `,"parent":`...)
+		out = append(out, optStr(r.parent)...)
 	}
 	out = append(out, `,"attempt":`+strconv.Itoa(r.attempt)+`,"response_model":`...)
 	out = append(out, optStr(r.responseModel)...)
@@ -248,13 +254,14 @@ func usageBase() string { return filepath.Join(paths.StateDir(), "usage") }
 
 // usageDay is the UTC day folder a row stamped ts belongs to. A stamp that
 // will not parse is today: the sidecar stamps what it writes now, and a row
-// carries its own timestamp for a reader to filter on.
+// carries its own timestamp for a reader to filter on. The name is
+// paths.DayLayout's, the one spelling the store's writer and readers share.
 func usageDay(ts string) string {
 	t, err := time.Parse(time.RFC3339Nano, ts)
 	if err != nil {
 		t = time.Now()
 	}
-	return t.UTC().Format("2006-01-02")
+	return t.UTC().Format(paths.DayLayout)
 }
 
 // rowDirs is where the row of a response stamped ts can be found, and the
@@ -270,9 +277,9 @@ func rowDirs(ts string) []string {
 	t = t.UTC()
 	base := usageBase()
 	return []string{
-		filepath.Join(base, t.Format("2006-01-02")),
-		filepath.Join(base, t.AddDate(0, 0, -1).Format("2006-01-02")),
-		filepath.Join(base, t.AddDate(0, 0, 1).Format("2006-01-02")),
+		filepath.Join(base, t.Format(paths.DayLayout)),
+		filepath.Join(base, t.AddDate(0, 0, -1).Format(paths.DayLayout)),
+		filepath.Join(base, t.AddDate(0, 0, 1).Format(paths.DayLayout)),
 		base,
 	}
 }
@@ -280,7 +287,7 @@ func rowDirs(ts string) []string {
 // owns is true only when the row on disk at path carries turn: the one thing
 // that makes replacing that name safe.
 func owns(path, turn string) bool {
-	data, err := os.ReadFile(path)
+	data, err := paths.ReadRegularFile(path)
 	if err != nil {
 		return false
 	}
@@ -323,6 +330,17 @@ func claim(tmp, candidate, turn string) (bool, error) {
 }
 
 func (u *UsageSidecar) write(r *record) error {
+	lock, err := lockClosedUsage(time.Now(), rowDirs(r.timestamp)[:1])
+	if err != nil {
+		return err
+	}
+	if lock != nil {
+		defer lock.Close()
+	}
+	return u.writeLocked(r)
+}
+
+func (u *UsageSidecar) writeLocked(r *record) error {
 	base := usageBase()
 	dir := filepath.Join(base, usageDay(r.timestamp))
 	if err := os.MkdirAll(filepath.Dir(base), 0o777); err != nil {
@@ -339,6 +357,26 @@ func (u *UsageSidecar) write(r *record) error {
 		}
 	}
 	primary, spills := rowNames(dir, r.responseID, r.turnID)
+	archived, err := paths.ReadUsageArchive(dir + ".jsonl")
+	if err != nil {
+		// A damaged archive this run cannot read no longer holds every write
+		// of the day: recorded once, the claim proceeds on the folder alone.
+		// Readers merge the original filename once, so no row is double-counted.
+		logScanOnce(err)
+		archived = nil
+	}
+	// The claim asks the archive about this response's own names only: a map of
+	// the whole day per written row made every row of a long transcript pay for
+	// the day's size under the store's exclusive lock (#654). The archive's
+	// names are strictly ordered (ReadUsageArchive verifies it).
+	archivedRow := func(path string) ([]byte, bool) {
+		name := filepath.Base(path)
+		i := sort.Search(len(archived), func(i int) bool { return archived[i].Name >= name })
+		if i < len(archived) && archived[i].Name == name {
+			return archived[i].Data, true
+		}
+		return nil, false
+	}
 	f, err := os.CreateTemp(dir, "tmp*.tmp")
 	if err != nil {
 		return err
@@ -356,13 +394,16 @@ func (u *UsageSidecar) write(r *record) error {
 	// earlier spill) was removed; ownership comes from the disk row.
 	var candidates []string
 	for _, s := range spills {
-		if owns(s, r.turnID) {
+		if data, _ := archivedRow(s); owns(s, r.turnID) || usageOwned(data, r.responseID, r.turnID) {
 			candidates = append(candidates, s)
 			break
 		}
 	}
 	candidates = append(append(candidates, primary), spills...)
 	for _, c := range candidates {
+		if data, ok := archivedRow(c); ok && !usageOwned(data, r.responseID, r.turnID) {
+			continue
+		}
 		ok, err := claim(tmp, c, r.turnID)
 		if err != nil {
 			return fail(err)
@@ -384,10 +425,13 @@ func (u *UsageSidecar) write(r *record) error {
 // otherwise sit in two places, and a reader would count the response twice.
 // Ownership is the turn_id the row on disk carries; another turn's row is
 // never touched. Only the hook's rows move days (a relay's record keeps the
-// stamp it was started with), so only the hook calls this.
+// stamp it was started with), so only the hook calls this. A spill a build
+// before #633 spelled under the joined key's own hash is one of those copies
+// too: it still carries this turn, so it is retired with the new-shape ones.
 func retireEarlierCopies(dirs []string, responseID, turnID string) {
 	for _, dir := range dirs[1:] {
 		primary, spills := rowNames(dir, responseID, turnID)
+		spills = append(spills, legacySpillNames(dir, responseID, turnID)...)
 		for _, path := range append([]string{primary}, spills...) {
 			if owns(path, turnID) {
 				remove(path)
@@ -401,14 +445,27 @@ func retireEarlierCopies(dirs []string, responseID, turnID string) {
 // gateway recycled that id. A writer and a reader of these rows share this one
 // definition, so neither can disagree with the other about the store.
 func rowNames(dir, responseID, turnID string) (primary string, spills []string) {
-	named := func(key string) string { return filepath.Join(dir, rowFileName(key)) }
-	primary = named(responseID)
+	primary = filepath.Join(dir, rowFileName(responseID))
 	key := responseID + "." + turnID
-	spills = []string{named(key)}
+	spills = []string{filepath.Join(dir, spillFileName(responseID, key))}
 	for n := 1; n <= 3; n++ {
-		spills = append(spills, named(key+"."+strconv.Itoa(n)))
+		spills = append(spills, filepath.Join(dir, spillFileName(responseID, key+"."+strconv.Itoa(n))))
 	}
 	return primary, spills
+}
+
+// legacySpillNames is where a build before #633 put a spill: the joined key's
+// own hash, with the .N names the old claim tried after it. The new shape is
+// the response id's hash followed by the key's, so the two are unrelated
+// strings; only a reader that holds the row's own turn can name one, and
+// migrateOldSpills re-files them under the new shape when it scans a directory.
+func legacySpillNames(dir, responseID, turnID string) []string {
+	key := responseID + "." + turnID
+	names := []string{filepath.Join(dir, rowFileName(key))}
+	for n := 1; n <= 3; n++ {
+		names = append(names, filepath.Join(dir, rowFileName(key+"."+strconv.Itoa(n))))
+	}
+	return names
 }
 
 // errRowNameTaken is a row no name on disk can hold: every candidate belongs to

@@ -45,7 +45,6 @@ import (
 	"net/http/httptrace"
 	"net/url"
 	"os"
-	"regexp"
 	"runtime/debug"
 	"strconv"
 	"strings"
@@ -53,6 +52,8 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/akleizor/ccmorph/netroute"
+	"github.com/akleizor/ccmorph/util"
 	"github.com/akleizor/ccmorph/util/tier"
 )
 
@@ -91,8 +92,11 @@ type Hooks struct {
 	// or nil. request is the body that was sent; response is the 400's body (nil
 	// for a stream content type, which is never read). It runs only while nothing
 	// has gone downstream, at most once per request, and the resend does not count
-	// as a transport retry or toward the breaker. The second answer is final. A
-	// panic means no resend.
+	// as a transport retry or toward the breaker. The second answer is final,
+	// except that when it is a non-retryable 4xx too and the first 400 was read
+	// (not a stream), the client gets the first 400: the repair must not replace
+	// the real error. A retryable status (429, 5xx) is passed through and counted
+	// by the breaker as the failure it is. A panic means no resend.
 	ResendBody func(request, response []byte) []byte
 }
 
@@ -110,31 +114,31 @@ const bigBody = 1 << 20
 
 const internalPrefix = "x-ccmorph-"
 
-var (
-	taskRE    = regexp.MustCompile(`^[A-Za-z0-9._-]{1,64}$`)
-	attemptRE = regexp.MustCompile(`^[0-9]{1,3}$`)
-	outcomes  = []string{"accepted", "rejected", "escalated", "parked"}
-)
+var outcomes = []string{"accepted", "rejected", "escalated", "parked"}
 
 type taskTags struct {
 	task    *string
 	attempt int
 	session *string
+	parent  *string
 }
 
-var noTags = taskTags{nil, 1, nil}
+var noTags = taskTags{attempt: 1}
 
 // tagsOf are the whitelisted task/attempt tags and Claude Code session id from the
 // request headers; the session id is held to the task tag's shape and is dropped if it equals the request's own key.
 func tagsOf(h http.Header) taskTags {
 	t := noTags
-	if task := strings.TrimSpace(h.Get("x-ccmorph-task")); taskRE.MatchString(task) {
+	if task := strings.TrimSpace(h.Get("x-ccmorph-task")); util.ValidTaskTag(task) {
 		t.task = &task
 	}
-	if sess := strings.TrimSpace(h.Get("x-claude-code-session-id")); taskRE.MatchString(sess) && sess != bearerKey(h) {
+	if sess := strings.TrimSpace(h.Get("x-claude-code-session-id")); util.ValidTaskTag(sess) && sess != bearerKey(h) {
 		t.session = &sess
 	}
-	if a := strings.TrimSpace(h.Get("x-ccmorph-attempt")); attemptRE.MatchString(a) {
+	if parent := strings.TrimSpace(h.Get("x-ccmorph-parent")); util.ValidTaskTag(parent) && parent != bearerKey(h) {
+		t.parent = &parent
+	}
+	if a := strings.TrimSpace(h.Get("x-ccmorph-attempt")); util.ValidAttemptTag(a) {
 		if n, _ := strconv.Atoi(a); n > 0 && n < 1000 {
 			t.attempt = n
 		}
@@ -197,6 +201,10 @@ type Server struct {
 	RetryBase      time.Duration
 	Sleep          func(time.Duration) // injected in tests: the retry waits must not cost real time
 	mask           *masker             // CCMORPH_MASK: secrets go upstream as placeholders
+	// Upstream is the profile's CCMORPH_UPSTREAM_PROXY, parsed once at Listen:
+	// the remote client dials through it, so a native gateway the process
+	// cannot reach still serves. nil: the environment resolves each call.
+	Upstream *url.URL
 
 	loopback, remote *http.Client
 	devicesMu        sync.Mutex
@@ -226,9 +234,10 @@ func (s *Server) setClients() {
 	}
 	// Loopback target (the translator): no proxy, whatever http_proxy says (same
 	// reason as --noproxy '*' in ccmorph.sh). A remote target and the catalogue
-	// honour the environment.
+	// take the profile's upstream route when it names one, the environment's
+	// otherwise; netroute keeps NO_PROXY and the loopback exemption either way.
 	s.loopback = mk(nil)
-	s.remote = mk(http.ProxyFromEnvironment)
+	s.remote = mk(func(r *http.Request) (*url.URL, error) { return netroute.Proxy(s.Upstream, r) })
 }
 
 // checkRedirect never carries the credential to another origin: Go, like urllib,
@@ -549,6 +558,13 @@ func (s *Server) relay(rq *request) {
 	var up *upstream
 	var data []byte
 	var isStream bool
+	// A resend is a speculative repair. When the repaired request is refused
+	// too, the upstream's first answer is the truth the client needs: keep it,
+	// so a second refusal the repair itself provoked (a stripped signature the
+	// provider required) never replaces the real error.
+	var firstType string
+	var firstData []byte
+	var haveFirst bool
 	for {
 		var err error
 		up, err = s.open(rq, body)
@@ -588,6 +604,7 @@ func (s *Server) relay(rq *request) {
 			}
 			if !resent && isMessagePost && up.resp.StatusCode == 400 {
 				if nb := s.callResend(body, data); nb != nil {
+					firstType, firstData, haveFirst = up.resp.Header.Get("Content-Type"), data, true
 					up.close()
 					body, resent = nb, true
 					continue
@@ -628,8 +645,14 @@ func (s *Server) relay(rq *request) {
 		}
 		break
 	}
+	status := up.resp.StatusCode
+	ctype := up.resp.Header.Get("Content-Type")
+	restored := !isStream && resent && haveFirst && status >= 400 && status < 500 && !retryStatus(status)
+	if restored {
+		data, ctype, status = firstData, firstType, 400 // only a 400 is resent
+	}
 	if breaker != nil {
-		breaker.record(!retryStatus(up.resp.StatusCode))
+		breaker.record(!retryStatus(status))
 	}
 	if sidecar != nil {
 		sidecar.retries = retries
@@ -643,16 +666,19 @@ func (s *Server) relay(rq *request) {
 			}
 		}
 	}
+	if restored {
+		h.Set("Content-Type", ctype)
+	}
 	if isStream {
 		h.Set("Connection", "close") // EOF is the client's only completion signal
-		rq.w.WriteHeader(up.resp.StatusCode)
+		rq.w.WriteHeader(status)
 		rq.flush()
 		s.streamSSE(rq, up, sidecar, requested, answerAs)
 		return
 	}
-	if strings.Contains(up.resp.Header.Get("Content-Type"), "json") {
+	if strings.Contains(ctype, "json") {
 		var out []byte
-		if up.resp.StatusCode >= 400 {
+		if status >= 400 {
 			out = unwrapGatewayError(data)
 		}
 		if out == nil {
@@ -661,16 +687,26 @@ func (s *Server) relay(rq *request) {
 				out = s.mask.restoreBody(out, true)
 			}
 		}
-		data = out
+		if status == 400 {
+			data = thoughtSignatureRefusal(out, s.behindTranslator())
+		} else {
+			data = out
+		}
 	}
 	h.Set("Content-Length", strconv.Itoa(len(data)))
-	rq.w.WriteHeader(up.resp.StatusCode)
+	rq.w.WriteHeader(status)
 	rq.w.Write(data)
 	// After the client has its bytes: the response is the product, the row is
 	// bookkeeping.
 	if sidecar != nil {
 		sidecar.response(data, requested)
 	}
+}
+
+// behindTranslator is whether the upstream is the adapter's translator: its
+// route spec names a translator config.
+func (s *Server) behindTranslator() bool {
+	return s.Routes != nil && s.Routes.command != nil
 }
 
 // callResend shields the request from a panicking hook: no resend.

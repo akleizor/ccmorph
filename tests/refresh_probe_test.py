@@ -29,7 +29,7 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
-from support import HANG_TIMEOUT, helper_cmd
+from support import HANG_TIMEOUT, helper_cmd, needs_loopback
 
 
 
@@ -63,6 +63,7 @@ class MetadataCompatibility(unittest.TestCase):
             self.assertNotEqual(result.returncode, 0)
 
 
+@needs_loopback  # the discovery gateway is a real listener: #611
 class DiscoveryHTTP(unittest.TestCase):
     def setUp(self):
         import http.server

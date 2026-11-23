@@ -2,7 +2,9 @@
 // and spend. Claude account usage is read from claude.ai's usage endpoint (the
 // one Claude Code's /usage reads) with the profile's own sign-in; Codex
 // subscriptions from Codex's own usage endpoint with the cliproxyapi sign-in;
-// gateways and API keys from the receipts their turns already wrote. A GET to a
+// gateways and API keys from the receipts their turns already wrote. A gateway's
+// own endpoint is asked whether it answers, so a dead gateway's receipts are
+// never printed as a month that was free (#726). A GET to a
 // usage endpoint: no inference, nothing billed. A sign-in whose access token has
 // expired is reported, never refreshed here: refreshing would rotate the token
 // under the Claude Code sessions that hold it.
@@ -10,13 +12,18 @@ package quota
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/akleizor/ccmorph/ctxwindow"
+	"github.com/akleizor/ccmorph/util"
 )
 
 // usageURL and transport are swapped by tests. The transport keeps the tests
@@ -29,8 +36,8 @@ var (
 
 // Main reads one profile per stdin line,
 // "name<TAB>kind<TAB>arg<TAB>extra", and prints one entry each. kind is "sub"
-// (arg is the config dir), "token" (extra is the token), "codex" (arg is the
-// cliproxyapi auth dir) or "gateway" (arg is the base URL, extra is
+// (arg is the config dir), "token" (extra is the token), "codex" or
+// "antigravity" (arg is the cliproxyapi auth dir) or "gateway" (arg is the base URL, extra is
 // monthly_budget_usd; either may be empty, and a fifth field carries an API key).
 func Main(argv []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	jsonOut, color := false, false
@@ -69,12 +76,29 @@ func Main(argv []string, stdin io.Reader, stdout, stderr io.Writer) int {
 			defer wg.Done()
 			e := read(client, f[0], f[1], f[2], f[3])
 			if f[1] == "gateway" {
+				// The endpoint is asked whether it answers at all, so a dead
+				// gateway's receipts stop answering as a healthy zero (#726).
+				e.Checked = endpointChecked(client, f[2], f[4])
 				e.Balance, e.Error = balance(client, f[2], f[4], e.Error)
 			}
 			entries[i] = e
 		}()
 	}
 	wg.Wait()
+	// A spend entry that carries a reason and no spend is a store the run could
+	// not read whole (#545): the view says so, and the run fails rather than
+	// answer a healthy zero. Other reasons keep the run's exit — a refused
+	// sign-in or an unreachable endpoint is one profile's state, and the rest of
+	// the view still read.
+	unread := false
+	for _, e := range entries {
+		// A spend that skipped receipts it could not read is still a store
+		// not read whole: it carries the rest's total, and the run fails (#654).
+		gap := e.Spend == nil || e.Spend.UnreadableReceipts > 0
+		if gap && e.Error != "" && (e.Kind == "gateway" || e.Kind == "budget") {
+			unread = true
+		}
+	}
 	if len(entries) == 0 {
 		if jsonOut {
 			fmt.Fprintln(stdout, `{"profiles":[]}`)
@@ -92,13 +116,21 @@ func Main(argv []string, stdin io.Reader, stdout, stderr io.Writer) int {
 			fmt.Fprintln(stderr, "ccmorph-core quota:", err)
 			return 1
 		}
+		if unread {
+			return 1
+		}
 		return 0
 	}
 	renderText(stdout, entries, color)
+	if unread {
+		return 1
+	}
 	return 0
 }
 
-// read dispatches one stdin line. A gateway line never reaches the network.
+// read dispatches one stdin line. A gateway line's spend is read from the
+// receipts alone; the endpoint is asked only beside that, in Main, and only
+// whether it answers (endpointChecked) or what a balance costs (balance.go).
 func read(client *http.Client, name, kind, arg, extra string) Entry {
 	switch kind {
 	case "sub":
@@ -122,6 +154,8 @@ func read(client *http.Client, name, kind, arg, extra string) Entry {
 		return readClaude(client, name, extra, "", true)
 	case "codex":
 		return readCodex(client, name, arg)
+	case "antigravity":
+		return readAntigravity(client, name, arg)
 	default:
 		return spendEntry(name, extra)
 	}
@@ -162,4 +196,46 @@ func usageVerdict(e Entry, status int, err error) (Entry, bool) {
 		return e, false
 	}
 	return e, true
+}
+
+// probeWait is the wait a gateway gets for one answer, the 5 seconds doctor's
+// route check gives it (util.ProbeListing's own bound), so quota never hangs
+// longer over a dead endpoint than the command that diagnoses it.
+const probeWait = 5 * time.Second
+
+// endpointChecked asks the gateway's own endpoint whether it answers, the way
+// doctor's route check does: the model list a launch reads first, sent with the
+// profile's own key, and read here for nothing but whether an answer came —
+// any answer, even a refusal or a redirect, proves the endpoint is there, and
+// only silence says it is not. A free GET, no inference, nothing billed. nil
+// says the line has no gateway to ask: no endpoint, no key to offer, or
+// Anthropic's own base, where the receipts are the whole answer and doctor's
+// key check is the place a native key gets checked (#726).
+//
+// The probe answers once and goes nowhere else: a redirect is refused, so the
+// key is carried to exactly the one host the profile's base URL names. Go
+// strips Authorization when a redirect crosses hosts, but not a custom header
+// like x-api-key, and following a redirect would hand the profile's credential
+// to whoever the endpoint names. doctor's curl probe sends its request exactly
+// once too (no -L), so the two probes ask the same single question.
+func endpointChecked(client *http.Client, base, key string) *bool {
+	if key == "" || base == "" || util.NativeBase(base) {
+		return nil
+	}
+	if u, err := url.Parse(base); err != nil || u.Host == "" {
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), probeWait)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, "GET", ctxwindow.APIURL(base, "/v1/models?limit=1"), nil)
+	if err != nil {
+		return nil
+	}
+	req.Header.Set("x-api-key", key)
+	req.Header.Set("Authorization", "Bearer "+key)
+	probe := *client
+	probe.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+	_, _, err = fetch(&probe, req)
+	checked := err == nil
+	return &checked
 }

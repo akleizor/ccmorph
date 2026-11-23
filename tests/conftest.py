@@ -1,3 +1,4 @@
+import getpass
 import http.server
 import socketserver
 
@@ -19,6 +20,20 @@ def _bind_without_reverse_dns(self):
 
 
 http.server.HTTPServer.server_bind = _bind_without_reverse_dns
+
+
+# Identity is ambient env, and per #774 env is a tool too: a subject that reads
+# the machine's username asserts what that machine happens to carry. On the rig
+# CPU worker nothing carries one — USER and LOGNAME are unset and the uid has no
+# name — so getpass.getuser raises its no-username error, the first member of
+# rc-hosts' TRANSIENT, so every reader's LOGIN_ERRORS guard swallowed it as a
+# routine login failure: the rc-hosts suite was red there and green on the gate,
+# where a username resolves (GH-809). The suite names itself one fixed name.
+# Scripts that load_script runs consult this module attribute at call time, so
+# the pin reaches them; a test that needs another name sets it after this fixture.
+@pytest.fixture(autouse=True)
+def fixed_identity(monkeypatch):
+    monkeypatch.setattr(getpass, "getuser", lambda: "ccmorph-tester")
 
 
 @pytest.hookimpl(tryfirst=True)

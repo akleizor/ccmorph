@@ -40,13 +40,20 @@ func (l *launcher) context(args []string) int {
 		l.err("usage: ccmorph context <profile> <model> [tokens|auto]")
 		return 2
 	}
-	cmd := exec.Command(filepath.Join(l.libexec, "ccmorph-core"),
-		append([]string{"model-window", "--context", name, model}, rest...)...)
-	cmd.Env = append(os.Environ(), "CCMORPH_STATE_DIR="+l.dir)
-	cmd.Stdin, cmd.Stderr = os.Stdin, os.Stderr
+	// One argv serves both forms (GH-561): the save appends the value's rest —
+	// a fresh slice each time, since argv is sized to what it holds — and the
+	// read runs it as it stands.
+	argv := []string{"model-window", "--context", name, model}
 	if len(rest) > 0 {
+		cmd := exec.Command(filepath.Join(l.libexec, "ccmorph-core"), append(argv, rest...)...)
+		cmd.Env = append(os.Environ(), "CCMORPH_STATE_DIR="+l.dir)
+		cmd.Stdin, cmd.Stderr = os.Stdin, os.Stderr
 		cmd.Stdout = os.Stdout
 		rc := runRC(cmd)
+		// The save rewrites a conf that still carries its discovered record
+		// inline, so the reads the warning makes must not be the memoized ones
+		// (GH-561).
+		delete(l.confReads, name)
 		// The save is done; a model the route does not carry — its listing for a
 		// gateway, the record its probe fills for a provider — is named after it
 		// (#370), the way the read form names a model it cannot answer auto for
@@ -65,7 +72,7 @@ func (l *launcher) context(args []string) int {
 	// inspect does, and the shell's exported ceiling is dropped so the
 	// profile's own state answers.
 	l.migrateState()
-	read := exec.Command(filepath.Join(l.libexec, "ccmorph-core"), "model-window", "--context", name, model)
+	read := exec.Command(filepath.Join(l.libexec, "ccmorph-core"), argv...)
 	read.Env = append(envDrop(os.Environ(), "CLAUDE_CODE_MAX_CONTEXT_TOKENS"), l.windowEnv(name)...)
 	read.Stderr = os.Stderr
 	out, err := read.Output()
@@ -93,7 +100,7 @@ func (l *launcher) context(args []string) int {
 	// hand still reads back, and a route whose listing cannot be read keeps
 	// answering.
 	if label != "manual" && l.listingKnown(name, model) == 1 {
-		l.err(model + " is not served by " + name + ". Run: ccmorph models " + name)
+		l.err(notServedAdvice(model, name, f["type"]))
 		return 1
 	}
 	fmt.Println(contextAnswer(name, model, n, label, unprobed))
@@ -125,7 +132,7 @@ func contextAnswer(name, model string, n int64, label string, unprobed bool) str
 	case label == "catalogue-estimate":
 		provenance = "estimated from the model catalogue"
 	}
-	return name + ": " + model + " context " + thousands(n) + " tokens · " + provenance
+	return name + ": " + model + " context " + ctxwindow.Commas(n) + " tokens · " + provenance
 }
 
 // unlistedWarning is what the set form says when the route does not carry the
@@ -172,15 +179,34 @@ func (l *launcher) contextUnlisted(name, want string, f map[string]string) bool 
 	return util.ContextServed(want, f["type"], base, f["model_map"], f["api_key"]) == util.ServedNo
 }
 
+// notServedAdvice is the read form's refusal (#268): the model has no size to
+// answer because the route does not carry it, so the sentence names the command
+// that lists what the route does carry.
+func notServedAdvice(model, name, typ string) string {
+	return model + " is not served by " + name + ". Run: " + listingAdvice(name, typ)
+}
+
+// listingAdvice names the command that answers what a profile's route carries
+// (#449). `ccmorph models` refuses a sub or token profile, and so does
+// `ccmorph probe` (#390): their model is chosen through set's picker.
+// A provider's listing is not readable with the profile's own credentials, so
+// its probe — which records what the route serves — is the command that answers.
+// noModelList's advice line reads it too (#562), so this policy lives here alone.
+func listingAdvice(name, typ string) string {
+	switch typ {
+	case "provider":
+		return "ccmorph probe " + name
+	case "sub", "token":
+		return "ccmorph set " + name + " model -i"
+	}
+	return "ccmorph models " + name
+}
+
 // unlistedWarningText is the sentence itself. A provider's listing is not
 // readable with the profile's own credentials, so its advice is the probe that
 // records what the route serves.
 func unlistedWarningText(model, name, typ string) string {
-	advice := "ccmorph models " + name
-	if typ == "provider" {
-		advice = "ccmorph probe " + name
-	}
-	return "'" + model + "' is not listed by " + name + "; the limit is saved for when it appears. Check the listing with: " + advice
+	return "'" + model + "' is not listed by " + name + "; the limit is saved for when it appears. Check the listing with: " + listingAdvice(name, typ)
 }
 
 // warnLines is a warning as it prints at width columns: prefixed and wrapped on
@@ -224,6 +250,22 @@ func (l *launcher) quota(args []string) int {
 		fmt.Println(noProfilesMsg)
 		return 0
 	}
+	input := l.quotaInput(names)
+	flags := []string{}
+	if asJSON {
+		flags = append(flags, "--json")
+	} else if isTTY(1) && os.Getenv("NO_COLOR") == "" && os.Getenv("TERM") != "dumb" {
+		flags = append(flags, "--color")
+	}
+	cmd := exec.Command(filepath.Join(l.libexec, "ccmorph-core"), append([]string{"quota"}, flags...)...)
+	cmd.Stdin = strings.NewReader(input)
+	cmd.Stdout, cmd.Stderr = os.Stdout, os.Stderr
+	return runRC(cmd)
+}
+
+// quotaInput is the quota core's stdin for these profiles: one line each, the
+// secret a read needs on stdin, never in argv.
+func (l *launcher) quotaInput(names []string) string {
 	var in strings.Builder
 	row := func(f ...string) { in.WriteString(strings.Join(f, "\t") + "\n") }
 	for _, n := range names {
@@ -239,8 +281,8 @@ func (l *launcher) quota(args []string) int {
 		case "token":
 			row(n, "token", dir, f["token"])
 		case "provider":
-			if auth, ok := l.authDirQuiet(n); ok && f["provider"] == "codex" {
-				row(n, "codex", auth, "")
+			if auth, ok := l.authDirQuiet(n); ok && (f["provider"] == "codex" || f["provider"] == "antigravity") {
+				row(n, f["provider"], auth, "")
 			} else {
 				row(n, "gateway", "", budget)
 			}
@@ -250,16 +292,7 @@ func (l *launcher) quota(args []string) int {
 			row(n, "gateway", "", budget)
 		}
 	}
-	flags := []string{}
-	if asJSON {
-		flags = append(flags, "--json")
-	} else if isTTY(1) && os.Getenv("NO_COLOR") == "" && os.Getenv("TERM") != "dumb" {
-		flags = append(flags, "--color")
-	}
-	cmd := exec.Command(filepath.Join(l.libexec, "ccmorph-core"), append([]string{"quota"}, flags...)...)
-	cmd.Stdin = strings.NewReader(in.String())
-	cmd.Stdout, cmd.Stderr = os.Stdout, os.Stderr
-	return runRC(cmd)
+	return in.String()
 }
 
 // authDirQuiet is `_ccm_provider_auth_dir 2>/dev/null`: no symlinked root or dir.

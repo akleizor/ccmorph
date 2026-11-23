@@ -1,0 +1,8 @@
+{
+  "verbose": true,
+  "$ccmorphUnset": [
+    [
+      "statusLine"
+    ]
+  ]
+}

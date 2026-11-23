@@ -1,7 +1,7 @@
 """The metadata-only ccusage export: one record per receipt, one folder per profile, damaged costs reported."""
+import contextlib
 import datetime as dt
-import importlib.machinery
-import importlib.util
+import errno
 import json
 import os
 import pathlib
@@ -13,16 +13,14 @@ import pytest
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 from rc_hosts_test import is_python_helper  # noqa: E402
-from support import HANG_TIMEOUT  # noqa: E402
+from support import HANG_TIMEOUT, load_script  # noqa: E402
 
 # The shim's own bound (costLimit in shim/sidecar.go, 2**53/100); shim/sidecar_test.go
 # asserts the Go constant equals this literal, and the test below that the exporter's matches.
 SHIM_COST_LIMIT = 2 ** 53 / 100
 
-SPEC = importlib.util.spec_from_loader("usage_export", importlib.machinery.SourceFileLoader(
-    "usage_export", str(pathlib.Path(__file__).parent.parent / "share/usage-export")))
-ue = importlib.util.module_from_spec(SPEC)
-SPEC.loader.exec_module(ue)
+EXPORTER = pathlib.Path(__file__).parent.parent / "share/usage-export"
+ue = load_script(EXPORTER, "usage_export")
 
 ABSENT = object()
 
@@ -322,6 +320,109 @@ def test_another_run_touching_a_stale_day_is_never_undone(tmp_path, monkeypatch,
     assert stats["rows"] == 1
     assert stale.read_text() == "the other run's export\n" if overlap == "rewritten" else not stale.exists()
     assert (output / "ccusage.json").exists()  # the run finished either way
+
+
+def test_a_listed_receipt_the_move_took_mid_read_is_skipped_issue_583(tmp_path, monkeypatch):
+    """The pre-shard move links each flat receipt into its day folder and then removes
+    the flat name (#513), and this export lists first and opens later, so the mover can
+    empty a listed path between the two. A vanished path is the move's relocation, not a
+    damaged store: the run skips it whole, finishes, and its summary names the count —
+    the skip #552 installed in the Go readers, and the one owned_days here already
+    makes two functions away (#583)."""
+    rows, output = tmp_path / "rows", tmp_path / "out"
+    rows.mkdir()
+    write(rows, "a.json", receipt("a", "claude-opus-5-5", "2026-10-16T01:00:00+00:00", cost=1))
+    write(rows, "b.json", receipt("b", "claude-opus-5-5", "2026-10-16T02:00:00+00:00", cost=2))
+    gone = rows / "b.json"
+
+    reader = ue.receipt_rows
+    raced = []
+
+    def mover(root, since):
+        # receipt_rows lists the whole store before it yields its first row, so a
+        # name removed after that first row is one the listing already holds.
+        listed = reader(root, since)
+        first = next(listed)
+        raced.append(first[0].name)
+        gone.unlink()  # the move removes the flat name after the listing, before its read
+        yield first
+        yield from listed
+
+    monkeypatch.setattr(ue, "receipt_rows", mover)
+
+    stats = ue.export(rows, output)
+
+    assert raced == ["a.json"], "the move must land between the listing and the read of b.json"
+    assert stats["rows"] == 1 and stats["moved"] == 1 and stats["usd"] == 1
+    assert [r["costUSD"] for r in read_day(output, "2026-10-16")] == [1]
+    assert "1 receipt moved by the store mid-run, skipped" in ue.report(stats, output).splitlines()
+
+
+def test_a_day_folder_receipt_gone_between_listing_and_read_is_skipped_issue_583(tmp_path, monkeypatch):
+    """A day folder is listed whole before its receipts are read, and compaction (#642)
+    removes a folder's names once their archive is published, so the same race reaches
+    a day folder: a name its listing holds and its read cannot open is skipped and
+    counted, the way the Go readers' receiptMarks skips it (#552, #583)."""
+    rows, output = tmp_path / "rows", tmp_path / "out"
+    day = rows / "2026-10-16"
+    day.mkdir(parents=True)
+    write(day, "a.json", receipt("a", "claude-opus-5-5", "2026-10-16T01:00:00+00:00", cost=1))
+    write(day, "b.json", receipt("b", "claude-opus-5-5", "2026-10-16T02:00:00+00:00", cost=2))
+    gone = day / "b.json"
+    real_scandir = os.scandir
+    raced = []
+
+    def scandir(path):
+        if os.fspath(path) != os.fspath(day):
+            return real_scandir(path)
+        with real_scandir(path) as entries:
+            listed = sorted(entries, key=lambda e: e.name)
+        for entry in listed:
+            entry.is_file(follow_symlinks=False)  # the listing's own view, taken before the race
+        raced.append([e.name for e in listed])
+        gone.unlink()  # the name leaves after the folder's listing, before its read
+        return contextlib.nullcontext(iter(listed))
+
+    monkeypatch.setattr(ue.os, "scandir", scandir)
+
+    stats = ue.export(rows, output)
+
+    assert raced == [["a.json", "b.json"]], "the folder must be listed before b.json goes"
+    assert stats["rows"] == 1 and stats["moved"] == 1 and stats["usd"] == 1
+    assert [r["costUSD"] for r in read_day(output, "2026-10-16")] == [1]
+
+
+def test_a_receipt_still_there_but_unreadable_still_fails_the_export_issue_583(tmp_path):
+    """The moved-by-the-mover skip reads only a path that is gone: a receipt that is
+    still there and cannot be read is damage or permissions, and the run still fails
+    — so the race skip never quiets a real unreadable store (#583). It fails naming
+    the receipt after counting every other one, the total quota and the report give
+    the same store (#654), and it writes nothing: a day file is rewritten whole, so
+    a partial run would drop the unread turn from the export already there."""
+    rows, output = tmp_path / "rows", tmp_path / "out"
+    if os.geteuid() == 0:
+        pytest.skip("root reads a mode-000 file")
+    rows.mkdir()
+    write(rows, "a.json", receipt("a", "claude-opus-5-5", "2026-10-16T01:00:00+00:00", cost=1))
+    write(rows, "b.json", receipt("b", "claude-opus-5-5", "2026-10-16T02:00:00+00:00", cost=2))
+    ue.export(rows, output)
+    day = output / "projects" / "ledger" / "2026-10-16.jsonl"
+    before = day.read_bytes()
+    (rows / "b.json").chmod(0o000)
+
+    stats = ue.export(rows, output)
+    assert stats["unreadable"] == [f"{rows / 'b.json'}: Permission denied"]
+    assert (stats["rows"], stats["gateway_rows"], stats["usd"]) == (1, 1, 1)
+    assert day.read_bytes() == before, "a run that could not read every receipt rewrote the export"
+
+    ran = subprocess.run(
+        [sys.executable, str(EXPORTER), "--output", str(output), "--source", str(rows)],
+        capture_output=True, text=True, timeout=HANG_TIMEOUT)
+    assert ran.returncode == 1, ran.stdout + ran.stderr
+    assert f"usage-export: {rows / 'b.json'}: Permission denied" in ran.stderr
+    assert "Nothing written" in ran.stdout and "the gateway billed, $1.00" in ran.stdout
+    assert "[Errno" not in ran.stderr and "Traceback" not in ran.stderr
+    assert day.read_bytes() == before
 
 
 def test_a_since_rerun_reconciles_only_its_range(tmp_path):
@@ -669,7 +770,7 @@ def test_the_exported_timestamp_is_utc_with_milliseconds_and_z(tmp_path):
 
 def test_the_python_floor_scan_covers_the_exporter():
     """Issue #248: the exporter stays in the Python floor scan."""
-    assert is_python_helper(pathlib.Path(SPEC.origin).read_text())
+    assert is_python_helper(str(EXPORTER), EXPORTER.read_text())
 
 
 @pytest.mark.parametrize("via", ["path", "symlink"], ids=["direct-issue-261", "through-a-symlink-issue-416"])
@@ -683,7 +784,7 @@ def test_the_checkout_launcher_runs_the_shipped_exporter(tmp_path, via):
     zero-row count it stands on."""
     (tmp_path / "rows").mkdir()
     output = tmp_path / "out"
-    script = pathlib.Path(SPEC.origin).parent.parent / "scripts/usage-export"
+    script = pathlib.Path(str(EXPORTER)).parent.parent / "scripts/usage-export"
     launcher = script
     if via == "symlink":
         launcher = tmp_path / "usage-export"
@@ -700,11 +801,105 @@ def test_the_checkout_launcher_runs_the_shipped_exporter(tmp_path, via):
         "0 turns ccmorph estimated, $0.00",
         "0 turns left for ccusage to price at its list price",
         "0 turns unpriced (a damaged cost, not exported)",
+        "0 receipts moved by the store mid-run, skipped",
         "Then, with ccusage installed:",
         f"CLAUDE_CONFIG_DIR={root} ccusage claude daily --instances "
         f"--config {root}/ccusage.json",
     ]) + "\n"
     assert (tmp_path / "out/ccusage.json").is_file()
+
+
+@pytest.mark.parametrize("state", ["home", "xdg"],
+                         ids=["default-state-home-issue-647", "xdg-state-home-issue-647"])
+def test_a_fresh_install_exports_zeroes_before_the_first_session_issue_647(tmp_path, state):
+    """#647: right after an install, before any launched session, the receipt
+    store folder does not exist at all. The README's command died with
+    "usage-export: [Errno 2] No such file or directory: .../usage/.move.lock" and
+    exit 1. A never-created store is an empty one: the zero report, exit 0, and
+    the reader still creates no store folder."""
+    home, output = tmp_path / "home", tmp_path / "out"
+    home.mkdir()
+    env = {k: v for k, v in os.environ.items() if k != "XDG_STATE_HOME"}
+    env["HOME"] = str(home)
+    state_root = home / ".local/state"
+    if state == "xdg":
+        state_root = tmp_path / "state"
+        env["XDG_STATE_HOME"] = str(state_root)
+
+    ran = subprocess.run([sys.executable, str(EXPORTER), "--output", str(output)],
+                         capture_output=True, text=True, timeout=HANG_TIMEOUT, env=env)
+
+    assert ran.returncode == 0, ran.stderr
+    assert ran.stdout.splitlines()[0] == f"Exported 0 turns over 0 days to {os.path.abspath(output)}"
+    assert "[Errno" not in ran.stdout + ran.stderr
+    assert ".move.lock" not in ran.stdout + ran.stderr
+    assert not (state_root / "ccmorph").exists()
+    assert (output / "projects").is_dir() and (output / "ccusage.json").is_file()
+
+
+@pytest.mark.parametrize("missing", [".jsonl", ".jsonl.idx"],
+                         ids=["archive-data-missing-issue-647", "archive-index-missing-issue-647"])
+def test_an_archive_missing_a_piece_names_the_file_not_an_errno_issue_647(tmp_path, missing):
+    """#647: no missing-state path may reach the person as a raw Python error
+    string. A day archive whose data or index file is not there refuses the
+    export naming the file that is missing, never "[Errno 2] No such file or
+    directory"."""
+    rows, output = tmp_path / "rows", tmp_path / "out"
+    rows.mkdir()
+    present = ".jsonl.idx" if missing == ".jsonl" else ".jsonl"
+    (rows / f"2026-10-16{present}").write_text("{}\n")
+
+    ran = subprocess.run(
+        [sys.executable, str(EXPORTER), "--output", str(output), "--source", str(rows)],
+        capture_output=True, text=True, timeout=HANG_TIMEOUT)
+
+    assert ran.returncode == 1
+    assert f"2026-10-16{missing} is missing" in ran.stderr
+    assert "[Errno" not in ran.stderr and "Traceback" not in ran.stderr
+
+
+@pytest.mark.parametrize("error, told", [
+    (errno.ENOENT, "{path} is missing"),
+    (errno.EACCES, "{path}: Permission denied"),
+], ids=["missing-issue-647", "unreadable-issue-647"])
+def test_an_os_error_reaching_the_command_is_told_without_an_errno_issue_647(
+        tmp_path, monkeypatch, capsys, error, told):
+    """#647: whatever file a run finds missing or unreadable — a day folder the
+    store compacted away mid-run, an output folder it may not write — the
+    command's last word names the path and what is wrong with it, never Python's
+    own "[Errno N] ..." spelling."""
+    path = tmp_path / "rows/2026-10-16"
+
+    def failing(*_args):
+        raise OSError(error, os.strerror(error), str(path))
+
+    monkeypatch.setattr(ue, "export", failing)
+    monkeypatch.setattr(sys, "argv", ["usage-export", "--output", str(tmp_path / "out")])
+    with pytest.raises(SystemExit) as stopped:
+        ue.main()
+
+    assert stopped.value.code == 1
+    assert capsys.readouterr().err == "usage-export: " + told.format(path=path) + "\n"
+
+
+def test_a_blocked_destination_is_named_not_the_temporary_file_issue_647(tmp_path):
+    """#647: an OSError carrying two paths — the writer's temporary file and the
+    destination it was moving onto — must name the destination, the one the
+    person can act on. A ccusage.json that is a directory made the export say a
+    .usage-* temporary file "Is a directory" and then delete that file, which
+    names nothing the reader owns; the blocking destination is the answer."""
+    rows, output = tmp_path / "rows", tmp_path / "out"
+    rows.mkdir()
+    (output / "ccusage.json").mkdir(parents=True)
+
+    ran = subprocess.run(
+        [sys.executable, str(EXPORTER), "--output", str(output), "--source", str(rows)],
+        capture_output=True, text=True, timeout=HANG_TIMEOUT)
+
+    assert ran.returncode == 1
+    assert str(output / "ccusage.json") in ran.stderr
+    assert "Is a directory" in ran.stderr
+    assert "[Errno" not in ran.stderr and "Traceback" not in ran.stderr
 
 
 def test_the_summary_names_where_the_files_went_and_the_command_to_run_next_issue_382(tmp_path):
@@ -724,7 +919,7 @@ def test_the_summary_names_where_the_files_went_and_the_command_to_run_next_issu
     write(rows, "e.json", receipt("e", "claude-opus-5-5", "2026-10-16T05:00:00+00:00", cost=1e14))
 
     ran = subprocess.run(
-        [sys.executable, SPEC.origin, "--output", str(output), "--source", str(rows),
+        [sys.executable, str(EXPORTER), "--output", str(output), "--source", str(rows),
          "--since", "20261016"],
         capture_output=True, text=True, timeout=HANG_TIMEOUT)
 
@@ -742,6 +937,7 @@ def test_the_summary_names_where_the_files_went_and_the_command_to_run_next_issu
         "1 turn ccmorph estimated, $0.05",
         "1 turn left for ccusage to price at its list price",
         "1 turn unpriced (a damaged cost, not exported)",
+        "0 receipts moved by the store mid-run, skipped",
         "Then, with ccusage installed:",
         f"CLAUDE_CONFIG_DIR={root} ccusage claude daily --instances "
         f"--config {root}/ccusage.json",
@@ -759,7 +955,7 @@ def test_the_printed_command_runs_as_printed_for_a_folder_with_spaces_issue_382(
     write(rows, "a.json", receipt("a", "claude-opus-5-5", "2026-10-16T01:00:00+00:00", cost=0.1))
 
     ran = subprocess.run(
-        [sys.executable, SPEC.origin, "--output", str(output), "--source", str(rows)],
+        [sys.executable, str(EXPORTER), "--output", str(output), "--source", str(rows)],
         capture_output=True, text=True, timeout=HANG_TIMEOUT)
     assert ran.returncode == 0, ran.stderr
     command = next(l for l in ran.stdout.splitlines() if l.startswith("CLAUDE_CONFIG_DIR="))
@@ -789,7 +985,7 @@ def test_help_prints_the_ccusage_command_that_reads_the_export():
     parser reflowed the description into one paragraph, gluing the command to
     the sentence after it so it could not be copied as one line, and --output
     and --source were bare — a flag and a placeholder, nothing else."""
-    ran = subprocess.run([sys.executable, SPEC.origin, "--help"],
+    ran = subprocess.run([sys.executable, str(EXPORTER), "--help"],
                          capture_output=True, text=True, timeout=HANG_TIMEOUT)
     assert ran.returncode == 0, ran.stderr
     assert ("CLAUDE_CONFIG_DIR=ROOT ccusage claude daily --instances --config "
@@ -797,6 +993,34 @@ def test_help_prints_the_ccusage_command_that_reads_the_export():
     for flag in ("--output", "--source", "--since"):
         line = next((l for l in ran.stdout.splitlines() if l.lstrip().startswith(flag)), "")
         assert len(line.split()) > 2, f"{flag} is missing or says nothing: {line!r}"
+
+
+@pytest.mark.parametrize("state", ["home", "xdg"],
+                         ids=["default-state-home-issue-731", "xdg-state-home-issue-731"])
+def test_help_shows_the_source_default_as_a_real_path_issue_731(tmp_path, state):
+    """#731: --help described the --source default as "the state root's usage/"
+    — a sentence naming no folder, which read as the CCMORPH_STATE_DIR root and
+    sent that reader to a path the exporter never reads. The default is an XDG
+    state path, so --help prints the folder it resolves to under both roots."""
+    home = tmp_path / "home"
+    home.mkdir()
+    env = {k: v for k, v in os.environ.items() if k != "XDG_STATE_HOME"}
+    env["HOME"] = str(home)
+    default = home / ".local/state/ccmorph/usage"
+    if state == "xdg":
+        default = tmp_path / "state/ccmorph/usage"
+        env["XDG_STATE_HOME"] = str(tmp_path / "state")
+
+    ran = subprocess.run([sys.executable, str(EXPORTER), "--help"], env=env,
+                         capture_output=True, text=True, timeout=HANG_TIMEOUT)
+
+    assert ran.returncode == 0, ran.stderr
+    # The path sits on its own line, the way the ccusage command does (#382):
+    # in wrapped option help argparse breaks a long path mid-word, and a path
+    # that cannot be copied names no folder.
+    assert f"Default --source: {default}" in ran.stdout.splitlines(), (
+        f"--help never names the default store as one copyable line: {ran.stdout}")
+    assert "state root's" not in ran.stdout, "--help still points at a root it does not print"
 
 
 @pytest.mark.parametrize("since", ["2026-11-10", "2026111", ""])
@@ -810,7 +1034,7 @@ def test_a_date_in_the_wrong_format_names_the_format_and_an_example_issue_382(tm
     rows, output = tmp_path / "rows", tmp_path / "out"
     rows.mkdir()
     ran = subprocess.run(
-        [sys.executable, SPEC.origin, "--output", str(output), "--source", str(rows),
+        [sys.executable, str(EXPORTER), "--output", str(output), "--source", str(rows),
          "--since", since],
         capture_output=True, text=True, timeout=HANG_TIMEOUT)
 

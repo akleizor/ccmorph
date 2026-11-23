@@ -9,9 +9,19 @@ import (
 )
 
 var (
-	taskTag    = regexp.MustCompile(`^[A-Za-z0-9._-]{1,64}$`)
-	attemptTag = regexp.MustCompile(`^[0-9]{1,3}$`)
+	taskTagRE    = regexp.MustCompile(`^[A-Za-z0-9._-]{1,64}$`)
+	attemptTagRE = regexp.MustCompile(`^[0-9]{1,3}$`)
 )
+
+// ValidTaskTag reports whether s may name a task. The launcher writes this tag
+// into x-ccmorph-task and the gateway shim records it, so the two ask one rule
+// (#638): a tag either side accepts is one the other accepts too.
+func ValidTaskTag(s string) bool { return taskTagRE.MatchString(s) }
+
+// ValidAttemptTag reports whether s has the shape of an attempt number. The
+// shim still requires the number to fall in 1..999; the shape is the one rule
+// the launcher and the shim share (#638).
+func ValidAttemptTag(s string) bool { return attemptTagRE.MatchString(s) }
 
 // LaunchEnv is the profile's launch env pointed at the local bridge (base and key,
 // added when missing) or at the adapter (base only), plus the task tags the gateway
@@ -20,7 +30,7 @@ var (
 //
 // The bridge key is never an operand of anything: a credential on a command line
 // is visible to anything running as this user (.github/SECURITY.md).
-func LaunchEnv(env []string, bridgePort, bridgeKey string, adapter bool, adapterPort, task, attempt string) []string {
+func LaunchEnv(env []string, bridgePort, bridgeKey string, adapter bool, adapterPort, task, attempt, parent string) []string {
 	env = append([]string{}, env...)
 	set := func(key, val string, add bool) {
 		for i, e := range env {
@@ -42,11 +52,14 @@ func LaunchEnv(env []string, bridgePort, bridgeKey string, adapter bool, adapter
 		set("ANTHROPIC_BASE_URL", "http://127.0.0.1:"+adapterPort, false)
 	}
 	var hdrs []string
-	if taskTag.MatchString(task) {
+	if ValidTaskTag(task) {
 		hdrs = append(hdrs, "x-ccmorph-task: "+task)
 	}
-	if attemptTag.MatchString(attempt) {
+	if ValidAttemptTag(attempt) {
 		hdrs = append(hdrs, "x-ccmorph-attempt: "+attempt)
+	}
+	if ValidTaskTag(parent) {
+		hdrs = append(hdrs, "x-ccmorph-parent: "+parent)
 	}
 	if adapter && len(hdrs) > 0 {
 		env = append(env, "ANTHROPIC_CUSTOM_HEADERS="+strings.Join(hdrs, "\n"))
@@ -76,7 +89,7 @@ func launchEnv(args []string, in io.Reader, out, _ io.Writer) int {
 			env = append(env, sc.Text())
 		}
 	}
-	for _, e := range LaunchEnv(env, args[0], bridgeKey, args[1] == "1", args[2], args[3], args[4]) {
+	for _, e := range LaunchEnv(env, args[0], bridgeKey, args[1] == "1", args[2], args[3], args[4], os.Getenv("CLAUDE_CODE_SESSION_ID")) {
 		io.WriteString(out, e+"\x00")
 	}
 	io.WriteString(out, ".")

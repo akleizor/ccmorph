@@ -1,22 +1,18 @@
 """ccmorph-rc-hosts: config parsing and the relaunch policy."""
-import importlib.machinery
-import importlib.util
 import os
+import time
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
-from support import HANG_TIMEOUT, port_outside_the_ephemeral_pool
+from support import HANG_TIMEOUT, load_script, needs_loopback, port_outside_the_ephemeral_pool
 
 SCRIPT = Path(__file__).resolve().parent.parent / "addons" / "remote-control" / "ccmorph-rc-hosts"
 
 
 def load():
-    loader = importlib.machinery.SourceFileLoader("rc_hosts", str(SCRIPT))
-    spec = importlib.util.spec_from_loader("rc_hosts", loader)
-    mod = importlib.util.module_from_spec(spec)
-    loader.exec_module(mod)
-    return mod
+    return load_script(SCRIPT, "rc_hosts")
 
 
 @pytest.fixture(autouse=True)
@@ -730,13 +726,16 @@ class FakeProc:
 
 
 def run_main(m, monkeypatch, tmp_path, cfg, start, sleep=None,
-             edge_ready=lambda route: True, clock=None, args=None):
+             edge_ready=lambda route: True, clock=None, args=None, logs=True):
     """Drive m.main() over cfg until the scripted sleep raises SystemExit: logs
     under tmp_path, Host.start faked by `start`, the clock read from `clock`
     when given. `args` replaces the `--config` argument list main() gets.
-    Without a `sleep`, main() stops on its fifth sleep."""
+    Without a `sleep`, main() stops on its fifth sleep. `logs=False` leaves
+    tmp_path/logs absent: a fresh state dir whose first reload reaches the
+    switch bring-up before any Host.start created LOGS (issue #596)."""
     monkeypatch.setattr(m, "LOGS", tmp_path / "logs")
-    (tmp_path / "logs").mkdir(exist_ok=True)
+    if logs:
+        (tmp_path / "logs").mkdir(exist_ok=True)
     monkeypatch.setattr(m, "edge_ready", edge_ready)
     monkeypatch.setattr(m.Host, "start", start)
     if clock is not None:
@@ -1488,11 +1487,11 @@ def test_a_retired_conversation_has_its_host_deleted(tmp_path, monkeypatch):
 
     class FakeRc:
         @staticmethod
-        def default_account(): return "acct"
+        def account_candidates(): return ["acct"]
         @staticmethod
         def profile_env(p): return {"CLAUDE_CONFIG_DIR": "/x/acct"}
 
-    monkeypatch.setattr(m.importlib.machinery.SourceFileLoader, "load_module", lambda self: FakeRc)
+    monkeypatch.setattr(m, "rc_module", lambda: FakeRc)
     monkeypatch.setattr(m.subprocess, "run", lambda *a, **k: type(
         "R", (), {"stdout": '{"claudeAiOauth": {"accessToken": "tok"}}'})())
 
@@ -1574,22 +1573,33 @@ def test_days_settings_fall_back_to_the_documented_default_when_absent_or_malfor
         assert f"{name}={bad} is not a number" in capsys.readouterr().out
 
 
+@needs_loopback  # this live edge really listens on loopback: #611
 def test_a_live_edge_is_the_record_its_own_file_holds(tmp_path, monkeypatch):
     """The record is what the adoption decision compares, so the reader returns it,
-    and only for an edge that is both alive and answering."""
+    and only for an edge that is alive, answering, and still holds its TLS
+    material. Liveness is ccmorph-rc's live_edge (#638): the supervisor must not
+    adopt an edge whose CA file is gone, because ccmorph-rc refuses to serve from
+    one and every bridge under it would fail closed."""
     import json, os, socket
     m = load()
+    rc = m.rc_module()
     monkeypatch.setattr(m, "EDGES", tmp_path)
+    monkeypatch.setattr(rc, "EDGES", tmp_path)    # live_edge reads its own module's
     # Below the ephemeral floors: the record's port must read dead the moment
     # srv closes it, and a number drawn from the ephemeral pool is free for
     # any parallel process to take in that gap.
     port = port_outside_the_ephemeral_pool()
+    ca = tmp_path / "edge-ca.pem"
+    ca.write_text("")
     with socket.socket() as srv:
         srv.bind(("127.0.0.1", port))
         srv.listen()
-        record = {"pid": os.getpid(), "port": port, "ca": "x",
+        record = {"pid": os.getpid(), "port": port, "ca": str(ca),
                   "upstream": "u", "tiers": {"fable": "m"}}
         (tmp_path / "gw.json").write_text(json.dumps(record))
+        ca.unlink()
+        assert m.edge_ready("gw") is None         # the CA file is gone: refused
+        ca.write_text("")
         assert m.edge_ready("gw") == record
     assert m.edge_ready("gw") is None             # its proxy stopped answering
     (tmp_path / "gw.json").write_text(json.dumps({**record, "pid": 5_000_000}))
@@ -1742,6 +1752,54 @@ def test_every_processless_session_is_handed_back_and_retried_slowly(tmp_path, m
     clock[0] += m.REWAKE_AFTER
     m.recover_processless([str(repo)], done, {str(repo)})
     assert sorted(posts[3:]) == ["cse_01PARKED", "cse_01UNARCH"]   # still dead: retried slowly
+
+
+def test_an_idle_session_parks_and_wakes_only_on_input(tmp_path, monkeypatch):
+    """21 idle phone sessions held 3.2 GB, some 2.5 days old (2026-11-19): an idle
+    session's process ends after park_hours and comes back on its next message."""
+    import json
+    m = load()
+    repo = tmp_path / "repo"
+    (repo / ".claude").mkdir(parents=True)
+    (repo / ".claude" / "rc-host.json").write_text(json.dumps({"environmentId": "env_01R"}))
+    now = 100_000.0
+    old, fresh = "1970-01-01T00:00:00Z", "1970-01-02T03:46:30Z"   # 0 s and 99,990 s
+    active = [{"id": "cse_01OLD", "environment_id": "env_01R", "connection_status": "connected",
+               "worker_status": "idle", "last_event_at": old, "user_message_count": 4},
+              {"id": "cse_01BUSY", "environment_id": "env_01R", "connection_status": "connected",
+               "worker_status": "running", "last_event_at": old},
+              {"id": "cse_01NEW", "environment_id": "env_01R", "connection_status": "connected",
+               "worker_status": "idle", "last_event_at": fresh}]
+    posts, killed = [], []
+
+    def api(method, path, token, body=None):
+        if method == "POST":
+            posts.append(body["session_id"])
+            return {}
+        return {"data": active}
+    monkeypatch.setattr(m, "api", api)
+    monkeypatch.setattr(m, "account_token", lambda: "tok")
+    monkeypatch.setattr(m.time, "time", lambda: now)
+    monkeypatch.setattr(m, "session_pid", lambda sid: {"cse_01OLD": 41, "cse_01BUSY": 42, "cse_01NEW": 43}[sid])
+    monkeypatch.setattr(m.os, "kill", lambda pid, sig: killed.append(pid))
+    monkeypatch.setattr(m, "gone_within", lambda pid, s: True)
+    parked = {}
+    assert m.park_idle([str(repo)], now, parked, m.park_hours("") * 3600) == ["cse_01OLD"]
+    assert killed == [41]                       # not the running one, not the recent one
+    active[0]["connection_status"] = "disconnected"
+    done = {}
+    m.recover_processless([str(repo)], done, {str(repo)}, None, parked)
+    assert posts == []                          # parked, no input: left processless
+    active[0]["user_message_count"] = 5         # Alex sent a message
+    m.recover_processless([str(repo)], done, {str(repo)}, None, parked)
+    assert posts == ["cse_01OLD"] and parked == {}   # handed back: it wakes
+
+
+def test_park_hours_zero_keeps_every_process(monkeypatch):
+    m = load()
+    assert m.park_hours("park_hours=0\n") == 0
+    assert m.park_idle([], 0.0, {}, 0) == []
+    assert m.parse("park_hours=6\n") == {}     # a setting, not a folder
 
 
 def test_no_hand_back_before_the_host_that_serves_it_is_up(tmp_path, monkeypatch):
@@ -2240,12 +2298,13 @@ def test_a_running_repo_host_log_is_truncated_in_place_past_the_cap(tmp_path, mo
     monkeypatch.setattr(m, "LOGS", logs)
     h = m.Host(str(tmp_path / "repo"), "gw")
     child = logs / f"{h.debugfile.stem}-cse_01A.log"
-    for f in (h.debugfile, child):
+    for f in (h.logfile, h.debugfile, child):
         f.write_bytes(b"x" * (m.LOG_CAP + 1))
     ino = h.debugfile.stat().st_ino
     h.bound_logs()
     assert h.debugfile.stat().st_size == 0 and h.debugfile.stat().st_ino == ino
     assert child.stat().st_size == 0
+    assert h.logfile.stat().st_size == 0     # the host's own log reached 300 MB uncapped
     assert h.debugfile.with_suffix(".log.1").stat().st_size == m.LOG_CAP + 1
 
 
@@ -2329,6 +2388,23 @@ def test_purging_a_session_removes_its_bridge_transcript(tmp_path, monkeypatch):
     monkeypatch.setattr(m, "host_envs", lambda folders: {})
     m.purge_archived([], m.stamp("2026-10-10T12:00:00Z"), 86400)
     assert not gone.exists()
+    assert kept.exists()
+
+
+def test_a_start_removes_session_records_past_retention(tmp_path, monkeypatch):
+    """Unbounded session logs filled the internal disk (239 files, 2.8 GB on 2026-11-21)."""
+    m = load()
+    logs = tmp_path / "logs"
+    logs.mkdir()
+    monkeypatch.setattr(m, "LOGS", logs)
+    old = logs / "bridge-transcript-cse_01OLD.jsonl"
+    kept = logs / "bridge-transcript-cse_01NEW.jsonl"
+    old.write_text("x")
+    kept.write_text("x")
+    stale = time.time() - (m.LOG_KEEP_DAYS + 1) * 86400
+    os.utime(old, (stale, stale))
+    m.sweep_logs()
+    assert not old.exists()
     assert kept.exists()
 
 
@@ -2589,6 +2665,7 @@ def test_a_session_the_server_will_not_resume_is_not_asked_again(tmp_path, monke
     assert _posts_per_cycle(m, repo, posts, clock, 2, done, failed) == [0, 0]
 
 
+@needs_loopback  # the half-written reply comes off a real listener: #611
 def test_a_truncated_api_reply_does_not_stop_the_supervisor(tmp_path, monkeypatch):
     """A reply cut off mid-body raised http.client.IncompleteRead (not an OSError)
     out of api() and exited main(); launchd then restarted every host (2026-10-14)."""
@@ -2604,13 +2681,15 @@ def test_a_truncated_api_reply_does_not_stop_the_supervisor(tmp_path, monkeypatc
     srv.bind(("127.0.0.1", 0))
     srv.listen(8)
 
+    seen = []        # every request the listener was asked for, as `posts` records hand-backs
+
     def serve():
         while True:
             try:
                 c, _ = srv.accept()
             except OSError:
                 return
-            c.recv(65536)
+            seen.append(c.recv(65536))       # before the reply: a call that returned saw this
             c.sendall(b"HTTP/1.1 200 OK\r\nContent-Length: 500\r\n\r\n" + b'{"data": []}')
             c.close()
     threading.Thread(target=serve, daemon=True).start()
@@ -2622,6 +2701,9 @@ def test_a_truncated_api_reply_does_not_stop_the_supervisor(tmp_path, monkeypatc
         m.purge_archived([str(repo)], 10**10, 86400)
     finally:
         srv.close()
+    assert len(seen) >= 3, (
+        f"only {len(seen)} request(s) reached the listener: each of the three calls must "
+        "read the truncated reply through api() for the 2026-10-14 exit to be guarded at all")
 
 
 def test_purge_days_is_a_setting_not_a_folder():
@@ -2631,16 +2713,42 @@ def test_purge_days_is_a_setting_not_a_folder():
     assert m.purge_days(text) == 7.0
 
 
-def is_python_helper(text):
-    """A python shebang, or a uv inline script (its shebang need not name python)."""
+PEP585_GENERICS = ("list", "dict", "set", "frozenset", "tuple", "type")
+
+
+def is_python_helper(name, text):
+    """A python shebang, a uv inline script (its shebang need not name python),
+    or any module under addons/, which ships on the add-on's 3.8 floor without a
+    shebang of its own."""
+    if name.startswith("addons/") and name.endswith(".py"):
+        return True
     shebang = text.splitlines()[0] if text.startswith("#!") else ""
     return "python" in shebang or ("uv run --script" in shebang and "# /// script" in text)
+
+
+def annotation_nodes(tree):
+    """Every annotation expression in the tree: parameters, returns, declared names."""
+    import ast
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            a = node.args
+            for arg in [a.vararg, a.kwarg, *a.posonlyargs, *a.args, *a.kwonlyargs]:
+                if arg is not None and arg.annotation is not None:
+                    yield arg.annotation
+            if node.returns is not None:
+                yield node.returns
+        elif isinstance(node, ast.AnnAssign) and node.annotation is not None:
+            yield node.annotation
 
 
 def test_every_shipped_python_helper_uses_nothing_newer_than_the_python_38_floor():
     """The add-on declares 3.8 (CI python-floor); str.removeprefix/removesuffix, functools.cache
     and dict | dict are 3.9+ and broke imports there (2026-10). Static, so it fails on any
-    interpreter. One rule set over every tracked file with a python shebang."""
+    interpreter. One rule set over every shipped Python file: a python shebang,
+    a uv inline script, or any .py under addons/. And on that floor the add-on's
+    PEP 585 builtins and PEP 604 | in an annotation need "from __future__ import
+    annotations" or the import itself evaluates them (rc_addon's tuple | None
+    raised TypeError on <= 3.9, 2026-11-16)."""
     import ast
     import subprocess
     root = SCRIPT.parent.parent.parent
@@ -2653,10 +2761,11 @@ def test_every_shipped_python_helper_uses_nothing_newer_than_the_python_38_floor
         if not path.is_file() or path.is_symlink():
             continue
         text = path.read_text(errors="replace")
-        if not is_python_helper(text):
+        if not is_python_helper(name, text):
             continue
         seen.add(name)
-        for node in ast.walk(ast.parse(text)):
+        tree = ast.parse(text)
+        for node in ast.walk(tree):
             if isinstance(node, ast.Attribute) and node.attr in ("removesuffix", "removeprefix"):
                 bad.append(f"{name} line {node.lineno}: str.{node.attr}")
             if isinstance(node, ast.Attribute) and node.attr == "cache" \
@@ -2666,8 +2775,52 @@ def test_every_shipped_python_helper_uses_nothing_newer_than_the_python_38_floor
                     getattr(node.left, "attr", "") == "environ"
                     or isinstance(node.right, (ast.Dict, ast.DictComp))):
                 bad.append(f"{name} line {node.lineno}: dict | dict")
+        if name.startswith("addons/"):
+            defers = any(isinstance(n, ast.ImportFrom) and n.module == "__future__"
+                         and any(a.name == "annotations" for a in n.names)
+                         for n in ast.walk(tree))
+            if not defers:
+                for ann in annotation_nodes(tree):
+                    for node in ast.walk(ann):
+                        if isinstance(node, ast.Subscript) and isinstance(node.value, ast.Name) \
+                                and node.value.id in PEP585_GENERICS:
+                            bad.append(f"{name} line {node.lineno}: PEP 585 {node.value.id}[...] "
+                                       f"without the annotations future import")
+                        if isinstance(node, ast.BinOp) and isinstance(node.op, ast.BitOr):
+                            bad.append(f"{name} line {node.lineno}: PEP 604 | annotation "
+                                       f"without the annotations future import")
     assert len(seen) >= 8, seen
     assert not bad, bad
+
+
+def test_no_shipped_python_helper_loads_a_module_with_load_module():
+    """Loader.load_module() is deprecated in 3.12 and gone in 3.15: a shipped script
+    that loads through it starts raising AttributeError the day python3 bumps, and
+    the rc-hosts supervisor would crash-loop every start with no edge maintained
+    (GH-812). The floor test above catches APIs newer than 3.8; this is its ceiling
+    twin over the same selection walk: newer APIs that are already removed.
+    This file itself is not in the walk (no python shebang), so the message below
+    cannot match its own rule."""
+    import subprocess
+    root = SCRIPT.parent.parent.parent
+    names = subprocess.run(["git", "ls-files"], cwd=root, capture_output=True, text=True,
+                           check=True, timeout=HANG_TIMEOUT).stdout.split()
+    bad = []
+    for name in names:
+        path = root / name
+        if not path.is_file() or path.is_symlink():
+            continue
+        text = path.read_text(errors="replace")
+        if not is_python_helper(name, text):
+            continue
+        for lineno, line in enumerate(text.splitlines(), 1):
+            if ".load_module(" in line:
+                bad.append(f"{name} line {lineno}: {line.strip()}")
+    assert not bad, (
+        "load_module() was removed in Python 3.15 (deprecated in 3.12), so this "
+        "launcher load breaks the day python3 bumps; use importlib.util."
+        "spec_from_loader + module_from_spec + exec_module instead "
+        "(see tests/support.py load_script): " + "; ".join(bad))
 
 
 def _running_host(m, repo, clock):
@@ -3078,15 +3231,15 @@ def _login_refresh(monkeypatch):
 
     def login():
         reads.append(1)
-        return {"expiresAt": (1000.0 + left[0]) * 1000}
+        return {"expiresAt": (1000.0 + left[0]) * 1000, "refreshToken": "refresh"}
     monkeypatch.setattr(m, "account_login", login)
 
     class RC:
         PROXY_ENV = ("HTTPS_PROXY",)
 
         @staticmethod
-        def default_account():
-            return "acct"
+        def account_candidates():
+            return ["acct"]
 
         @staticmethod
         def profile_env(name):
@@ -3153,6 +3306,35 @@ def test_the_account_login_is_refreshed_before_it_expires(monkeypatch):
     assert len(runs) == 1
     m.keep_login_fresh(clock, 3002.0 + m.LOGIN_REFRESH_RETRY)
     assert len(runs) == 2
+
+
+def test_signed_out_login_does_not_refresh_and_reports_once_per_episode(monkeypatch, capsys):
+    m, left, reads, runs = _login_refresh(monkeypatch)
+    login = {"expiresAt": 0, "accessToken": "expired"}
+    monkeypatch.setattr(m, "account_login", lambda: login)
+    monkeypatch.setattr(m, "host_envs", lambda folders: {"env": "repo"})
+
+    def unauthorized(token, status):
+        raise m.urllib.error.HTTPError("url", 401, "Unauthorized", None, None)
+    monkeypatch.setattr(m, "sessions", unauthorized)
+    clock = m.Clock()
+    for now in (0.0, 20.0):
+        m.keep_login_fresh(clock, now)
+        m.host_sessions(["repo"], "active")
+    output = capsys.readouterr().out
+    assert runs == []
+    assert output.count("account acct is signed out; fix: ccmorph login acct") == 1
+    assert output.count("active session check failed:") == 1
+    assert "active session check failed: HTTP Error 401: Unauthorized; fix: ccmorph login acct" in output
+    login.update(refreshToken="refresh", expiresAt=4_600_000)
+    m.keep_login_fresh(clock, 40.0)
+    del login["refreshToken"]
+    m.keep_login_fresh(clock, clock.next_login_check)
+    m.host_sessions(["repo"], "active")
+    output = capsys.readouterr().out
+    assert output.count("account acct is signed out; fix: ccmorph login acct") == 1
+    assert output.count("active session check failed:") == 1
+    assert runs == []
 
 
 def test_a_refresh_turn_that_never_exits_is_killed_and_replaced(monkeypatch):
@@ -3255,3 +3437,314 @@ def test_a_kept_worktree_is_reported_once_per_run(capsys):
     for _ in range(3):
         m.kept_once("/r: cse_1 archived; worktree kept: its branch is missing")
     assert capsys.readouterr().out.count("worktree kept") == 1
+
+
+def test_inference_names_any_profile_and_defaults_to_route(tmp_path, monkeypatch):
+    mod = load()
+    monkeypatch.setattr(mod, "INFERENCE", tmp_path / "inference")
+    routes = {"llmgate"}
+    assert mod.inference("route=llmgate\n~/x\n", routes, "alex") == "route"
+    assert mod.inference("inference=alex  # subscription first\n", routes, "alex") == "account"
+    assert mod.inference("inference=llmgate\n", routes, "alex") == "route"
+    assert mod.inference("inference=oli\n", routes, "alex") == "oli"     # brought up beside the edge
+    assert mod.inference("# inference=alex\n", routes, "alex") == "route"
+    mod.rc_module().write_inference(mod.inference("inference=alex\n", routes, "alex"), mod.INFERENCE)
+    assert (tmp_path / "inference").read_text() == "account\n"
+
+
+def _two_account_profiles(state_dir: Path) -> None:
+    """Two Claude account profiles on the machine: the state under which the
+    one-shot `default_account()` refuses, and a refusal there is SystemExit."""
+    state_dir.mkdir(parents=True, exist_ok=True)
+    for name in ("acct1", "acct2"):
+        (state_dir / f"{name}.conf").write_text("type=sub\n")
+
+
+@pytest.mark.parametrize("mapping, named, hosted", [
+    pytest.param("inference=acct1", True, True, id="ambiguous-account-issue-596"),
+    pytest.param("# inference=acct1", False, False, id="comment-mentions-inference-issue-596"),
+])
+def test_a_config_reload_never_dies_on_account_resolution(tmp_path, monkeypatch, capsys,
+                                                          mapping, named, hosted):
+    """Two Claude account profiles made every config reload kill the supervisor:
+    the reload branch called `default_account()`, a one-shot CLI helper whose
+    refusal prints for a human holding a terminal and exits the process, and
+    launchd's next start only deferred the same crash to the next edit (GH-596,
+    a5b5339's branch). The old trigger was the substring `inference=` anywhere
+    in the text, so a comment merely mentioning it resolved accounts too. Now
+    resolution happens only for a real mapping and never by dying: an ambiguous
+    account is no account match, so the word is brought up as a profile -- where
+    `ccmorph-rc --switch` refuses into switch.log, not into the supervisor --
+    and the ambiguity itself is named once in the supervisor's log."""
+    m = load()
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _two_account_profiles(tmp_path / "state")
+    cfg = tmp_path / "rc-hosts"
+    cfg.write_text(f"route=gateway\n{repo}\n{mapping}\n")
+    popens = []
+    monkeypatch.setattr(m.subprocess, "Popen", lambda cmd, **kw: popens.append(cmd) or FakeProc())
+
+    def start(self):
+        self.proc, self.started = FakeProc(), m.time.time()
+
+    run_main(m, monkeypatch, tmp_path, cfg, start)
+    out = capsys.readouterr().out
+    assert ("no unique Claude account profile (acct1, acct2)" in out) is named
+    assert (len(popens) == 1) is hosted
+    if hosted:
+        assert popens[0] == [str(m.HERE / "ccmorph-rc"), "acct1", "--switch"]
+    else:     # a comment is no mapping: nothing resolved, the route word stands
+        assert (tmp_path / "state" / "profiles" / ".rc-bridge" / "inference").read_text() == "route\n"
+
+
+def test_a_signed_out_session_report_never_dies_on_account_resolution(tmp_path, monkeypatch, capsys):
+    """Two Claude account profiles turned the signed-out 401 report into a crash
+    loop: host_sessions() named the account in its fix line with default_account(),
+    a one-shot CLI helper whose refusal exits the process, and the refusal is a
+    SystemExit raised inside the very `except LOGIN_ERRORS` handler that caught the
+    401, so it escaped the supervisor at every active check -- and since the flag
+    landed after the log line, launchd's next start met the same crash (GH-805,
+    the shape #596 recorded for the reload branch). The report must stand on its
+    own: a fix line that names no account when none can be named, and the
+    once-per-episode flag landing with it."""
+    m = load()
+    _two_account_profiles(tmp_path / "state")   # the real default_account() now refuses: SystemExit
+    login = {"expiresAt": 0, "accessToken": "expired"}   # signed out: no refreshToken
+    monkeypatch.setattr(m, "account_login", lambda: login)
+    monkeypatch.setattr(m, "host_envs", lambda folders: {"env": "repo"})
+
+    def unauthorized(token, status):
+        raise m.urllib.error.HTTPError("url", 401, "Unauthorized", None, None)
+    monkeypatch.setattr(m, "sessions", unauthorized)
+
+    assert m.host_sessions(["repo"], "active") == ("", [])
+    out = capsys.readouterr().out
+    assert "active session check failed: HTTP Error 401: Unauthorized; fix: ccmorph login" in out
+    assert m.host_sessions(["repo"], "active") == ("", [])   # once per episode
+    assert "session check failed" not in capsys.readouterr().out
+
+
+def test_account_name_resolves_one_profile_and_degrades_on_zero_or_several(monkeypatch, capsys):
+    """GH-807: the supervisor's one account-name resolution, in inference_account's
+    shape. One candidate names the account; zero is a silent no-op; several are no
+    account at all, and the operator gets ONE line naming them per episode -- the
+    hot paths that resolve this run every recovery cycle, so a line per call would
+    bury the log it exists to reach."""
+    m = load()
+    candidates = [["acct"]]
+    monkeypatch.setattr(m, "rc_module",
+                        lambda: SimpleNamespace(account_candidates=lambda: candidates[0]))
+    assert m.account_name() == "acct"
+    assert capsys.readouterr().out == ""
+    candidates[0] = []                     # nothing to pass --as yet: no line either
+    assert m.account_name() == ""
+    assert capsys.readouterr().out == ""
+    candidates[0] = ["acct1", "acct2"]
+    assert m.account_name() == ""
+    out = capsys.readouterr().out
+    assert out.count("no unique Claude account profile (acct1, acct2)") == 1
+    assert m.account_name() == ""          # the same episode: one line, no more
+    assert capsys.readouterr().out == ""
+    candidates[0] = ["acct1", "acct2", "acct3"]   # a new set is a new episode
+    assert m.account_name() == ""
+    assert "no unique Claude account profile (acct1, acct2, acct3)" in capsys.readouterr().out
+
+
+def test_inference_and_the_login_resolution_share_one_ambiguity_notice(tmp_path, capsys):
+    """GH-807 merge-gate finding: inference_account() enumerated the candidates
+    and logged its own ambiguity line, while account_name() did it again with a
+    separate episode state -- so one episode that resolved an `inference=`
+    mapping and then the login account produced two ambiguity notices. The
+    reload's resolution now goes through account_name(), sharing both the
+    resolution and the once-per-episode line, in either order."""
+    _two_account_profiles(tmp_path / "state")
+    m = load()
+    assert m.inference_account("inference=acct1\n") == ""
+    assert m.account_name() == ""
+    notices = [line for line in capsys.readouterr().out.splitlines() if "acct1, acct2" in line]
+    assert len(notices) == 1, notices
+    m = load()                              # the other order shares the same episode too
+    assert m.account_name() == ""
+    assert m.inference_account("inference=acct1\n") == ""
+    notices = [line for line in capsys.readouterr().out.splitlines() if "acct1, acct2" in line]
+    assert len(notices) == 1, notices
+
+
+def test_two_account_profiles_still_report_a_signed_out_login(tmp_path, monkeypatch, capsys):
+    """GH-807, first #805 sibling: with two Claude account profiles the signed-out
+    report called the one-shot account helper under `except LOGIN_ERRORS`, which
+    swallowed its SystemExit -- no line, no flag, every retry silent forever. The
+    fix must log the signed-out line (naming no account, since none can be named),
+    set signed_out_reported, and still name the candidates once through the shared
+    resolution."""
+    m = load()
+    _two_account_profiles(tmp_path / "state")
+    login = {"expiresAt": 0, "accessToken": "expired"}   # signed out: no refreshToken
+    monkeypatch.setattr(m, "account_login", lambda: login)
+    clock = m.Clock()
+    m.keep_login_fresh(clock, 0.0)
+    out = capsys.readouterr().out
+    assert out.count("no unique Claude account profile (acct1, acct2)") == 1
+    assert "is signed out; fix: ccmorph login" in out
+    assert m.signed_out_reported is True
+    m.keep_login_fresh(clock, m.RECOVER_EVERY)     # the episode is reported once
+    assert "signed out" not in capsys.readouterr().out
+
+
+def test_two_account_profiles_still_retry_the_login_refresh(tmp_path, monkeypatch, capsys):
+    """GH-807, second #805 sibling: with two Claude account profiles the refresh
+    target's resolve raised the one-shot helper's SystemExit before Popen, and the
+    guard swallowed it -- no line, no refresh, and nothing said why. Inside the
+    refresh window the refusal must land once naming the candidates, no turn may
+    start, and the next recovery cycle must read the login again rather than
+    starve forever."""
+    m = load()
+    _two_account_profiles(tmp_path / "state")
+    reads = []
+    monkeypatch.setattr(m.time, "time", lambda: 1000.0)
+
+    def login():
+        reads.append(1)
+        return {"expiresAt": 1_300_000.0, "refreshToken": "refresh"}   # 300 s left
+    monkeypatch.setattr(m, "account_login", login)
+    runs = []
+    monkeypatch.setattr(m.subprocess, "Popen", lambda *a, **kw: runs.append(a) or pytest.fail(
+        "no refresh turn can run without a nameable account"))
+    clock = m.Clock()
+    m.keep_login_fresh(clock, 0.0)
+    out = capsys.readouterr().out
+    assert out.count("no unique Claude account profile (acct1, acct2)") == 1
+    assert runs == []
+    assert clock.last_refresh == float("-inf")     # no refresh was marked as attempted
+    m.keep_login_fresh(clock, m.RECOVER_EVERY)
+    assert len(reads) == 2                         # retried on the next cycle
+    assert capsys.readouterr().out == ""           # one refusal line per episode
+
+
+def test_no_unique_account_profile_is_a_readable_cause_at_every_keychain_reader(
+        tmp_path, monkeypatch, capsys):
+    """GH-807: keychain_service() resolved through the one-shot helper, so with two
+    account profiles its refusal surfaced at four sites as the bare `1` of
+    SystemExit's str. The cause must name the candidates, and each site must print
+    it instead of `failed: 1`."""
+    m = load()
+    _two_account_profiles(tmp_path / "state")
+    with pytest.raises(ValueError) as raised:
+        m.keychain_service()
+    assert "no unique Claude account profile (acct1, acct2)" in str(raised.value)
+    monkeypatch.setattr(m, "host_envs", lambda folders: {"env": "repo"})
+
+    class Host:
+        edge = False
+        proc = object()                # running here, so restart_logged_out checks it
+        folder = "repo"
+
+        def lost_login(self):
+            return "No access token for session fetch"
+
+        def mark_logs(self):
+            pass
+
+    m.host_sessions(["repo"], "active")
+    m.restart_logged_out({"repo": Host()}, 0.0)
+    m.purge_archived(["repo"], 0.0, 1.0)
+    assert m.delete_host(Host()) is False
+    out = capsys.readouterr().out
+    cause = "no unique Claude account profile (acct1, acct2)"
+    for prefix in ("active session check failed: ", "archived session purge failed: ",
+                   "host not deleted: ", "account login is unreadable too ("):
+        assert any(prefix in line and cause in line for line in out.splitlines()), prefix
+    assert "failed: 1" not in out and "unreadable too (1)" not in out
+
+
+def test_the_supervisor_never_calls_the_one_shot_account_helper():
+    """GH-807 kind-level guard (#596's shape): ccmorph-rc-hosts is a long-lived
+    supervisor, and the one-shot account helper refuses by exiting the process.
+    A guard around such a call prevents the crash only -- it swallows the refusal's
+    message and whatever work the caller was about to do. Every site resolves
+    through account_name(), fed by account_candidates()."""
+    source = SCRIPT.read_text()
+    assert "default_account(" not in source, (
+        "ccmorph-rc-hosts must not call default_account(): its refusal is a SystemExit "
+        "that a surrounding guard swallows (GH-807). Resolve through account_name(), "
+        "fed by rc_module().account_candidates().")
+
+
+def test_a_first_config_with_inference_creates_its_switch_log(tmp_path, monkeypatch):
+    """A fresh state dir whose first config carries `inference=<profile>` died
+    FileNotFoundError on its first reload: the bring-up Popen's stderr opened
+    LOGS/switch.log, but LOGS is created only inside Host.start, which runs
+    later in the same tick -- the #419 comment already warns the mkdir sits
+    past the early returns, and the reload branch walked into the same hole
+    (GH-596). The supervisor must live, and the log it wants must be created
+    on demand, mkdir first."""
+    m = load()
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    cfg = tmp_path / "rc-hosts"
+    cfg.write_text(f"route=gateway\n{repo}\ninference=oli\n")
+    popens = []
+    monkeypatch.setattr(m.subprocess, "Popen", lambda cmd, **kw: popens.append(cmd) or FakeProc())
+
+    def start(self):
+        self.proc, self.started = FakeProc(), m.time.time()
+
+    run_main(m, monkeypatch, tmp_path, cfg, start, logs=False)   # no host ever started: no LOGS
+    assert popens == [[str(m.HERE / "ccmorph-rc"), "oli", "--switch"]]
+    assert (tmp_path / "logs" / "switch.log").exists()
+
+
+def test_two_concurrent_write_inference_callers_each_land_a_whole_word(tmp_path):
+    """write_inference used one shared `<target>.tmp`, and both the supervisor
+    and a manual `--switch` write STATE/inference: one writer's replace() could
+    rename the other's half-written temp away (FileNotFoundError, the same
+    uncaught path as the reload-death), or the two O_TRUNC writes could
+    interleave into a torn word that inference_target silently reads as "route"
+    (GH-596). Two writers through the real seam must each land a whole word and
+    leave no temp behind. The loop count manufactures contention, not a timing
+    bound: with unique temps every interleave satisfies these assertions."""
+    from concurrent.futures import ThreadPoolExecutor
+    mod = load()
+    rc = mod.rc_module()
+    path = tmp_path / "inference"
+    errors = []
+
+    def writer(word):
+        for _ in range(200):
+            try:
+                rc.write_inference(word, path)
+            except OSError as e:
+                errors.append(e)
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        list(pool.map(writer, ("firstword", "secondword")))
+    assert errors == []
+    assert path.read_text() in ("firstword\n", "secondword\n")
+    assert [p.name for p in tmp_path.iterdir() if p != path] == []
+
+
+def test_a_failed_write_inference_raises_its_own_error_and_leaves_no_temp(tmp_path, monkeypatch):
+    """write_inference cleans a failed write up under `suppress(OSError)`, and
+    ccmorph-rc never imported suppress: when os.replace failed, the cleanup
+    itself raised NameError, which masked the real write failure and left
+    `inference.<unique>.tmp` beside the switch file (GH-596, merge-gate
+    finding). A failed write must re-raise its own OSError, remove its temp,
+    and leave the previous word in place, so every proxy keeps reading the
+    last whole word."""
+    rc = load().rc_module()
+    path = tmp_path / "bridge" / "inference"
+    path.parent.mkdir()
+    path.write_text("route\n")
+    injected = OSError("injected: the disk is full")
+
+    def refuse(src, dst):
+        raise injected
+
+    with monkeypatch.context() as mp:
+        mp.setattr(os, "replace", refuse)
+        with pytest.raises(OSError) as raised:
+            rc.write_inference("account", path)
+    assert raised.value is injected
+    assert path.read_text() == "route\n"
+    assert sorted(p.name for p in path.parent.iterdir()) == ["inference"]

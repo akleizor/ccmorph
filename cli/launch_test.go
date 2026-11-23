@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"encoding/json"
 	"errors"
 	"io"
 	"os"
@@ -12,6 +13,7 @@ import (
 	"strings"
 	"syscall"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/akleizor/ccmorph/ctxwindow"
@@ -533,11 +535,15 @@ func coreCopy(t *testing.T) string {
 	return core
 }
 
-// TestMain lets the route fixture run this test binary as the core's route
-// hold: started as `<core> util route-hold <users>` with
-// CCMORPH_TEST_HOLD_USERS set, it runs util's own route-hold, so the process
-// table shows the fixture's holder the way it shows the real one (#408).
+// TestMain lets a fixture run this test binary as the core: started as
+// `<core> model-window …` it runs the real resolver's migration and reads, and
+// started as `<core> util route-hold <users>` with CCMORPH_TEST_HOLD_USERS set
+// it runs util's own route-hold, so the process table shows the fixture's
+// holder the way it shows the real one (#408).
 func TestMain(m *testing.M) {
+	if len(os.Args) > 1 && os.Args[1] == "model-window" {
+		os.Exit(ctxwindow.WindowMain(os.Args[2:], os.Stdout, os.Stderr))
+	}
 	if os.Getenv("CCMORPH_TEST_HOLD_USERS") != "" && len(os.Args) > 1 && os.Args[1] == "util" {
 		os.Exit(util.Main(os.Args[2:], os.Stdin, os.Stdout, io.Discard))
 	}
@@ -1511,6 +1517,137 @@ func TestAnAdapterRefusalStandsAlone(t *testing.T) { // issue #374
 	}
 }
 
+// A launch whose arguments open no session — a Claude subcommand, or a
+// print-and-exit --help/-v — has no session for a gateway to serve: it starts
+// neither the adapter nor the bridge, asks the route nothing, and execs claude
+// with the arguments passed through even while the endpoint is unreachable
+// (#650, INTENT promise 6). The stub core dies on adapter-start the way the
+// real adapter dies against an endpoint that does not answer, so a launch
+// that waits on readiness cannot reach claude.
+func TestALaunchThatOpensNoSessionPassesThroughADeadGateway(t *testing.T) {
+	for _, tc := range []struct {
+		id   string
+		sub  string
+		argv []string
+	}{
+		{"a-claude-subcommand-passes-through-issue-650", "1", []string{"mcp", "list"}},
+		{"the-help-flag-passes-through-issue-650", "0", []string{"--help"}},
+		{"the-version-flag-passes-through-issue-650", "0", []string{"-v"}},
+	} {
+		t.Run(tc.id, func(t *testing.T) {
+			t.Setenv("HOME", t.TempDir())
+			t.Setenv("CCMORPH_SUBCOMMAND_LAUNCH", tc.sub)
+			state, profiles := t.TempDir(), t.TempDir()
+			os.MkdirAll(filepath.Join(profiles, "gw650"), 0o755)
+			os.WriteFile(filepath.Join(state, "gw650.conf"), []byte(
+				"type=apikey\nbase_url=http://127.0.0.1:9\napi_key=k"), 0o600)
+			argv := tc.argv
+			libexec := t.TempDir()
+			log := filepath.Join(libexec, "calls.log")
+			os.WriteFile(filepath.Join(libexec, "ccmorph-core"), []byte(
+				"#!/bin/sh\n{ for a do printf '%s\\n' \"$a\"; done; printf '.\\n'; } >> '"+log+"'\n"+
+					"if [ \"$1\" = util ] && [ \"$2\" = adapter-start ]; then\n"+
+					"  echo \"ccmorph: 'gw650': adapter exited before readiness; session not started.\" >&2\n"+
+					"  exit 1\nfi\nexit 0\n"), 0o755)
+
+			r, w, err := os.Pipe()
+			if err != nil {
+				t.Fatal(err)
+			}
+			saved := os.Stderr
+			os.Stderr = w
+			l := &launcher{dir: state, profileDirs: profiles, libexec: libexec, launchEnv: profile.LaunchEnv, memo: map[string]string{}}
+			_, rc := l.launch("gw650", false, false, argv)
+			w.Close()
+			os.Stderr = saved
+			outB, _ := io.ReadAll(r)
+			out := string(outB)
+
+			if rc != 0 {
+				t.Fatalf("rc %d, want 0: a launch that opens no session must not wait on the gateway: %s", rc, out)
+			}
+			if strings.Contains(out, "session not started") {
+				t.Fatalf("a launch that opens no session must not be told its session failed to start: %s", out)
+			}
+			b, _ := os.ReadFile(log)
+			calls := string(b)
+			if strings.Contains(calls, "adapter-start") {
+				t.Fatalf("the adapter started for a launch that opens no session:\n%s", calls)
+			}
+			if !strings.Contains(calls, "--\n"+strings.Join(argv, "\n")+"\n.") {
+				t.Fatalf("claude never received the arguments untouched:\n%s", calls)
+			}
+		})
+	}
+}
+
+// `_ccm_launch -a <profile> <args>` is the agent-dispatch contract, and a hop's
+// relaunch re-enters the launch with native arguments: both hand Claude Code
+// the arguments exactly as given (INTENT promise 6). There the lone word
+// `version` is a one-word prompt, so it opens a session and takes the route
+// path; only the public `ccmorph run` verb reads it as the version request
+// (#650, cli/main.go runVerb). The stub core dies on adapter-start the way the
+// real adapter dies against an endpoint that does not answer, so the readiness
+// refusal proves the session path ran, and claude never receives --version.
+func TestALoneVersionStaysAPromptOffTheRunVerb(t *testing.T) {
+	for _, tc := range []struct {
+		id     string
+		name   string
+		native bool
+		argv   []string
+	}{
+		{"agent-dispatch-keeps-the-word-issue-650", "", false, []string{"-a", "gw650", "version"}},
+		{"a-relaunch-pass-keeps-the-word-issue-650", "gw650", true, []string{"version"}},
+	} {
+		t.Run(tc.id, func(t *testing.T) {
+			t.Setenv("HOME", t.TempDir())
+			t.Setenv("CCMORPH_SUBCOMMAND_LAUNCH", "0")
+			saved := probeListing
+			probeListing = func(string, string, ...string) (string, string) { return "", "000" }
+			t.Cleanup(func() { probeListing = saved })
+			state, profiles := t.TempDir(), t.TempDir()
+			os.MkdirAll(filepath.Join(profiles, "gw650"), 0o755)
+			os.WriteFile(filepath.Join(state, "gw650.conf"), []byte(
+				"type=apikey\nbase_url=http://127.0.0.1:9\napi_key=k"), 0o600)
+			libexec := t.TempDir()
+			log := filepath.Join(libexec, "calls.log")
+			os.WriteFile(filepath.Join(libexec, "ccmorph-core"), []byte(
+				"#!/bin/sh\n{ for a do printf '%s\\n' \"$a\"; done; printf '.\\n'; } >> '"+log+"'\n"+
+					"if [ \"$1\" = util ] && [ \"$2\" = adapter-start ]; then\n"+
+					"  echo \"ccmorph: 'gw650': adapter exited before readiness; session not started.\" >&2\n"+
+					"  exit 1\nfi\nexit 0\n"), 0o755)
+
+			r, w, err := os.Pipe()
+			if err != nil {
+				t.Fatal(err)
+			}
+			savedErr := os.Stderr
+			os.Stderr = w
+			l := &launcher{dir: state, profileDirs: profiles, libexec: libexec, launchEnv: profile.LaunchEnv, memo: map[string]string{}}
+			_, rc := l.launch(tc.name, false, tc.native, tc.argv)
+			w.Close()
+			os.Stderr = savedErr
+			outB, _ := io.ReadAll(r)
+			out := string(outB)
+
+			b, _ := os.ReadFile(log)
+			calls := string(b)
+			if rc == 0 {
+				t.Fatalf("rc 0: a lone `version` off the run verb is a prompt, and its session cannot start on a dead route:\n%s\n%s", out, calls)
+			}
+			if !strings.Contains(calls, "adapter-start") {
+				t.Fatalf("a lone `version` off the run verb opens a session, so it must take the route path:\n%s", calls)
+			}
+			if !strings.Contains(out, "adapter exited before readiness; session not started.") {
+				t.Fatalf("the session refusal must stand on a session path, got: %s", out)
+			}
+			if strings.Contains(calls, "--version") {
+				t.Fatalf("the launch rewrote the prompt `version` into --version; only `ccmorph run` may:\n%s", calls)
+			}
+		})
+	}
+}
+
 // The probe verdict is the one status switch every probe of a credential reads
 // (#488): the branches #255, #286 and #374 each landed in, spelled four times
 // before. Pinned here once — including the three-digit guard, so a status a
@@ -1649,6 +1786,156 @@ func TestABrokenProfilesRefusalIsWordedTheSameOnEveryRead(t *testing.T) {
 	}
 }
 
+// TestOneCommandParsesAProfileConfOnce is GH-561: a command stacks several reads
+// of one profile's conf — read, readQuiet, modelKnown, listingKnown — and every
+// one of them re-read and re-parsed the file. One command must parse a profile's
+// conf once: the reads after the first are answered by that parse, so a conf
+// broken after it — by nothing this command wrote — changes no answer.
+func TestOneCommandParsesAProfileConfOnceIssue561(t *testing.T) {
+	name := "once"
+	l := storeTestLauncher(t, name,
+		"type=apikey\nbase_url=https://gw.test\napi_key=test-key\nmodel=m-first\nmodel_defaults=1\n", "")
+	if f, ok := l.readQuiet(name); !ok || f["base_url"] != "https://gw.test" {
+		t.Fatalf("the first read: %v, ok %v", f, ok)
+	}
+	if err := os.WriteFile(filepath.Join(l.dir, name+".conf"), []byte("{ broken"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if f, ok := l.readQuiet(name); !ok || f["base_url"] != "https://gw.test" {
+		t.Fatalf("read after the one parse: %v, ok %v", f, ok)
+	}
+	if _, ok := l.readRaw(name); !ok {
+		t.Fatal("readRaw after the one parse must still answer")
+	}
+}
+
+// TestAReadAfterTheSameCommandsConfWriteSeesTheNewValue is GH-561's correctness
+// clause over the conf memo: a command reads a profile, rewrites its conf the
+// way a verb does, and reads again — the second read must see what the write
+// left, never the view the first read memoized. Every write path drops the
+// memo: the store's saves (what set and config run), the add flow's writeConf,
+// and rm and mv's removal and rename.
+func TestAReadAfterTheSameCommandsConfWriteSeesTheNewValueIssue561(t *testing.T) {
+	// rm and mv ask the keychain on macOS; a no-op security keeps the test off
+	// the real one.
+	bin := t.TempDir()
+	if err := os.WriteFile(filepath.Join(bin, "security"), []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	for _, row := range []struct {
+		write string
+		run   func(t *testing.T)
+	}{
+		{"the store's set", func(t *testing.T) {
+			name := "set"
+			l := storeTestLauncher(t, name,
+				"type=apikey\nbase_url=https://gw.test\napi_key=gw-key-1", "{\"env\":{}}\n")
+			if f, ok := l.readQuiet(name); !ok || f["model"] != "" {
+				t.Fatalf("read before the save: %v, ok %v", f, ok)
+			}
+			set := l.storeArgs("set", name, "")
+			set.Change = util.StoreChange{Model: "m-second"}
+			if _, rc := l.runStore(set, io.Discard); rc != 0 {
+				t.Fatalf("set: rc %d", rc)
+			}
+			if f, ok := l.readQuiet(name); !ok || f["model"] != "m-second" {
+				t.Fatalf("read after the save: %v, ok %v — a save must drop the memoized read", f, ok)
+			}
+		}},
+		{"add's conf write", func(t *testing.T) {
+			name := "added"
+			l := storeTestLauncher(t, name,
+				"type=apikey\nbase_url=https://gw.test\napi_key=gw-key-1", "")
+			if f, ok := l.readQuiet(name); !ok || f["type"] != "apikey" {
+				t.Fatalf("read before the write: %v, ok %v", f, ok)
+			}
+			if err := l.writeConf(name, "type=token\ntoken=sk-ant-oat01-plain\n"); err != nil {
+				t.Fatal(err)
+			}
+			if f, ok := l.readRaw(name); !ok || f["type"] != "token" {
+				t.Fatalf("read after the write: %v, ok %v — a write must drop the memoized read", f, ok)
+			}
+		}},
+		{"mv's rename", func(t *testing.T) {
+			from, to := "moved", "renamed"
+			l := storeTestLauncher(t, from, "type=apikey\nbase_url=https://gw.test\n", "")
+			// The lock re-exec would start ccmorph-core; being already the locked
+			// child is what a test of the rename itself needs.
+			t.Setenv("CCMORPH_CONTEXT_LOCKED", from+","+to)
+			if f, ok := l.readQuiet(from); !ok || f["base_url"] != "https://gw.test" {
+				t.Fatalf("read before the rename: %v, ok %v", f, ok)
+			}
+			if rc := l.mv([]string{from, to}); rc != 0 {
+				t.Fatalf("mv: rc %d", rc)
+			}
+			if f, ok := l.readQuiet(to); !ok || f["base_url"] != "https://gw.test" {
+				t.Fatalf("read after the rename: %v, ok %v — a rename must drop the memoized read", f, ok)
+			}
+			if _, ok := l.readQuiet(from); ok {
+				t.Fatal("the renamed-away name must refuse to read")
+			}
+		}},
+		{"rm's removal", func(t *testing.T) {
+			name := "gone"
+			l := storeTestLauncher(t, name, "type=apikey\nbase_url=https://gw.test\n", "")
+			t.Setenv("CCMORPH_CONTEXT_LOCKED", name)
+			if f, ok := l.readQuiet(name); !ok || f["base_url"] != "https://gw.test" {
+				t.Fatalf("read before the removal: %v, ok %v", f, ok)
+			}
+			answerRmPrompt(t, "y\n") // removal asks whoever runs it (#724)
+			if rc := l.rm([]string{name}); rc != 0 {
+				t.Fatalf("rm: rc %d", rc)
+			}
+			if _, ok := l.readQuiet(name); ok {
+				t.Fatal("the removed profile must refuse to read")
+			}
+		}},
+	} {
+		t.Run(row.write, row.run)
+	}
+}
+
+// TestConfReadsReplayTheirNoticesAndRefusals guards the memo's side channels
+// (GH-561): a read prints a removed key's notice, and a broken conf's refusal,
+// and one command that stacks reads must hear each of them from every read —
+// never only the first.
+func TestConfReadsReplayTheirNoticesAndRefusalsIssue561(t *testing.T) {
+	for _, row := range []struct {
+		name, conf string
+		ok         bool
+	}{
+		{"notices", "type=apikey\nbase_url=https://gw.test\nlean=1\n", true},
+		{"refusal", "type=sub\n", false},
+	} {
+		name := "heard"
+		l := storeTestLauncher(t, name, row.conf, "")
+		var heard []string
+		for i := 0; i < 2; i++ {
+			saved := os.Stderr
+			r, w, err := os.Pipe()
+			if err != nil {
+				t.Fatal(err)
+			}
+			os.Stderr = w
+			_, ok := l.readRaw(name)
+			w.Close()
+			os.Stderr = saved
+			note, _ := io.ReadAll(r)
+			if ok != row.ok {
+				t.Fatalf("%s: read %d: ok %v, want %v", row.name, i, ok, row.ok)
+			}
+			if len(note) == 0 {
+				t.Fatalf("%s: read %d must say what a fresh read says", row.name, i)
+			}
+			heard = append(heard, string(note))
+		}
+		if heard[0] != heard[1] {
+			t.Fatalf("%s: the reads worded themselves differently:\n%q\n%q", row.name, heard[0], heard[1])
+		}
+	}
+}
+
 // nativeBase owns Anthropic's own endpoint (#488): the URL an empty base_url
 // means, and the spellings that count as that endpoint — the bare URL and its
 // trailing-slash form — which run's and inspect's switches each spelled three
@@ -1734,4 +2021,125 @@ func TestReadActiveRescuesOnlyAValidSpelling(t *testing.T) {
 	if name, ok := l.readActive(); name != "" || ok {
 		t.Fatalf("readActive = %q, %v; an invalid default must be refused", name, ok)
 	}
+}
+
+// get is the one public read of a profile: every field by name, or all of
+// them as JSON, so scripts never parse the private .conf format by hand.
+func TestGetReadsEveryProfileField(t *testing.T) {
+	name := "gw"
+	l := storeTestLauncher(t, name, "type=apikey\nbase_url=https://gw.test\napi_key=k-plain-123\nmodel=m-first", "{\"env\":{}}\n")
+	get := func(key string) string {
+		out, rc := captureStdout(t, func() int { return l.getSet("get", []string{name, key}) })
+		if rc != 0 {
+			t.Fatalf("get %s: rc %d", key, rc)
+		}
+		return out
+	}
+	if out := get("base_url"); out != "https://gw.test\n" {
+		t.Errorf("get base_url: %q", out)
+	}
+	if out := strings.TrimSpace(get("api_key")); out != "k-plain-123" {
+		t.Errorf("get api_key: %q", out)
+	}
+	var all map[string]string
+	if err := json.Unmarshal([]byte(get("--json")), &all); err != nil {
+		t.Fatal(err)
+	}
+	if all["base_url"] != "https://gw.test" || all["api_key"] != "k-plain-123" || all["model"] != "m-first" || all["type"] != "apikey" {
+		t.Errorf("get --json: %v", all)
+	}
+}
+
+// The 2026-11-20 outage (#723): a gateway that answers nothing leaves the
+// picker's exclusions undecidable when the cache holds nothing. That silence
+// must end as the gateway class naming the route — after the launch has waited
+// on the listing — never exit 1 with the picker's "revise the list" message,
+// which a caller reads as a build crash. synctest runs the launch's real
+// one-second retries on a virtual clock, so the wait costs the suite nothing.
+func TestARunOnAGatewayThatNeverAnswersExitsTheGatewayClass(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		t.Setenv("HOME", t.TempDir())
+		state, profiles, libexec := t.TempDir(), t.TempDir(), t.TempDir()
+		os.MkdirAll(filepath.Join(profiles, "gw723"), 0o755)
+		// The exclusion is what makes the picker judge rows at all; with the
+		// cache empty, nothing can be judged until the listing answers.
+		os.WriteFile(filepath.Join(state, "gw723.conf"), []byte(
+			"type=apikey\nbase_url=http://127.0.0.1:9\nexcluded_models=blocked\napi_key=k"), 0o600)
+		os.WriteFile(filepath.Join(profiles, "gw723", ".claude.json"),
+			[]byte(`{"additionalModelOptionsCache":[]}`), 0o600)
+		log := filepath.Join(libexec, "calls.log")
+		os.WriteFile(filepath.Join(libexec, "ccmorph-core"), []byte(
+			"#!/bin/sh\n{ for a do printf '%s\\n' \"$a\"; done; printf '.\\n'; } >> '"+log+"'\nexit 0\n"), 0o755)
+
+		r, w, err := os.Pipe()
+		if err != nil {
+			t.Fatal(err)
+		}
+		saved := os.Stderr
+		os.Stderr = w
+		l := &launcher{dir: state, profileDirs: profiles, libexec: libexec, launchEnv: profile.LaunchEnv, memo: map[string]string{}}
+		_, rc := l.launch("gw723", false, false, nil)
+		w.Close()
+		os.Stderr = saved
+		outB, _ := io.ReadAll(r)
+		out := string(outB)
+
+		if rc != 75 { // util.RCGatewayDown: EX_TEMPFAIL, the class a caller retries
+			t.Fatalf("rc %d, want 75: a silent gateway must not end as the crash class: %s", rc, out)
+		}
+		if strings.Contains(out, "no cached or served picker models remain") {
+			t.Fatalf("the outage was reported as the profile's config to revise: %s", out)
+		}
+		if !strings.Contains(out, "could not reach") || !strings.Contains(out, "ccmorph doctor gw723") {
+			t.Fatalf("the failure must name the unreachable route and its check: %s", out)
+		}
+		if !strings.Contains(out, "Waiting for 'gw723' gateway") {
+			t.Fatalf("the pass must wait on the listing before giving up on it: %s", out)
+		}
+		if b, _ := os.ReadFile(log); strings.Contains(string(b), "adapter-start") || strings.Contains(string(b), "--\n") {
+			t.Fatalf("the launch reached the route or claude despite the outage:\n%s", b)
+		}
+	})
+}
+
+// #747: a 200 whose body is not a listing is no answer, so the wait must ask
+// the gateway again rather than re-read the memoized error object. A route that
+// answered wrongly once and then serves a listing has to recover in the wait
+// window exactly as silence that clears does; before this, both retries
+// reparsed the stored error body and the launch exited 75.
+func TestAWrongAnswerIsRetriedInsteadOfReadFromTheListingMemo(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		dir := t.TempDir()
+		asks := filepath.Join(dir, "asks")
+		script := "#!/bin/sh\n" +
+			"n=$(cat '" + asks + "' 2>/dev/null || echo 0)\n" +
+			"n=$((n+1))\n" +
+			"echo $n > '" + asks + "'\n" +
+			"if [ $n -le 2 ]; then\n" +
+			"  printf '%s' '{\"error\":{\"message\":\"upstream is unwell\"}}'\n" +
+			"else\n" +
+			"  printf '%s' '{\"data\":[{\"id\":\"wanted\"}]}'\n" +
+			"fi\n"
+		if err := os.WriteFile(filepath.Join(dir, "curl"), []byte(script), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		t.Setenv("PATH", dir+":"+os.Getenv("PATH"))
+
+		l := &launcher{memo: map[string]string{}}
+		base, key := "http://gw.invalid", "k"
+		// The picker's ask, which the pass memoizes before it finds the body
+		// is not a listing.
+		if body, ok := l.listing(base, key); !ok || !strings.Contains(body, `"error"`) {
+			t.Fatalf("the first ask must answer the malformed body: %q %v", body, ok)
+		}
+		if !l.awaitListing("gw", base, key) {
+			t.Fatal("a listing that arrived on a retry must end the wait, not exit the gateway class")
+		}
+		if n, _ := os.ReadFile(asks); strings.TrimSpace(string(n)) != "3" {
+			t.Fatalf("the gateway was asked %s time(s), want 3 (the picker's ask and one per retry): a malformed answer must not be memoized across the wait", n)
+		}
+		if body, ok := l.listing(base, key); !ok || !strings.Contains(body, "wanted") {
+			t.Fatalf("the recovered listing must be the memo's answer, got %q %v", body, ok)
+		}
+	})
 }

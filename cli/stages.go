@@ -37,7 +37,13 @@ var stages = map[string]func(l *launcher, args []string) int{
 	},
 	"--project-picker": func(l *launcher, args []string) int { // <profile> <base> <key> [own] [tag] [launch]
 		a := pad(args[1:], 6)
-		return rc(l.projectPicker(a[0], a[1], a[2], a[3], a[4], a[5]))
+		switch l.projectPicker(a[0], a[1], a[2], a[3], a[4], a[5]) {
+		case pickerDone:
+			return 0
+		case pickerUnreached:
+			return util.RCGatewayDown // a silent gateway, not a refused projection (#723)
+		}
+		return 1
 	},
 	"--project": func(l *launcher, args []string) int { // <one|pair|model-settings> <profile> [opts...] -- [penv...]
 		i := slices.Index(args, "--")

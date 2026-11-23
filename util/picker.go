@@ -58,14 +58,30 @@ func rewriteJSON(path string, mutate func(doc *ordjson.Obj) bool) {
 
 // PickerIn is what the project picker needs: the profile's home dir, conf, its own
 // model, the row tag, the profile name, its settings layer, the launch model and
-// the endpoint's /v1/models listing.
+// the endpoint's /v1/models listing. A listing that did not arrive usable is read
+// as exactly that: the gateway's state, never the profile's config error (#723).
 type PickerIn struct {
 	Home, Conf, Own, Tag, Profile, Layer, Launch, ModelsJSON string
 }
 
+// PickerResult is how a project-picker pass ends. RCGatewayDown is the exit
+// class of the route-side one: EX_TEMPFAIL — the condition may clear, retry
+// later — so a caller can tell a gateway outage from its own crash (#723).
+type PickerResult int
+
+const (
+	PickerDone      PickerResult = iota // rows projected, or there was nothing to project
+	PickerRefused                       // the pass failed; the reason was printed to errw
+	PickerUnreached                     // no listing arrived and the cache judged nothing: the caller words the route failure
+)
+
+const RCGatewayDown = 75
+
 // ProjectPicker writes the profile's own /model rows into its .claude.json and the
-// allowlist into its settings layer. False when it could not; reasons go to errw.
-func ProjectPicker(in PickerIn, errw io.Writer) bool {
+// allowlist into its settings layer. Reasons for a refusal go to errw; a pass the
+// gateway's silence made undecidable returns PickerUnreached worded by no one,
+// because the route — not this profile — is what failed (#723).
+func ProjectPicker(in PickerIn, errw io.Writer) PickerResult {
 	home, contextConf, own, tag, layer, launch := in.Home, in.Conf, in.Own, in.Tag, in.Layer, in.Launch
 	tagText := strings.TrimSpace(tag)
 	if tagText == "" {
@@ -78,7 +94,7 @@ func ProjectPicker(in PickerIn, errw io.Writer) bool {
 		var err error
 		if confText, fields, err = ctxwindow.ReadConf(contextConf); err != nil {
 			fmt.Fprintln(errw, err)
-			return false
+			return PickerRefused
 		}
 	}
 	excluded := map[string]bool{}
@@ -94,27 +110,24 @@ func ProjectPicker(in PickerIn, errw io.Writer) bool {
 		}
 	}
 
+	// A reply body that is not a listing — a 200 error object, data absent,
+	// null or not a list, a body that does not parse — is no listing arrived,
+	// exactly as silence is: the cache is judged and the caller words the
+	// route. Only a real data list, empty or not, is the endpoint's own answer
+	// (#747, the shared shape rule of #558 and #695).
 	var served []any
-	fresh := true
-	if pv, err := ordjson.Parse([]byte(in.ModelsJSON)); err == nil && asObj(pv) != nil {
-		data := getKey(asObj(pv), "data")
-		if !ordjson.Truthy(data) {
-			data = []any{}
-		}
-		items, ok := iterItems(data)
-		if !ok {
-			fmt.Fprintln(errw, "TypeError: object is not iterable")
-			return false
-		}
-		served = items
-	} else {
+	fresh := false
+	if rows, verdict := ctxwindow.ListingShapeBody(in.ModelsJSON); verdict != ctxwindow.ListingNotAListing {
+		served, fresh = rows, true
+	}
+	if !fresh {
 		if len(excluded) == 0 {
-			return true
+			return PickerDone
 		}
 		v, lerr := loadJSON(filepath.Join(home, ".claude.json"))
 		if lerr != nil {
 			fmt.Fprintln(errw, lerr.Error())
-			return false
+			return PickerRefused
 		}
 		cached := []any{}
 		if o := asObj(v); o != nil {
@@ -122,13 +135,13 @@ func ProjectPicker(in PickerIn, errw io.Writer) bool {
 				items, ok := iterItems(c)
 				if !ok {
 					fmt.Fprintln(errw, "TypeError: object is not iterable")
-					return false
+					return PickerRefused
 				}
 				cached = items
 			}
 		} else {
 			fmt.Fprintln(errw, "AttributeError: object has no attribute 'get'")
-			return false
+			return PickerRefused
 		}
 		for _, r := range cached {
 			if value, ok := getKey(asObj(r), "value").(string); ok {
@@ -137,7 +150,6 @@ func ProjectPicker(in PickerIn, errw io.Writer) bool {
 				served = append(served, row)
 			}
 		}
-		fresh = false
 	}
 
 	isExcl := func(id string) bool { return ctxwindow.IsExcluded(fields, id) }
@@ -188,10 +200,8 @@ func ProjectPicker(in PickerIn, errw io.Writer) bool {
 		if !ok || mid == "" || isExcl(mid) {
 			continue
 		}
-		if caps := asObj(getKey(o, "capabilities")); caps != nil {
-			if v, has := caps.Get("chat_completion"); has && v == false {
-				continue
-			}
+		if DeniedForChat(o) {
+			continue
 		}
 		real := ctxwindow.RealID(mid)
 		if real == mid && strings.HasPrefix(mid, "claude-") {
@@ -208,10 +218,18 @@ func ProjectPicker(in PickerIn, errw io.Writer) bool {
 	}
 	if len(rows) == 0 {
 		if len(excluded) > 0 {
+			if !fresh {
+				// The listing never arrived usable and the cache holds nothing to
+				// fall back on: whether the route would answer past the exclusions
+				// is unknowable until it answers (#723). This is the gateway's
+				// state, not the profile's config — errw stays silent here so the
+				// caller can word the route it could not reach.
+				return PickerUnreached
+			}
 			fmt.Fprintln(errw, "ccmorph: no cached or served picker models remain after excluded_models; revise the list or restore gateway access")
-			return false
+			return PickerRefused
 		}
-		return true
+		return PickerDone
 	}
 
 	rewriteJSON(filepath.Join(home, ".claude.json"), func(doc *ordjson.Obj) bool {
@@ -317,7 +335,7 @@ func ProjectPicker(in PickerIn, errw io.Writer) bool {
 		doc.Set("availableModels", merged)
 		return changed()
 	})
-	return true
+	return PickerDone
 }
 
 func toAny(ss []string) []any {

@@ -12,7 +12,7 @@ TAG := v$(VERSION)
 DIST := dist
 TARBALL := $(DIST)/ccmorph-$(TAG).tar.gz
 
-.PHONY: help shim test test-zsh test-py test-go gate gate-launch gate-install gate-configure gate-py check-version dist release clean
+.PHONY: help shim test test-go gate gate-launch gate-install gate-configure gate-py check-version dist release clean
 
 help:
 	@echo "ccmorph $(VERSION)"
@@ -22,24 +22,39 @@ help:
 	@echo "  make release        verify, then build $(TARBALL) + the stable ccmorph.tar.gz"
 
 # The compiled helpers. Tests and a checkout's install.sh use these binaries.
+# macOS keys privacy grants to an ad-hoc binary's hash, so each build asks again;
+# a real identity (CCMORPH_CODESIGN_IDENTITY) keeps them.
+# The core is built and signed in a private directory inside libexec/, then
+# renamed into place only after both steps succeed, so libexec/ccmorph-core only
+# ever names a finished, signed build: a build that fails, is killed or times out
+# leaves the published core as it was, and nothing reads a half-written or
+# unsigned file (#714). Same directory, so the rename is atomic; it also gives
+# the new core its own inode, never the bytes of a copy still running.
 shim:
-	go build -trimpath -o libexec/ccmorph-core ./cmd/ccmorph-core
+	@tmp=libexec/.shim-build.$$$$; rm -rf "$$tmp"; mkdir -p "$$tmp" && \
+	go build -trimpath -o "$$tmp/ccmorph-core" ./cmd/ccmorph-core && \
+	if [ -n "$(CCMORPH_CODESIGN_IDENTITY)" ]; then codesign -f -s "$(CCMORPH_CODESIGN_IDENTITY)" -i ccmorph-core "$$tmp/ccmorph-core"; fi && \
+	mv -f "$$tmp/ccmorph-core" libexec/ccmorph-core; rc=$$?; rm -rf "$$tmp"; exit $$rc
 
-test: shim test-go test-zsh test-py
+test: gate
 
+# The suite runs a second time under umask 077, which catches mode-vs-umask
+# fixture tests by name: os.WriteFile filters the mode it asks for through the
+# host umask, so a test that writes 0644 and asserts it is born 0600 on a 077
+# host. -count=1 keeps the cached 022 result from answering for it (#704).
+# Env is a tool too, so the suite runs once more under NO_PROXY='*', the
+# hostile shell of every machine that carries proxy exemptions: a test whose
+# subject routes by env must not quietly assert what a scrubbed shell produced
+# (#774, REVIEW.md). -count=1 for the same reason as above.
 test-go:
 	go vet ./...
 	go test ./...
+	umask 077 && go test -count=1 ./...
+	NO_PROXY='*' no_proxy='*' go test -count=1 ./... || { echo "red under a hostile proxy env (NO_PROXY='*'): env is a tool too — a test that reads the operator's proxy env is the same failure as a test that sees the operator's bridge binary; fix it with t.Setenv in the test, not by scrubbing this line (#774, .github/REVIEW.md)"; exit 1; }
 
-test-zsh:
-	zsh tests/ccmorph_test.zsh
-	zsh tests/install_test.zsh
-
-test-py:
-	python3 -m pytest tests/ -q
-
-# The Hive's gate on every landing. Each suite works in its own scratch homes and mostly
-# waits on process spawns, so they overlap: 185 s one after another, under a minute at once.
+# The Hive's gate on every landing, and what `make test` runs. Each suite works in
+# its own scratch homes and mostly waits on process spawns, so they overlap: 185 s
+# one after another, about a minute at once on a quiet host. Never chain them.
 gate: shim
 	@$(MAKE) -j5 gate-launch gate-install gate-configure gate-py test-go
 
@@ -53,17 +68,24 @@ gate-configure:
 	@zsh tests/cli_configure_test.zsh
 
 gate-py:
-	@CCMORPH_LIB_DIR="$$PWD/lib" uv run --with pytest --with pytest-xdist --with pytest-timeout python -m pytest tests/ -q
+	@CCMORPH_LIB_DIR="$$PWD/lib" uv run python -m pytest tests/ -q
 
 # Three places state the version and nothing checked they agree: the assignment
 # the installer greps, the changelog a reader trusts, and the tag a package
 # manager resolves. A release that disagrees with itself is how v1.5.1 came to
 # have a changelog entry and no tag, invisible to anything resolving by tag.
+# "Newest entry" is a fact about content, not about line numbers: the live
+# Unreleased block sits above every release heading and grows with every
+# landing, so the gate skips the first heading only when it is exactly
+# `## Unreleased`; the next one must be TAG's. The
+# `head -20` window this replaced held zero slack once v0.5.13 landed, and the
+# next Unreleased bullet would have blocked `make release` (#610).
 check-version:
 	@test -n "$(VERSION)" || { echo "no _CCMORPH_VERSION in lib/ccmorph.sh"; exit 1; }
 	@grep -q '^## $(TAG) ' CHANGELOG.md || { \
 	  echo "CHANGELOG.md has no '## $(TAG)' section"; exit 1; }
-	@head -20 CHANGELOG.md | grep -q '^## $(TAG) ' || { \
+	@awk '/^## /{ if (!n++ && $$0 == "## Unreleased") next; print; exit }' CHANGELOG.md | \
+	  grep -q '^## $(TAG) ' || { \
 	  echo "'## $(TAG)' is not the newest CHANGELOG entry"; exit 1; }
 	@git rev-parse -q --verify "refs/tags/$(TAG)" >/dev/null || { \
 	  echo "tag $(TAG) does not exist — create it before releasing:"; \

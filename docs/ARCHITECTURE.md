@@ -20,7 +20,9 @@ The repo suite: `tests/ccmorph_test.zsh` (112 zsh tests),
 `tests/install_test.zsh` (installer against a throwaway `$HOME`),
 `tests/adapter_test.py`, `tests/gateway_shim_test.py` (black-box, against the
 built binaries) and the Go unit tests in each package. Run them all with
-`make shim && go test ./... && zsh tests/ccmorph_test.zsh && zsh tests/install_test.zsh && python3 -m pytest tests/`.
+`make test`: the suites work in disjoint scratch homes and mostly wait on
+process spawns, so it runs them at once — minutes one after another, about a
+minute on a quiet host (where the time goes: `docs/test-runtime.md`).
 
 ## Scope and ownership
 
@@ -264,7 +266,10 @@ MCP credentials (through capsules), settings, history, and tooling are **global 
 exactly as given. Nothing is inserted, removed or rewritten, so no subcommand —
 listed, hidden or released tomorrow — meets a flag ccmorph invented, and ccmorph
 never needs Claude Code's command grammar. (The additions are a hop's resume,
-which is ccmorph's own relaunch.) Launch state reaches Claude Code through the
+which is ccmorph's own relaunch. The one rewrite is `ccmorph run <profile>
+version`: Claude Code has no `version` command, so that lone word becomes its
+`--version` request (#650); `_ccm_launch -a` passes the word through as a
+prompt.) Launch state reaches Claude Code through the
 two channels it reads at
 every entry point — a session, any subcommand, the sessions Remote Control spawns:
 
@@ -651,8 +656,9 @@ error text. Always on: a `tool_reference` inside a `tool_result` whose `tool_nam
 request does not declare in `tools` becomes a text block (declared references and every
 other byte stay), and a 400 on `POST /v1/messages` with nothing yet sent downstream is
 resent once with `thinking` and `redacted_thinking` blocks removed from assistant turns
-(`Hooks.ResendBody`; not a transport retry, not counted by the breaker, the second answer
-is final) **[test]**. Profile keys, ferried as `CCMORPH_*` env: `env.CCMORPH_AFFINITY_HEADER=<name>`
+(`Hooks.ResendBody`; not a transport retry, not counted by the breaker; when the resend
+is refused with a non-retryable 4xx too, the client gets the first 400, and a retryable
+429 is passed through and counted by the breaker) **[test]**. Profile keys, ferried as `CCMORPH_*` env: `env.CCMORPH_AFFINITY_HEADER=<name>`
 sends the session id in that header, `env.CCMORPH_USER_AGENT=<template>` sets the outbound
 `User-Agent` from the client's `claude-cli` version, and the adapter's passthrough entries
 take theirs from the shim's `translator-user-agent` subcommand **[test]**. `env.CCMORPH_QUIRKS=off` gives the shim no hooks at all (no repair, no resend, no affinity header, no User-Agent rewrite) **[test]**. Anything beyond
@@ -668,7 +674,8 @@ behind cliproxyapi a shim retry would multiply its own `request-retry` (which on
 also retries 403 and 429). On a 429, 5xx or
 refused connection — and only before the client has any byte — the shim resends the same
 body to the same target twice, waiting a random interval each time (full jitter, up to
-0.5 s then 1 s; `CCMORPH_RETRY_BASE` sets the base and the tests set it to 0). A stall is
+0.5 s then 1 s; `CCMORPH_RETRY_BASE` sets the base and the tests set it to a
+near-zero value). A stall is
 not retried: it already waited the stall timeout and Claude Code retries it itself
 **[test]**. Each retry is the same bytes to the same target, so no retry can move a call
 to another model or provider, and the tier cannot change under load **[test]**.
@@ -694,9 +701,45 @@ model). A shim holding that spec writes one metadata-only row for every
 
 ```
 ${XDG_STATE_HOME:-~/.local/state}/ccmorph/usage/<YYYY-MM-DD>/<sha256(response_id)>.json
+${XDG_STATE_HOME:-~/.local/state}/ccmorph/usage/<YYYY-MM-DD>.jsonl
+${XDG_STATE_HOME:-~/.local/state}/ccmorph/usage/<YYYY-MM-DD>.jsonl.idx
 ```
 
-the day folder of the row's own UTC stamp, so a response id quoted in a Claude
+Live rows use the day folder; a closed UTC day older than yesterday is compacted
+into JSONL, one byte-identical row per line in original filename order. Its
+hash-bound `.idx` keeps each original filename and modification time, so spill
+names and incremental spend cursors survive. During replacement it also keeps
+one `previous` index; a reader uses the generation matching the JSONL digest,
+so a process killed between the two renames still has a readable archive. Every reader merges the archive
+with any recreated day folder; a later file replaces its archived filename only
+when it carries the same response and turn. A conflicting identity keeps both
+rows, the archived one under a spill-style name. A multiline receipt, which
+readers count but one archive line cannot hold, stays in its folder. A row no
+reader counts (zero bytes, truncated, not one JSON object) is moved to
+`ccmorph/usage-dropped/<day>/<mtime_ns>-<name>` with one stderr line, so the
+day can close and its bytes stay as the record. A failed verification leaves
+the source files untouched.
+Compaction uses the existing store move lock, writes atomically, and re-reads
+and verifies the full content, row count and response/turn identities before
+removing any source file. Multiply-linked receipts remain in their folder until
+the legacy move resolves their aliases. A quota call compacts at most one closed
+day, held to a statusline's budget: a day folder over 2000 entries or 2 MiB of
+receipts, or an archive and index over 2 MiB, is left whole after reading at
+most that much, and no step starts after half a second.
+`ccmorph-core usage-compact` drains the backlog and those larger days. A report refuses a busy
+store with a plain error rather than printing a partial total. No daemon is added.
+Every store read opens a receipt or archive without waiting on the open and
+refuses anything but a regular file, so a FIFO or device left under a
+receipt's name is named, never waited on. A receipt still there that a run
+cannot read is skipped and named by quota, the report and the export alike,
+and each still totals every other receipt, so the three agree: the report
+goes on; quota carries that total beside its reason and fails the run; the
+export writes nothing over the export already there and fails the run. A
+receipt gone between listing and read is the store's own relocation, which
+all three skip. A response held under both a flat name and a day folder's
+counts once in every reader, by the day folder's copy.
+
+The row is initially written in the day folder of the row's own UTC stamp, so a response id quoted in a Claude
 Code transcript joins to what that turn
 cost by computing that filename directly. The day folders are an index a
 time-window read uses: it opens only the folders its window touches — a row
@@ -705,11 +748,11 @@ build (or a move that could not rename) still holds flat at the top level.
 If a gateway recycles an id, the
 earlier row is never overwritten: when that file already holds a row with a
 different `turn_id` (or one that cannot be parsed), the later turn is written
-to `<sha256(response_id.turn_id)>.json` instead, and a consumer that needs
-every turn for an id globs the day folders and the flat store, matching the
-`response_id` field.
+to `<sha256(response_id)>.<16-hex spill key>.json` instead, and a consumer that
+needs every turn for an id reads the day folders, archives and flat store,
+matching the `response_id` field. The spill key hashes `response_id.turn_id`.
 If that name too holds another turn's row, the later turn takes the first free
-`<sha256(response_id.turn_id.N)>.json`, N = 1–3; a write only takes a name that
+spill keyed by `response_id.turn_id.N`, N = 1–3; a write only takes a name that
 is free or already holds its own turn's row — the claim is a hardlink where the
 filesystem has them and an exclusive create where it does not, atomic either
 way — so a turn whose every name is taken loses its own row rather than destroy
@@ -721,7 +764,7 @@ and a timestamp was therefore not a usable ownership key. Rows written before
 `turn_id` existed carry no token and stay readable:
 
 ```
-{schema: 1, response_id, turn_id, route_id, profile, requested_model, task, session?, attempt,
+{schema: 1, response_id, turn_id, route_id, profile, requested_model, task, session?, parent?, attempt,
  served_model, retries, masked?, response_model, timestamp, usage, complete}
 ```
 
@@ -735,7 +778,8 @@ carries the whole history, so it counts what that request kept back, not new fin
 header (the usage hook reads `sessionId` from the transcript line), written only when it
 matches the task tag's shape (`[A-Za-z0-9._-]{1,64}`) and is not the request's own
 key (`x-api-key` or bearer token), and absent otherwise **[test]**. It is an opaque
-grouping key, never a credential.
+grouping key, never a credential. `parent` is the launching session's id, subject to
+the same validation and key exclusion, and is absent when unavailable or invalid.
 `retries` is how many times the shim re-sent the request before the response this row
 describes: up to two transport retries under `--retry-transport`, otherwise the single
 unexpected-EOF replay, so `0` when it re-sent nothing **[test]**.
@@ -762,13 +806,15 @@ refreshed after a day. A billed cost is never replaced, and rows written before 
 are not recomputed; rows written by builds that carried #34 before `estimated_cost` existed
 hold that computed amount in `cost`, and nothing marks them as estimates. A string (`service_tier`), an unknown key or
 a bool never enters the file, and neither does a prompt, a header or a credential
-**[test]**; the only session identifier is the optional `session` above. `route_id` is a domain-separated digest
+**[test]**; session identifiers are limited to `session` and `parent` above. `route_id` is a domain-separated digest
 of the profile and the adapter's route identity; that identity is itself a
 digest of `upstream + key`, so it, the key, its hash, the rendered config path
 and the token are never written anywhere in the row.
 
 **Task tags.** A launch through the adapter may carry `CCMORPH_TASK` (opaque
-id, `[A-Za-z0-9._-]{1,64}`) and `CCMORPH_ATTEMPT` (digits). The launcher turns the
+id, `[A-Za-z0-9._-]{1,64}`) and `CCMORPH_ATTEMPT` (digits). The launcher's
+`CLAUDE_CODE_SESSION_ID` supplies `x-ccmorph-parent`; the child does not inherit it.
+The launcher turns the
 well-formed ones into Claude Code's `ANTHROPIC_CUSTOM_HEADERS` (`x-ccmorph-task`,
 `-attempt`) and clears the variables so the session's children never inherit
 them; a direct (no-adapter) launch carries none. Because the generated settings
@@ -777,7 +823,7 @@ one diagnostics interpreter that answers the launch's other settings-layer
 questions also brings back the user's own `env.ANTHROPIC_CUSTOM_HEADERS`, and
 the launcher sends their lines in front of the tags, so a tagged launch no
 longer drops a header such as a tenant id. After verifying the key the shim tags
-the row and drops both headers before the upstream. **Task tags never
+the row and drops the internal headers before the upstream. **Task tags never
 change the requested model**: the caller picks the model once per task with `--model`,
 because a gateway rewrite would also override subagents.
 `requested_model` is the exact client ID, `served_model` is the ID sent upstream after
@@ -811,9 +857,10 @@ Outcomes are appended with `ccmorph-core shim outcome <task>
 accepted|rejected|escalated|parked` to `<state>/ccmorph/outcomes.jsonl`
 (`{task, outcome, timestamp}`), joined to rows by task.
 
-**Ownership.** The shim owns the write, ccmorph owns the format and the
-retention, and the consumer — Helm, or anything joining response ids — reads
-these files and nothing else. Nothing reads them back into a launch, they never
+**Ownership.** The shim owns the write, ccmorph owns the format and retention.
+Compaction changes storage only; no retention pruning deletes rows or days.
+The consumer — Helm, or anything joining response ids — reads the live rows and
+closed-day archives, with their index metadata, and nothing else. Nothing reads them back into a launch, they never
 travel to a remote host, and they sit under the XDG *state* root rather than the
 profile root because they are derived state: deleting the directory loses no
 configuration, no profile and no credential, and the state root keeps containing
@@ -883,7 +930,10 @@ anything, naming the receipt **[test]**. Each run is a snapshot of its range: a 
 usable receipt supports any more is removed, earlier days and every file the exporter does
 not own stay — a `ccmorph-<profile>` folder an export before #383 wrote is still ours,
 so a full rerun clears its days — two overlapping runs never undo each other's days, and
-the receipts themselves are never touched **[test]**. The run ends with a summary for the person who
+the receipts themselves are never touched **[test]**. A receipt the listing named and the store
+moved before its read — the pre-shard move or compaction relocating it — is skipped and
+counted in the summary, never fatal, while one still there that cannot be read fails the
+run **[test]**. The run ends with a summary for the person who
 ran it, not a machine's JSON line: where the files went, every count by a name — the
 three priced kinds, gateway, estimate and list, add up to the whole — money at cents,
 and the exact ccusage command for that output folder, both paths shell-quoted so a
@@ -1021,21 +1071,76 @@ injects an image_generation tool and the upstream rejects the call with
 `imagegen deployment must be provided through header
 x-ms-oai-image-generation-deployment` **[wire]**.
 
-### Translator config workarounds, verified on cliproxyapi 8.0.45
+### Translator config workarounds
 
 Each workaround `adapter/render.go` writes was re-checked against 8.0.45 source and
-a black-box run (real binary, loopback fake upstream) **[src][wire]**:
+a black-box run (real binary, loopback fake upstream) **[src][wire]**. The
+Antigravity rewrite is the one row `util/bridge.go` writes, and it carries its own
+floor:
 
-| Setting | 8.0.45 source | Verdict |
+| Setting | source | Verdict |
 |---|---|---|
 | `request-retry: 3` | `sdk/cliproxy/auth/conductor_selection.go` `isCredentialRetryRoundStatus`: 403, 408, 429, 500, 502, 503, 504 plus transport EOF | keep. **429 and 403 are now retried too**, immediately and without backoff; one 502, 429 or EOF then 200 reached the upstream twice, `request-retry: 0` did not retry |
 | `disable-image-generation: "chat"` | `internal/config/disable_image_generation_mode.go` | keep. Without it a Responses call carries `tools:[{"type":"image_generation"}]` upstream |
 | `disable-cooling: true` | `internal/watcher/synthesizer/config.go` (`disable_cooling` metadata) | keep. Without it the call after one 500 returns 503 `auth_unavailable` with no upstream hit |
 | `rebuild-mid-system-message: true` | `internal/runtime/executor/claude_signing.go` `rebuildMidSystemMessageEnabled` | keep. Off: a `role:"system"` message reaches the upstream; on: it is folded into `system` |
 | `cloak: mode never` | `internal/runtime/executor/claude_executor_cloaking.go` `resolveClaudeWirePolicy` (`Uncloak`); 7.2.110 `helps/cloak_utils.go:41` `ShouldCloak` | **version-gated**. On 7.2.110 no block means `auto`, which cloaks any client whose User-Agent is not `claude-cli` (frozen cc_version billing header), so `never` is written for translators < 8.0.34. Since 8.0.34 `never` strips Claude Code's billing header, identity system block, `metadata.user_id` and `diagnostics` and rewrites the User-Agent, while no block forwards the caller verbatim, so it is omitted. The version comes from `cliproxyapi -h` (banner, exit 0); an unparseable version counts as new |
+| `antigravity: sensitive-patterns-replace` | upstream 905e70c48 (2026-11-14), first released in 8.0.70 | **version-gated, floor 8.0.70**. Rewrites the Claude Code system-prompt lines Antigravity answers with 429 RESOURCE_EXHAUSTED (identity, security and pasted-content lines). Below the floor the section does not exist: the bridge's plain `yaml.Unmarshal` (no `KnownFields`) drops it without a word, so the bridge starts, lists models, and every turn answers 429. The bridge reads the same binary's `-h` banner once before rendering; below the floor it writes no section and prints the repair (`upgrade cliproxyapi`). At or above the floor, and on an unparseable banner, the section is written. |
 | `thinking.block_binding` filter | `claude_executor_request.go` `applyClaudePreservedThinkingBinding` runs before `ApplyPayloadConfigWithTrackedPaths` (`claude_executor_execute.go:246-249`) | keep. Sonnet 5.5 with a signed thinking replay: field and `thinking-binding-controls-2026-08-01` beta header present without the filter, absent with it |
 | never put `system` in `payload.override` | payload override | keep. `override: system` replaces the whole field |
 | `display-name` on `oauth-model-alias` | `internal/config/config_types.go` `OAuthModelAlias.DisplayName` | keep. Not written by the adapter; only the root-owned `:<translator-port>` config uses it |
+
+### Gemini thought signatures on the chat path (#646)
+
+Gemini 3 and later reject a tool turn unless each `functionCall` comes back with
+the `thought_signature` the model issued for it (Vertex answers `400 ... missing a
+thought_signature in functionCall parts`). Behind a chat-completions gateway the
+signature arrives in `choices[].delta.reasoning_details[]`. Each hop, checked
+for `gemini-4-carbon` (wire capture 2026-11-18, tests 2026-11-20):
+
+| Hop | Verdict |
+|---|---|
+| Gateway | carries it, as `{"type":"tool","text":"Bash","signature":"..."}` entries **[wire]** |
+| cliproxyapi up to 8.0.76 (upstream) | **drops it**: the next request's assistant message has `tool_calls` but no `reasoning_details`. It also merges parallel tool calls that share `index: 0` into one call with two JSON objects as arguments **[wire]** |
+| akleizor/CLIProxyAPI from `v8.0.76-akleizor.4` (the carrier landed in `.1`, the final-text fixes around it in `.2` to `.4`) | keeps it: the reply ends with a thinking block whose signature is `cliproxy-reasoning-details:` plus the base64 of the gateway's array, and the next request turns that block back into `reasoning_details`; a new `id` at a used index starts a new tool call. Its tests `TestReasoningDetails_StreamReplayIssue646` and `TestStreaming_ReusedToolIndexIssue646` (package `internal/translator/openai/claude`) fail on `9adde20a47^` and pass on the tag **[test]** |
+| Claude Code, unrecognized model | replays the signed block on the next request **[test]** |
+| ccmorph shim | passes it through: `malformedThinking` (`shim/transform.go`) keeps the block (text `.`, signed); `resendWithoutThinking` (`quirks/quirks.go`) runs only after a 400, and on a model the translator serves on its chat path it drops every other thinking block but keeps the carrier **[test]** |
+
+Install the fork with `brew install akleizor/tap/cliproxyapi` (macOS arm64 only);
+`findTranslator` finds it unchanged. `make shim && python3 tests/native_gemini_signature_smoke.py`
+runs one Bash turn through the real Claude Code, `ccmorph-core adapter`, the
+translator on PATH and a loopback fake of the gateway that answers Vertex's 400
+when the signature is missing. It prints `ASSERTION PASS` on the fork;
+`--translator <path>` with an upstream build fails the turn and prints one line
+that names `thought_signature` and the upgrade, never the raw Vertex paragraph.
+
+Only Gemini's own refusal is rewritten to one line, by `thoughtSignatureRefusal`
+(`shim/transform.go`): a 400 whose error message, read from the JSON rather than
+the whole body, starts with `Function call is missing a thought_signature in
+functionCall parts` (Vertex relays it behind `Google Vertex bad request: `). A
+400 that only names the field, a 400 that merely quotes the sentence, and every
+other status pass through unchanged.
+Behind the translator the line names the cliproxyapi build that sends the
+signature back and the command that installs it; on a direct route it names the
+gateway, because there the shim relays the history unchanged.
+
+The 400 resend keeps the carrier where the route needs it. The adapter writes the
+ids of its chat-path rows (`chat` and `chat-noreason`) to a file beside the
+translator config and names it in `CCMORPH_TRANSLATOR_CHAT_MODELS_FILE`; the shim
+rereads that file on each resend, so a model selected mid-session is already on
+the side of the adapter that wrote it. For a request to a listed model the resend
+drops every other thinking block but keeps the carrier, and sends nothing when
+the carrier is all it could drop. Everywhere else (a direct route, and the
+translator's Anthropic passthrough) the carrier goes with the rest, because a
+native Anthropic route rejects that signature: that is what lets a conversation
+continue there after a hop or a `/model` switch. When the resend is refused with
+a non-retryable 4xx too, the client gets the upstream's first 400, never the
+refusal the repair provoked; a retryable 429 is passed through, so the breaker
+counts it. A mid-session prepare that fails, a failed write of the list itself
+included, puts the previous config and list back before it exits, so the running
+translator keeps its route **[test]**. Known limit: `ccmorph add` and doctor still
+name `brew install cliproxyapi`, the upstream build without the fix, because the
+fork's package exists only for macOS arm64.
 
 ## 5. Context window
 
@@ -1350,10 +1455,10 @@ exact manual override in the profile `.conf`. That same `.conf` also holds
 `context_discovered`, a JSON blob keyed by the profile's current route
 fingerprint that `ccmorph probe` writes. A tier alias (`opus`, `fable`) resolves
 through the profile's own `ANTHROPIC_DEFAULT_<TIER>_MODEL` to the model that
-actually answers. The only numbers in `ccmorph.sh` are `_CCMORPH_ACW_MIN` /
-`_CCMORPH_ACW_MAX`, which are Claude Code's own schema bounds on the setting
-(`.int().min(1e5).max(1e6)`) — a value outside them is dropped silently, which
-would put the session back on the default budget.
+actually answers. No schema bound, budget or window lives in `ccmorph.sh`
+either — a value outside Claude Code's own bounds on the setting
+(`.int().min(1e5).max(1e6)`) is dropped silently, so a clamped constant would
+only pretend to guard it.
 `test_no_context_window_is_written_into_the_source` fails the build if a window
 literal reappears.
 
@@ -1895,6 +2000,47 @@ Per-request variance swamps the effect. `low` versus `max` gave medians of 166
 and 178 output tokens over five trials each — a null result regardless of the
 truth. Capture the outbound request instead: put a recorder between cliproxyapi
 and the upstream and read the `reasoning` object.
+
+## 6b. Subagent router
+
+`ccmorph router on` turns on an optional module, off by default, that decides
+where a session's subagent work runs. `router/` holds it; `router.json` beside
+the profiles holds its settings, and `enabled` is the switch. Off, a launch is
+unchanged: `pluginDirs` (cli/run.go) adds `share/claude-plugin-router` to
+`CLAUDE_CODE_PLUGIN_DIRS` only while it is on, so no hook, no MCP server and no
+ledger exist without it. A delegated worker (`CCMORPH_ROUTER_WORKER=1`) never
+loads it, so a worker cannot delegate again.
+
+The plugin gives a session two things. The `delegate` MCP tool
+(`ccmorph router mcp`) runs a brief through `ccmorph run <profile> --model <id>
+-- --effort <e> -p` and returns the final answer. The Agent hooks (`ccmorph
+router hook pre|post|stop`) fill a same-profile pick into the call's model and
+effort and join outcomes to the ledger. The hooks never deny a call: another
+profile's pick, no pick, or a delegated worker's own Agent call runs as written. An Agent call with an explicit model, or a fork, is
+never touched (promise 2).
+
+One route, in order:
+
+1. Kind and tier: the caller's, else the optional decider endpoint's typed
+   answer, else keyword rules. `tier_cap` stops writing at mid.
+2. Profiles: every ccmorph profile; reserved, disabled and unavailable ones drop.
+   Class comes from the profile (Claude, Codex and Google AI plans are
+   subscriptions; a `monthly_budget_usd` is a budget; other keys are API) unless
+   `router.json` sets it (`free` for a gateway that costs nothing).
+3. Pace: windows from `ccmorph quota`'s own readers, kept five minutes; slack is
+   elapsed share minus used share of the tightest window the model draws on. A
+   hook takes the last stored reading so it never waits on a usage endpoint.
+4. Order: the user's `order` list, then free, subscriptions behind pace, ahead
+   of pace, paid; then largest slack; inside the profile the cheapest model by
+   `ccmorph price` (3 input : 1 output); the kind's family rank breaks ties.
+   Top tier keeps the kind's first two families; `only` limits a tier to named
+   models with no fallback.
+
+A refused account (quota, auth) waits until its tightest window resets; any
+other failure backs off that one model for 15 minutes. `delegate` retries once
+at the same tier. `ccmorph router report` checks real traffic: reserved profiles
+take no calls, subscriptions stay within 20 points of slack of each other, and
+at most a fifth of routes fail.
 
 ## 7. Known gaps
 

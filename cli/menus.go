@@ -28,8 +28,10 @@ type profileDesc struct {
 // its detail, and the marks. Both engines that describe profiles — `list` and
 // the profile menu — render from it, so a fact settles here once and shows
 // wherever a profile is described (#489: the private mark had reached `list`
-// only, the Browser login fallback the menu only).
-func (l *launcher) describeProfiles(active string, types []string) []profileDesc {
+// only, the Browser login fallback the menu only). accept, when set, is the
+// chooser's own filter over a profile's fields: it decides which profiles a
+// command can answer with, not how they are described (GH-790).
+func (l *launcher) describeProfiles(active string, types []string, accept func(map[string]string) bool) []profileDesc {
 	var descs []profileDesc
 	for _, n := range l.confNames() {
 		f, ok := l.readRaw(n)
@@ -39,6 +41,9 @@ func (l *launcher) describeProfiles(active string, types []string) []profileDesc
 		}
 		typ := f["type"]
 		if len(types) > 0 && !slices.Contains(types, typ) {
+			continue
+		}
+		if accept != nil && !accept(f) {
 			continue
 		}
 		d := profileDesc{name: n, typ: typ, kind: profile.KindLabel(typ, f["provider"])}
@@ -69,10 +74,11 @@ func (l *launcher) describeProfiles(active string, types []string) []profileDesc
 }
 
 // profileRows is _ccm_profile_rows: ID<TAB>kind<TAB>detail<TAB>marker per
-// profile, rendered from the one description walk (#489).
-func (l *launcher) profileRows(active string, types []string) []string {
+// profile, rendered from the one description walk (#489). accept, when set,
+// is the chooser's filter over the profile's fields (GH-790).
+func (l *launcher) profileRows(active string, types []string, accept func(map[string]string) bool) []string {
 	var rows []string
-	for _, d := range l.describeProfiles(active, types) {
+	for _, d := range l.describeProfiles(active, types, accept) {
 		detail := d.detail
 		if d.private {
 			// The mark #292 put on `list`, in the menu's single grey detail
@@ -95,7 +101,7 @@ func (l *launcher) profileRows(active string, types []string) []string {
 
 // menuProfile is _ccm_menu_profile: the profile chooser, limited to types when given.
 func (l *launcher) menuProfile(types ...string) (string, bool) {
-	rows := l.profileRows(l.active(), types)
+	rows := l.profileRows(l.active(), types, nil)
 	if len(rows) == 0 {
 		switch {
 		case len(l.confNames()) == 0:
@@ -104,6 +110,36 @@ func (l *launcher) menuProfile(types ...string) (string, bool) {
 			l.err("no compatible profiles for this command. Run: ccmorph add <profile>")
 		default:
 			l.err("no saved profiles. Run: ccmorph add <profile>")
+		}
+		return "", false
+	}
+	v, rc := uiSelect("search", "Profile", strings.Join(rows, "\n"), "all")
+	return v, rc == 0 && v != ""
+}
+
+// hasStoredCredential is the credential picker's filter: credOf is what `cred`
+// prints, so a profile passes the chooser only when that command could answer
+// with it (GH-790).
+func hasStoredCredential(f map[string]string) bool { return credOf(f) != "" }
+
+// menuProfileCred is the credential chooser: of the kinds that can carry a
+// credential, it offers only the profiles that actually store one, as the
+// help promises — a keyless profile in the list is a choice that can only fail
+// after it is made (GH-790). When none qualifies, the answer names a way that
+// can actually add a credential instead of opening an empty menu: `config`
+// writes a key or token onto a profile of a kind that carries one, while a
+// kind that stores none at all (a Claude account signs in through the browser)
+// has no credential section there, so only a new profile can be the answer.
+func (l *launcher) menuProfileCred() (string, bool) {
+	rows := l.profileRows(l.active(), []string{"apikey", "token"}, hasStoredCredential)
+	if len(rows) == 0 {
+		switch {
+		case len(l.confNames()) == 0:
+			l.err(noProfilesMsg)
+		case len(l.profileRows(l.active(), []string{"apikey", "token"}, nil)) > 0:
+			l.err("no profile has a stored key or token. Add one: ccmorph config <profile>")
+		default:
+			l.err("no compatible profiles for this command. Run: ccmorph add <profile>")
 		}
 		return "", false
 	}

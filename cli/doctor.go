@@ -232,7 +232,7 @@ type zshCompletion struct {
 	dir      string // the install's share/zsh/site-functions
 	rcName   string // the .zshrc as a person writes it: ~/.zshrc under HOME
 	onFpath  bool   // the startup files or FPATH already reach a _ccmorph
-	compinit bool   // the .zshrc names compinit or Oh My Zsh
+	compinit bool   // the .zshrc runs compinit or the Oh My Zsh loader
 	bound    bool   // a new zsh answered with a completion bound to ccmorph
 }
 
@@ -270,18 +270,8 @@ func (l *launcher) doctorCompletion() zshCompletion {
 		}
 	}
 	rc, _ := os.ReadFile(rcFile)
-	c.onFpath = strings.Contains(string(rc), c.dir) ||
-		strings.Contains(string(rc), "ccmorph/share/zsh/site-functions")
-	if !c.onFpath {
-		for _, d := range filepath.SplitList(os.Getenv("FPATH")) {
-			if d == c.dir || paths.IsFile(filepath.Join(d, "_ccmorph")) {
-				c.onFpath = true
-				break
-			}
-		}
-	}
-	c.compinit = strings.Contains(string(rc), "compinit") ||
-		strings.Contains(string(rc), "oh-my-zsh")
+	c.onFpath = util.FpathBound(rc, c.dir, os.Getenv("FPATH"))
+	c.compinit = util.CompinitRuns(rc)
 	bound, answered := l.completionBound(zdot)
 	c.bound = answered && bound
 	if c.bound {
@@ -366,10 +356,18 @@ func (l *launcher) doctor(name string, verbose bool) int {
 		}
 		return 1
 	}
-	f, ok := l.readRaw(name)
-	if !ok {
+	f, readErr := l.readProfile(name, func(line string) { fmt.Fprintln(os.Stderr, line) })
+	if readErr != nil {
+		l.err(readErr.Error())
 		l.status("FAIL", "config: invalid profile schema (launch would reject it)")
-		l.status("FAIL", "not ready: "+recreate)
+		if f["type"] == "sub" && f["email"] == "" {
+			// GH-649: a sign-in interrupted before its email line is this
+			// conf's whole story, and `login` is the one repair every other
+			// verb already names for it — doctor may not point elsewhere.
+			l.status("FAIL", "not ready: sign in again: ccmorph login "+name)
+		} else {
+			l.status("FAIL", "not ready: "+recreate)
+		}
 		return 1
 	}
 	typ, base := f["type"], f["base_url"]
@@ -533,15 +531,32 @@ func (l *launcher) doctor(name string, verbose bool) int {
 			report("INFO", "effective model: "+unsavedModelWords(typ, base)+" (no saved model)")
 		}
 		// The level is the one a plain launch passes (#356): the override saved
-		// for the model it carries — the saved spelling, as launch asks it —
-		// else the profile's own default.
-		switch effort := l.savedEffort(name, savedModel); effort {
+		// for the model it carries — a 1M claude model is sent under its [1m]
+		// send id, and the launch keys this lookup by that id (runLaunch), so
+		// doctor asks the resolver's own rule for it in place, as the launch's
+		// model-window --fields does — else the profile's own default (#449).
+		effortModel := savedModel
+		if strings.HasPrefix(effortModel, "claude-") &&
+			(typ == "provider" || (typ == "apikey" && !util.NativeBase(base))) {
+			// The launch's model-window read migrates legacy state first; doctor
+			// asks the resolver in place (#449), so it must move that state
+			// forward itself or key the lookup by an id the launch would have
+			// replaced (#556). The context half alone: doctor is otherwise
+			// read-only, so it never moves credentials. A failed migration leaves
+			// the saved spelling, as it leaves the launch's requested model.
+			if l.migrateContextState() {
+				if send := ctxwindow.LoadInputs(l.conf(name)).Resolve(effortModel).SendID; send != "" {
+					effortModel = send
+				}
+			}
+		}
+		switch effort := l.savedEffort(name, effortModel); effort {
 		case "":
 			report("INFO", "effective effort: "+unsavedEffortWords+" (no saved effort)")
 		case top:
 			report("INFO", "effective effort: "+effort+" (profile default)")
 		default:
-			report("INFO", "effective effort: "+effort+" (profile override for "+savedModel+")")
+			report("INFO", "effective effort: "+effort+" (profile override for "+effortModel+")")
 		}
 	}
 	if tierMissing != "" {

@@ -5,6 +5,34 @@ import (
 	"testing"
 )
 
+func TestTagValidatorsAreTheOnesTheShimAsks(t *testing.T) {
+	// The launcher and the gateway shim share these two rules (#638): a tag one
+	// side writes the other must accept, and a tag one side refuses is refused by
+	// both. The boundaries are where the two spellings could drift.
+	for _, task := range []string{"issue-42", "fix-1", "a.b_c", strings.Repeat("a", 64)} {
+		if !ValidTaskTag(task) {
+			t.Errorf("ValidTaskTag(%q) = false, want true", task)
+		}
+	}
+	for _, task := range []string{"", "a b", "a/b", "x\n", strings.Repeat("a", 65)} {
+		if ValidTaskTag(task) {
+			t.Errorf("ValidTaskTag(%q) = true, want false", task)
+		}
+	}
+	for _, attempt := range []string{"0", "1", "42", "999"} {
+		if !ValidAttemptTag(attempt) {
+			t.Errorf("ValidAttemptTag(%q) = false, want true", attempt)
+		}
+	}
+	// The shape admits 0 and the shim's own 1..999 range check is separate; the
+	// validator only owns the shape the launcher also applies.
+	for _, attempt := range []string{"", "1000", "-1", "1a"} {
+		if ValidAttemptTag(attempt) {
+			t.Errorf("ValidAttemptTag(%q) = true, want false", attempt)
+		}
+	}
+}
+
 func TestLaunchEnvRoutesThroughTheLocalHop(t *testing.T) {
 	run := func(stdin string, args ...string) []string {
 		var b strings.Builder
@@ -14,6 +42,7 @@ func TestLaunchEnvRoutesThroughTheLocalHop(t *testing.T) {
 		got := strings.Split(strings.TrimSuffix(b.String(), "."), "\x00")
 		return got[:len(got)-1]
 	}
+	t.Setenv("CLAUDE_CODE_SESSION_ID", "") // the suite may itself run inside a Claude Code session
 	// Bridge: base and key replaced, or added when the profile had none. The key
 	// comes from the environment, never an operand.
 	t.Setenv("_CCM_BRIDGE_KEY", "k")
@@ -25,6 +54,16 @@ func TestLaunchEnvRoutesThroughTheLocalHop(t *testing.T) {
 	if got[0] != "ANTHROPIC_BASE_URL=http://127.0.0.1:7" || got[1] != "ANTHROPIC_CUSTOM_HEADERS=x-ccmorph-task: fix-1\nx-ccmorph-attempt: 2" {
 		t.Errorf("adapter: %q", got)
 	}
+	// The launcher's own session id rides along as the parent tag; a bad shape is dropped.
+	t.Setenv("CLAUDE_CODE_SESSION_ID", "test-parent-1")
+	if got := run("", "", "1", "7", "", ""); got[0] != "ANTHROPIC_CUSTOM_HEADERS=x-ccmorph-parent: test-parent-1" {
+		t.Errorf("parent: %q", got)
+	}
+	t.Setenv("CLAUDE_CODE_SESSION_ID", "a b/c")
+	if got := run("", "", "1", "7", "", ""); len(got) != 0 {
+		t.Errorf("bad parent: %q", got)
+	}
+	t.Setenv("CLAUDE_CODE_SESSION_ID", "")
 	// Bad shapes are dropped, and a native adapter answer (no port) keeps the base.
 	if got := run("ANTHROPIC_BASE_URL=https://x\n", "", "1", "", "bad tag", "1234"); len(got) != 1 || got[0] != "ANTHROPIC_BASE_URL=https://x" {
 		t.Errorf("drop: %q", got)

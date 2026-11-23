@@ -32,7 +32,9 @@ func (l *launcher) rm(args []string) int {
 	if len(args) > 0 {
 		name = args[0]
 	}
-	if !profile.ValidName(name) {
+	// rm is the one verb that accepts the pre-#373 length: a profile made before
+	// the limit can still be addressed and so must still be removable (#449).
+	if !profile.RemovableName(name) {
 		return l.badName("rm", name)
 	}
 	// A name that differs only by case is refused before the leftover branch:
@@ -61,6 +63,36 @@ func (l *launcher) rm(args []string) int {
 			}
 			return 1
 		}
+	} else {
+		// The removal the help page caps with "This cannot be undone" must ask
+		// whoever runs rm, not only a terminal (#652): the same question the
+		// leftover branch above asks, answered off a terminal by one line of
+		// stdin exactly as every other [y/N] prompt is, defaulting to No like
+		// the guide says (docs/guide.md). Deleting on an unanswered prompt is
+		// not reachable (#724): a piped "n" is an answer of No, and a stdin
+		// that closes without one names the ways through instead of removing.
+		detail := "  " + l.conf(name)
+		if paths.Lexists(pdir) {
+			detail += "\n  " + pdir
+		}
+		if paths.Lexists(auth) {
+			detail += "\n  " + auth
+		}
+		fmt.Fprintf(os.Stderr, "Remove profile '%s', its saved credential and private sign-in state?\n%s\nShared conversation history will be kept. This cannot be undone.\n", name, detail)
+		if rc := uiConfirm("Remove this profile?"); rc != 0 {
+			switch {
+			case rc == 2 && !isTTY(0):
+				// The stdin closed without an answer and no terminal was
+				// there to show the prompt on: name both ways through (#724).
+				l.err("no answer to confirm; nothing removed — confirm in a terminal, or pipe the answer: printf 'y' | ccmorph rm " + name)
+			case rc != 2:
+				// A leave (rc 2) is already answered by the picker's own
+				// Cancelled line, as in the leftover branch; there is no
+				// second way to reach here with rc 2 on a terminal.
+				l.err("cancelled; nothing removed")
+			}
+			return 1
+		}
 	}
 	if !l.removeProfileDir(name) {
 		l.err("could not remove credential directory for '" + name + "'")
@@ -70,18 +102,25 @@ func (l *launcher) rm(args []string) int {
 		l.err("could not remove profile '" + name + "'")
 		return 1
 	}
+	delete(l.confReads, name) // what was removed must not be read back (GH-561)
 	util.KeychainDelete(name)
 	os.Remove(filepath.Join(l.profileDirs, "..", ".locks", name+".lock"))
 	for _, p := range util.BridgeFiles(filepath.Join(l.dir, "auth"), name) {
 		os.Remove(p)
 	}
-	if l.active() == name {
+	clearedDefault := l.active() == name
+	if clearedDefault {
 		if err := os.Remove(filepath.Join(l.dir, "active")); err != nil && !os.IsNotExist(err) {
 			l.err("could not clear default profile")
 			return 1
 		}
 	}
 	fmt.Println(l.accent + "Removed" + l.reset + " " + name)
+	if clearedDefault {
+		// The default left with the profile; the removal summary is where that
+		// belongs, not two steps downstream at the next failed run (#652).
+		l.err("default profile removed — set one: ccmorph use <profile>")
+	}
 	return 0
 }
 
@@ -148,7 +187,9 @@ func keepHistory(from, to string) bool {
 		}
 		return nil
 	})
-	gives := func(dest, f string) bool { return paths.IsSymlink(dest) && (sameFile(dest, f) || !paths.Exists(dest)) }
+	gives := func(dest, f string) bool {
+		return paths.IsSymlink(dest) && (paths.SameFile(dest, f) || !paths.Exists(dest))
+	}
 	for _, f := range dirs {
 		dest := filepath.Join(to, strings.TrimPrefix(f, from+"/"))
 		if gives(dest, f) && os.Remove(dest) == nil {
@@ -288,6 +329,10 @@ func (l *launcher) mv(args []string) int {
 	if util.KeychainRename(l.dir, from, to) != nil {
 		l.err("renamed, but '" + to + "' still reads its credential from the keychain item of '" + from + "'")
 	}
+	// The rename moved the conf and the keychain move may have rewritten it:
+	// a read of either name must see what mv left (GH-561).
+	delete(l.confReads, from)
+	delete(l.confReads, to)
 	fmt.Println(l.accent + "Renamed" + l.reset + " " + l.bold + from + l.reset + " → " + l.bold + to + l.reset)
 	return 0
 }

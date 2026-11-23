@@ -14,7 +14,10 @@ owned daily file no receipt supports any more is removed, while earlier days and
 files stay; the receipts themselves are never touched. No transcript or credential is read.
 """
 import argparse
+from contextlib import nullcontext
 import datetime as dt
+import errno
+import fcntl
 import hashlib
 import json
 import math
@@ -22,7 +25,9 @@ import os
 from pathlib import Path
 import re
 import shlex
+import stat
 import tempfile
+import time
 
 BUCKETS = ("input_tokens", "cache_creation_input_tokens", "cache_read_input_tokens", "output_tokens")
 # The profile name is the project label ccusage prints, cut to its head at a narrow
@@ -41,6 +46,27 @@ DAY_DIR = re.compile(r"\d{4}-\d{2}-\d{2}")
 # COST_LIMIT: its bucket filter keeps a receipt's cost only below it, so this reader
 # refuses the same range instead of billing a number the writer would never store.
 COST_LIMIT = 2 ** 53 / 100
+
+# How long the export waits for the store's shared lock. A compaction holds the
+# exclusive lock across its whole run, and a year export queued behind it is the
+# hang INTENT 8 forbids: past this bound the export refuses with a named reason
+# (paths.UsageLockWait is the Go readers' same bound, #654).
+LOCK_WAIT = 1.0
+
+
+def lock_shared(file):
+    """Take the store's shared lock within LOCK_WAIT, or refuse a busy store."""
+    deadline = time.monotonic() + LOCK_WAIT
+    while True:
+        try:
+            fcntl.flock(file.fileno(), fcntl.LOCK_SH | fcntl.LOCK_NB)
+            return
+        except OSError as exc:
+            if exc.errno not in (errno.EWOULDBLOCK, errno.EAGAIN):
+                raise
+            if time.monotonic() >= deadline:
+                raise ValueError("usage store busy; retry after compaction finishes") from exc
+            time.sleep(0.01)
 
 
 def finite(value):
@@ -108,6 +134,11 @@ def convert(row):
         return stamp, None
     # A turn token distinguishes recycled ids even when timestamps collide.
     # Keep the historical identity unchanged for receipts without a token.
+    # The join itself is util.ResponseKey's spelling (util/identity.go),
+    # mirrored here in Python: id, stamp as written, and turn only when it has
+    # one, joined by NUL. The Go side owns the definition — a change there is
+    # a change here — so this export counts a response the store holds under
+    # two names once, the way the Go readers do.
     identity = row["response_id"] + "\0" + row["timestamp"]
     if isinstance(row.get("turn_id"), str) and row["turn_id"]:
         identity += "\0" + row["turn_id"]
@@ -200,38 +231,241 @@ def owned_days(projects):
     return days
 
 
-def receipt_paths(root, since):
-    """Every receipt file to parse, sorted: the flat files still at the top level, and
-    the day folders at or after the first day the range can read — a receipt always
-    sits in a folder at or after its stamp's UTC day, so an earlier folder holds only
-    receipts the range itself excludes. Without since, every folder."""
-    # The first folder a receipt in range can sit in: the UTC day of the range's
-    # first instant (a local midnight is the previous UTC day east of UTC, and
-    # the same day west of it).
+def plain(exc):
+    """An OSError as a person reads it: the path and what is wrong with it, never
+    Python's own "[Errno N] ..." spelling (#647). A move names both paths, and
+    the destination is the one that blocked the write, so it is kept last (#647)."""
+    what = exc.strerror or "cannot be read"
+    where = exc.filename if exc.filename is not None else "a receipt file"
+    destination = getattr(exc, "filename2", None)
+    if destination is not None:
+        return f"{where} -> {destination}: {what}"
+    if isinstance(exc, FileNotFoundError):
+        return f"{where} is missing"
+    return f"{where}: {what}"
+
+
+def read_regular(path):
+    """A store file's bytes, opened without ever waiting on the open: O_NONBLOCK
+    keeps a FIFO or device left under a receipt's name from holding the run and
+    its store lock (INTENT 8, #654), and anything but a regular file is refused
+    by name — the refusal util/paths.OpenRegular gives the Go readers. A name
+    that is gone still raises FileNotFoundError, the store's relocation."""
+    fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK | getattr(os, "O_CLOEXEC", 0))
+    try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            raise OSError(errno.EINVAL, "not a regular file", str(path))
+        chunks = []
+        while True:
+            chunk = os.read(fd, 1 << 20)
+            if not chunk:
+                return b"".join(chunks)
+            chunks.append(chunk)
+    finally:
+        os.close(fd)
+
+
+def archive_rows(path):
+    """Raw rows and original filenames from one hash-bound archive generation."""
+    try:
+        data = read_regular(path)
+        index = json.loads(read_regular(Path(str(path) + ".idx")).decode("utf-8"))
+        lines = data.split(b"\n") if data else []
+        if data:
+            if lines[-1] != b"":
+                raise ValueError("missing final newline")
+            lines.pop()
+        if index["v"] != 1:
+            raise ValueError("unsupported index version")
+        digest = hashlib.sha256(data).hexdigest()
+        generation = index if index["sha256"] == digest else index.get("previous", {})
+        if generation.get("sha256") != digest:
+            raise ValueError("index does not match content")
+        files = generation["files"]
+        if len(files) != len(lines):
+            raise ValueError("index does not match row count")
+        names = [f["name"] for f in files]
+        if any(not isinstance(n, str) or Path(n).name != n or not n.endswith(".json") for n in names) or names != sorted(set(names)):
+            raise ValueError("invalid receipt names")
+        if any(not isinstance(f["mtime_ns"], int) or isinstance(f["mtime_ns"], bool) for f in files):
+            raise ValueError("invalid receipt modification times")
+        return {name: (line, f["mtime_ns"]) for name, line, f in zip(names, lines, files)}
+    except OSError as exc:
+        raise ValueError(f"archive {path.name}: {plain(exc)}") from exc
+    except (ValueError, KeyError, TypeError) as exc:
+        raise ValueError(f"archive {path.name}: {exc}") from exc
+
+
+def receipt_rows(root, since):
+    """Folder and archived receipts in original path order, under the store move lock.
+    A listed receipt whose name is gone by its read comes back with data None (#583);
+    one still there that cannot be read comes back with its OSError as data (#654)."""
     first = since.astimezone(dt.timezone.utc).strftime("%Y-%m-%d") if since else ""
-    paths = []
-    for entry in os.scandir(root):
-        if DAY_DIR.fullmatch(entry.name) and entry.is_dir(follow_symlinks=False):
-            if entry.name < first:
+    def create_lock():
+        try:
+            return os.fdopen(os.open(root / ".move.lock", os.O_CREAT | os.O_RDWR, 0o600), "rb")
+        except OSError as exc:
+            if exc.errno not in (errno.EACCES, errno.EROFS):
+                raise
+            return None  # A read-only legacy store cannot start a compactor either.
+
+    try:
+        lock = open(root / ".move.lock", "rb")
+    except FileNotFoundError:
+        try:
+            lock = create_lock()
+        except FileNotFoundError:
+            # Before the first session the store folder itself does not exist (#647):
+            # nothing to read, and a reader leaves no trace, so this is an empty store.
+            return
+    except OSError as exc:
+        if exc.errno not in (errno.EACCES, errno.EROFS):
+            raise
+        # A lock file this run cannot open — a root-owned one a sudo'd
+        # compaction left — must not poison every export forever. It is never
+        # unlinked: a permission failure cannot show the holder is stale, and a
+        # replacement inode would let readers and a live compactor stop
+        # excluding each other. The export reads without a lock, as the Go
+        # readers do; the archives are hash-bound and merged with the folder.
+        lock = None
+    with lock if lock is not None else nullcontext():
+        if lock is not None:
+            lock_shared(lock)
+        days, flat = set(), []
+        with os.scandir(root) as entries:
+            for entry in entries:
+                name = entry.name
+                if entry.is_dir(follow_symlinks=False) and DAY_DIR.fullmatch(name):
+                    if name >= first:
+                        days.add(name)
+                elif entry.is_file(follow_symlinks=False):
+                    if (DAY_FILE.fullmatch(name) or (name.endswith(".jsonl.idx") and DAY_FILE.fullmatch(name[:-4]))) and name[:10] >= first:
+                        days.add(name[:10])
+                    elif name.endswith(".json"):
+                        flat.append(Path(entry.path))
+        # Day folders first, flat receipts last: a response the store holds under both
+        # names counts by its day folder's copy, the copy quota and the report count
+        # too (#654). A plain name sort put a flat name such as 0abc.json first.
+        sources = [(day, True) for day in sorted(days)] + [(p.name, False) for p in sorted(flat)]
+        for name, is_day in sources:
+            if not is_day:
+                path = root / name
+                try:
+                    data = read_regular(path)
+                except FileNotFoundError:
+                    # A listed name that is gone by its read was relocated, not lost —
+                    # the pre-shard move's link-then-remove (#513) — so it comes back
+                    # with no bytes and export counts it and skips it, the skip #552
+                    # taught the Go readers (#583).
+                    yield path, None
+                    continue
+                except OSError as exc:
+                    # Still there and not readable (mode 0, a FIFO under its name):
+                    # handed to export, which names it and writes nothing (#654).
+                    yield path, exc
+                    continue
+                yield path, data
                 continue
-            paths += [e.path for e in os.scandir(entry.path)
-                      if e.name.endswith(".json") and e.is_file(follow_symlinks=False)]
-        elif entry.name.endswith(".json") and entry.is_file(follow_symlinks=False):
-            paths.append(entry.path)
-    return sorted(paths)
+            path = root / (name + ".jsonl")
+            if path.exists():
+                rows = archive_rows(path)
+            elif not Path(str(path) + ".idx").exists():
+                rows = {}  # no archive at all: the folder is the day
+            elif (root / name).is_dir():
+                # A first publication that died between its index and its content leaves
+                # an index over no content: the folder holds that day whole, so the
+                # index is garbage, not a promise — the same heal the Go readers apply.
+                rows = {}
+            else:
+                rows = archive_rows(path)  # An index over no content and no folder is damage, named.
+            folder = root / name
+            conflicts = []
+            if folder.is_dir():
+                with os.scandir(folder) as entries:
+                    for entry in entries:
+                        # A FIFO or device under a receipt's name is not skipped
+                        # in silence: read_regular names it, as the Go readers do
+                        # (#654). A symlink stays outside the store, as before.
+                        if (entry.name.endswith(".json") and not entry.is_dir(follow_symlinks=False)
+                                and not entry.is_symlink()):
+                            try:
+                                data = read_regular(entry.path)
+                                mtime = entry.stat().st_mtime_ns
+                            except FileNotFoundError:
+                                # Compaction (#642) removed this name after the listing: skipped as above (#583).
+                                yield Path(entry.path), None
+                                continue
+                            except OSError as exc:
+                                yield Path(entry.path), exc  # not readable: named by export (#654)
+                                continue
+                            previous = rows.get(entry.name)
+                            if previous is not None:
+                                old_data, old_mtime = previous
+                                same = old_data == data
+                                if not same:
+                                    # util/paths.SameNamedRows is the store's one merge
+                                    # rule, mirrored here (#654): a non-finite token parses
+                                    # as a number no member string can equal — the Go
+                                    # readers normalize it to null before comparing, and a
+                                    # member that is not a string is not a match — and an
+                                    # empty turn is only one row when both rows carry a
+                                    # string timestamp. A row that does not parse is not
+                                    # the same turn as anything: it is kept beside its
+                                    # sibling and skipped when the export reads it, the
+                                    # Go readers' reading, instead of raising here inside
+                                    # the generator where export's per-receipt handler
+                                    # cannot see it (#654).
+                                    try:
+                                        old = json.loads(old_data, parse_constant=float)
+                                        new = json.loads(data, parse_constant=float)
+                                    except (ValueError, TypeError):
+                                        old = new = None
+                                    if old is not None and new is not None:
+                                        rid, turn = old.get("response_id"), old.get("turn_id", "")
+                                        new_turn = new.get("turn_id", "")
+                                        same = (isinstance(rid, str) and bool(rid) and rid == new.get("response_id")
+                                                and isinstance(turn, str) and isinstance(new_turn, str) and turn == new_turn
+                                                and (turn or (isinstance(old.get("timestamp"), str)
+                                                               and old.get("timestamp") == new.get("timestamp"))))
+                                if not same:
+                                    conflicts.append((entry.name, previous))
+                                elif old_mtime > mtime:
+                                    continue
+                            rows[entry.name] = (data, mtime)
+            for receipt_name, (data, _) in sorted(list(rows.items()) + conflicts):
+                yield folder / receipt_name, data
 
 
 def export(root, output, since=None):
     days, seen = {}, set()
     unpriced = 0
+    moved = 0
+    unreadable = []
     # The days this rerun reconciles are the ones already exported when it started, each with
     # the stamp it had then: a day another run writes while this one reads receipts belongs to
     # that run's snapshot, so it is not this run's to remove.
     projects = output / "projects"
     marked = owned_days(projects)
-    for path in receipt_paths(root, since):
+    for path, data in receipt_rows(root, since):
+        if data is None:
+            # The listing named this receipt and the store moved it before its read: a
+            # relocation, not damage, so the run skips it and counts it (#583).
+            moved += 1
+            continue
+        if isinstance(data, OSError):
+            # A receipt still there that this run cannot read is named and left out of
+            # every count, the reading quota and the report give the same store (#654).
+            unreadable.append(plain(data))
+            continue
+        # A Python writer wrote a bad cost as a bare NaN/Infinity token; parsing it
+        # as the float it stands for lets convert's damaged-cost guard count the
+        # turn unpriced, instead of the parser refusing the token and the whole
+        # export with it — the reading the Go readers give the same row (#654).
+        try:
+            row = json.loads(data, parse_constant=float)
+        except ValueError:
+            continue  # truncated, zero-byte or otherwise unparseable: one row, never the run
         try:  # every receipt in range is parsed: its own stamp decides the range
-            row = json.loads(Path(path).read_text())
             converted = convert(row)
         except (ValueError, KeyError, TypeError) as exc:
             raise ValueError(f"{os.path.relpath(path, root)}: {exc}") from exc
@@ -268,6 +502,23 @@ def export(root, output, since=None):
         target = projects / folder
         if target.is_symlink() or (target.exists() and not claimed(target)):
             raise ValueError(f"projects/{folder} already exists and is not this exporter's")
+    rows = [r for records in days.values() for r in records]
+    # The three priced kinds are the whole export, so a reader can reconcile the
+    # counts: gateway + estimate + list is rows (#382).
+    stats = {"rows": len(seen), "days": len({d for _, d in days}), "unpriced": unpriced,
+             "moved": moved, "unreadable": unreadable,
+             # usd is what a gateway itself billed; an estimate is its own total.
+             "usd": sum(r.get("costUSD", 0) for r in rows if r["ccmorph"]["costSource"] == "gateway"),
+             "estimated_usd": sum(r.get("costUSD", 0) for r in rows if r["ccmorph"]["costSource"] == "estimate"),
+             "gateway_rows": sum(r["ccmorph"]["costSource"] == "gateway" for r in rows),
+             "estimated_rows": sum(r["ccmorph"]["costSource"] == "estimate" for r in rows),
+             "list_rows": sum(r["ccmorph"]["costSource"] == "list" for r in rows)}
+    if unreadable:
+        # A day file is rewritten whole and a day no receipt supports is removed, so a
+        # run that could not read every receipt would drop the unread turns from the
+        # export already there. It writes nothing: that export stands, and the counts
+        # are what this run could read (#654).
+        return stats
     for (folder, day), records in days.items():
         own(projects / folder)
         atomic_write(projects / folder / f"{day}.jsonl",
@@ -291,16 +542,7 @@ def export(root, output, since=None):
     # by ccusage.
     config = {"defaults": {"mode": "auto", "breakdown": True}}
     atomic_write(output / "ccusage.json", json.dumps(config, indent=2) + "\n")
-    rows = [r for records in days.values() for r in records]
-    # The three priced kinds are the whole export, so a reader can reconcile the
-    # counts: gateway + estimate + list is rows (#382).
-    return {"rows": len(seen), "days": len({d for _, d in days}), "unpriced": unpriced,
-            # usd is what a gateway itself billed; an estimate is its own total.
-            "usd": sum(r.get("costUSD", 0) for r in rows if r["ccmorph"]["costSource"] == "gateway"),
-            "estimated_usd": sum(r.get("costUSD", 0) for r in rows if r["ccmorph"]["costSource"] == "estimate"),
-            "gateway_rows": sum(r["ccmorph"]["costSource"] == "gateway" for r in rows),
-            "estimated_rows": sum(r["ccmorph"]["costSource"] == "estimate" for r in rows),
-            "list_rows": sum(r["ccmorph"]["costSource"] == "list" for r in rows)}
+    return stats
 
 
 def report(stats, output):
@@ -312,13 +554,21 @@ def report(stats, output):
     def count(n, word):
         return f"{n} {word}" if n == 1 else f"{n} {word}s"
 
-    return "\n".join([
-        f"Exported {count(stats['rows'], 'turn')} over {count(stats['days'], 'day')} to {root}",
-        "one folder per profile under projects/, ccusage.json beside it",
+    unreadable = stats.get("unreadable") or []
+    if unreadable:
+        head = [f"Nothing written to {root}: {count(len(unreadable), 'receipt')} not readable, "
+                "so the export already there stands",
+                f"Read {count(stats['rows'], 'turn')} over {count(stats['days'], 'day')}; "
+                "fix the receipts' permissions and run it again"]
+    else:
+        head = [f"Exported {count(stats['rows'], 'turn')} over {count(stats['days'], 'day')} to {root}",
+                "one folder per profile under projects/, ccusage.json beside it"]
+    return "\n".join(head + [
         f"{count(stats['gateway_rows'], 'turn')} the gateway billed, ${stats['usd']:.2f}",
         f"{count(stats['estimated_rows'], 'turn')} ccmorph estimated, ${stats['estimated_usd']:.2f}",
         f"{count(stats['list_rows'], 'turn')} left for ccusage to price at its list price",
         f"{count(stats['unpriced'], 'turn')} unpriced (a damaged cost, not exported)",
+        f"{count(stats['moved'], 'receipt')} moved by the store mid-run, skipped",
         "Then, with ccusage installed:",
         # Both paths shell-quoted, so a folder with spaces in its name does not
         # tear the command apart at the first space (#382).
@@ -331,13 +581,23 @@ def main():
     # RawDescriptionHelpFormatter keeps the authored lines: the ccusage command
     # stays on its own line, ready to copy, instead of reflowing into one
     # paragraph (#382).
-    parser = argparse.ArgumentParser(description=__doc__,
-                                     formatter_class=argparse.RawDescriptionHelpFormatter)
+    # #731: the default resolves against the XDG state root — the same root
+    # paths.StateDir() gives the Go reader — which CCMORPH_STATE_DIR does not
+    # move, so --help prints the folder a run would actually read instead of
+    # naming "the state root", a phrase a CCMORPH_STATE_DIR user read as their
+    # own root and found no receipts under. The path rides the description,
+    # which the formatter keeps as authored: in option help argparse breaks a
+    # long path mid-word, and a path that cannot be copied names no folder —
+    # #382's lesson for the ccusage command line, applied to this one.
+    default_source = (Path(os.environ.get("XDG_STATE_HOME") or Path.home() / ".local/state")
+                      / "ccmorph" / "usage")
+    parser = argparse.ArgumentParser(
+        description=__doc__ + f"\nDefault --source: {default_source}",
+        formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--output", type=Path, required=True, metavar="ROOT",
                         help="directory the export lands in")
-    parser.add_argument("--source", type=Path, metavar="ROOT",
-                        default=Path(os.environ.get("XDG_STATE_HOME") or Path.home() / ".local/state") / "ccmorph/usage",
-                        help="ccmorph receipt store to read; default the state root's usage/")
+    parser.add_argument("--source", type=Path, metavar="ROOT", default=default_source,
+                        help="ccmorph receipt store to read; the default folder is named above")
     parser.add_argument("--since", metavar="YYYYMMDD",
                         help="first local date to export; default all history")
     args = parser.parse_args()
@@ -356,9 +616,14 @@ def main():
                            "YYYYMMDD, for example 20261110\n")
     try:
         stats = export(args.source, args.output, since)
-    except (OSError, ValueError) as exc:
+    except OSError as exc:
+        parser.exit(1, f"usage-export: {plain(exc)}\n")
+    except ValueError as exc:
         parser.exit(1, f"usage-export: {exc}\n")
     print(report(stats, args.output))
+    if stats["unreadable"]:
+        # Each receipt by name, the way every other refusal here is told (#647).
+        parser.exit(1, "".join(f"usage-export: {name}\n" for name in stats["unreadable"]))
 
 
 if __name__ == "__main__":

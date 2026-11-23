@@ -1,0 +1,13 @@
+# The pytest suite's dependencies, so any `uv run` in a checkout carries them
+# (PEP 735 groups stand without a [project] table): a command typed without
+# `--with pytest-xdist` otherwise runs 1300+ spawn-bound cases serially — about
+# four minutes against the 60 s ceiling pytest.ini states. conftest.py turns
+# xdist on by itself once it is installed; CI's pip installs stay serial on
+# purpose. No requires-python: uv locks to the interpreter it runs, and the
+# warning it prints for that is upstream's, not a defect here.
+[tool.uv]
+package = false
+default-groups = ["test"]
+
+[dependency-groups]
+test = ["pytest", "pytest-timeout", "pytest-xdist"]

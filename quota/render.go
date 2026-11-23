@@ -4,9 +4,12 @@ import (
 	"fmt"
 	"io"
 	"math"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/akleizor/ccmorph/util/paths"
 )
 
 // maxWidth is a phone-width terminal: 60 columns, so no line wraps.
@@ -19,6 +22,7 @@ const barCells = 16
 var groups = []struct{ kind, title string }{
 	{"claude", "Claude accounts and tokens"},
 	{"codex", "Codex subscriptions"},
+	{"antigravity", "Google AI plans"},
 	{"budget", "Budget accounts"},
 	{"gateway", "API key and provider profiles"},
 }
@@ -45,6 +49,43 @@ func renderText(w io.Writer, entries []Entry, color bool) {
 		for _, e := range rows {
 			renderEntry(w, e, color)
 		}
+	}
+	receiptsFooter(w, entries, color)
+}
+
+// receiptsFooter is the view's last line once any row was read from the
+// receipts: the folder this run read, resolved (#731). Debugging cost starts by
+// finding the receipts, and only the tool knows which folder its reader used —
+// the profile root moves with CCMORPH_STATE_DIR while the receipts resolve
+// against the XDG state root (paths.StateDir) — so the view names the path it
+// actually read instead of one a document remembered. A view that read no
+// receipts says nothing. The folder is spelled ~/… under the home, as the help
+// pages spell the state root, so a default install prints the README's own
+// ~/.local/state/ccmorph/usage within the 60 columns; when
+// "receipts: <folder>" would pass the width, the folder takes its own line.
+// The folder is never cut — a cut name leads to no folder — so only a folder
+// whose own path is wider than 60 columns can wrap.
+func receiptsFooter(w io.Writer, entries []Entry, color bool) {
+	read := false
+	for _, e := range entries {
+		if e.Kind == "gateway" || e.Kind == "budget" {
+			read = true
+		}
+	}
+	if !read {
+		return
+	}
+	fmt.Fprintln(w)
+	folder := paths.SpelledFromHome(filepath.Join(paths.StateDir(), "usage"))
+	lines := []string{"receipts: " + folder}
+	if len([]rune(lines[0])) > maxWidth {
+		lines = []string{"receipts:", folder}
+	}
+	for _, line := range lines {
+		if color {
+			line = "\033[2m" + line + "\033[0m"
+		}
+		fmt.Fprintln(w, line)
 	}
 }
 
@@ -77,6 +118,14 @@ func renderEntry(w io.Writer, e Entry, color bool) {
 	if e.Balance != "" {
 		emit(w, "  balance "+e.Balance, color, style)
 	}
+	// A gateway whose endpoint answered nothing says what its numbers are made
+	// of before the reason line: the zero above is local receipts, not a
+	// reading that found no spend, and doctor is the command that checks the
+	// endpoint (#726). Two lines so neither is cut at the width.
+	if e.Checked != nil && !*e.Checked {
+		emit(w, "  gateway not reachable — spend from local receipts only", color, style)
+		emit(w, "  check it: ccmorph doctor "+e.Profile, color, style)
+	}
 	if reason != "" {
 		emit(w, "  "+reason, color, style)
 	}
@@ -84,14 +133,19 @@ func renderEntry(w io.Writer, e Entry, color bool) {
 
 // windowLine is "  5h       ██░░░░░░░░░░░░░░  12%  in 4h 10m". A budget window
 // is the month's priced spend over the budget; when no turn this month was
-// priced there is no share to show, so the bar stays empty and its label says
-// the cost is unknown — never 0%, the picture of a month with no spend (#301).
+// priced there is no share to show, so the window carries none (Used nil) and
+// the bar stays empty and says the cost is unknown — never 0%, the picture of a
+// month with no spend (#301).
 func windowLine(win Window, s *Spend) string {
-	share := percent(win.Used)
-	if s.allUnpriced() {
+	used := 0.0
+	if win.Used != nil {
+		used = *win.Used
+	}
+	share := percent(used)
+	if win.Used == nil || s.AllUnpriced() {
 		share = "cost unknown"
 	}
-	return fmt.Sprintf("  %-8s %s %4s  %s", win.Label, bar(win.Used), share, resetText(win.ResetsAt))
+	return fmt.Sprintf("  %-8s %s %4s  %s", win.Label, bar(used), share, resetText(win.ResetsAt))
 }
 
 // spendLine is a gateway or budget profile's use. A price turns into money;
@@ -99,9 +153,12 @@ func windowLine(win Window, s *Spend) string {
 // never $0.00; no receipts at all say the profile was not used.
 func spendLine(s *Spend) string {
 	if s.MonthTurns == 0 {
+		if s.UnreadableReceipts > 0 {
+			return "  no readable turn this month" // the reason line names what could not be read
+		}
 		return "  not used this month"
 	}
-	if s.allUnpriced() {
+	if s.AllUnpriced() {
 		return fmt.Sprintf("  %d %s · %d %s this month · cost unknown",
 			s.MonthTurns, plural(int64(s.MonthTurns), "turn"), s.MonthTokens, plural(s.MonthTokens, "token"))
 	}

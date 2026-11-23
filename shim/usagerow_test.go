@@ -2,6 +2,8 @@ package shim
 
 import (
 	"encoding/json"
+	"errors"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -27,6 +29,25 @@ func seedOwnedPrices(t *testing.T, usageDir, provider string, models map[string]
 	if err := os.WriteFile(filepath.Join(root, "prices-owned-"+provider+".json"), data, 0o600); err != nil {
 		t.Fatal(err)
 	}
+}
+
+// seedSpillDay builds a day folder holding resp_1's primary row and one of its
+// spills, and names the folder and the two files.
+func seedSpillDay(t *testing.T) (day, primaryName, spillName string) {
+	t.Helper()
+	day = filepath.Join(t.TempDir(), "2026-11-05")
+	if err := os.MkdirAll(day, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	primaryName = rowFileName("resp_1")
+	spillName = spillFileName("resp_1", "resp_1.turn_x")
+	if err := os.WriteFile(filepath.Join(day, primaryName), []byte(`{"response_id":"resp_1"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(day, spillName), []byte(`{"response_id":"resp_1","turn_id":"turn_x"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return day, primaryName, spillName
 }
 
 func transcriptLine(uuid, id, model, ts string, usage string) string {
@@ -882,6 +903,34 @@ func TestAWindowedReadTakesTheFlatRowsAndTheDayFoldersItTouches(t *testing.T) {
 	}
 }
 
+// A folder named the way a day folder is named, but for no calendar date —
+// 2026 has no February 30th — is not the store's day. The window's real days
+// sit either side of such a name, and the report's walk rules it out the way
+// quota's does: one day-name rule answers both (#546).
+func TestAWindowedReadRulesOutAFolderThatIsNoCalendarDate(t *testing.T) {
+	base := t.TempDir()
+	write := func(name string) string {
+		t.Helper()
+		path := filepath.Join(base, name)
+		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte("{}"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		return path
+	}
+	first := write(filepath.Join("2026-02-28", "a.json"))
+	write(filepath.Join("2026-02-30", "c.json")) // a day's shape, but no day of any year
+	last := write(filepath.Join("2026-03-01", "b.json"))
+	since := time.Date(2026, 2, 28, 18, 0, 0, 0, time.UTC)
+	now := time.Date(2026, 3, 1, 9, 0, 0, 0, time.UTC)
+	got := dayRowFiles(base, since, now)
+	if len(got) != 2 || got[0] != first || got[1] != last {
+		t.Fatalf("dayRowFiles = %v, want [%s %s]", got, first, last)
+	}
+}
+
 // When another turn holds the primary name, the relaying adapter's row for this
 // response lands in a spill — a name the hook cannot derive from the id. The
 // hook must still find it, or the response is counted twice and the report sums
@@ -925,6 +974,246 @@ func TestAReplyTheAdapterSpilledIsNotWrittenAgain(t *testing.T) {
 	}
 }
 
+// A build before #633 named a spill by the hash of the joined <response
+// id>.<turn id> key, a name no reader of the new shape can derive. A re-read of
+// that response must still find the row the old build spilled, or the hook
+// writes its own and every report and quota sums the response twice (2026-11-17).
+func TestAReplySpilledBeforeTheRenameIsStillFound(t *testing.T) {
+	dir := stateHome(t)
+	seedOwnedPrices(t, dir, "anthropic", map[string]price{"claude-opus-5-5": {Input: 4, Output: 20}})
+	model := "claude-opus-5-5"
+	// Another turn holds the primary name in the day folder the reply falls in.
+	held := newSidecar("gw", "adapter")
+	held.prices = CachedOwnedPriceBook("anthropic")
+	primary := held.start("resp_1", nil, &model, usageRow{{"input_tokens", []byte("7")}})
+	primary.timestamp = "2026-11-05T08:00:00+00:00"
+	primary.complete = true
+	if err := held.write(primary); err != nil {
+		t.Fatal(err)
+	}
+	// The relaying adapter spilled this session's reply, as the old build did.
+	relay := newSidecar("gw", "adapter")
+	relay.prices = CachedOwnedPriceBook("anthropic")
+	rec := relay.start("resp_1", nil, &model, usageRow{{"input_tokens", []byte("10")}})
+	rec.timestamp = "2026-11-05T09:50:00+00:00"
+	rec.complete = true
+	old := filepath.Join(dir, "2026-11-05", rowFileName("resp_1."+rec.turnID))
+	if err := os.WriteFile(old, relay.row(rec), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	path := writeTranscript(t, transcriptLine("u1", "resp_1", model, "2026-11-05T10:00:00Z",
+		`{"input_tokens":10,"output_tokens":25}`))
+	if n := RecordTranscript("codex", "anthropic", path); n != 0 {
+		t.Fatalf("the hook rewrote a reply spilled before the rename: %d", n)
+	}
+	if got := len(rows(t, dir)); got != 2 {
+		t.Fatalf("rows = %d, want 2: %v", got, rows(t, dir))
+	}
+	if out := reportOutput(t, 3650); !strings.Contains(out, "over 2 rows") {
+		t.Fatalf("the report does not sum the response once: %s", out)
+	}
+}
+
+// #642's compaction copies a row's name into the day's archive, and an archived
+// row cannot be re-filed by migrateOldSpills: a spill a build before #633 wrote
+// is still spelled under the joined key's hash there, and the relay's turn is
+// not the reader's to name. The held+miss scan must still find it by the
+// response id the row carries, or a re-read writes a second row and every
+// report sums the response twice (2026-11-17).
+func TestAnOldSpillInAnArchivedDayIsStillFound(t *testing.T) {
+	dir := stateHome(t)
+	seedOwnedPrices(t, dir, "anthropic", map[string]price{"claude-opus-5-5": {Input: 4, Output: 20}})
+	model := "claude-opus-5-5"
+	day := time.Now().UTC().AddDate(0, 0, -3).Format(paths.DayLayout)
+	stamp := day + "T08:00:00+00:00"
+	// Another turn holds the primary when the day is compacted.
+	held := newSidecar("gw", "adapter")
+	held.prices = CachedOwnedPriceBook("anthropic")
+	primary := held.start("resp_1", nil, &model, usageRow{{"input_tokens", []byte("7")}})
+	primary.timestamp = stamp
+	primary.complete = true
+	if err := held.write(primary); err != nil {
+		t.Fatal(err)
+	}
+	// The relaying adapter spilled this session's reply, as the old build did.
+	relay := newSidecar("gw", "adapter")
+	relay.prices = CachedOwnedPriceBook("anthropic")
+	rec := relay.start("resp_1", nil, &model, usageRow{{"input_tokens", []byte("10")}})
+	rec.timestamp = stamp
+	rec.complete = true
+	old := filepath.Join(dir, day, rowFileName("resp_1."+rec.turnID))
+	if err := os.WriteFile(old, relay.row(rec), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if n, err := CompactUsage(dir, time.Now(), 1); err != nil || n != 1 {
+		t.Fatalf("compaction = %d, %v", n, err)
+	}
+	archive := filepath.Join(dir, day+".jsonl")
+	before, err := os.ReadFile(archive)
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := writeTranscript(t, transcriptLine("u1", "resp_1", model, day+"T10:00:00Z",
+		`{"input_tokens":10,"output_tokens":25}`))
+	if n := RecordTranscript("codex", "anthropic", path); n != 0 {
+		t.Fatalf("the hook rewrote a reply spilled before the rename: %d", n)
+	}
+	if got := len(rowFilesOf(dir)); got != 0 {
+		t.Fatalf("the hook wrote %d row files beside the archive", got)
+	}
+	if after, err := os.ReadFile(archive); err != nil || string(before) != string(after) {
+		t.Fatalf("the hook touched the archive: %v", err)
+	}
+	if out := reportOutput(t, 3650); !strings.Contains(out, "over 2 rows") {
+		t.Fatalf("the report does not sum the response once: %s", out)
+	}
+}
+
+// A hook pass folds what its own row already holds, whichever name a build
+// before #633 gave that spill: reading only the #633 names would replace the
+// row with this pass's lines and shrink it (2026-11-17).
+func TestAnOldSpillStillFoldsIntoTheHooksRow(t *testing.T) {
+	dir := stateHome(t)
+	s := newSidecar("sub", "transcript")
+	rec := s.start("resp_1", nil, nil, usageRow{
+		{"input_tokens", []byte("10")}, {"output_tokens", []byte("40")},
+	})
+	rec.turnID = "turn_1"
+	rec.timestamp = "2026-11-05T09:00:00+00:00"
+	rec.complete = true
+	folder := filepath.Join(dir, "2026-11-05")
+	if err := os.MkdirAll(folder, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	old := filepath.Join(folder, rowFileName("resp_1.turn_1"))
+	if err := os.WriteFile(old, s.row(rec), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	got := mergeExisting(s, "resp_1", "turn_1", "2026-11-05T10:00:00Z", usageRow{
+		{"input_tokens", []byte("10")}, {"output_tokens", []byte("25")},
+	})
+	if v, _ := finiteNumber(valueOf(got, "output_tokens")); v != 40 {
+		t.Fatalf("an old-name spill was not folded: output_tokens = %v, want 40", v)
+	}
+}
+
+// The one-time rename finds a spill a build before #633 wrote by the content it
+// carries, re-files it under the #633 name in a day folder and in the flat
+// store, and leaves every row it cannot re-file where it is (2026-11-17).
+func TestPreUpdateSpillNamesAreRenamedByContent(t *testing.T) {
+	dir := stateHome(t)
+	day := filepath.Join(dir, "2026-11-05")
+	if err := os.MkdirAll(day, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	body := func(id, turn string) []byte {
+		return []byte(`{"schema":1,"response_id":"` + id + `","turn_id":"` + turn +
+			`","timestamp":"2026-11-05T09:00:00+00:00","usage":{"input_tokens":10},"complete":true}`)
+	}
+	write := func(path string, data []byte) {
+		t.Helper()
+		if err := os.WriteFile(path, data, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// A day folder's old-name spill is re-filed.
+	old := filepath.Join(day, rowFileName("resp_1.turn_1"))
+	write(old, body("resp_1", "turn_1"))
+	// A row that does not parse, and one whose new name another row holds, stay.
+	broken := filepath.Join(day, rowFileName("resp_2.turn_2"))
+	write(broken, []byte("{not json"))
+	taken := filepath.Join(day, rowFileName("resp_3.turn_3"))
+	write(taken, body("resp_3", "turn_3"))
+	target := filepath.Join(day, spillFileName("resp_3", "resp_3.turn_3"))
+	keptBytes := body("resp_3", "another_turn")
+	write(target, keptBytes)
+	// A primary and a #633 spill name are already where they belong.
+	primary := filepath.Join(day, rowFileName("resp_4"))
+	write(primary, body("resp_4", "turn_4"))
+	current := filepath.Join(day, spillFileName("resp_5", "resp_5.turn_5"))
+	write(current, body("resp_5", "turn_5"))
+	// The flat store holds an old-name spill too.
+	flat := filepath.Join(dir, rowFileName("resp_6.turn_6"))
+	write(flat, body("resp_6", "turn_6"))
+
+	migrateOldSpills(day)
+	migrateOldSpills(dir)
+
+	if _, err := os.Stat(old); !os.IsNotExist(err) {
+		t.Fatalf("the old-name spill is still there: %v", err)
+	}
+	if _, err := os.ReadFile(filepath.Join(day, spillFileName("resp_1", "resp_1.turn_1"))); err != nil {
+		t.Fatalf("the old-name spill was not re-filed under the #633 name: %v", err)
+	}
+	for _, kept := range []string{broken, taken, target, primary, current} {
+		if _, err := os.Stat(kept); err != nil {
+			t.Fatalf("a row the sweep must leave alone moved: %s: %v", filepath.Base(kept), err)
+		}
+	}
+	if got, err := os.ReadFile(target); err != nil || string(got) != string(keptBytes) {
+		t.Fatalf("the sweep replaced a row whose new name was taken: %v", err)
+	}
+	if _, err := os.Stat(flat); !os.IsNotExist(err) {
+		t.Fatalf("the flat store's old-name spill is still there: %v", err)
+	}
+	if _, err := os.ReadFile(filepath.Join(dir, spillFileName("resp_6", "resp_6.turn_6"))); err != nil {
+		t.Fatalf("the flat store's old-name spill was not re-filed: %v", err)
+	}
+	// The marker keeps the sweep to one scan per directory per store.
+	late := filepath.Join(day, rowFileName("resp_7.turn_7"))
+	write(late, body("resp_7", "turn_7"))
+	migrateOldSpills(day)
+	if _, err := os.Stat(late); err != nil {
+		t.Fatalf("the marker did not stop a second scan: %v", err)
+	}
+}
+
+// The held+miss scan re-files old-name spills, and that rename meets the
+// pre-shard move: the move links a flat row into its day folder and only then
+// removes the flat name, so a rename landing between the two leaves one row
+// under two names and every reader counts it twice. The sweep waits for the
+// store's one lock, as compaction and the move do (2026-11-17).
+func TestTheSpillRenameWaitsForTheMoveLock(t *testing.T) {
+	dir := stateHome(t)
+	seedOwnedPrices(t, dir, "anthropic", map[string]price{"claude-opus-5-5": {Input: 4, Output: 20}})
+	model := "claude-opus-5-5"
+	hook := newSidecar("codex", "transcript")
+	usage := usageRow{{"input_tokens", []byte("10")}}
+	timestamp := "2026-11-05T10:00:00+00:00"
+	// Another route holds the id's primary, so the spill scan runs.
+	other := newSidecar("gw", "adapter")
+	other.prices = CachedOwnedPriceBook("anthropic")
+	rec := other.start("resp_1", nil, &model, usageRow{{"input_tokens", []byte("7")}})
+	rec.timestamp = "2026-11-05T09:00:00+00:00"
+	rec.complete = true
+	if err := other.write(rec); err != nil {
+		t.Fatal(err)
+	}
+	held, ok := moveLock(dir)
+	if !ok {
+		t.Fatal("the move lock was free")
+	}
+	done := make(chan error, 1)
+	go func() {
+		_, err := recordedElsewhere("resp_1", hook.routeID, "turn_hook", timestamp, usage, false)
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		t.Fatalf("the scan ran beside the move lock's holder: %v", err)
+	case <-time.After(100 * time.Millisecond):
+	}
+	held.Close()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the scan did not resume once the move lock was free")
+	}
+}
+
 // A spill exists only while its primary is held: the sidecar claims the primary
 // first, and nothing removes a primary. With no primary there is no row to
 // match, so the hook must read that one name and move on — an orphan spill
@@ -942,7 +1231,7 @@ func TestANewResponseReadsOnlyItsPrimary(t *testing.T) {
 		t.Fatal(err)
 	}
 	// The name the sidecar gives a spill, with no primary beside it.
-	spill := filepath.Join(dir, rowFileName("resp_1."+rec.turnID))
+	spill := filepath.Join(dir, spillFileName("resp_1", "resp_1."+rec.turnID))
 	if err := os.WriteFile(spill, other.row(rec), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -954,6 +1243,156 @@ func TestANewResponseReadsOnlyItsPrimary(t *testing.T) {
 	if got := len(rows(t, dir)); got != 2 {
 		t.Fatalf("rows = %d, want 2: %v", got, rows(t, dir))
 	}
+}
+
+// #635: the spill scan cached each folder's names for the life of the process,
+// so a spill the relay adds while a pass runs cannot be found, and the miss is
+// permanent: the pass that misses a spill writes its own row and moves the
+// cursor past the response, and no later pass re-reads it.
+func TestASpillAddedBetweenTwoScansIsFound(t *testing.T) {
+	dir := stateHome(t)
+	seedOwnedPrices(t, dir, "anthropic", map[string]price{"claude-opus-5-5": {Input: 4, Output: 20}})
+	model := "claude-opus-5-5"
+	hook := newSidecar("codex", "transcript")
+	usage := usageRow{{"input_tokens", []byte("10")}}
+	timestamp := "2026-11-05T10:00:00+00:00"
+	// Another route holds this id's primary, so the scan for our row runs.
+	other := newSidecar("gw", "adapter")
+	other.prices = CachedOwnedPriceBook("anthropic")
+	rec := other.start("resp_1", nil, &model, usageRow{{"input_tokens", []byte("7")}})
+	rec.timestamp = "2026-11-05T09:00:00+00:00"
+	rec.complete = true
+	if err := other.write(rec); err != nil {
+		t.Fatal(err)
+	}
+	// The first scan: the relay has not spilled this response yet.
+	if held, err := recordedElsewhere("resp_1", hook.routeID, "turn_hook", timestamp, usage, false); held || err != nil {
+		t.Fatalf("first scan = %v, %v: want false, the spill has not landed", held, err)
+	}
+	// The relay spills this response mid-pass: its primary is held, so the
+	// write claims a spill name beside it.
+	relay := newSidecar("gw", "adapter")
+	relay.prices = CachedOwnedPriceBook("anthropic")
+	rec = relay.start("resp_1", nil, &model, usageRow{{"input_tokens", []byte("10")}})
+	rec.timestamp = "2026-11-05T09:50:00+00:00"
+	rec.complete = true
+	if err := relay.write(rec); err != nil {
+		t.Fatal(err)
+	}
+	// The second scan lists the same folder again. The first scan's listing
+	// predates the spill; if the pass answers from it, the hook writes a
+	// second row for this response and the cursor moves on.
+	if held, err := recordedElsewhere("resp_1", hook.routeID, "turn_hook", timestamp, usage, false); !held || err != nil {
+		t.Fatalf("second scan = %v, %v: want true, the spill landed between the scans", held, err)
+	}
+}
+
+// #635 (the merge gate's reproduction): the first scan's cached listing already
+// holds a spill — the relay's row for a different request under this id, whose
+// input counts differ, so it never matches. The glob is not empty, so a scan
+// that re-lists only an empty glob reads just that stale row again: when the
+// relay lands our own spill in between, the second scan still answers no
+// spill, and the hook writes a duplicate whose cursor never comes back. A
+// cached listing may answer yes; a no must come from a listing taken now.
+func TestACachedSpillThatIsNotOursIsCheckedAgainstAFreshListing(t *testing.T) {
+	dir := stateHome(t)
+	seedOwnedPrices(t, dir, "anthropic", map[string]price{"claude-opus-5-5": {Input: 4, Output: 20}})
+	model := "claude-opus-5-5"
+	hook := newSidecar("codex", "transcript")
+	usage := usageRow{{"input_tokens", []byte("10")}}
+	timestamp := "2026-11-05T10:00:00+00:00"
+	// Another route holds this id's primary, so the scan for our row runs.
+	other := newSidecar("gw", "adapter")
+	other.prices = CachedOwnedPriceBook("anthropic")
+	rec := other.start("resp_1", nil, &model, usageRow{{"input_tokens", []byte("7")}})
+	rec.timestamp = "2026-11-05T09:00:00+00:00"
+	rec.complete = true
+	if err := other.write(rec); err != nil {
+		t.Fatal(err)
+	}
+	// The relay has already spilled another request under this id: same
+	// response id, different input counts, so it is a candidate that will not
+	// match and the first scan's cached glob is not empty.
+	older := newSidecar("gw", "adapter")
+	older.prices = CachedOwnedPriceBook("anthropic")
+	rec = older.start("resp_1", nil, &model, usageRow{{"input_tokens", []byte("8")}})
+	rec.timestamp = "2026-11-05T09:00:00+00:00"
+	rec.complete = true
+	if err := older.write(rec); err != nil {
+		t.Fatal(err)
+	}
+	// The first scan: the other request's spill is there, ours is not.
+	if held, err := recordedElsewhere("resp_1", hook.routeID, "turn_hook", timestamp, usage, false); held || err != nil {
+		t.Fatalf("first scan = %v, %v: want false, only the other row is there", held, err)
+	}
+	// The relay spills this response mid-pass, beside the stale spill.
+	relay := newSidecar("gw", "adapter")
+	relay.prices = CachedOwnedPriceBook("anthropic")
+	rec = relay.start("resp_1", nil, &model, usageRow{{"input_tokens", []byte("10")}})
+	rec.timestamp = "2026-11-05T09:50:00+00:00"
+	rec.complete = true
+	if err := relay.write(rec); err != nil {
+		t.Fatal(err)
+	}
+	// The second scan's cached listing predates this spill and holds only the
+	// non-matching one; answering from it leaves the hook writing a second row.
+	if held, err := recordedElsewhere("resp_1", hook.routeID, "turn_hook", timestamp, usage, false); !held || err != nil {
+		t.Fatalf("second scan = %v, %v: want true, the spill landed while the cache held only the other row", held, err)
+	}
+}
+
+// #635: the spill prefix is the primary's stem plus a dot, which the primary's
+// own name also starts with. The scan the glob replaced skipped the primary by
+// name, and its caller reads the primary itself: a scan that returns it too
+// re-reads the primary once per scanned response.
+func TestTheSpillScanNeverReReadsThePrimary(t *testing.T) {
+	day, primaryName, spillName := seedSpillDay(t)
+	rows, err := usageRowsFor(day, "resp_1", "turn_hook", true, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var names []string
+	seen := 0
+	for _, row := range rows {
+		names = append(names, row.Name)
+		if row.Name == primaryName {
+			seen++
+		}
+	}
+	if seen != 1 {
+		t.Fatalf("the spill scan read the primary %d times, want once: %v", seen, names)
+	}
+	if len(names) != 2 {
+		t.Fatalf("the scan = %v, want the primary and %s", names, spillName)
+	}
+}
+
+// #635: one transient listing failure used to be stored as the folder's
+// contents for the life of the process — the failed ReadDir's empty answer was
+// cached — so every spill in that folder was invisible for the rest of the
+// pass: the caller must not remember the miss (#538).
+func TestAFailedListingIsNotRemembered(t *testing.T) {
+	day, primaryName, spillName := seedSpillDay(t)
+	failing := true
+	orig := listDir
+	t.Cleanup(func() { listDir = orig })
+	listDir = func(name string) ([]os.DirEntry, error) {
+		if failing {
+			failing = false
+			return nil, errors.New("emfile: too many open files")
+		}
+		return os.ReadDir(name)
+	}
+	prefix := strings.TrimSuffix(primaryName, ".json") + "."
+	if got := spillsIn(day, prefix, primaryName); len(got) != 0 {
+		t.Fatalf("the failed listing reported %v: it saw nothing", got)
+	}
+	for _, path := range spillsIn(day, prefix, primaryName) {
+		if filepath.Base(path) == spillName {
+			return
+		}
+	}
+	t.Fatalf("the failed first listing hid the spill from the second call")
 }
 
 func TestMaxUsageKeepsTheLargerNumberPerKey(t *testing.T) {
@@ -1218,5 +1657,187 @@ func TestRecordTranscriptCarriesAValidSessionIDOnly(t *testing.T) {
 		if (row["response_id"] == "msg_ok") != has || (has && sess != "sess-1") {
 			t.Fatalf("%v", row)
 		}
+	}
+}
+
+// #562, pinned before cli's sameFile and the shim's merged under util/paths:
+// the move's claim — a name already held in a day folder that is this very
+// row — is a hardlink pair, and a link sitting at that name is another row's
+// file, never the claim. Following it instead would remove the flat name and
+// leave the row readable only through a link that no longer resolves.
+func TestALinkAtTheDayNameIsNotTheClaimAMoveLeft(t *testing.T) {
+	dir := stateHome(t)
+	yday := time.Now().UTC().AddDate(0, 0, -1)
+	folder := filepath.Join(dir, yday.Format("2006-01-02"))
+	if err := os.MkdirAll(folder, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	flat := filepath.Join(dir, "a.json")
+	if err := os.WriteFile(flat, []byte(`{"response_id":"a"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chtimes(flat, yday, yday); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(flat, filepath.Join(folder, "a.json")); err != nil {
+		t.Fatal(err)
+	}
+	moveFlatRows()
+	if _, err := os.Stat(flat); err != nil {
+		t.Fatalf("the flat row must stay: a link is not the claim a move left: %v", err)
+	}
+	if !paths.Lexists(filepath.Join(folder, "a.json")) {
+		t.Fatal("the move took the day name a link held")
+	}
+}
+
+// A pass the Stop hook's timeout stops mid-backlog keeps the rows it wrote: the
+// checkpoint onStop writes sits before the row in flight, so the next pass
+// starts there instead of rereading the whole transcript.
+func TestRecordTranscriptCheckpointSkipsWrittenRows(t *testing.T) {
+	stateHome(t)
+	path := writeTranscript(t,
+		transcriptLine("u1", "msg_1", "claude-opus-5-5", "2026-11-05T10:00:00Z", `{"input_tokens":1,"output_tokens":2}`),
+		transcriptLine("u2", "msg_2", "claude-opus-5-5", "2026-11-05T10:00:01Z", `{"input_tokens":1,"output_tokens":2}`),
+	)
+	first, _ := os.ReadFile(path)
+	firstLen := int64(strings.IndexByte(string(first), '\n') + 1)
+	calls := 0
+	writeRow = func(p, pr, id, m, ts, s, turn string, u usageRow) (bool, error) {
+		if calls++; calls == 2 { // the hook is stopped while the second row is written
+			cp := progress.Load()
+			writeCursor(cp.path, cp.c)
+			panic("stopped")
+		}
+		return writeUsageRow(p, pr, id, m, ts, s, turn, u)
+	}
+	t.Cleanup(func() { writeRow = writeUsageRow; progress.Store(nil) })
+	func() { defer func() { _ = recover() }(); RecordTranscript("sub", "anthropic", path) }()
+	if c := readCursor(cursorFile(path)); c.Offset != firstLen {
+		t.Fatalf("checkpoint %d, want %d (just past the written row)", c.Offset, firstLen)
+	}
+}
+
+// A clock rewind can leave an archive on a day that is open again: when the
+// hook re-stamps its write into the older day that archive's row carries, the
+// target is compaction-eligible and the write must wait for the store's
+// exclusive lock. Taken only for the original stamp, which the rewind made
+// look open, the row is written and its earlier copies retired while a
+// compaction may be unlinking that very name — fresh usage destroyed, stale
+// archive left (#654).
+func TestAClockRewindRedirectWaitsForTheTargetDaysLock(t *testing.T) {
+	base := stateHome(t)
+	if err := os.MkdirAll(base, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	today := now.Format(paths.DayLayout)
+	old := now.AddDate(0, 0, -3)
+	oldStamp := old.Format(paths.DayLayout) + "T10:00:00+00:00"
+	responseID, turnID := "recycled", "same-turn"
+	if err := writeUsageArchiveWithPrevious(filepath.Join(base, today+".jsonl"), []paths.UsageArchiveRow{{
+		Name: rowFileName(responseID), MTimeNS: 10,
+		Data: []byte(`{"response_id":"` + responseID + `","turn_id":"` + turnID + `","timestamp":"` + oldStamp + `","usage":{"cost":1}}`),
+	}}, nil); err != nil {
+		t.Fatal(err)
+	}
+	held, err := paths.UsageStoreLock(base, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer held.Close()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		writeUsageRow("sub", "", responseID, "m", today+"T00:00:01+00:00", "", turnID,
+			usageRow{{"input_tokens", []byte("2")}})
+	}()
+	select {
+	case <-done:
+		t.Fatal("the re-stamped write ran into a closed day beside the lock's holder")
+	case <-time.After(200 * time.Millisecond):
+	}
+	held.Close()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the re-stamped write did not resume once the lock was free")
+	}
+}
+
+// A Stop pass writing rows stamped on an archived day reads the names those
+// rows can own, never the whole day. Each of a row's lookups used to merge
+// every archived row and read every leftover live file of the day, several
+// lookups a row, so a long transcript held the store's exclusive lock for
+// minutes on a busy store (#654). The rows still land, and the leftover
+// receipts no written row can own are never opened.
+func TestTranscriptRecordIntoAnArchivedDayReadsOnlyItsOwnNames(t *testing.T) {
+	base := stateHome(t)
+	day := time.Now().UTC().AddDate(0, 0, -5).Format(paths.DayLayout)
+	archived := []paths.UsageArchiveRow{{Name: rowFileName("msg_archived"), MTimeNS: 1,
+		Data: []byte(`{"schema":1,"response_id":"msg_archived","turn_id":"t"}`)}}
+	if err := os.MkdirAll(base, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeUsageArchiveWithPrevious(filepath.Join(base, day+".jsonl"), archived, nil); err != nil {
+		t.Fatal(err)
+	}
+	leftover := map[string]bool{}
+	for i := 0; i < 200; i++ {
+		name := rowFileName(fmt.Sprintf("msg_leftover_%d", i))
+		seedCompactRow(t, base, day, name, `{"schema":1,"response_id":"other"}`, 10)
+		leftover[filepath.Join(base, day, name)] = true
+	}
+	var lines []string
+	for i := 0; i < 20; i++ {
+		lines = append(lines, transcriptLine(fmt.Sprintf("u%d", i), fmt.Sprintf("msg_new_%d", i), "claude-opus-5-5",
+			day+"T10:00:00Z", `{"input_tokens":10,"output_tokens":25}`))
+	}
+	path := writeTranscript(t, lines...)
+	opened := 0
+	rowFileRead = func(p string) {
+		if leftover[p] {
+			opened++
+		}
+	}
+	t.Cleanup(func() { rowFileRead = nil })
+	if got := RecordTranscript("sub", "anthropic", path); got != 20 {
+		t.Fatalf("wrote %d rows into the archived day, want 20", got)
+	}
+	if opened != 0 {
+		t.Fatalf("writing 20 rows opened %d leftover receipts no written row can own", opened)
+	}
+	if got := len(rowFilesOf(filepath.Join(base, day))); got != 220 {
+		t.Fatalf("the archived day's folder holds %d rows, want 220", got)
+	}
+}
+
+// A Stop pass that meets a store another process holds answers with its
+// cursor still on the unwritten row: the hook's write is a wait with a bound,
+// never the unbounded queue behind a compaction (INTENT 8, #654). The next
+// Stop writes the row once the store is free instead of skipping it.
+func TestTranscriptRecordHoldsTheCursorWhileTheStoreIsBusy(t *testing.T) {
+	base := stateHome(t)
+	if err := os.MkdirAll(base, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	held, err := paths.UsageStoreLock(base, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	when := time.Now().UTC().AddDate(0, 0, -2).Format(time.RFC3339)
+	path := writeTranscript(t, transcriptLine("u1", "msg_busy", "claude-opus-5-5", when, `{"input_tokens":1,"output_tokens":2}`))
+	if got := RecordTranscript("sub", "anthropic", path); got != 0 {
+		t.Fatalf("wrote %d rows into a store another process held", got)
+	}
+	if c := readCursor(cursorFile(path)); c.Offset != 0 {
+		t.Fatalf("cursor %d moved past the unwritten row", c.Offset)
+	}
+	held.Close()
+	if got := RecordTranscript("sub", "anthropic", path); got != 1 {
+		t.Fatalf("wrote %d rows after the store was free, want 1", got)
+	}
+	if got := len(rows(t, base)); got != 1 {
+		t.Fatalf("the held-back row did not land: %d rows", got)
 	}
 }

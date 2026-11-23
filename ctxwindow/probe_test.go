@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"maps"
+	"math"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -22,6 +23,7 @@ import (
 	"testing/synctest"
 	"time"
 
+	"github.com/akleizor/ccmorph/util/modelsdev"
 	"github.com/akleizor/ccmorph/util/paths"
 )
 
@@ -73,6 +75,12 @@ func state(t *testing.T) string {
 	old := fetchJSONDict
 	fetchJSONDict = func(ctx context.Context, url string, timeout time.Duration) obj { return obj{} }
 	t.Cleanup(func() { fetchJSONDict = old })
+	// api.json's fetch is stubbed at its var (it does not flow through
+	// fetchJSONDict); the flat catalogue stays production so its bundled-snapshot
+	// fallback keeps running, its wire blocked by the stub above.
+	api := FetchCatalogue
+	FetchCatalogue = func(context.Context, time.Duration) obj { return obj{} }
+	t.Cleanup(func() { FetchCatalogue = api })
 	probeShareDir = func() string { return filepath.Join(dir, "share") }
 	t.Cleanup(func() { probeShareDir = func() string { return filepath.Join(paths.LibDir(), "..", "share") } })
 	return dir
@@ -200,8 +208,12 @@ func TestProbeAllModes(t *testing.T) {
 	}
 }
 
+// GH-371/#449: a probe failure is shown once. ProbeAll's progress row names the
+// model and the kind; the note itself is the report's, and printing it under
+// the row as well made one report carry the same sentence twice.
 func TestProbeFailureReasonIsPrinted(t *testing.T) {
-	state(t)
+	dir := state(t)
+	put(t, filepath.Join(dir, "gw.conf"), "type=apikey\napi_key=k\n")
 	stubs(t, okEnv, func(string) ([]string, map[string]int64, []obj, error) {
 		return []string{"known", "failed"}, map[string]int64{"known": 300000}, nil, nil
 	})
@@ -214,9 +226,20 @@ func TestProbeFailureReasonIsPrinted(t *testing.T) {
 	out := captureStderr(t)
 	o := DefaultOptions()
 	o.Mode = "auto"
-	ProbeAll(context.Background(), []string{"gw"}, o)
-	if !strings.Contains(out.String(), "gateway timed out") || !strings.Contains(out.String(), "paid probe enabled") {
-		t.Fatal(out.String())
+	r := ProbeAll(context.Background(), []string{"gw"}, o)
+	var report bytes.Buffer
+	reportProfiles(&report, []string{"gw"}, r.Notes, nil, nil)
+	if n := strings.Count(out.String()+report.String(), "gateway timed out"); n != 1 {
+		t.Fatalf("the failure's note is printed %d times, want once:\n%s\n%s", n, out.String(), report.String())
+	}
+	if !strings.Contains(out.String(), "paid probe enabled") {
+		t.Errorf("the cost warning must still print:\n%s", out.String())
+	}
+	if !strings.Contains(out.String(), "failed") || !strings.Contains(out.String(), "anthropic:error") {
+		t.Errorf("the progress row must still name the model and the kind:\n%s", out.String())
+	}
+	if !strings.Contains(report.String(), "gw: failed: gateway timed out") {
+		t.Errorf("the report must carry the failure's note:\n%s", report.String())
 	}
 }
 
@@ -340,6 +363,41 @@ func TestCancelInsideRouteStopStillRetiresTheRoute(t *testing.T) {
 	}
 }
 
+// GH-554: #449 moved a failed probe's note from the inline print into the
+// report, but a Ctrl-C leaves before the report: every note the run had
+// collected was lost, with only "interrupted" left. The probe fails first; the
+// route stop then sends the Ctrl-C the probe catches, and waits until the run
+// has seen it, so the exit is the one a person's Ctrl-C takes.
+func TestCancelAfterAFailedProbeStillPrintsItsNote(t *testing.T) {
+	dir := state(t)
+	put(t, filepath.Join(dir, "gw.conf"), "type=apikey\napi_key=k\n")
+	stubs(t, okEnv, func(string) ([]string, map[string]int64, []obj, error) {
+		return []string{"failed"}, nil, nil, nil
+	})
+	priorWalk = func([]string) (map[string]int64, map[string]obj) { return nil, nil }
+	oldProbe, oldPayload := probeFn, payloadFn
+	t.Cleanup(func() { probeFn, payloadFn = oldProbe, oldPayload })
+	payloadFn = func(int) string { return "blob" }
+	probeFn = func(context.Context, string, string, string, string, time.Duration, Opener, int) ProbeResult {
+		return ProbeResult{"anthropic:error", 0, "gateway timed out"}
+	}
+	routeStop = func(ctx context.Context, h string) {
+		if err := syscall.Kill(os.Getpid(), syscall.SIGINT); err != nil {
+			t.Fatal(err)
+		}
+		<-ctx.Done()
+	}
+	var out, errb bytes.Buffer
+	code := ProbeMain([]string{"--profile", "gw", "--model", "failed", "--allow-inference"},
+		strings.NewReader(""), &out, &errb)
+	if code != 130 {
+		t.Fatalf("exit %d, want 130:\n%s", code, errb.String())
+	}
+	if !strings.Contains(errb.String(), "gw: failed: gateway timed out") {
+		t.Fatalf("a cancelled run lost the note it had collected:\n%s", errb.String())
+	}
+}
+
 // Python: ProbeOutputStaysOnPoint + ModelScope + catalogue-on-listing-failure.
 // A profile lock held by `ccmorph config` used to sit in a blocking Flock the
 // deadline never saw: measured 20.0s against --deadline 4. The save now waits
@@ -435,11 +493,8 @@ func TestCatalogueTagLifecycle(t *testing.T) {
 		func(string) ([]string, map[string]int64, []obj, error) {
 			return []string{"acme/solo"}, nil, rows, nil
 		})
-	fetchJSONDict = func(ctx context.Context, url string, timeout time.Duration) obj {
-		if url == catalogueURL {
-			return parse(t, `{"acme":{"models":{"acme/solo":{"limit":{"context":128000,"input":100000}}}}}`)
-		}
-		return obj{}
+	FetchCatalogue = func(context.Context, time.Duration) obj {
+		return parse(t, `{"acme":{"models":{"acme/solo":{"limit":{"context":128000,"input":100000}}}}}`)
 	}
 	captureStderr(t)
 	r := ProbeAll(context.Background(), []string{"gw"}, DefaultOptions())
@@ -467,10 +522,8 @@ func TestCatalogueTagLifecycle(t *testing.T) {
 	priorWalk = func([]string) (map[string]int64, map[string]obj) {
 		return map[string]int64{"gw:acme/solo": 100000}, map[string]obj{"gw:acme/solo": tag}
 	}
-	fetchJSONDict = func(ctx context.Context, url string, timeout time.Duration) obj {
-		t.Fatal("refetched")
-		return nil
-	}
+	fetchJSONDict = func(context.Context, string, time.Duration) obj { t.Fatal("refetched"); return nil }
+	FetchCatalogue = func(context.Context, time.Duration) obj { t.Fatal("refetched"); return nil }
 	r = ProbeAll(context.Background(), []string{"gw"}, DefaultOptions())
 	eq(t, vals(r), map[string]int64{"gw:acme/solo": 100000})
 	if !reflect.DeepEqual(r.Sources["gw:acme/solo"], tag) {
@@ -492,17 +545,15 @@ func TestCatalogueTagLifecycle(t *testing.T) {
 
 func TestCatalogueFetchedAtMostOncePerRun(t *testing.T) {
 	state(t)
-	n := 0
-	fetchJSONDict = func(ctx context.Context, url string, timeout time.Duration) obj {
-		n++
-		return obj{}
-	}
+	api, flat := 0, 0
+	FetchCatalogue = func(context.Context, time.Duration) obj { api++; return obj{} }
+	fetchJSONDict = func(ctx context.Context, url string, timeout time.Duration) obj { flat++; return obj{} }
 	cache := NewCache(false)
 	for _, m := range []string{"x", "y", "z"} {
 		CatalogueLookup(context.Background(), m, "", cache, time.Second)
 	}
-	if n != 2 || cache.apiFetches != 1 || cache.flatFetches != 1 { // one api.json + one models.json, fetched once each
-		t.Fatalf("fetches %d %d %d", n, cache.apiFetches, cache.flatFetches)
+	if api != 1 || flat != 1 || cache.apiFetches != 1 || cache.flatFetches != 1 { // one api.json + one models.json, fetched once each
+		t.Fatalf("fetches %d %d %d %d", api, flat, cache.apiFetches, cache.flatFetches)
 	}
 }
 
@@ -578,11 +629,12 @@ func TestBlockedCatalogueUsesTheBundledSnapshot(t *testing.T) {
 
 // Python: test_catalogue_fetch_sends_a_user_agent.
 func TestCatalogueFetchSendsAUserAgent(t *testing.T) {
-	old := fetchJSONDict
-	t.Cleanup(func() { fetchJSONDict = old })
 	f := &fake{reply: func(r Request) ([]byte, error) {
+		if r.URL != modelsdev.URL {
+			return nil, httpErr(404, "")
+		}
 		for _, h := range r.Header {
-			if h[0] == "User-Agent" && h[1] == userAgent {
+			if h[0] == "User-Agent" && h[1] == modelsdev.UserAgent {
 				return []byte(`{"ok":1}`), nil
 			}
 		}
@@ -590,14 +642,7 @@ func TestCatalogueFetchSendsAUserAgent(t *testing.T) {
 	}}
 	defaultOpener = f
 	t.Cleanup(func() { defaultOpener = BuildOpener() })
-	fetchJSONDict = func(ctx context.Context, url string, timeout time.Duration) obj {
-		body, err := pick(nil).Open(ctx, Request{Method: "GET", URL: url, Header: [][2]string{{"User-Agent", userAgent}}}, timeout)
-		if err != nil {
-			return obj{}
-		}
-		return parseDict(body)
-	}
-	if got := fetchJSONDict(context.Background(), "http://x/models.json", time.Second); len(got) != 1 {
+	if got := dictOrEmpty(modelsdev.Get(context.Background(), time.Second, openURL)); len(got) != 1 {
 		t.Fatal("the fetch was rejected")
 	}
 }
@@ -667,12 +712,21 @@ func TestListModelsOllamaAndDisguisedIDs(t *testing.T) {
 
 // Python: test_probe_urls_match_each_protocols_serving_client.
 func TestAPIURL(t *testing.T) {
-	base := "https://gateway/api/v4"
+	// The GH-563 parity table: the one join's answers on the rows that once
+	// split util's, adapter's and this package's spellings of it.
 	for _, tc := range [][3]string{
-		{base, "/v1/messages", base + "/v1/messages"},
-		{base, "/v1/chat/completions", base + "/chat/completions"},
+		{"https://gw", "/v1/models", "https://gw/v1/models"},
 		{"https://gw/", "/v1/models", "https://gw/v1/models"},
+		{"https://gw//", "/v1/models", "https://gw/v1/models"},
 		{"https://gw/api/v1", "/v1/models", "https://gw/api/v1/models"},
+		{"https://gw/V1", "/v1/models", "https://gw/V1/models"},
+		{"https://gw/api/v4", "/v1/models", "https://gw/api/v4/models"},
+		{"https://alice:tok3n@gw/v1", "/v1/models", "https://alice:tok3n@gw/v1/models"},
+		{"https://gw/v1", "/v1/messages", "https://gw/v1/v1/messages"}, // appended verbatim: the serving client's spelling
+		{"https://gw", "/v1/messages", "https://gw/v1/messages"},
+		{"https://gw/v1", "/v1/models?limit=1000", "https://gw/v1/models?limit=1000"},
+		{"https://gw/v1", "/v1", "https://gw/v1"},
+		{"https://gw/api/v4", "/v1/chat/completions", "https://gw/api/v4/chat/completions"},
 		{"http://127.0.0.1:8080", "/v1/models", "http://127.0.0.1:8080/v1/models"},
 	} {
 		if got := APIURL(tc[0], tc[1]); got != tc[2] {
@@ -916,7 +970,9 @@ func TestWarningPrecedesTheFirstPaidRequest(t *testing.T) {
 	out := captureStderr(t)
 	oldProbe := probeFn
 	t.Cleanup(func() { probeFn = oldProbe })
+	probeCalls := 0
 	probeFn = func(ctx context.Context, base, key, model, blob string, timeout time.Duration, op Opener, bisect int) ProbeResult {
+		probeCalls++
 		if !strings.Contains(out.String(), "may be billed in full") {
 			t.Fatal("the cost warning must come first")
 		}
@@ -925,6 +981,15 @@ func TestWarningPrecedesTheFirstPaidRequest(t *testing.T) {
 	o := DefaultOptions()
 	o.Mode = "auto"
 	ProbeAll(context.Background(), []string{"gw"}, o)
+	// The stub above can only assert anything if the run reaches it; without
+	// this witness a path that never probes passes the test having checked
+	// nothing.
+	if probeCalls == 0 {
+		t.Fatal("the auto path never reached the paid probe")
+	}
+	if !strings.Contains(out.String(), "may be billed in full") {
+		t.Fatalf("the cost warning was not printed:\n%s", out.String())
+	}
 }
 
 // GH-371: the paid-probe warning is probe output, so it wraps at 80 too; a
@@ -1260,12 +1325,9 @@ func TestLaunchSizesOnlyNewModelsAndRemembersMisses(t *testing.T) {
 	fmt.Fprintf(f, `context_discovered={"route":%q,"models":{"known-model":123456}}`+"\n", route)
 	f.Close()
 	fetches := 0
-	fetchJSONDict = func(ctx context.Context, url string, timeout time.Duration) obj {
+	FetchCatalogue = func(context.Context, time.Duration) obj {
 		fetches++
-		if url == catalogueURL {
-			return parse(t, `{"openai":{"models":{"gpt-5":{"limit":{"context":400000,"input":272000}}}}}`)
-		}
-		return obj{}
+		return parse(t, `{"openai":{"models":{"gpt-5":{"limit":{"context":400000,"input":272000}}}}}`)
 	}
 	oldV := validationWindowFn
 	t.Cleanup(func() { validationWindowFn = oldV })
@@ -1295,6 +1357,7 @@ func TestLaunchSizesOnlyNewModelsAndRemembersMisses(t *testing.T) {
 	}
 	// Next launch inside the retry window asks nobody.
 	fetchJSONDict = func(context.Context, string, time.Duration) obj { t.Fatal("fetched again"); return nil }
+	FetchCatalogue = func(context.Context, time.Duration) obj { t.Fatal("fetched again"); return nil }
 	validationWindowFn = func(context.Context, string, string, string, Opener, time.Duration) int64 {
 		t.Fatal("asked again")
 		return 0
@@ -1348,6 +1411,185 @@ func TestSizeListingReadsTheConfOnceIssue522(t *testing.T) {
 	}
 }
 
+// unknownListing is a gateway listing of n models neither the profile nor the
+// catalogue knows.
+func unknownListing(n int) string {
+	var b strings.Builder
+	b.WriteString(`{"data":[`)
+	for i := range n {
+		if i > 0 {
+			b.WriteString(",")
+		}
+		fmt.Fprintf(&b, `{"id":"new-model-%02d"}`, i)
+	}
+	b.WriteString(`]}`)
+	return b.String()
+}
+
+// GH-603: the models left after the declared pre-pass are independent, so they
+// are sized a few at a time. Serial, every one of them waited out a shared
+// catalogue lookup and up to two validation POSTs before the next started.
+func TestSizeListingSizesUnknownModelsConcurrentlyIssue603(t *testing.T) {
+	dir := state(t)
+	put(t, filepath.Join(dir, "gw.conf"), "type=apikey\nbase_url=https://gw.invalid\napi_key={{SECRET_q7t2w9dxk4}}\n")
+	oldV := validationWindowFn
+	t.Cleanup(func() { validationWindowFn = oldV })
+	var mu sync.Mutex
+	inflight, peak := 0, 0
+	var release chan struct{}
+	validationWindowFn = func(_ context.Context, _, _, model string, _ Opener, _ time.Duration) int64 {
+		mu.Lock()
+		inflight++
+		if inflight > peak {
+			peak = inflight
+		}
+		mu.Unlock()
+		<-release
+		mu.Lock()
+		inflight--
+		mu.Unlock()
+		if last := model[len(model)-1]; last%2 == 0 {
+			return 131072
+		}
+		return 0
+	}
+	captureStderr(t)
+	synctest.Test(t, func(t *testing.T) {
+		release = make(chan struct{})
+		done := make(chan int, 1)
+		go func() {
+			done <- SizeListing(context.Background(), "gw", unknownListing(16), "https://gw.invalid", "canary", nil)
+		}()
+		// Every worker is now at its validation call; one model at a time would
+		// leave exactly one there.
+		synctest.Wait()
+		mu.Lock()
+		got := peak
+		mu.Unlock()
+		close(release)
+		if c := <-done; c != 0 {
+			t.Fatal(c)
+		}
+		if got <= 1 || got > 8 {
+			t.Fatalf("in-flight validation calls peaked at %d; want more than 1 and at most 8", got)
+		}
+	})
+	w := windowsOf("gw")
+	_, fields, _ := ReadConf(filepath.Join(dir, "gw.conf"))
+	if len(w) != 8 || len(DiscoveredMisses(fields)) != 8 {
+		t.Fatalf("values %v, misses %v", w, DiscoveredMisses(fields))
+	}
+	for i := range 16 {
+		model := fmt.Sprintf("new-model-%02d", i)
+		if got, ok := w[model]; i%2 == 0 && (!ok || got != 131072) {
+			t.Errorf("%s: %d (present %v), want 131072", model, got, ok)
+		} else if i%2 == 1 && ok {
+			t.Errorf("%s: sized %d, want a miss", model, got)
+		}
+	}
+}
+
+// GH-603: concurrency must not reorder a listing that names one model twice.
+// The serial loop let the later row win; applied in completion order, a slow
+// first row's validation answer overwrote the later row's catalogue one and
+// left the later row's provenance on it.
+func TestSizeListingDuplicateIDsKeepListingOrderIssue603(t *testing.T) {
+	dir := state(t)
+	put(t, filepath.Join(dir, "gw.conf"), "type=apikey\nbase_url=https://gw.invalid\napi_key={{SECRET_q7t2w9dxk4}}\n")
+	oldV, oldA, oldF := validationWindowFn, FetchCatalogue, FetchCanonicalCatalogue
+	t.Cleanup(func() { validationWindowFn, FetchCatalogue, FetchCanonicalCatalogue = oldV, oldA, oldF })
+	// Under acme the id is unique; with gamma as owner the bare-id scan sees it
+	// under two providers and refuses to pick, so the first row falls through
+	// to the slow validation probe.
+	FetchCatalogue = func(context.Context, time.Duration) obj {
+		return parse(t, `{"acme":{"models":{"same":{"limit":{"input":32768}}}},"beta":{"models":{"same":{"limit":{"input":16384}}}}}`)
+	}
+	FetchCanonicalCatalogue = func(context.Context, time.Duration) obj { return obj{} }
+	var release chan struct{}
+	validationWindowFn = func(context.Context, string, string, string, Opener, time.Duration) int64 {
+		<-release
+		return 16384
+	}
+	captureStderr(t)
+	synctest.Test(t, func(t *testing.T) {
+		release = make(chan struct{}) // made in the bubble, as synctest requires
+		done := make(chan int, 1)
+		go func() {
+			done <- SizeListing(context.Background(), "gw",
+				`{"data":[{"id":"same","owned_by":"gamma"},{"id":"same","owned_by":"acme"}]}`,
+				"https://gw.invalid", "canary", nil)
+		}()
+		synctest.Wait() // the second row has its catalogue answer; the first waits in validation
+		close(release)
+		if c := <-done; c != 0 {
+			t.Fatal(c)
+		}
+	})
+	if w := windowsOf("gw"); w["same"] != 32768 {
+		t.Fatalf("saved %d for a model listed twice; the later row's catalogue 32768 must win", w["same"])
+	}
+	_, fields, _ := ReadConf(filepath.Join(dir, "gw.conf"))
+	if s := DiscoveredSources(fields)["same"]; getv(s, "source") != "catalogue" {
+		t.Fatalf("provenance %v, want the later row's catalogue tag", s)
+	}
+}
+
+// sleepingGateway is a gateway that answers neither API shape and spends a
+// second on each POST: the slow endpoint #603 is about.
+type sleepingGateway struct {
+	mu       sync.Mutex
+	posts    int
+	inflight int
+	peak     int
+}
+
+func (g *sleepingGateway) Open(context.Context, Request, time.Duration) ([]byte, error) {
+	g.mu.Lock()
+	g.posts++
+	g.inflight++
+	if g.inflight > g.peak {
+		g.peak = g.inflight
+	}
+	g.mu.Unlock()
+	time.Sleep(time.Second)
+	g.mu.Lock()
+	g.inflight--
+	g.mu.Unlock()
+	return nil, errors.New("gateway did not answer")
+}
+
+// GH-603: sixteen unknown models cost two validation POSTs each. A gateway
+// spending a second on every POST made the serial launch spend 32 s before
+// Claude started; sized a few at a time the same gateway answers in about
+// four. synctest virtualizes the gateway's sleep, so the launch's wall time is
+// measured exactly and costs the suite nothing.
+func TestSizeListingUnknownModelsDoNotSerializeTheLaunchIssue603(t *testing.T) {
+	dir := state(t)
+	put(t, filepath.Join(dir, "gw.conf"), "type=apikey\nbase_url=https://gw.invalid\napi_key={{SECRET_q7t2w9dxk4}}\n")
+	captureStderr(t)
+	gw := &sleepingGateway{}
+	synctest.Test(t, func(t *testing.T) {
+		start := time.Now()
+		if c := SizeListing(context.Background(), "gw", unknownListing(16), "https://gw.invalid", "canary", gw); c != 0 {
+			t.Fatal(c)
+		}
+		elapsed := time.Since(start)
+		gw.mu.Lock()
+		posts, peak := gw.posts, gw.peak
+		gw.mu.Unlock()
+		if posts != 32 {
+			t.Fatalf("gateway saw %d validation POSTs; want two per unknown model", posts)
+		}
+		if peak <= 1 || peak > 8 {
+			t.Fatalf("validation POSTs in flight peaked at %d; want more than 1 and at most 8", peak)
+		}
+		if elapsed >= 8*time.Second {
+			t.Fatalf("16 unknown models took %v; the 32 serial POSTs alone are 32s", elapsed)
+		}
+		t.Logf("16 unknown models took %v; %d POSTs, %d in flight at peak", elapsed, posts, peak)
+	})
+}
+
 // Python: size_listing replaces the six-byte escape before matching; the
 // decoded ">" this port used to write matched itself and normalized nothing.
 func TestValidationNormalizesTheEscapedGT(t *testing.T) {
@@ -1384,6 +1626,10 @@ func TestProviderProfileKeepsWindowsSizedThroughItsBridge(t *testing.T) {
 	dir := state(t)
 	put(t, filepath.Join(dir, "codex.conf"), "type=provider\nprovider=codex\n")
 	fetchJSONDict = func(context.Context, string, time.Duration) obj {
+		t.Fatal("declared size needs no catalogue")
+		return nil
+	}
+	FetchCatalogue = func(context.Context, time.Duration) obj {
 		t.Fatal("declared size needs no catalogue")
 		return nil
 	}
@@ -1425,10 +1671,95 @@ func TestOpenRouterShapedListingNeedsNoManualNumber(t *testing.T) {
 func TestListingStdinIgnoresGarbage(t *testing.T) {
 	dir := state(t)
 	put(t, filepath.Join(dir, "gw.conf"), "type=apikey\napi_key=k\n")
-	for _, body := range []string{"not json", "[]", `{"data": 5}`, ""} {
-		if c := SizeListing(context.Background(), "gw", body, "", "", nil); c != 0 {
-			t.Errorf("%q: %d", body, c)
+	out := captureStderr(t)
+	for _, tc := range []struct {
+		body string
+		want int64 // window stored for "new": 0 unless the body is a listing
+	}{
+		{"not json", 0},
+		{"[]", 0},
+		{`{"data": 5}`, 0},
+		{"", 0},
+		// The reading side: the same call sizes a well-formed listing, so the
+		// zeros above prove the garbage was parsed and refused, not ignored
+		// along with the body by a SizeListing that never reads its argument.
+		{`{"data":[{"id":"new","max_input_tokens":500000}]}`, 500000},
+	} {
+		if c := SizeListing(context.Background(), "gw", tc.body, "", "", nil); c != 0 {
+			t.Errorf("%q: %d", tc.body, c)
 		}
+		if got := windowsOf("gw")["new"]; got != tc.want {
+			t.Errorf("%q: stored window %d, want %d", tc.body, got, tc.want)
+		}
+	}
+	if !strings.Contains(out.String(), "sized gw:new 500000") {
+		t.Fatalf("the size was not reported:\n%s", out.String())
+	}
+}
+
+// GH-757: a listing's save takes the profile lock, which another process can
+// hold while a person thinks — `ccmorph rm` at its confirm does. The launch
+// runs the sizer with a deadline, so the pass gives up inside it, writes
+// nothing, and leaves the model unsized for the next launch to retry. A flock
+// belongs to an open file description, so a second fd is a second holder even
+// inside this process, exactly as another process's fd is.
+func TestListingStdinGivesUpOnAHeldProfileLockIssue757(t *testing.T) {
+	dir := state(t)
+	conf := filepath.Join(dir, "gw.conf")
+	put(t, conf, "type=apikey\napi_key=k\n")
+	lock, err := lockPath(conf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	held, err := os.OpenFile(lock, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer held.Close()
+	if err := syscall.Flock(int(held.Fd()), syscall.LOCK_EX); err != nil {
+		t.Fatal(err)
+	}
+	before, err := os.ReadFile(conf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	listing := `{"data":[{"id":"new","max_input_tokens":500000}]}`
+	done := make(chan int, 1)
+	go func() {
+		done <- ProbeMain([]string{"--listing-stdin", "--profile", "gw", "--deadline", "2"},
+			strings.NewReader(listing), io.Discard, io.Discard)
+	}()
+	start := time.Now()
+	var code int
+	select {
+	case code = <-done:
+	case <-time.After(3 * time.Second):
+		// Release the holder so the pass can finish instead of leaking a
+		// goroutine parked in flock, then fail: the deadline was ignored.
+		held.Close()
+		<-done
+		t.Fatal("still waiting on a held profile lock after 3s; the sizing pass ignored its --deadline")
+	}
+	if elapsed := time.Since(start); elapsed > 3*time.Second {
+		t.Fatalf("the pass took %v; its --deadline was 2s", elapsed)
+	}
+	if code != 1 {
+		t.Fatalf("exit %d, want 1: a save that timed out writes nothing", code)
+	}
+	after, err := os.ReadFile(conf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(after) != string(before) {
+		t.Fatalf("a timed-out save rewrote the conf:\nbefore: %q\nafter:  %q", before, after)
+	}
+	if _, err := os.Stat(DiscoveredPath(conf)); !os.IsNotExist(err) {
+		t.Fatalf("a timed-out save wrote a discovered record: %v", err)
+	}
+	// The model the save would have sized is still unknown, which is what
+	// makes the next launch's ListingHasUnsized pass the listing to the sizer.
+	if _, sized := windowsOf("gw")["new"]; sized {
+		t.Fatal("the model must stay unsized, so the next launch retries the sizing pass")
 	}
 }
 
@@ -1616,6 +1947,64 @@ func TestTheEntrySweepParsesEachSidecarOnceIssue539(t *testing.T) {
 	}
 }
 
+// GH-561: the save parses the sidecar once. SaveDiscoveredCtx took its merge
+// tables from DiscoveredValues, DiscoveredSources and DiscoveredMisses, each of
+// which re-runs discoveredDoc — three parses of the one record the save itself
+// read (#539 closed the sweep's parse; this closes the save's). The conf
+// carries a route-bound record with all three tables so each wrapper has a
+// parse to double.
+func TestTheSaveParsesTheSidecarOnceIssue561(t *testing.T) {
+	dir := state(t)
+	conf := filepath.Join(dir, "gw.conf")
+	put(t, conf, "type=apikey\nbase_url=https://gw.invalid\napi_key=canary\nexcluded_models=hidden-new\n\n")
+	_, fields, _ := ReadConf(conf)
+	route := RouteFingerprint(fields)
+	f, _ := os.OpenFile(conf, os.O_APPEND|os.O_WRONLY, 0)
+	fmt.Fprintf(f, `context_discovered={"route":%q,"models":{"known-model":123456},"sources":{"known-model":{"source":"listing"}},"misses":{"missed-model":"2026-01-01"}}`+"\n", route)
+	f.Close()
+	parses := 0
+	od := discoveredDoc
+	t.Cleanup(func() { discoveredDoc = od })
+	discoveredDoc = func(fields map[string]string) obj {
+		parses++
+		return od(fields)
+	}
+	v := map[string]int64{"fresh-model": 200000}
+	SaveDiscovered("gw", v, ProfileIdentity("gw"), true, nil, map[string]string{"missed-model": "2026-01-02"})
+	if parses != 1 {
+		t.Fatalf("the save parsed the sidecar %d time(s)", parses)
+	}
+	_, after, _ := ReadConf(conf)
+	if d := ParseDiscovered(after); d.Values["fresh-model"] != 200000 || d.Values["known-model"] != 123456 ||
+		d.Sources["known-model"]["source"] != "listing" || d.Misses["missed-model"] != "2026-01-02" {
+		t.Fatalf("the save's merge lost the record's entries: %+v", d)
+	}
+}
+
+// #449 (from #371): a --check run's per-profile result is the found/would-change
+// line. A note about one model — here a paid probe that failed — must not stand
+// in for it: the run that found sizes still says how many would change.
+func TestCheckSummaryPrintsBesideANote(t *testing.T) {
+	notes := []Note{{Profile: "gw", Subject: "paid-model", Reason: "probe failed: connection refused"}}
+	var b bytes.Buffer
+	reportProfiles(&b, []string{"gw"}, notes, map[string]int{"gw": 3}, map[string]int{"gw": 1})
+	s := b.String()
+	if !strings.Contains(s, "probe failed: connection refused") {
+		t.Fatalf("the note must still print:\n%s", s)
+	}
+	if !strings.Contains(s, "gw: found context window sizes for 3 models; 1 would change.") {
+		t.Fatalf("a note must not hide the check's result:\n%s", s)
+	}
+
+	// The save path's summary is Commit's to print, note or no note: the report
+	// must not say it twice.
+	b.Reset()
+	reportProfiles(&b, []string{"gw"}, notes, map[string]int{"gw": 3}, nil)
+	if strings.Contains(b.String(), "found context window sizes") {
+		t.Fatalf("the save path must not repeat Commit's summary:\n%s", b.String())
+	}
+}
+
 func TestReportUnresolvedOrdersTheFreeFixBeforeThePaidOne(t *testing.T) {
 	var b bytes.Buffer
 	ReportUnresolved(&b, "gateway", []string{"deepseek-v4.1-flash"})
@@ -1727,6 +2116,28 @@ func TestProbeReportsEveryProfileInOneShape(t *testing.T) {
 	}
 }
 
+// GH-449: a wrapped line is as wide as the terminal shows it, not as many
+// runes as it holds. Ten four-rune CJK words are 49 runes but 89 cells, and
+// the rune count kept all ten on one line twice the terminal's width.
+func TestWrapLineCountsDisplayCells(t *testing.T) {
+	word := "中中中中" // four runes, eight cells
+	var b bytes.Buffer
+	wrapLine(&b, strings.TrimSpace(strings.Repeat(word+" ", 10)), "", "  ")
+	want := strings.TrimRight(strings.Repeat(word+" ", 9), " ") + "\n  " + word + "\n"
+	if b.String() != want {
+		t.Fatalf("wrapLine put the words on the wrong lines:\ngot  %q\nwant %q", b.String(), want)
+	}
+}
+
+// GH-449: the report's columns are display cells. pad gave a two-rune CJK
+// model id six cells of padding as if it were six wide, so the size column of
+// the next row sat four cells to the left.
+func TestProbeReportColumnsCountDisplayCells(t *testing.T) {
+	if got, want := pad("模型", 6), "模型  "; got != want {
+		t.Fatalf("pad(%q, 6) = %q, want %q (two runes, four cells)", "模型", got, want)
+	}
+}
+
 // GH-371: a long profile name and long model ids still fit a 80-column
 // terminal: no line is wider, no id is split, and no line is a lone bracket.
 func TestProbeOutputFitsEightyColumns(t *testing.T) {
@@ -1821,8 +2232,20 @@ func TestPayloadAndFormatting(t *testing.T) {
 	if len(p) < 200 || !strings.HasPrefix(p, "The quick brown fox jumps over the lazy dog number 0. The quick brown fox jumps over the lazy dog number 1. ") {
 		t.Fatal(p)
 	}
-	if commas(1234567) != "1,234,567" || commas(12) != "12" || gFormat(30) != "30" || gFormat(0.2) != "0.2" {
-		t.Fatal(commas(1234567), gFormat(30))
+	// #562: the negative half the cli spelling of the rule dropped (-,123) —
+	// no count a caller prints is negative today, but the one helper every
+	// count goes through keeps the minus before the digits.
+	if got := Commas(-1234567); got != "-1,234,567" {
+		t.Fatalf("a negative count keeps its minus before the digits: %s", got)
+	}
+	// The int64 boundary: the minus cannot be negated out of the value
+	// (-MinInt64 overflows), so it is split off the formatted string; a
+	// negation instead prints it twice (--9,223,372,036,854,775,808).
+	if got := Commas(math.MinInt64); got != "-9,223,372,036,854,775,808" {
+		t.Fatalf("the int64 boundary keeps one minus before its groups: %s", got)
+	}
+	if Commas(1234567) != "1,234,567" || Commas(12) != "12" || gFormat(30) != "30" || gFormat(0.2) != "0.2" {
+		t.Fatal(Commas(1234567), gFormat(30))
 	}
 }
 
@@ -1993,18 +2416,33 @@ func TestProviderBridgeIsNeverValidatedWithARequest(t *testing.T) {
 	put(t, filepath.Join(dir, "codex.conf"), "type=provider\nprovider=codex\n")
 	oldV := validationWindowFn
 	t.Cleanup(func() { validationWindowFn = oldV })
+	validationCalls := 0
 	validationWindowFn = func(context.Context, string, string, string, Opener, time.Duration) int64 {
+		validationCalls++
 		t.Fatal("quota spent")
 		return 0
 	}
 	if c := SizeListing(context.Background(), "codex", `{"data":[{"id":"gpt-unknown","owned_by":"openai"}]}`, "http://127.0.0.1:1", "k", nil); c != 0 {
 		t.Fatal(c)
 	}
+	if validationCalls != 0 {
+		t.Fatalf("the provider bridge was validated %d time(s)", validationCalls)
+	}
+	// The listing must have been read: the unknown model became a recorded
+	// miss. A SizeListing that skipped the body would satisfy the checks above
+	// without ever reaching the decision not to validate.
+	_, fields, err := ReadConf(filepath.Join(dir, "codex.conf"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, missed := DiscoveredMisses(fields)["gpt-unknown"]; !missed {
+		t.Fatalf("the provider listing was not processed: misses %v", DiscoveredMisses(fields))
+	}
 }
 
 // Ported from tests/product_defaults_test.py: the catalogue URLs are fixed.
 func TestCatalogueURLsAreFixed(t *testing.T) {
-	if catalogueURL != "https://models.dev/api.json" || canonicalCatalogueURL != "https://models.dev/models.json" {
-		t.Fatal(catalogueURL, canonicalCatalogueURL)
+	if modelsdev.URL != "https://models.dev/api.json" || canonicalCatalogueURL != "https://models.dev/models.json" {
+		t.Fatal(modelsdev.URL, canonicalCatalogueURL)
 	}
 }

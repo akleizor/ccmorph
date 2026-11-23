@@ -9,6 +9,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"os/exec"
 	"os/user"
@@ -22,6 +23,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/akleizor/ccmorph/ctxwindow"
+	"github.com/akleizor/ccmorph/ordjson"
+	"github.com/akleizor/ccmorph/util"
 	"github.com/akleizor/ccmorph/util/paths"
 )
 
@@ -147,14 +151,17 @@ func decoy(t *testing.T) (url string, hits func() int) {
 
 // --- ports of tests/adapter_auto_test.py ----------------------------------------
 
+// #563: the join this pin exercised is the one home now — these rows are
+// what the adapter's probes rely on: a versioned base in either case gets
+// no second /v1, a bare base gains its first.
 func TestAPIURLVersionedBaseGetsNoSecondV1(t *testing.T) { // test_versioned_base_url_is_not_given_a_second_v1
 	for base, want := range map[string]string{
 		"https://provider.example/api/v4": "https://provider.example/api/v4/models",
 		"https://provider.example/api/V4": "https://provider.example/api/V4/models",
 		"https://provider.example":        "https://provider.example/v1/models",
 	} {
-		if got := apiURL(base, "/v1/models"); got != want {
-			t.Errorf("apiURL(%q) = %q, want %q", base, got, want)
+		if got := ctxwindow.APIURL(base, "/v1/models"); got != want {
+			t.Errorf("ctxwindow.APIURL(%q) = %q, want %q", base, got, want)
 		}
 	}
 }
@@ -206,12 +213,73 @@ func TestHomeUnsetDefaultProfileDirsAnswerTheAccountHomesRoot(t *testing.T) {
 }
 
 func TestRenderUpstreamProxyOnlyWhenSet(t *testing.T) { // test_upstream_proxy_is_rendered_only_when_set
+	// The route's exemptions read NO_PROXY, so the test's own answer must not
+	// depend on whichever one this machine carries.
+	t.Setenv("NO_PROXY", "")
+	t.Setenv("no_proxy", "")
 	cfg := render([]Row{row("anthropic")}, "k", 1234, "https://gw", "/unused", "http://127.0.0.1:18480", "", nil, false)
 	if !strings.Contains(cfg, "\nproxy-url: \"http://127.0.0.1:18480\"\n") {
 		t.Fatal("proxy-url missing")
 	}
 	if strings.Contains(render([]Row{row("anthropic")}, "k", 1234, "https://gw", "/unused", "", "", nil, false), "proxy-url") {
 		t.Fatal("proxy-url rendered without a proxy")
+	}
+	// An unusable knob names no route: the translator keeps the environment's
+	// resolution, the same decision the probes and the shim take (GH-580
+	// review). Before, cliproxyapi was handed an invalid proxy-url while the
+	// probes had already fallen back.
+	for _, knob := range []string{"http://proxy:bad-port", "not a url", "http://[::1"} {
+		if strings.Contains(render([]Row{row("anthropic")}, "k", 1234, "https://gw", "/unused", knob, "", nil, false), "proxy-url") {
+			t.Fatalf("%q rendered proxy-url; the resolver leaves that call to the environment", knob)
+		}
+	}
+	// A pasted userinfo inside the authority still names the proxy: the
+	// translator is rendered the resolver's spelling -- parseable by
+	// cliproxyapi and the one the probes dial -- not the raw knob, which would
+	// be a different route.
+	pasted := "http://alice:p^ss@proxy:3128?token=qq"
+	cfg = render([]Row{row("anthropic")}, "k", 1234, "https://gw", "/unused", pasted, "", nil, false)
+	if want := "\nproxy-url: \""; !strings.Contains(cfg, want) {
+		t.Fatalf("proxy-url missing; a pasted userinfo inside the authority still names the proxy")
+	}
+	start := strings.Index(cfg, "proxy-url: \"") + len("proxy-url: \"")
+	end := strings.Index(cfg[start:], "\"")
+	if end < 0 {
+		t.Fatalf("unterminated proxy-url: %q", cfg)
+	}
+	rendered := cfg[start : start+end]
+	if u, err := url.Parse(rendered); err != nil || u.Host != "proxy:3128" {
+		t.Fatalf("proxy-url %q is not a parseable route to proxy:3128: %v", rendered, err)
+	}
+	if strings.Contains(cfg, "\""+pasted+"\"") {
+		t.Fatalf("the translator was handed the knob's raw spelling, which Go cannot parse: %q", cfg)
+	}
+	// An '@' after a path or query is ambiguous -- it may belong to that path
+	// or query value -- and the resolver refuses to guess a host from it, so
+	// the translator gets no proxy-url and keeps the environment's resolution
+	// (GH-580 review).
+	queryAt := "http://proxy.invalid:bad-port/?tag=" + "someone" + "@" + "other.invalid:3128"
+	if strings.Contains(render([]Row{row("anthropic")}, "k", 1234, "https://gw", "/unused", queryAt, "", nil, false), "proxy-url") {
+		t.Fatalf("%q rendered proxy-url; the resolver leaves an ambiguous '@' to the environment", queryAt)
+	}
+}
+
+// The knob is the session's route, not a licence to hand this machine's own
+// loopback — or a NO_PROXY-listed gateway — to a remote proxy. The translator
+// reads the same promise the shim and the probes do (GH-580).
+func TestRenderNeverProxiesAnExemptUpstream(t *testing.T) {
+	t.Setenv("NO_PROXY", "")
+	t.Setenv("no_proxy", "")
+	for _, upstream := range []string{"http://127.0.0.1:4000", "http://localhost:4000", "http://[::1]:4000"} {
+		cfg := render([]Row{row("anthropic")}, "k", 1234, upstream, "/unused", "http://bridge.invalid:3128", "", nil, false)
+		if strings.Contains(cfg, "proxy-url") {
+			t.Fatalf("%s rendered proxy-url; a loopback upstream is dialed directly", upstream)
+		}
+	}
+	t.Setenv("NO_PROXY", "gateway.lan")
+	cfg := render([]Row{row("anthropic")}, "k", 1234, "http://gateway.lan:8443", "/unused", "http://bridge.invalid:3128", "", nil, false)
+	if strings.Contains(cfg, "proxy-url") {
+		t.Fatal("a NO_PROXY-listed gateway rendered proxy-url; it is dialed directly")
 	}
 }
 
@@ -400,6 +468,56 @@ func TestTheListingWalkReadsEveryRowShapeOnceIssue479(t *testing.T) {
 	}
 }
 
+// The #562 chat denial is one rule with two remaining spellings, each shaped
+// for its package's JSON decoder: util.DeniedForChat over ordjson rows and
+// this walk over encoding/json rows. Pinned into equality here — every
+// capabilities shape takes the same verdict through both, and only an
+// explicit chat_completion: false denies. The walk once denied on a mere
+// absence (a truthy test, so a row publishing any other capability dropped
+// out of the adapter's inventory while every other surface still served it).
+func TestTheListingWalkAndDeniedForChatDenyTheSameRowsIssue617(t *testing.T) {
+	for _, c := range []struct {
+		caps string // the row's capabilities value as written; "" means no key
+		chat bool   // the one rule's verdict: the row is chat-capable
+	}{
+		{"", true},
+		{"{}", true},
+		{"null", true},
+		{`{"vision":true}`, true},
+		{`{"chat_completion":true}`, true},
+		{`{"chat_completion":0}`, true},
+		{`{"chat_completion":false}`, false},
+	} {
+		row := `{"id":"m"}`
+		if c.caps != "" {
+			row = `{"id":"m","capabilities":` + c.caps + `}`
+		}
+		var decoded map[string]any
+		if err := json.Unmarshal([]byte(row), &decoded); err != nil {
+			t.Fatalf("capabilities %s: %v", c.caps, err)
+		}
+		parsed, err := ordjson.Parse([]byte(row))
+		if err != nil {
+			t.Fatalf("capabilities %s: %v", c.caps, err)
+		}
+		obj, ok := parsed.(*ordjson.Obj)
+		if !ok {
+			t.Fatalf("capabilities %s: the row parsed as %T, not an object", c.caps, parsed)
+		}
+		if denied := util.DeniedForChat(obj); denied != !c.chat {
+			t.Errorf("capabilities %s: DeniedForChat = %v, want chat=%v", c.caps, denied, c.chat)
+		}
+		rows := walkListing([]any{decoded}, false)
+		if len(rows) != 1 {
+			t.Fatalf("capabilities %s: the walk returned %d rows, want 1", c.caps, len(rows))
+		}
+		if rows[0].chat != c.chat {
+			t.Errorf("capabilities %s: the walk said chat=%v, want %v — DeniedForChat's verdict",
+				c.caps, rows[0].chat, c.chat)
+		}
+	}
+}
+
 // usableNative is the one fold over classified rows that doctor's verdict and
 // serve's fast path read (#479); it was spelled in both places before, and a
 // new Row field remembered in only one of them is how doctor and launch
@@ -449,7 +567,7 @@ func TestClassifyProbesOnlySelectedModelOnce(t *testing.T) { // test_missing_dec
 		calls++
 		return "chat", "", 200
 	})
-	swap(t, &inventoryFn, func(string, string, *http.Client) ([]string, error) { panic("unrelated model scan") })
+	swap(t, &inventoryFn, func(string, string, *http.Client) ([]any, []string, error) { panic("unrelated model scan") })
 	for range 2 {
 		if _, err := classify("https://gateway", "k", cache, "m", true); err != nil {
 			t.Fatal(err)
@@ -473,7 +591,9 @@ func seededCache(t *testing.T, endpoint string, withPath bool, rows ...map[strin
 
 func TestClassifyLockedSkipsInventoryWhenSelectedModelCached(t *testing.T) { // test_selected_model_cached_while_waiting_on_lock_skips_inventory
 	cache := seededCache(t, "https://gateway", true, rowJSON(row("anthropic")))
-	swap(t, &inventoryFn, func(string, string, *http.Client) ([]string, error) { return []string{"m", "uncached"}, nil })
+	swap(t, &inventoryFn, func(string, string, *http.Client) ([]any, []string, error) {
+		return nil, []string{"m", "uncached"}, nil
+	})
 	swap(t, &dialectAutoFn, func(_, _, _ string) (string, string, int) { panic("probe") })
 	swap(t, &dialectOfFn, func(_, _, _ string, _ bool) (string, string, int) { panic("probe") })
 	rows, err := classifyLocked("https://gateway", "k", cache, "m", true)
@@ -531,7 +651,7 @@ func TestOldDefaultChatCacheRowIsReclassified(t *testing.T) { // test_old_defaul
 	chat := rowJSON(row("chat"))
 	chat["note"] = "default OpenAI-compatible protocol"
 	cache := seededCache(t, "https://gateway", false, chat)
-	swap(t, &inventoryFn, func(string, string, *http.Client) ([]string, error) { panic("inventory") })
+	swap(t, &inventoryFn, func(string, string, *http.Client) ([]any, []string, error) { panic("inventory") })
 	swap(t, &dialectAutoFn, func(_, _, _ string) (string, string, int) { return "unusable", "no metadata", 0 })
 	calls := 0
 	swap(t, &dialectOfFn, func(_, _, _ string, bounded bool) (string, string, int) {
@@ -713,7 +833,7 @@ func TestCachedNativeMainNeedsNoTranslator(t *testing.T) { // test_cached_native
 		"thinking_probe": thinkingProbeVersion, "rows": []any{rowJSON(row("anthropic"))}})
 	swap(t, &profileDirs, dir)
 	stubProfile(t, map[string]string{"ANTHROPIC_API_KEY": "k", "ANTHROPIC_BASE_URL": "https://gateway"})
-	swap(t, &inventoryFn, func(string, string, *http.Client) ([]string, error) { panic("network") })
+	swap(t, &inventoryFn, func(string, string, *http.Client) ([]any, []string, error) { panic("network") })
 	swap(t, &dialectAutoFn, func(_, _, _ string) (string, string, int) { panic("probe") })
 	swap(t, &freePortFn, func() (int, error) { panic("translator state") })
 	upstream := ""
@@ -734,8 +854,8 @@ func TestAModelMustBeNamedWhenTheGatewayOffersNoList(t *testing.T) { // issue #3
 	os.MkdirAll(filepath.Join(dir, ".adapter-cache"), 0o755)
 	swap(t, &profileDirs, dir)
 	stubProfile(t, map[string]string{"ANTHROPIC_API_KEY": "k", "ANTHROPIC_BASE_URL": "https://gateway"})
-	swap(t, &inventoryFn, func(string, string, *http.Client) ([]string, error) {
-		return nil, refusingStatus{404}
+	swap(t, &inventoryFn, func(string, string, *http.Client) ([]any, []string, error) {
+		return nil, nil, refusingStatus{404}
 	})
 	swap(t, &dialectAutoFn, func(_, _, _ string) (string, string, int) { panic("no probe can name a model") })
 	swap(t, &frontDirectlyFn, func(_ *cliArgs, _, _, _ string, _ []Row, _ map[string]string, _ []string, _ map[string]any) int {
@@ -767,8 +887,8 @@ func TestARefusedListingNamesItsTrueCause(t *testing.T) { // issues #357, #374
 		setup func(t *testing.T) func() int
 	}{
 		{"no model named", []string{"demo", "--auto"}, func(t *testing.T) func() int {
-			swap(t, &inventoryFn, func(string, string, *http.Client) ([]string, error) {
-				return nil, refusingStatus{401}
+			swap(t, &inventoryFn, func(string, string, *http.Client) ([]any, []string, error) {
+				return nil, nil, refusingStatus{401}
 			})
 			return func() int { return 0 }
 		}},
@@ -829,8 +949,8 @@ func TestAWarmCacheIsNotAModelChoice(t *testing.T) { // issue #357
 	cache := filepath.Join(dir, ".adapter-cache", hashHex("https://gateway")[:16]+".json")
 	os.WriteFile(cache, []byte(`{"endpoint":"https://gateway","anthropic_path":"/v1/messages","thinking_probe":2,`+
 		`"rows":[{"model":"delta-1","dialect":"anthropic","note":"","cap":null,"nothink":false,"id_recycle":false,"status":200}]}`), 0o600)
-	swap(t, &inventoryFn, func(string, string, *http.Client) ([]string, error) {
-		return nil, refusingStatus{404}
+	swap(t, &inventoryFn, func(string, string, *http.Client) ([]any, []string, error) {
+		return nil, nil, refusingStatus{404}
 	})
 	served := false
 	swap(t, &frontDirectlyFn, func(_ *cliArgs, _, _, _ string, _ []Row, _ map[string]string, _ []string, _ map[string]any) int {
@@ -1323,6 +1443,48 @@ func TestServingBypassesAmbientProxy(t *testing.T) { // ServingNoProxyTest.test_
 	}
 }
 
+// A 200 that parses is still not a listing when "data" is absent or not a
+// JSON list — a proxy's error object on a 200, a wrapped reply whose data is
+// an object — and the reader must say so instead of answering "serves
+// nothing" (#695, the guard #558 added to util's reader four days before this
+// one shipped). Only a real data list, empty or not, is the endpoint's answer.
+func TestInventoryListingRejectsRepliesThatAreNotListings(t *testing.T) {
+	for _, tc := range []struct {
+		name, body string
+		wantErr    bool
+		wantIDs    []string
+	}{
+		{"absent data — proxy error object", `{"error":"upstream down"}`, true, nil},
+		{"object data — wrapped reply", `{"data":{"id":"m"}}`, true, nil},
+		{"null data", `{"data":null}`, true, nil},
+		{"string data", `{"data":"none"}`, true, nil},
+		{"number data", `{"data":7}`, true, nil},
+		{"empty list — the endpoint's own answer", `{"data":[]}`, false, []string{}},
+		{"normal list", `{"data":[{"id":"m1"}]}`, false, []string{"m1"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("content-type", "application/json")
+				io.WriteString(w, tc.body)
+			}))
+			defer srv.Close()
+			data, ids, err := inventoryListing(srv.URL, "k", nil)
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("reply %s read as a listing: data %v, ids %v, want an error", tc.body, data, ids)
+				}
+				return
+			}
+			if err != nil || !reflect.DeepEqual(ids, tc.wantIDs) {
+				t.Fatalf("reply %s: ids %v err %v, want %v with no error", tc.body, ids, err, tc.wantIDs)
+			}
+			if data == nil {
+				t.Errorf("reply %s: data rows nil for a real list", tc.body)
+			}
+		})
+	}
+}
+
 func inventoryFixture(t *testing.T) string {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("x-api-key") != "k" {
@@ -1354,11 +1516,12 @@ func TestEnsureConfigPollBypassesAmbientProxy(t *testing.T) { // InventoryLoopba
 	writeFile(t, conf, "old", 0o600)
 	up, key := "http://gateway.invalid", "k"
 	realInventory := inventory
-	swap(t, &inventoryFn, func(b, k string, c *http.Client) ([]string, error) {
+	swap(t, &inventoryFn, func(b, k string, c *http.Client) ([]any, []string, error) {
 		if b == up {
-			return []string{"m1"}, nil
+			return nil, []string{"m1"}, nil
 		}
-		return realInventory(b, k, c)
+		ids, err := realInventory(b, k, c)
+		return nil, ids, err
 	})
 	swap(t, &classifyFn, func(_, _, _, _ string, _ bool) ([]Row, error) { return nil, nil })
 	port, _ := strconv.Atoi(translator[strings.LastIndex(translator, ":")+1:])
@@ -1523,16 +1686,29 @@ func TestAutoLaunchWithoutModelIsBoundedBySelectDeadline(t *testing.T) {
 func TestPrintConfigNeverPrintsTheProxyPassword(t *testing.T) {
 	// Go's url.Parse refuses these passwords where Python's urlsplit took them;
 	// the fallback must still cut the userinfo rather than echo the raw URL.
-	// A /, ? or # inside the password ends the authority mid-password (GH-65),
-	// so the @ that closes the userinfo sits past the split's netloc and the
-	// password's head would print as the host.
+	// A space, '^', '%' or a brace inside the password is re-encoded inside the
+	// authority, so the proxy is rendered and redaction must cut it to its host
+	// (GH-65). A /, ? or # before the '@' is ambiguous -- the '@' may belong to
+	// a path or query value -- so the resolver refuses to guess and the
+	// translator gets no proxy-url; no part of the knob may print either way
+	// (GH-580 review).
 	// A digit or empty head before the first /?# reads as a port, so url.Parse
 	// accepts the URL and the success path must not print the secret either.
-	for name, secret := range map[string]string{"caret": "p^ss", "percent": "50%off", "space": "p ss", "slash": "pa/ss", "question": "pa?ss", "hash": "pa#ss",
-		"digit-slash": "12/ss", "digit-question": "12?ss", "empty-head-slash": "/ss"} {
+	// The knob also carries a query token: redaction must drop it, and a key
+	// that itself spells part of the proxy must not cut the spelling first.
+	for name, c := range map[string]struct {
+		secret   string
+		rendered bool
+	}{
+		"caret": {"p^ss", true}, "percent": {"50%off", true}, "space": {"p ss", true},
+		"digit-slash": {"12/ss", true}, "digit-question": {"12?ss", true}, "empty-head-slash": {"/ss", true},
+		"slash": {"pa/ss", false}, "question": {"pa?ss", false}, "hash": {"pa#ss", false},
+	} {
 		t.Run(name, func(t *testing.T) {
+			t.Setenv("NO_PROXY", "")
+			t.Setenv("no_proxy", "")
 			stubProfile(t, map[string]string{"ANTHROPIC_API_KEY": "k", "ANTHROPIC_BASE_URL": "https://gateway",
-				"CCMORPH_UPSTREAM_PROXY": "http://alice:" + secret + "@proxy:3128"})
+				"CCMORPH_UPSTREAM_PROXY": "http://alice:" + c.secret + "@proxy:3128?token=qq"})
 			swap(t, &profileDirs, t.TempDir())
 			// Neutral state dir: t.TempDir() puts the subtest name in the path,
 			// and a secret spelled "p^ss" must not be excused for that.
@@ -1549,11 +1725,17 @@ func TestPrintConfigNeverPrintsTheProxyPassword(t *testing.T) {
 				t.Fatalf("Main = %d", got)
 			}
 			text := output()
-			if strings.Contains(text, secret) || strings.Contains(text, "alice") {
-				t.Fatalf("--print-config printed the proxy credentials: %q", text)
+			if strings.Contains(text, c.secret) || strings.Contains(text, "alice") || strings.Contains(text, "token=qq") {
+				t.Fatalf("--print-config printed the proxy credentials or its query: %q", text)
 			}
-			if !strings.Contains(text, `proxy-url: "http://proxy:3128"`) {
-				t.Fatalf("proxy-url not redacted to its host: %q", text)
+			if c.rendered {
+				if !strings.Contains(text, `proxy-url: "http://proxy:3128"`) {
+					t.Fatalf("proxy-url not redacted to its host: %q", text)
+				}
+				return
+			}
+			if strings.Contains(text, "proxy-url") {
+				t.Fatalf("an ambiguous '@' rendered proxy-url; the resolver leaves that call to the environment: %q", text)
 			}
 		})
 	}
@@ -1580,5 +1762,164 @@ func TestRecyclesToolIDsNonStringIDsAnswerFalse(t *testing.T) {
 				t.Fatal("a non-string tool id must answer false")
 			}
 		})
+	}
+}
+
+func TestRenderPoolsUpstreamConnections(t *testing.T) { // test_upstream_credentials_reuse_connections
+	cfg := render([]Row{row("anthropic"), row("responses")}, "k", 1234, "https://gw", "/unused", "http://127.0.0.1:18480", "", nil, false)
+	for _, entry := range []string{"claude-api-key:", "codex-api-key:"} {
+		block := strings.SplitN(strings.SplitN(cfg, "\n"+entry+"\n", 2)[1], "    models:", 2)[0]
+		if !strings.Contains(block, "    connection-pool: {}\n") {
+			t.Fatalf("%s has no connection-pool, so each request orphans an idle upstream connection:\n%s", entry, block)
+		}
+	}
+}
+
+// --- GH-592: --print-config against an unreachable profile proxy --------------
+
+// deadProxyPW is the dead proxy's password in the GH-592 tests: no output may
+// carry it.
+const deadProxyPW = "pw592dead"
+
+func TestPrintConfigPrintsDespiteAProbeFailure(t *testing.T) { // test_print_config_redacts_upstream_proxy_credentials, offline half (GH-592)
+	// --print-config is the offline way to confirm masking (#47, #65, #139,
+	// #164), so when the profile's proxy is not listening the probe failure is
+	// a note, never a preemption of the print: exit 0, the redacted config on
+	// stdout, the refused dial named on stderr.
+	noAmbientProxy(t)       // this machine's own exemptions would route past the dead proxy (GH-774)
+	swap(t, &probeVia, nil) // Main sets it from the profile and never resets it
+	stubProfile(t, map[string]string{"ANTHROPIC_API_KEY": "abc123", "ANTHROPIC_BASE_URL": "https://gateway",
+		"CCMORPH_UPSTREAM_PROXY": "http://alice:" + deadProxyPW + "@127.0.0.1:8118"})
+	swap(t, &profileDirs, t.TempDir())
+	t.Setenv("TMPDIR", t.TempDir())
+	swap(t, &classifyFn, func(_, _, _, _ string, _ bool) ([]Row, error) {
+		return nil, fmt.Errorf("Get %q: proxyconnect tcp: dial tcp 127.0.0.1:8118: connect: connection refused", "https://gateway/v1/models")
+	})
+	swap(t, &freePortFn, func() (int, error) { return 1234, nil })
+	output := captureStdio(t)
+	var got int
+	code, died := exits(t, func() { got = Main([]string{"demo", "--print-config"}) })
+	text := output()
+	if died || got != 0 {
+		t.Fatalf("the dead proxy preempted the print: died=%v code=%d exit=%d, output %q", died, code, got, text)
+	}
+	for _, want := range []string{`proxy-url: "http://127.0.0.1:8118"`, "<redacted>",
+		"compatibility probes failed", "dial tcp 127.0.0.1:8118: connect: connection refused"} {
+		if !strings.Contains(text, want) {
+			t.Errorf("--print-config output lacks %q: %q", want, text)
+		}
+	}
+	for _, secret := range []string{"alice", deadProxyPW, "abc123"} {
+		if strings.Contains(text, secret) {
+			t.Errorf("--print-config leaked %q after a probe failure: %q", secret, text)
+		}
+	}
+}
+
+func TestPrintConfigPrintsThroughADeadProfileProxy(t *testing.T) { // test_print_config_prints_through_a_dead_profile_proxy (GH-592)
+	// No classify stub: the real probe dials the profile's proxy, where nothing
+	// listens. --print-config prints with the failure named; a launch on the
+	// same profile still dies on it, naming the same dial.
+	noAmbientProxy(t) // a NO_PROXY from this machine exempts the gateway and the probe never dials the proxy (GH-774)
+	swap(t, &probeVia, nil)
+	stubProfile(t, map[string]string{"ANTHROPIC_API_KEY": "abc123", "ANTHROPIC_BASE_URL": "http://gateway.invalid",
+		"CCMORPH_UPSTREAM_PROXY": "http://alice:" + deadProxyPW + "@127.0.0.1:1/p?token=qq"})
+	swap(t, &profileDirs, t.TempDir())
+	t.Setenv("TMPDIR", t.TempDir())
+	swap(t, &freePortFn, func() (int, error) { return 1234, nil })
+
+	output := captureStdio(t)
+	var got int
+	code, died := exits(t, func() { got = Main([]string{"demo", "--print-config"}) })
+	text := output()
+	if died || got != 0 {
+		t.Fatalf("the dead proxy preempted the print: died=%v code=%d exit=%d, output %q", died, code, got, text)
+	}
+	for _, want := range []string{`proxy-url: "http://127.0.0.1:1/p"`, "<redacted>",
+		"compatibility probes failed", "proxyconnect tcp: dial tcp 127.0.0.1:1"} {
+		if !strings.Contains(text, want) {
+			t.Errorf("--print-config output lacks %q: %q", want, text)
+		}
+	}
+	for _, secret := range []string{"alice", deadProxyPW, "token=qq", "abc123"} {
+		if strings.Contains(text, secret) {
+			t.Errorf("--print-config leaked %q through a dead proxy: %q", secret, text)
+		}
+	}
+
+	// A launch is not a print: it dies on the same refused dial. No --auto and
+	// no --model: either arms abortAfter, whose timer outlives exits.
+	output = captureStdio(t)
+	code, died = exits(t, func() { Main([]string{"demo"}) })
+	text = output()
+	if !died || code != 1 {
+		t.Fatalf("a launch through the dead proxy did not die with 1: died=%v code=%d, output %q", died, code, text)
+	}
+	if !strings.Contains(text, "proxyconnect tcp: dial tcp 127.0.0.1:1") || strings.Contains(text, "compatibility probes failed") {
+		t.Fatalf("the launch's refusal does not name the dead proxy plainly: %q", text)
+	}
+}
+
+func TestPrintConfigStillRefusesAnEndpointWithNothingUsable(t *testing.T) { // GH-592: only a failed probe degrades the print
+	swap(t, &probeVia, nil)
+	stubProfile(t, map[string]string{"ANTHROPIC_API_KEY": "abc123", "ANTHROPIC_BASE_URL": "https://gateway"})
+	swap(t, &profileDirs, t.TempDir())
+	t.Setenv("TMPDIR", t.TempDir())
+	swap(t, &classifyFn, func(_, _, _, _ string, _ bool) ([]Row, error) { return []Row{row("unusable")}, nil })
+	swap(t, &freePortFn, func() (int, error) { return 1234, nil })
+	output := captureStdio(t)
+	code, died := exits(t, func() { Main([]string{"demo", "--print-config"}) })
+	if text := output(); !died || code != 1 || !strings.Contains(text, "no usable models on this endpoint") {
+		t.Fatalf("a reachable endpoint with nothing usable printed instead of refusing: died=%v code=%d, output %q", died, code, text)
+	}
+}
+
+func TestPrintConfigPrintsWhenTheInventoryFallsBackToAnUnusableCache(t *testing.T) { // GH-592: a fallback keeps the failed-inventory signal
+	// With the proxy dead and only a settled unusable row on disk, classify
+	// logs the inventory failure, falls back to that cache and returns no
+	// error. The print must still survive, carrying the failure as its note --
+	// and a launch on the same profile must still refuse to serve nothing.
+	noAmbientProxy(t) // this machine's own exemptions would route the inventory past the dead proxy (GH-774)
+	swap(t, &probeVia, nil)
+	stubProfile(t, map[string]string{"ANTHROPIC_API_KEY": "abc123", "ANTHROPIC_BASE_URL": "http://gateway.invalid",
+		"CCMORPH_UPSTREAM_PROXY": "http://alice:" + deadProxyPW + "@127.0.0.1:1"})
+	dirs := t.TempDir()
+	swap(t, &profileDirs, dirs)
+	t.Setenv("TMPDIR", t.TempDir())
+	cache := filepath.Join(dirs, ".adapter-cache", hashHex("http://gateway.invalid")[:16]+".json")
+	if err := os.MkdirAll(filepath.Dir(cache), 0o777); err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, cache, `{"endpoint":"http://gateway.invalid","anthropic_path":"/v1/messages","thinking_probe":2,"refusal_verdicts":1,`+
+		`"rows":[{"model":"m-dead","dialect":"unusable","note":"HTTP 404","cap":null,"nothink":false,"id_recycle":false,"status":404}]}`, 0o600)
+	swap(t, &freePortFn, func() (int, error) { return 1234, nil })
+
+	output := captureStdio(t)
+	var got int
+	code, died := exits(t, func() { got = Main([]string{"demo", "--print-config"}) })
+	text := output()
+	if died || got != 0 {
+		t.Fatalf("the failed inventory preempted the print: died=%v code=%d exit=%d, output %q", died, code, got, text)
+	}
+	for _, want := range []string{"<redacted>", "compatibility probes failed",
+		"proxyconnect tcp: dial tcp 127.0.0.1:1", "falling back to 1 cached model(s)"} {
+		if !strings.Contains(text, want) {
+			t.Errorf("--print-config output lacks %q: %q", want, text)
+		}
+	}
+	for _, secret := range []string{"alice", deadProxyPW} {
+		if strings.Contains(text, secret) {
+			t.Errorf("--print-config leaked %q: %q", secret, text)
+		}
+	}
+
+	output = captureStdio(t)
+	code, died = exits(t, func() { Main([]string{"demo"}) })
+	text = output()
+	if !died || code != 1 || !strings.Contains(text, "no usable models on this endpoint") {
+		t.Fatalf("a launch served, or died unnamed, on an unusable cache: died=%v code=%d, output %q", died, code, text)
+	}
+	if strings.Contains(text, "compatibility probes failed") {
+		t.Fatalf("a launch printed the --print-config note: %q", text)
 	}
 }

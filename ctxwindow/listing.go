@@ -15,8 +15,11 @@ import (
 	"slices"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
+	"github.com/akleizor/ccmorph/ordjson"
+	"github.com/akleizor/ccmorph/util/modelsdev"
 	"github.com/akleizor/ccmorph/util/paths"
 )
 
@@ -26,7 +29,6 @@ type (
 )
 
 const (
-	catalogueURL          = "https://models.dev/api.json"
 	canonicalCatalogueURL = "https://models.dev/models.json"
 	catalogueTimeout      = listTimeout
 	sourceRetrySeconds    = 600
@@ -84,6 +86,60 @@ func parseDict(b []byte) obj {
 		return nil
 	}
 	return asObj(v)
+}
+
+// ListingVerdict is what one /v1/models reply says about the endpoint's model
+// list. Only a data list — empty or not — is the endpoint's own answer;
+// anything else is no listing at all, never a confident "serves nothing".
+// Every reader of the reply shape answers from this one verdict (#558, #695,
+// #747).
+type ListingVerdict int
+
+const (
+	// ListingNotAListing: the reply is not a JSON object, or its data is
+	// absent, null or not a JSON list. It cannot tell a reader what the
+	// route serves — a proxy's 200 error object, a wrapped reply, a 3xx body
+	// curl -f passes through.
+	ListingNotAListing ListingVerdict = iota
+	// ListingConfidentlyEmpty: {"data":[]} — the endpoint's own "serves
+	// nothing".
+	ListingConfidentlyEmpty
+	// ListingServed: a non-empty data list arrived.
+	ListingServed
+)
+
+// ListingShape reads the shared reply shape from a decoded /v1/models reply.
+// top is an *ordjson.Obj (that decoder) or a map[string]any (encoding/json's);
+// every other top level, and any data value that is not a JSON list, is
+// ListingNotAListing. rows is the data list on the two listing verdicts.
+func ListingShape(top val) (rows []any, verdict ListingVerdict) {
+	var data val
+	switch t := top.(type) {
+	case *ordjson.Obj:
+		data, _ = t.Get("data")
+	case map[string]any:
+		data = t["data"]
+	default:
+		return nil, ListingNotAListing
+	}
+	rows, ok := data.([]any)
+	if !ok {
+		return nil, ListingNotAListing
+	}
+	if len(rows) == 0 {
+		return rows, ListingConfidentlyEmpty
+	}
+	return rows, ListingServed
+}
+
+// ListingShapeBody is ListingShape over a reply body, parsed the picker's way:
+// a body that does not parse is no listing.
+func ListingShapeBody(body string) (rows []any, verdict ListingVerdict) {
+	v, err := ordjson.Parse([]byte(body))
+	if err != nil {
+		return nil, ListingNotAListing
+	}
+	return ListingShape(v)
 }
 
 // ListingRows are the chat-capable /v1/models rows under their true ids.
@@ -210,11 +266,17 @@ func pyType(v val) string {
 	return "dict"
 }
 
-// fetchJSONDict is a var so tests run offline. It never fails: unreachable,
-// slow or malformed all mean "no catalogue fallback available". It sends an
-// explicit User-Agent because models.dev answers 403 to a bare default one.
-var fetchJSONDict = func(ctx context.Context, url string, timeout time.Duration) obj {
-	body, err := pick(nil).Open(ctx, Request{Method: "GET", URL: url, Header: [][2]string{{"User-Agent", userAgent}}}, timeout)
+// openURL is the windows' transport for a catalogue GET: each wait on the
+// socket gets the budget, so a flowing transfer over a slow link finishes
+// while a stalled one times out (TestTimeoutBoundsEachWaitNotTheWholeTransfer)
+// — a launch must not lose the 5.9 MB api.json to a 3 s whole-exchange cap.
+func openURL(ctx context.Context, url string, header [][2]string, timeout time.Duration) ([]byte, error) {
+	return pick(nil).Open(ctx, Request{Method: "GET", URL: url, Header: header}, timeout)
+}
+
+// dictOrEmpty parses a fetched document; unreachable, slow or malformed all
+// mean "no catalogue fallback available".
+func dictOrEmpty(body []byte, err error) obj {
 	if err != nil {
 		return obj{}
 	}
@@ -224,9 +286,18 @@ var fetchJSONDict = func(ctx context.Context, url string, timeout time.Duration)
 	return obj{}
 }
 
-// FetchCatalogue is the models.dev provider/model catalogue, or {} on any failure.
+// fetchJSONDict is a var so tests run offline. It never fails. It sends
+// modelsdev's User-Agent: models.json is a models.dev document too, and the
+// window sources just see who is asking.
+var fetchJSONDict = func(ctx context.Context, url string, timeout time.Duration) obj {
+	return dictOrEmpty(openURL(ctx, url, [][2]string{{"User-Agent", modelsdev.UserAgent}}, timeout))
+}
+
+// FetchCatalogue is the models.dev provider/model catalogue, or {} on any
+// failure. Always fresh, never the price book's state-dir cache: the choice
+// and its reason are modelsdev.Get's to own.
 var FetchCatalogue = func(ctx context.Context, timeout time.Duration) obj {
-	return fetchJSONDict(ctx, catalogueURL, timeout)
+	return dictOrEmpty(modelsdev.Get(ctx, timeout, openURL))
 }
 
 // FetchCanonicalCatalogue is the flat canonical-id catalogue; offline it falls
@@ -311,11 +382,11 @@ func CatalogueWindow(catalogue obj, modelID, ownedBy string) *Limit {
 			return nil // absent, or present under 2+ providers: no confident pick
 		}
 	}
-	return LimitWindow(getv(entries[0], "limit"))
+	return limitWindow(getv(entries[0], "limit"))
 }
 
-// CatalogueTag is the provenance record stored beside a catalogue-derived window.
-func CatalogueTag(found *Limit) obj {
+// catalogueTag is the provenance record stored beside a catalogue-derived window.
+func catalogueTag(found *Limit) obj {
 	return obj{"source": "catalogue", "value": found.Value, "input": numOrNil(found.Input),
 		"context": numOrNil(found.Context), "fetched": time.Now().UTC().Format("2006-01-02")}
 }
@@ -330,6 +401,8 @@ func numOrNil(p *int64) val {
 // CatalogueLookup is the models.dev window for one id; cache memoizes each
 // catalogue for the caller's run.
 func CatalogueLookup(ctx context.Context, model, ownedBy string, cache *Cache, timeout time.Duration) *Limit {
+	cache.mu.Lock()
+	defer cache.mu.Unlock()
 	if cache.api == nil {
 		cache.api = FetchCatalogue(ctx, timeout)
 		cache.apiFetches++
@@ -349,6 +422,7 @@ func CatalogueLookup(ctx context.Context, model, ownedBy string, cache *Cache, t
 
 // Cache holds what one run fetched once: the catalogues and window sources.
 type Cache struct {
+	mu                      sync.Mutex // the launch sizes models concurrently (#603); one lazy fetch per run still
 	api, flat               obj
 	apiFetches, flatFetches int
 	sources                 []val

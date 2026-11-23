@@ -30,6 +30,7 @@ module_files=("$REPO"/lib/ccmorph-*.zsh(N:t))   # not `modules`: a readonly zsh 
 readonly _jobs_default=4
 typeset -gA _unit_cost=(
   basics     3   # 1 + 1b + 2: the legacy check reuses 1b's case dir
+  options    4   # 1c: hostile .zshenv options, clean and flipped runs
   inplace    1   # 2b
   migrate    1   # 2c
   module     1   # 2d
@@ -44,7 +45,7 @@ typeset -gA _unit_cost=(
   windows    1   # 9
   hint       1   # 10
   pkgmgr     5   # 11
-  path       7   # 12
+  path       9   # 12
   footer     4   # 13
   selfupdate 17  # 14
 )
@@ -179,8 +180,8 @@ run_installer "$d"; rc=$?
 # its hooks file is what carries a session's end to the launcher (#285), so
 # an installer that drops it must fail here, not in a user's terminal.
 (( ${#module_files} )) || fail "no ccmorph-*.zsh module found beside ccmorph.sh — the manifest below would be silently short"
-want=(bin/ccmorph lib/ccmorph.sh ${module_files/#/lib/} libexec/ccmorph-core share/model-catalogue.json share/window-sources.json share/provider-presets.tsv share/usage-export share/claude-plugin/.claude-plugin/plugin.json share/claude-plugin/commands/hop.md share/claude-plugin/commands/profile.md share/claude-plugin/hooks/hooks.json local.sh.example profile.conf.example install.sh profiles)
-got=(${(f)"$(cd "$d/home/.config/ccmorph" && print -l *(N) {bin,lib,libexec,share}/*(N.) share/claude-plugin/*/*(ND.) | grep -vxE 'bin|lib|libexec|share')"})
+want=(bin/ccmorph lib/ccmorph.sh ${module_files/#/lib/} libexec/ccmorph-core share/model-catalogue.json share/window-sources.json share/provider-presets.tsv share/usage-export share/claude-plugin/.claude-plugin/plugin.json share/claude-plugin/commands/hop.md share/claude-plugin/commands/profile.md share/claude-plugin/hooks/hooks.json share/claude-plugin-router/.mcp.json share/claude-plugin-router/.claude-plugin/plugin.json share/claude-plugin-router/hooks/hooks.json share/claude-plugin-router/skills/router/SKILL.md local.sh.example profile.conf.example install.sh profiles)
+got=(${(f)"$(cd "$d/home/.config/ccmorph" && print -l *(N) {bin,lib,libexec,share}/*(N.) share/claude-plugin/*/*(ND.) share/claude-plugin-router/*(ND.) share/claude-plugin-router/*/*(ND.) share/claude-plugin-router/skills/*/*(ND.) | grep -vxE 'bin|lib|libexec|share')"})
 extra=(${got:|want}); missing=(${want:|got})
 (( ${#extra} == 0 && ${#missing} == 0 )) \
   && ok "install places exactly its own manifest" \
@@ -252,6 +253,96 @@ run_installer "$d"; rc=$?
 grep -qiF 'legacy ccmorph block' "$d/out" && ok "legacy rc ownership is reported" || fail "legacy rc was not reported"
 fi
 
+# --- 1c. the user's .zshenv options cannot reshape the install (#778) --------
+if _own options; then
+# zsh reads ~/.zshenv before the first line of any script, this installer's
+# included, so the options set there reach its own globs and braces: `unsetopt
+# bareglobqual` made the (N:t) module glob fatal before anything was copied,
+# and `setopt ignorebraces` broke `{ ...; break }` and the layout's brace list.
+# Each hostile .zshenv drives the same three runs as a clean home — a fresh
+# install, an update over a profile and a legacy helper, and --uninstall — and
+# every run must exit 0, leave the clean run's tree and print the clean run's
+# report, so a glob or brace install.sh gains later is swept by these same runs.
+opt_stage() {  # $1 = case dir, $2 = stage name, rest = installer args
+  local d="$1" st="$2"; shift 2
+  env -i HOME="$d/home" ZDOTDIR="$d/home" PATH="$d/bin:/usr/bin:/bin:/opt/homebrew/bin" \
+    zsh "$REPO/install.sh" "$@" >"$d/out.$st" 2>&1 </dev/null
+  print -r -- $? > "$d/rc.$st"
+  (cd "$d/home" && find . -mindepth 1 ! -path ./.zshenv | LC_ALL=C sort) > "$d/tree.$st"
+}
+opt_cycle() {  # $1 = case dir: the three runs, in order
+  opt_stage "$1" fresh
+  mkdir -p "$1/home/.config/ccmorph/libexec"
+  print -r -- 'type=apikey' > "$1/home/.config/ccmorph/work.conf"
+  print -r -- '#!/bin/sh' > "$1/home/.config/ccmorph/libexec/model-window"
+  opt_stage "$1" update
+  opt_stage "$1" uninstall --uninstall
+}
+opt_layout=(bin lib libexec share/claude-plugin/.claude-plugin share/claude-plugin/commands
+  share/claude-plugin/hooks share/claude-plugin-router/.claude-plugin share/claude-plugin-router/hooks
+  share/claude-plugin-router/skills/router share/zsh/site-functions)
+# The reference must be whole itself, or two equally broken runs would agree.
+clean=$(fresh_env opt_clean)
+opt_cycle "$clean"
+for st in fresh update uninstall; do
+  [[ "$(<"$clean/rc.$st")" == 0 ]] || { fail "options: the clean $st run rc=$(<"$clean/rc.$st")"; cat "$clean/out.$st" }
+done
+for layout in $opt_layout; do
+  grep -qxF "./.config/ccmorph/$layout" "$clean/tree.fresh" || fail "options: the clean install has no $layout"
+done
+grep -qxF 'Preserved: 1 profile(s)' "$clean/out.update" && ! grep -qxF './.config/ccmorph/libexec/model-window' "$clean/tree.update" \
+  && grep -qF '(1 profiles,' "$clean/out.uninstall" \
+  && ok "options: the clean runs count the profile and sweep the legacy helper" \
+  || { fail "options: the clean runs did not reach the profile and helper globs"; cat "$clean/out.update" "$clean/out.uninstall" }
+for opt_case opt_line in \
+  ignorebraces 'setopt ignorebraces' \
+  bareglobqual 'unsetopt bareglobqual' \
+  every 'setopt ignorebraces extendedglob ksharrays noglob shwordsplit globdots nullglob; unsetopt bareglobqual'; do
+  d=$(fresh_env "opt_$opt_case")
+  print -r -- "$opt_line" > "$d/home/.zshenv"
+  opt_cycle "$d"
+  for st in fresh update uninstall; do
+    [[ "$(<"$d/rc.$st")" == 0 ]] \
+      && ok "options $opt_case: the $st run exits 0" \
+      || { fail "options $opt_case: the $st run rc=$(<"$d/rc.$st")"; cat "$d/out.$st" }
+    [[ "$(<"$d/tree.$st")" == "$(<"$clean/tree.$st")" ]] \
+      && ok "options $opt_case: the $st run leaves the clean run's tree" \
+      || { fail "options $opt_case: the $st run's tree differs from the clean run's"; diff "$clean/tree.$st" "$d/tree.$st" }
+    opt_got="$(<"$d/out.$st")"; opt_want="$(<"$clean/out.$st")"
+    [[ "${opt_got//"$d"/@}" == "${opt_want//"$clean"/@}" ]] \
+      && ok "options $opt_case: the $st run prints the clean run's report" \
+      || { fail "options $opt_case: the $st run's output differs from the clean run's"; cat "$d/out.$st" }
+    grep -q '[{}]' "$d/tree.$st" \
+      && fail "options $opt_case: the $st run left a literal brace path: $(grep '[{}]' "$d/tree.$st")" \
+      || ok "options $opt_case: the $st run leaves no literal brace path"
+  done
+  opt_missing=()
+  for layout in $opt_layout; do
+    grep -qxF "./.config/ccmorph/$layout" "$d/tree.fresh" || opt_missing+=("$layout")
+  done
+  (( ${#opt_missing} == 0 )) && ok "options $opt_case: every layout directory is installed" \
+    || fail "options $opt_case: missing installed directories: ${opt_missing[*]}"
+  [[ "$(<"$d/home/.zshenv")" == "$opt_line" ]] \
+    && ok "options $opt_case: .zshenv is left as it was" || fail "options $opt_case: the installer edited .zshenv"
+done
+# Remote mode hands over to the DOWNLOADED installer through `sh`, which
+# re-execs zsh, and that zsh reads the same .zshenv.
+for opt_case opt_line in ignorebraces 'setopt ignorebraces' bareglobqual 'unsetopt bareglobqual'; do
+  d=$(remote_env "opt_remote_$opt_case" "$TMP/src.tar.gz")
+  print -r -- "$opt_line" > "$d/home/.zshenv"
+  remote_run "$d" cmd; rc=$?
+  (cd "$d/home" && find . -mindepth 1 | LC_ALL=C sort) > "$d/tree"
+  opt_missing=()
+  for layout in $opt_layout; do
+    [[ -d "$d/home/.config/ccmorph/$layout" ]] || opt_missing+=("$layout")
+  done
+  (( rc == 0 )) && [[ -f "$d/home/.config/ccmorph/lib/ccmorph.sh" && -x "$d/home/.local/bin/ccmorph" ]] \
+    && (( ${#opt_missing} == 0 )) && ! grep -q '[{}]' "$d/tree" \
+    && ok "options remote $opt_case: the downloaded installer installs the whole layout" \
+    || { fail "options remote $opt_case: rc=$rc, missing: ${opt_missing[*]:-none}"; cat "$d/out" "$d/err" }
+done
+fi
+
 # --- 2b. an IN-PLACE install (clone already at the target) succeeds -----------
 if _own inplace; then
 # The normal update path on a machine whose repo lives at ~/.config/ccmorph:
@@ -311,7 +402,7 @@ grep -qF '1000000' "$d/home/.config/ccmorph/profiles/work/models.json" \
 # Re-running install again (nothing left to migrate) must not error or re-migrate.
 run_installer "$d"; rc=$?
 (( rc == 0 )) || { fail "second install after migration rc=$rc"; cat "$d/out" }
-[[ ! -e "$d/home/.config/ccmorph/model-registry" ]] \
+[[ ! -e "$d/home/.config/ccmorph/model-registry" && ! -e "$d/home/.config/ccmorph/model-registry.conf" ]] \
   && ok "a second install does not resurrect the legacy registry" \
   || fail "a second install re-created the legacy registry"
 fi
@@ -349,14 +440,16 @@ print 'export KEEP=1' > "$d/dotfiles/zshrc"
 print '# >>> ccmorph >>>' >> "$d/dotfiles/zshrc"
 ln -s "$d/dotfiles/zshrc" "$d/home/.zshrc"
 original=$(<"$d/dotfiles/zshrc")
-run_installer "$d"
+run_installer "$d"; rc=$?
+(( rc == 0 )) || { fail "symlink-case install rc=$rc"; cat "$d/out" }
 [[ -L "$d/home/.zshrc" && "$(<"$d/dotfiles/zshrc")" == "$original" ]] && ok "symlinked rc stays byte-identical" || fail "installer edited symlinked rc"
 fi
 
 # --- 4. uninstall also leaves startup files untouched ------------------------
 if _own uninstall; then
 d=$(fresh_env uninstall)
-run_installer "$d" >/dev/null
+run_installer "$d"; rc=$?
+(( rc == 0 )) || { fail "uninstall-case install rc=$rc"; cat "$d/out" }
 print '# >>> ccmorph >>>' >> "$d/home/.zshrc"
 print 'export TAIL=1' >> "$d/home/.zshrc"
 original=$(<"$d/home/.zshrc")
@@ -373,7 +466,8 @@ if _own residue; then
 d=$(fresh_env uninstall_residue)
 mkdir -p "$d/home/.local/bin"
 printf '#!/bin/sh\necho mine\n' > "$d/home/.local/bin/ccrelay"   # a neighbour, not ours
-run_installer "$d" >/dev/null
+run_installer "$d"; rc=$?
+(( rc == 0 )) || { fail "residue-case install rc=$rc"; cat "$d/out" }
 cfg="$d/home/.config/ccmorph"
 [[ "$(<"$d/home/.local/bin/ccrelay")" == *mine* ]] && ok "install: a neighbour ccrelay in ~/.local/bin survives" || fail "install: deleted ~/.local/bin/ccrelay"
 printf 'type=apikey\napi_key=keychain:work.api_key\nbase_url=https://example.invalid\n' > "$cfg/work.conf"
@@ -402,7 +496,8 @@ grep -qxF "  security delete-generic-password -s ccmorph -a work.api_key" "$d/ou
 # No usage dir and a Linux uname: neither line appears, and the rm names one path.
 # The uname is stubbed, not assumed: on a macOS runner the real one says Darwin.
 d=$(fresh_env uninstall_bare)
-run_installer "$d" >/dev/null
+run_installer "$d"; rc=$?
+(( rc == 0 )) || { fail "bare-uninstall install rc=$rc"; cat "$d/out" }
 printf 'type=apikey\napi_key=keychain:work.api_key\n' > "$d/home/.config/ccmorph/work.conf"
 printf '#!/bin/sh\necho Linux\n' > "$d/bin/uname"; chmod +x "$d/bin/uname"
 env -i HOME="$d/home" ZDOTDIR="$d/home" PATH="$d/bin:/usr/bin:/bin" \
@@ -412,7 +507,8 @@ grep -qxF "  rm -rf $d/home/.config/ccmorph" "$d/out" && ! grep -q 'usage receip
 # macOS with no keychain reference in any conf: the grep finds nothing, and that
 # must not end the uninstall mid-report (it did, under set -e).
 d=$(fresh_env uninstall_darwin_plain)
-run_installer "$d" >/dev/null
+run_installer "$d"; rc=$?
+(( rc == 0 )) || { fail "darwin-plain install rc=$rc"; cat "$d/out" }
 printf 'type=token\ntoken=canary\n' > "$d/home/.config/ccmorph/work.conf"
 printf '#!/bin/sh\necho Darwin\n' > "$d/bin/uname"; chmod +x "$d/bin/uname"
 env -i HOME="$d/home" ZDOTDIR="$d/home" PATH="$d/bin:/usr/bin:/bin" \
@@ -431,7 +527,8 @@ if _own statedir; then
 # it), the code dir as code — never as the profiles' home — and the plugin
 # repair walks the redirected profile homes (#143).
 d=$(fresh_env uninstall_state_dir)
-run_installer "$d" >/dev/null
+run_installer "$d"; rc=$?
+(( rc == 0 )) || { fail "state-dir install rc=$rc"; cat "$d/out" }
 cfg="$d/home/.config/ccmorph"          # what the install wrote: the code
 state="$d/moved-state"                 # where the runtime keeps the profiles
 mkdir -p "$state"
@@ -470,7 +567,8 @@ grep -qF "\"$d/home/.claude/plugins/marketplaces/example\"" "$d/home/.claude/plu
 # repair must walk those pre-override profile homes too, or the index still
 # names plugin files the printed rm deletes (#187).
 d=$(fresh_env uninstall_prior_profiles)
-run_installer "$d" >/dev/null
+run_installer "$d"; rc=$?
+(( rc == 0 )) || { fail "prior-profiles install rc=$rc"; cat "$d/out" }
 cfg="$d/home/.config/ccmorph"          # the code, and the pre-override profiles
 state="$d/moved-state"                 # where the runtime looks now
 printf 'type=apikey\napi_key=keychain:team.api_key\n' > "$cfg/team.conf"
@@ -516,7 +614,8 @@ if _own linkspell; then
 # spelling the printed cleanup carries.
 for spell in slash link leaf; do
   d=$(fresh_env "uninstall_equiv_$spell")
-  run_installer "$d" >/dev/null
+  run_installer "$d"; rc=$?
+  (( rc == 0 )) || { fail "equiv-$spell install rc=$rc"; cat "$d/out" }
   cfg="$d/home/.config/ccmorph"
   state="$cfg/"                        # slash: the same directory, trailing /
   if [[ "$spell" == link ]]; then      # link: the same directory via a symlinked parent
@@ -574,7 +673,8 @@ done
 # a state root that links at a symlinked config dir, and the usage receipts.
 for spell in state slash chain config equiv usage; do
   d=$(fresh_env "uninstall_rm_$spell")
-  run_installer "$d" >/dev/null
+  run_installer "$d"; rc=$?
+  (( rc == 0 )) || { fail "rm-$spell install rc=$rc"; cat "$d/out" }
   cfg="$d/home/.config/ccmorph"
   target="$d/elsewhere/data"           # where the link leads: the data under test
   mkdir -p "$target"
@@ -634,7 +734,8 @@ done
 # that fails must not end the uninstall before the report (#219).
 for dspell in plain slash broken; do
   d=$(fresh_env "uninstall_rm_dangling_$dspell")
-  run_installer "$d" >/dev/null
+  run_installer "$d"; rc=$?
+  (( rc == 0 )) || { fail "dangling-$dspell install rc=$rc"; cat "$d/out" }
   ln -s "$d/unmounted/state" "$d/state-link"
   dstate="$d/state-link"
   [[ "$dspell" == slash ]] && dstate="$dstate/"
@@ -664,7 +765,8 @@ done
 # printed cleanup like a dangling state root: a path that tests as a symlink and
 # not as a directory is still one the uninstall must name (#219).
 d=$(fresh_env uninstall_usage_dangling)
-run_installer "$d" >/dev/null
+run_installer "$d"; rc=$?
+(( rc == 0 )) || { fail "dangling-usage install rc=$rc"; cat "$d/out" }
 link="$d/home/.local/state/ccmorph"
 mkdir -p "${link:h}"
 ln -s "$d/unmounted/usage" "$link"
@@ -687,7 +789,8 @@ eval "$rm_line"
 # it could be read. The report must say so, count no profiles as fact, name the
 # target unread on the rm line, and leave the link (#219).
 d=$(fresh_env uninstall_rm_unreached)
-run_installer "$d" >/dev/null
+run_installer "$d"; rc=$?
+(( rc == 0 )) || { fail "unreached-link install rc=$rc"; cat "$d/out" }
 data="$d/locked/state"
 mkdir -p "$data/profiles/team"
 print -r -- 'type=apikey' > "$data/team.conf"
@@ -734,7 +837,8 @@ if _own rerun; then
 # construction" is exactly the kind of property that a later refactor breaks
 # silently, and a re-run that looks destructive is one nobody runs twice.
 d=$(fresh_env update)
-run_installer "$d" >/dev/null
+run_installer "$d"; rc=$?
+(( rc == 0 )) || { fail "rerun-case install rc=$rc"; cat "$d/out" }
 cfg="$d/home/.config/ccmorph"
 
 # User state, as a real install would hold it. Probed/manual context now lives
@@ -934,6 +1038,31 @@ env -i HOME="$d/home" ZDOTDIR="$d/home" PATH="$d/bin:/usr/bin:/bin" TMPDIR="$d/t
 (( rc == 0 )) && [[ ! -e "$d/curl.argv" ]] \
   && ok "remote: a local sh install exits 0 and never calls curl" || { fail "local sh install rc=$rc or it called curl"; cat "$d/out" }
 
+release_clone() {  # $1 = source repo, $2 = clone dir, $3 = tag
+  # 8.8's scratch clone as one named setup step (GH-712, the #615 shape): a
+  # failure must say which step died and with what stderr, here, instead of
+  # surfacing downstream. `git clone` exits 0 on an EMPTY source — the
+  # condition is only a stderr warning — so an exit status alone cannot tell a
+  # good clone from an empty one; HEAD resolving is the clone's own proof of
+  # life, and the tag is verified the same way before anything runs against it.
+  local src="$1" dest="$2" tag="$3" err rc
+  err=$(git clone -q "$src" "$dest" 2>&1); rc=$?
+  (( rc == 0 )) || { print -r -- "git clone $src failed rc=$rc: $err"; return 1; }
+  # -q makes rev-parse itself silent, so on failure its output is empty: it
+  # must not be captured into $err, or the empty-clone message would say
+  # "git clone said:" followed by nothing and drop the warning that names the
+  # cause. $err stays the clone's own stderr.
+  git -C "$dest" rev-parse --verify -q HEAD >/dev/null 2>&1; rc=$?
+  (( rc == 0 )) || { print -r -- "empty clone of $src at $dest: HEAD does not resolve rc=$rc; git clone said: $err"; return 1; }
+  err=$(cp "$src/Makefile" "$dest/Makefile" 2>&1) \
+    || { print -r -- "copying $src/Makefile into $dest failed: $err"; return 1; }
+  err=$(git -C "$dest" tag "$tag" 2>&1); rc=$?
+  (( rc == 0 )) || { print -r -- "git tag $tag in $dest failed rc=$rc: $err"; return 1; }
+  git -C "$dest" rev-parse --verify -q "refs/tags/$tag" >/dev/null 2>&1 \
+    || { print -r -- "tag $tag absent in $dest after git tag rc=$rc"; return 1; }
+  return 0
+}
+
 # 8.8 the default URL names a release asset, so make must build one: dist/
 # ccmorph.tar.gz, a stable-name copy of the tag tarball. A release that attaches
 # only dist/ccmorph-<tag>.tar.gz leaves the one-liner's default download a 404.
@@ -943,18 +1072,38 @@ env -i HOME="$d/home" ZDOTDIR="$d/home" PATH="$d/bin:/usr/bin:/bin" TMPDIR="$d/t
 # suite, while the archive content still comes from the tagged commit alone.
 # `make release` itself would recurse into this suite (its `test` prerequisite),
 # so this exercises the `dist` step release runs after verifying.
-git clone -q "$REPO" "$TMP/relrepo"
-cp "$REPO/Makefile" "$TMP/relrepo/Makefile"
 reltag=v0.0.0-install-test
-git -C "$TMP/relrepo" tag "$reltag"
-make -C "$TMP/relrepo" dist TAG="$reltag" DIST="$TMP/reldist" >"$TMP/relmake.out" 2>&1; rc=$?
-(( rc == 0 )) && ok "release: make dist exits 0 on a throwaway tag" \
-  || { fail "release: make dist rc=$rc"; cat "$TMP/relmake.out" }
-[[ -s "$TMP/reldist/ccmorph-$reltag.tar.gz" ]] \
-  && ok "release: the tag-named tarball is built" || fail "release: dist/ccmorph-$reltag.tar.gz was not built"
-cmp -s "$TMP/reldist/ccmorph-$reltag.tar.gz" "$TMP/reldist/ccmorph.tar.gz" \
-  && ok "release: dist/ccmorph.tar.gz is byte-identical to the tag-named tarball" \
-  || fail "release: dist/ccmorph.tar.gz is missing or differs from dist/ccmorph-$reltag.tar.gz"
+if relsetup=$(release_clone "$REPO" "$TMP/relrepo" "$reltag" 2>&1); then
+  make -C "$TMP/relrepo" dist TAG="$reltag" DIST="$TMP/reldist" >"$TMP/relmake.out" 2>&1; rc=$?
+  (( rc == 0 )) && ok "release: make dist exits 0 on a throwaway tag" \
+    || { fail "release: make dist rc=$rc"; cat "$TMP/relmake.out" }
+  [[ -s "$TMP/reldist/ccmorph-$reltag.tar.gz" ]] \
+    && ok "release: the tag-named tarball is built" || fail "release: dist/ccmorph-$reltag.tar.gz was not built"
+  cmp -s "$TMP/reldist/ccmorph-$reltag.tar.gz" "$TMP/reldist/ccmorph.tar.gz" \
+    && ok "release: dist/ccmorph.tar.gz is byte-identical to the tag-named tarball" \
+    || fail "release: dist/ccmorph.tar.gz is missing or differs from dist/ccmorph-$reltag.tar.gz"
+else
+  # One failure naming the setup step, not the three downstream assertions
+  # an empty clone used to produce (GH-712: make dist rc=2 and two missing
+  # tarball FAILs, cause one warning line in the log).
+  fail "release: clone setup: $relsetup"
+fi
+
+# The empty-source case the HEAD verification exists for, pinned directly:
+# a committed-empty repo clones "successfully" (git only warns), which is
+# exactly the state that once reached `make dist` and failed there three
+# times over. release_clone must refuse it, name the empty clone, and carry
+# the clone's own warning line — the message that names the cause is the
+# whole point of the helper. The call above, against $REPO, is its rc=0 proof.
+git init -q "$TMP/relsrc-empty"
+# LC_ALL=C (LANGUAGE emptied too) pins git to its untranslated messages for this
+# one call: the match below reads git's own English warning, and a caller's
+# translated locale must not turn a correct refusal into a false FAIL.
+relsetup=$(export LC_ALL=C LANGUAGE=; release_clone "$TMP/relsrc-empty" "$TMP/relrepo-empty" v0.0.0-empty-clone-test 2>&1); rc=$?
+(( rc != 0 )) && [[ "$relsetup" == *'empty clone'* ]] \
+  && [[ "$relsetup" == *'cloned an empty repository'* ]] \
+  && ok "release: an empty clone fails release_clone, naming the empty clone" \
+  || { fail "release_clone accepted an empty source rc=$rc: $relsetup"; }
 fi
 
 # --- 9. Windows shells are named and sent to WSL before anything else ----------
@@ -1207,6 +1356,28 @@ grep -qF 'fpath=' "$d/out" \
 [[ "$(<"$d/home/.zshrc")" == "$comp_rc" ]] \
   && ok "path: an already-configured .zshrc stays byte-identical" || fail "path: installer edited .zshrc"
 
+# A commented-out compinit, and an oh-my-zsh directory named but not loaded,
+# start nothing (#449): the installer must still say the missing compinit line.
+d=$(fresh_env path_comp_commented)
+print 'fpath=($HOME/.config/ccmorph/share/zsh/site-functions $fpath)' > "$d/home/.zshrc"
+print '# autoload -Uz compinit; compinit' >> "$d/home/.zshrc"
+print 'export ZSH="$HOME/.oh-my-zsh"' >> "$d/home/.zshrc"
+d=$(path_run path_comp_commented /bin/zsh Linux)
+grep -qxF "  autoload -Uz compinit && compinit" "$d/out" \
+  && ok "path: a commented-out compinit is still told the compinit line" \
+  || { fail "path: commented-out compinit got no compinit advice"; cat "$d/out"; }
+
+# Oh My Zsh's loader runs compinit, so only the fpath half is missing.
+d=$(fresh_env path_comp_omz)
+print '. "$HOME/.oh-my-zsh/oh-my-zsh.sh"' > "$d/home/.zshrc"
+d=$(path_run path_comp_omz /bin/zsh Linux)
+grep -qxF "  fpath=($d/home/.config/ccmorph/share/zsh/site-functions \$fpath)" "$d/out" \
+  && ok "path: the Oh My Zsh loader counts as compinit" \
+  || { fail "path: the Oh My Zsh loader got no fpath advice"; cat "$d/out"; }
+grep -qxF "  autoload -Uz compinit && compinit" "$d/out" \
+  && fail "path: the Oh My Zsh loader is told the compinit line again" \
+  || ok "path: the Oh My Zsh loader is not told the compinit line"
+
 # A .zshrc with only the fpath line — the old advice, followed (#363): zsh
 # runs no completion system by itself, so Tab still completes nothing. The
 # installer must say the missing half, not fall silent, and never write it.
@@ -1234,6 +1405,89 @@ grep -qxF "  fpath=($d/home/.config/ccmorph/share/zsh/site-functions \$fpath)" "
 grep -qxF "  autoload -Uz compinit && compinit" "$d/out" \
   && fail "path: the compinit line is repeated" \
   || ok "path: a rc with compinit alone is not told the compinit line again"
+
+# The rc-shape table (#555): the installer's verdict must be doctor's verdict,
+# asked of the one parser that owns the rule — a zsh re-spelling of the scan
+# here once disagreed with cli/doctor.go on these shapes. A last line with no
+# trailing newline still runs: `read` answers nonzero there, so the old
+# while-read loop never ran its body and a .zshrc ending in compinit was
+# scanned as running nothing.
+d=$(fresh_env path_comp_last_line)
+print -rn -- 'autoload -Uz compinit && compinit' > "$d/home/.zshrc"
+d=$(path_run path_comp_last_line /bin/zsh Linux)
+grep -qxF "  fpath=($d/home/.config/ccmorph/share/zsh/site-functions \$fpath)" "$d/out" \
+  && ok "path: an unterminated last compinit line still counts" \
+  || { fail "path: unterminated last compinit line got no fpath advice"; cat "$d/out"; }
+grep -qxF "  autoload -Uz compinit && compinit" "$d/out" \
+  && fail "path: the unterminated last compinit line is told the compinit line again" \
+  || ok "path: the unterminated last compinit line is not told the compinit line again"
+
+d=$(fresh_env path_comp_omz_last_line)
+print -rn -- 'source $ZSH/oh-my-zsh.sh' > "$d/home/.zshrc"
+d=$(path_run path_comp_omz_last_line /bin/zsh Linux)
+grep -qxF "  fpath=($d/home/.config/ccmorph/share/zsh/site-functions \$fpath)" "$d/out" \
+  && ok "path: an unterminated last Oh My Zsh line still counts" \
+  || { fail "path: unterminated last Oh My Zsh line got no fpath advice"; cat "$d/out"; }
+grep -qxF "  autoload -Uz compinit && compinit" "$d/out" \
+  && fail "path: the unterminated last Oh My Zsh line is told the compinit line again" \
+  || ok "path: the unterminated last Oh My Zsh line is not told the compinit line again"
+
+# The installer runs under zsh, so the user's .zshenv applies to it: with
+# extendedglob set there, the old comment-cut's [[:space:]]# meant zero-or-more
+# whitespace and emptied every line, whatever the rc ran. A home with both
+# halves set up must hear nothing.
+d=$(fresh_env path_comp_extendedglob)
+print 'setopt extendedglob' > "$d/home/.zshenv"
+print 'fpath=($HOME/.config/ccmorph/share/zsh/site-functions $fpath)' > "$d/home/.zshrc"
+print 'autoload -Uz compinit && compinit' >> "$d/home/.zshrc"
+d=$(path_run path_comp_extendedglob /bin/zsh Linux)
+grep -qF 'fpath=' "$d/out" \
+  && fail "path: extendedglob from .zshenv still printed a completion hint" \
+  || ok "path: extendedglob from .zshenv prints no completion hint"
+grep -qxF "  autoload -Uz compinit && compinit" "$d/out" \
+  && fail "path: extendedglob from .zshenv is told the compinit line again" \
+  || ok "path: extendedglob from .zshenv is not told the compinit line again"
+
+# compinit inside a quoted string: doctor's parser keeps a quoted string as
+# code, so the word still counts as what the rc runs — the installer must
+# answer the same, not disagree through its own substring reading.
+d=$(fresh_env path_comp_quoted)
+print 'print -r -- "run compinit yourself"' > "$d/home/.zshrc"
+d=$(path_run path_comp_quoted /bin/zsh Linux)
+grep -qxF "  fpath=($d/home/.config/ccmorph/share/zsh/site-functions \$fpath)" "$d/out" \
+  && ok "path: compinit inside a quoted string counts, as doctor reads it" \
+  || { fail "path: compinit inside a quoted string got no fpath advice"; cat "$d/out"; }
+grep -qxF "  autoload -Uz compinit && compinit" "$d/out" \
+  && fail "path: the quoted compinit string is told the compinit line again" \
+  || ok "path: the quoted compinit string is not told the compinit line again"
+
+# A # inside quotes is not a comment: doctor's parser keeps the line whole, so
+# the compinit the quoted string carries still runs — the old cut here stopped
+# at the quoted # it could not see through and answered neither.
+d=$(fresh_env path_comp_quoted_hash)
+print 'print -r -- "run # compinit yourself"' > "$d/home/.zshrc"
+d=$(path_run path_comp_quoted_hash /bin/zsh Linux)
+grep -qxF "  fpath=($d/home/.config/ccmorph/share/zsh/site-functions \$fpath)" "$d/out" \
+  && ok "path: a quoted # is not a comment, so the compinit behind it counts" \
+  || { fail "path: a quoted # hid the compinit from the verdict"; cat "$d/out"; }
+grep -qxF "  autoload -Uz compinit && compinit" "$d/out" \
+  && fail "path: the compinit behind a quoted # is told the compinit line again" \
+  || ok "path: the compinit behind a quoted # is not told the compinit line again"
+
+# The fpath half is doctor's rule, asked of the core (#638): a .zshenv that
+# exports FPATH with the installed directory puts it on fpath for every zsh the
+# user starts, without the .zshrc naming the literal. The old grep of .zshrc
+# could not see that and told the user to add a line already in effect.
+d=$(fresh_env path_comp_live_fpath)
+print 'autoload -Uz compinit; compinit' > "$d/home/.zshrc"
+print "export FPATH=$d/home/.config/ccmorph/share/zsh/site-functions" > "$d/home/.zshenv"
+d=$(path_run path_comp_live_fpath /bin/zsh Linux)
+grep -qF 'fpath=(' "$d/out" \
+  && fail "path: a live FPATH from .zshenv is told the fpath line again" \
+  || ok "path: a live FPATH from .zshenv needs no fpath hint"
+grep -qxF "  autoload -Uz compinit && compinit" "$d/out" \
+  && fail "path: a live FPATH from .zshenv is told the compinit line again" \
+  || ok "path: a live FPATH from .zshenv is not told the compinit line again"
 
 # ZDOTDIR moves the zsh file; an unknown or unset SHELL gets the zsh advice, which
 # is what a bare `env -i` run (every test above this section) always printed.
@@ -1305,7 +1559,9 @@ if _own selfupdate; then
 # (--remote), which downloads, unpacks and runs the downloaded installer. The same
 # stub-curl harness as section 8; the tarball carries a different version, so the
 # command's own --version proves the new code is the code that runs.
-d=$(fresh_env shipped); run_installer "$d" >/dev/null
+d=$(fresh_env shipped)
+run_installer "$d"; rc=$?
+(( rc == 0 )) || { fail "shipped install rc=$rc"; cat "$d/out" }
 [[ -x "$d/home/.config/ccmorph/install.sh" ]] \
   && ok "update: a fresh install ships an executable install.sh" || fail "update: install.sh is not an executable component"
 
@@ -1317,6 +1573,33 @@ cp "$REPO/libexec/ccmorph-core" "$TMP/stage99/ccmorph-main/libexec/ccmorph-core"
 sed 's/^_CCMORPH_VERSION=.*/_CCMORPH_VERSION="9.9.9"/' "$REPO/lib/ccmorph.sh" > "$TMP/stage99/ccmorph-main/lib/ccmorph.sh"
 grep -qxF '_CCMORPH_VERSION="9.9.9"' "$TMP/stage99/ccmorph-main/lib/ccmorph.sh" || fail "update: could not stage the 9.9.9 tree"
 tar -czf "$TMP/src99.tar.gz" -C "$TMP/stage99" ccmorph-main
+
+# The GitHub archive shape of a tag: a source tree whose libexec/ carries only
+# .gitkeep, no binary at all. Its library says a different version, and its
+# install.sh stands in for the older installer a tag like v0.5.26 carries —
+# one that copied lib/ before looking for the core. If the updater hands off
+# to it, the canary line lands in the installed lib and the case fails.
+# Its --uninstall answers like a real one, with no core needed (14.2c).
+mkdir -p "$TMP/stage-nocore"
+cp -R "$TMP/stage/ccmorph-v1.2.3" "$TMP/stage-nocore/ccmorph-v9.8.7"
+rm -f "$TMP/stage-nocore/ccmorph-v9.8.7/libexec/ccmorph-core"
+sed 's/^_CCMORPH_VERSION=.*/_CCMORPH_VERSION="9.8.7"/' "$REPO/lib/ccmorph.sh" > "$TMP/stage-nocore/ccmorph-v9.8.7/lib/ccmorph.sh"
+grep -qxF '_CCMORPH_VERSION="9.8.7"' "$TMP/stage-nocore/ccmorph-v9.8.7/lib/ccmorph.sh" || fail "update: could not stage the no-core tree"
+cat > "$TMP/stage-nocore/ccmorph-v9.8.7/install.sh" <<'STUB'
+#!/bin/sh
+# An older release's installer. Its uninstall needs no core: it removes the command.
+if [ "${1:-}" = "--uninstall" ]; then
+  rm -f "$HOME/.local/bin/ccmorph"
+  echo "Removed $HOME/.local/bin/ccmorph."
+  exit 0
+fi
+# Its install writes before it checks, as v0.5.26 did.
+printf '\n# the downloaded installer ran\n' >> "$HOME/.config/ccmorph/lib/ccmorph.sh"
+echo "No ccmorph-core binary for test in the tree." >&2
+exit 1
+STUB
+chmod +x "$TMP/stage-nocore/ccmorph-v9.8.7/install.sh"
+tar -czf "$TMP/src-nocore.tar.gz" -C "$TMP/stage-nocore" ccmorph-v9.8.7
 
 # A release tree names its binary per platform, so no plain libexec/ccmorph-core
 # sits beside the source lib; the install must still finish (#180 broke this).
@@ -1334,9 +1617,14 @@ else
   fail "remote: a tree with only per-platform binaries did not install"
 fi
 
-upd_env() {  # $1 = case; an installed tree, a stub curl serving 9.9.9, and user state
-  local d; d=$(remote_env "$1" "$TMP/src99.tar.gz")
-  run_installer "$d" >/dev/null
+upd_env() {  # $1 = case; $2 = tarball served by the stub curl (default: 9.9.9)
+  # Its stdout is the case path, so a fail() here would be swallowed with it:
+  # a dead install reports on stderr and returns 1 for the caller's || fail,
+  # yet still prints the path, so the case's later checks fail inside its own
+  # scratch dir instead of writing to /out, /curl.argv or /home (fail() does not return).
+  local d; d=$(remote_env "$1" "${2:-$TMP/src99.tar.gz}")
+  run_installer "$d"; local rc=$?
+  (( rc == 0 )) || { print -u2 -- "FAIL: $1: setup install rc=$rc"; cat "$d/out" >&2; print -r -- "$d"; return 1 }
   print 'type=token\ntoken=canary' > "$d/home/.config/ccmorph/work.conf"
   print 'export CCMORPH_TEST_LOCAL=1' > "$d/home/.config/ccmorph/local.sh"
   cp "$d/home/.config/ccmorph/work.conf" "$d/work.conf.before"
@@ -1352,7 +1640,7 @@ cmd_run() {  # $1 = case dir, rest = ccmorph arguments; the installed command, h
 
 # 14.1 update: no ref is the latest release (the one-liner's default), new code
 # live, user state byte-identical.
-d=$(upd_env upd_main); cmd_run "$d" update; rc=$?
+d=$(upd_env upd_main) || fail "upd_main setup install rc!=0 (output above)"; cmd_run "$d" update; rc=$?
 (( rc == 0 )) && ok "update: exits 0" || { fail "update rc=$rc"; cat "$d/out" "$d/err" }
 grep -qxF "$url_release" "$d/curl.argv" 2>/dev/null \
   && ok "update: no ref downloads the latest release" || { fail "update: curl argv lacks the latest release"; cat "$d/curl.argv" 2>&1 }
@@ -1381,7 +1669,7 @@ cmd_run "$d" update
 grep -qF 'Preserved:' "$d/out" && ok "update: says what it preserved" || { fail "update: no 'Preserved:' line"; cat "$d/out" "$d/err" }
 
 # 14.2 update <ref>: a tag or a branch picks the archive.
-d=$(upd_env upd_tag); cmd_run "$d" update v1.2.3; rc=$?
+d=$(upd_env upd_tag) || fail "upd_tag setup install rc!=0 (output above)"; cmd_run "$d" update v1.2.3; rc=$?
 (( rc == 0 )) && ok "update v1.2.3: exits 0" || { fail "update v1.2.3 rc=$rc"; cat "$d/out" "$d/err" }
 grep -qxF 'https://github.com/akleizor/ccmorph/archive/v1.2.3.tar.gz' "$d/curl.argv" 2>/dev/null \
   && ok "update v1.2.3: curl argv has archive/v1.2.3.tar.gz" || { fail "update v1.2.3: wrong archive"; cat "$d/curl.argv" 2>&1 }
@@ -1389,8 +1677,41 @@ cmd_run "$d" update feature/x-1.y_z
 grep -qxF 'https://github.com/akleizor/ccmorph/archive/feature/x-1.y_z.tar.gz' "$d/curl.argv" 2>/dev/null \
   && ok "update: a branch name with a slash is accepted" || { fail "update: branch with slash refused"; cat "$d/out" "$d/err" }
 
+# 14.2b update <tag> against the GitHub archive shape (no libexec/ccmorph-core):
+# the updater validates the download BEFORE handing it to that tree's own
+# installer, which may be an older release's; the failure leaves lib and core
+# the old pair — not a new library beside the old core (#721).
+d=$(upd_env upd_nocore "$TMP/src-nocore.tar.gz") || fail "upd_nocore setup install rc!=0 (output above)"
+cp -R "$d/home/.config/ccmorph/lib" "$d/lib.before"
+cp "$d/home/.config/ccmorph/libexec/ccmorph-core" "$d/core.before"
+cmd_run "$d" update v9.8.7; rc=$?
+(( rc != 0 )) && ok "update no-core: exits non-zero" || fail "update no-core: exited 0 without a binary to install"
+diff -rq "$d/lib.before" "$d/home/.config/ccmorph/lib" >/dev/null 2>&1 \
+  && ok "update no-core: the installed lib is byte-identical" \
+  || { fail "update no-core: lib changed before the failure"; diff -r "$d/lib.before" "$d/home/.config/ccmorph/lib"; }
+cmp -s "$d/core.before" "$d/home/.config/ccmorph/libexec/ccmorph-core" \
+  && ok "update no-core: the core is the one that was there" || fail "update no-core: the core changed"
+grep -qF 'No ccmorph-core binary for' "$d/err" "$d/out" \
+  && ok "update no-core: names the missing binary" || { fail "update no-core: no missing-binary message"; cat "$d/out" "$d/err"; }
+
+# 14.2c the core check is for installs only: a standalone `install.sh --uninstall`
+# (remote mode, no library beside it) with CCMORPH_REF on a coreless tag archive
+# still hands off to that archive's installer, which removes the command
+# without a core, as main did before #721.
+d=$(upd_env upd_nocore_rm "$TMP/src-nocore.tar.gz") || fail "upd_nocore_rm setup install rc!=0 (output above)"
+rm -f "$d/curl.argv"
+env -i HOME="$d/home" ZDOTDIR="$d/home" PATH="$d/bin:/usr/bin:/bin" TMPDIR="$d/tmp" CCMORPH_REF=v9.8.7 \
+  sh -c "$(cat "$REPO/install.sh")" sh --uninstall >"$d/out" 2>"$d/err" </dev/null; rc=$?
+(( rc == 0 )) && ok "standalone uninstall no-core: exits 0" || { fail "standalone uninstall no-core: rc=$rc"; cat "$d/out" "$d/err"; }
+grep -qxF 'https://github.com/akleizor/ccmorph/archive/v9.8.7.tar.gz' "$d/curl.argv" 2>/dev/null \
+  && ok "standalone uninstall no-core: downloads the tag archive" || { fail "standalone uninstall no-core: wrong or no download"; cat "$d/curl.argv" 2>&1; }
+[[ ! -e "$d/home/.local/bin/ccmorph" ]] \
+  && ok "standalone uninstall no-core: the command is gone" || fail "standalone uninstall no-core: the command is still there"
+cmp -s "$d/work.conf.before" "$d/home/.config/ccmorph/work.conf" \
+  && ok "standalone uninstall no-core: the profile is byte-identical" || fail "standalone uninstall no-core: work.conf changed"
+
 # 14.3 a ref that is not a plain name is refused before anything is downloaded.
-d=$(upd_env upd_badref)
+d=$(upd_env upd_badref) || fail "upd_badref setup install rc!=0 (output above)"
 for bad in 'x;rm' '../evil' 'a..b' '-rf' '/abs' 'a b' '$(id)' ''; do
   cmd_run "$d" update "$bad"; rc=$?
   (( rc != 0 )) && [[ ! -e "$d/curl.argv" ]] \
@@ -1405,7 +1726,7 @@ cmd_run "$d" uninstall now; rc=$?
   && ok "uninstall: an argument is refused and nothing is removed" || fail "uninstall: accepted an argument (rc=$rc)"
 
 # 14.4 a git checkout is updated with git: a download copied over it would dirty it.
-d=$(upd_env upd_git); mkdir -p "$d/home/.config/ccmorph/.git"
+d=$(upd_env upd_git) || fail "upd_git setup install rc!=0 (output above)"; mkdir -p "$d/home/.config/ccmorph/.git"
 cmd_run "$d" update; rc=$?
 (( rc != 0 )) && [[ ! -e "$d/curl.argv" ]] \
   && ok "update: a git checkout is refused, curl never called" || { fail "update: ran on a git checkout (rc=$rc)"; cat "$d/curl.argv" 2>&1 }
@@ -1414,7 +1735,7 @@ cmd_run "$d" --version
 [[ "$(<"$d/out")" != 'ccmorph 9.9.9' ]] && ok "update: a refused update left the code alone" || fail "update: replaced a git checkout"
 
 # 14.5 no installer beside the library (a packaged or older install): name the one-liner.
-d=$(upd_env upd_noinst); rm -f "$d/home/.config/ccmorph/install.sh"
+d=$(upd_env upd_noinst) || fail "upd_noinst setup install rc!=0 (output above)"; rm -f "$d/home/.config/ccmorph/install.sh"
 for verb in update uninstall; do
   cmd_run "$d" $verb; rc=$?
   (( rc == 1 )) && [[ ! -e "$d/curl.argv" ]] \
@@ -1425,7 +1746,7 @@ done
 [[ -x "$d/home/.local/bin/ccmorph" ]] && ok "uninstall: a missing installer removes nothing" || fail "uninstall: removed the command without an installer"
 
 # 14.6 uninstall: the command goes, the profiles stay, and it says so.
-d=$(upd_env upd_rm); cmd_run "$d" uninstall; rc=$?
+d=$(upd_env upd_rm) || fail "upd_rm setup install rc!=0 (output above)"; cmd_run "$d" uninstall; rc=$?
 (( rc == 0 )) && ok "uninstall: exits 0" || { fail "uninstall rc=$rc"; cat "$d/out" "$d/err" }
 [[ ! -e "$d/home/.local/bin/ccmorph" ]] && ok "uninstall: the command is gone from ~/.local/bin" || fail "uninstall: the command is still on PATH"
 cmp -s "$d/work.conf.before" "$d/home/.config/ccmorph/work.conf" \
@@ -1434,7 +1755,7 @@ grep -qF 'profiles' "$d/out" && ok "uninstall: says the profiles were kept" || {
 [[ ! -e "$d/curl.argv" ]] && ok "uninstall: never downloads" || fail "uninstall: called curl"
 
 # 14.7 help: both verbs have their own entry, in the long list only.
-d=$(upd_env upd_help)
+d=$(upd_env upd_help) || fail "upd_help setup install rc!=0 (output above)"
 cmd_run "$d" help all
 grep -qE '^  ccmorph update \[ref\] +Update to the latest version, or to a branch or tag$' "$d/out" \
   && grep -qE '^  ccmorph uninstall +Remove the command; profiles stay$' "$d/out" \

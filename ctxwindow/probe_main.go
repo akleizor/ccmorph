@@ -174,7 +174,13 @@ func run(argv []string, stdin io.Reader, stdout, errw io.Writer) int {
 			fmt.Fprintf(errw, "%s: %s\n", prog, rerr)
 			return 1
 		}
-		return SizeListing(context.Background(), a.profiles[0], string(body),
+		// The save at the end of sizing waits on the profile lock, which another
+		// ccmorph can hold while a person thinks (`ccmorph rm` at its confirm);
+		// the launch already passes a deadline so this wait, like every network
+		// call in SizeListing, ends when it does (#757).
+		ctx, cancel := context.WithTimeout(context.Background(), time.Duration(a.deadline*float64(time.Second)))
+		defer cancel()
+		return SizeListing(ctx, a.profiles[0], string(body),
 			os.Getenv("ANTHROPIC_BASE_URL"), os.Getenv("ANTHROPIC_API_KEY"), BuildOpener())
 	}
 	if (a.bisect || a.probeAll) && !a.allowInference {
@@ -237,10 +243,13 @@ func run(argv []string, stdin io.Reader, stdout, errw io.Writer) int {
 	// The selection's read is the one the pinned loop reuses (GH-485).
 	opts.Snaps = snaps
 	result := ProbeAll(sigctx, tried, opts)
+	notes := result.Notes
+	// A cancelled run still names the failures it collected: #449 moved a
+	// failure's note into the report, and this exit never reaches it (#554).
 	if sigctx.Err() != nil {
+		reportNotes(errw, tried, notes)
 		return 130
 	}
-	notes := result.Notes
 	// The pinned read inside the run already carried each profile's baseline.
 	baseline := result.Baseline
 
@@ -312,6 +321,7 @@ func run(argv []string, stdin io.Reader, stdout, errw io.Writer) int {
 
 	remaining := a.deadline - time.Since(started).Seconds()
 	if remaining <= 0 {
+		reportNotes(errw, tried, notes)
 		fmt.Fprintln(errw, "deadline reached before profile write; existing values left unchanged")
 		return 1
 	}
@@ -319,10 +329,12 @@ func run(argv []string, stdin io.Reader, stdout, errw io.Writer) int {
 	defer cancel()
 	committed, cut := Commit(ctx, result.Values, baseline, opts.Identities, result.Sources)
 	if sigctx.Err() != nil {
+		reportNotes(errw, tried, notes)
 		fmt.Fprintln(errw, "interrupted; completed profile updates were kept")
 		return 130
 	}
 	if cut {
+		reportNotes(errw, tried, notes)
 		fmt.Fprintln(errw, "Save deadline reached; completed profile updates were kept, and no partial files were written.")
 		return 1
 	}

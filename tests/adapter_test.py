@@ -18,13 +18,12 @@ import subprocess
 import sys
 import tempfile
 import threading
-import time
 import unittest
-from http.server import BaseHTTPRequestHandler, HTTPServer
+from http.server import BaseHTTPRequestHandler, HTTPServer, ThreadingHTTPServer
 from pathlib import Path
 
 from support import (CORE, FAKE_SERVER_NO_DNS, HANG_TIMEOUT, adapter_cmd,
-                     port_outside_the_ephemeral_pool)
+                     needs_loopback, port_outside_the_ephemeral_pool, wait_until)
 
 REPO = Path(__file__).resolve().parent.parent
 
@@ -44,9 +43,9 @@ class Gateway(BaseHTTPRequestHandler):
     # True when /v1/messages answers 501 while the chat paths still work: a
     # chat-only gateway, for the dialect-fallback half of #375.
     messages_not_implemented = False
-    # Set when a stalled probe's client goes away, freeing this single-threaded
-    # server for the next request. `test_selected_launch_has_its_own_global_deadline`
-    # reads it instead of racing the stall with a client timeout.
+    # Set when a stalled probe's client goes away.
+    # `test_selected_launch_has_its_own_global_deadline` reads it instead of
+    # racing the stall with a client timeout.
     stall_released = threading.Event()
 
     def log_message(self, format, *args):  # noqa: A002
@@ -204,10 +203,14 @@ def listener_outside_the_ephemeral_pool(addr: str) -> tuple[socket.socket, int]:
     raise RuntimeError(f"no port below the ephemeral ranges is free on {addr}")
 
 
+@needs_loopback  # the stub gateway is a real listener: #611
 class AdapterTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        cls.srv = HTTPServer(("127.0.0.1", 0), Gateway)
+        # Threaded: on a single-threaded server a stalled probe queued the
+        # next requests, and a dead client's queued probe then landed in a
+        # later test's PROBES (seen as six stray /v1/messages on macOS CI).
+        cls.srv = ThreadingHTTPServer(("127.0.0.1", 0), Gateway)
         cls.port = cls.srv.server_address[1]
         threading.Thread(target=cls.srv.serve_forever, daemon=True).start()
         cls.base = f"http://127.0.0.1:{cls.port}"
@@ -252,12 +255,12 @@ class AdapterTest(unittest.TestCase):
         target.chmod(0o755)
         return target
 
-    def cache_file(self):
+    def cache_file(self, base=None):
         """The shared endpoint-keyed classification cache the adapter writes —
         keyed by base_url hash, not per-profile, so profiles on one gateway share
         one classification. Mirrors the keying in ccmorph-adapter main()."""
         import hashlib
-        key = hashlib.sha256(self.base.encode()).hexdigest()[:16]
+        key = hashlib.sha256((base or self.base).encode()).hexdigest()[:16]
         return self.profiles / ".adapter-cache" / f"{key}.json"
 
     def write_ccmorph(self, key: str) -> None:
@@ -394,17 +397,84 @@ class AdapterTest(unittest.TestCase):
                         f"a probe carried an unexpected X-Forwarded-For: {XFF_SEEN}")
         self.assertNotIn("X-Forwarded-For", out.stdout)
 
-    def test_print_config_redacts_upstream_proxy_credentials(self):
+    def test_print_config_never_prints_the_upstream_proxy_credentials(self):
+        # A rendered proxy: the gateway is remote, so the knob reaches the
+        # config and GH-65's redaction must cut its userinfo and its query
+        # before either can print (GH-580).
+        base = "https://gateway.example"
+        proxy = "http://user:s3cretpw@127.0.0.1:8118/p?token=qq"
+        (self.home / ".config/ccmorph/lib/ccmorph.sh").write_text(
+            "ccmorph() {\n"
+            '  [[ "$1" == _env ]] || return 1\n'
+            f'  print "ANTHROPIC_BASE_URL={base}"\n'
+            '  print "ANTHROPIC_API_KEY=stub-key"\n'
+            f'  print "CCMORPH_UPSTREAM_PROXY={proxy}"\n'
+            "}\n")
+        # m-anthropic is known from the cache, so --print-config renders without
+        # contacting the remote gateway.
+        cache = self.cache_file(base)
+        cache.parent.mkdir(parents=True, exist_ok=True)
+        cache.write_text(json.dumps({
+            "endpoint": base, "anthropic_path": "/v1/messages",
+            "thinking_probe": 2,
+            "rows": [{"model": "m-anthropic", "dialect": "anthropic",
+                      "note": "", "status": 200, "cap": None,
+                      "nothink": False, "id_recycle": False}]}))
+        out = self.run_adapter("--print-config", "--model", "m-anthropic",
+                               env={"NO_PROXY": "", "no_proxy": ""})
+        self.assertEqual(out.returncode, 0, out.stderr)
+        for leak in ("s3cretpw", "user:", "token=qq"):
+            self.assertNotIn(leak, out.stdout)
+        self.assertIn("proxy-url:", out.stdout)
+        self.assertIn("127.0.0.1:8118/p", out.stdout)
+
+    def test_print_config_never_renders_the_upstream_proxy_for_a_loopback_gateway(self):
+        # The stub gateway is on 127.0.0.1, which no proxy may be asked to
+        # reach (GH-580): the profile's knob is not rendered at all, so no part
+        # of it — password placeholder, user or query token — can print.
         proxy = "http://user:s3cretpw@127.0.0.1:8118/p?token=qq"
         stub = self.home / ".config/ccmorph/lib/ccmorph.sh"
         stub.write_text(stub.read_text().rstrip().rstrip("}")
                         + f"  print 'CCMORPH_UPSTREAM_PROXY={proxy}'\n}}\n")
         out = self.run_adapter("--print-config")
         self.assertEqual(out.returncode, 0, out.stderr)
-        for leak in ("s3cretpw", "user:", "token=qq"):
+        for leak in ("s3cretpw", "user:", "token=qq", "8118"):
             self.assertNotIn(leak, out.stdout)
-        self.assertIn("proxy-url:", out.stdout)
-        self.assertIn("127.0.0.1:8118/p", out.stdout)
+        self.assertNotIn("proxy-url:", out.stdout)
+        # GH-592's promise holds here too: the proxy's credentials stay off
+        # stderr as well as stdout, rendered or not.
+        password = proxy.split("user:", 1)[1].split("@", 1)[0]
+        for leak in (password, "user:", "token=qq"):
+            self.assertNotIn(leak, out.stderr)
+
+    def test_print_config_prints_through_a_dead_profile_proxy(self):
+        # GH-592's contract: with the profile's proxy unreachable, --print-config
+        # still prints the redacted config and names the failed probe on stderr,
+        # exit 0; a launch on the same profile still refuses, naming the same
+        # dial. The endpoint is not loopback, so the probe takes the proxy
+        # (#580), and nothing listens on 127.0.0.1:1.
+        password = "pw592dead"
+        proxy = f"http://user:{password}@127.0.0.1:1/p?token=qq"
+        (self.home / ".config/ccmorph/lib/ccmorph.sh").write_text(
+            "ccmorph() {\n"
+            '  [[ "$1" == _env ]] || return 1\n'
+            '  print "ANTHROPIC_BASE_URL=http://gateway.invalid"\n'
+            '  print "ANTHROPIC_API_KEY=stub-key"\n'
+            f"  print 'CCMORPH_UPSTREAM_PROXY={proxy}'\n"
+            "}\n")
+        out = self.run_adapter("--print-config")
+        self.assertEqual(out.returncode, 0, out.stderr)
+        self.assertIn('proxy-url: "http://127.0.0.1:1/p"', out.stdout)
+        self.assertIn("<redacted>", out.stdout)
+        self.assertIn("compatibility probes failed", out.stderr)
+        self.assertIn("proxyconnect tcp: dial tcp 127.0.0.1:1", out.stderr)
+        for leak in (password, "user:", "token=qq", "stub-key"):
+            self.assertNotIn(leak, out.stdout)
+            self.assertNotIn(leak, out.stderr)
+        launch = self.run_adapter()
+        self.assertEqual(launch.returncode, 1, launch.stderr)
+        self.assertIn("proxyconnect tcp: dial tcp 127.0.0.1:1", launch.stderr)
+        self.assertNotIn("compatibility probes failed", launch.stderr)
 
     def test_reason_by_default_model_gets_thinking_disabled(self):
         # kimi-k3 pathology (2026-08-16): the gateway reasons even when
@@ -819,22 +889,21 @@ class AdapterTest(unittest.TestCase):
                                  PATH=f"{self.path_bin}:{os.environ.get('PATH', '')}"))
                 child_pids, seen = [], set()
                 try:
-                    deadline = time.monotonic() + HANG_TIMEOUT
-                    while True:
+                    def served():
                         # PORT= follows both children's readiness, so every pid
                         # has reached the tether by then.
-                        seen |= self._tethers(proc.pid)
+                        seen.update(self._tethers(proc.pid))
                         ready = (tpid.exists() and (not hooks or spid.exists())
                                  and "PORT=" in out.read_text())
                         if ready and seen:
-                            break
+                            return True
                         if proc.poll() is not None:
                             self.fail(f"hooks={hooks}: adapter exited "
                                       f"{proc.returncode}: {out.read_text()}")
-                        self.assertLess(time.monotonic(), deadline,
-                                        f"hooks={hooks}: adapter never served: "
-                                        f"{out.read_text()}")
-                        time.sleep(0.1)
+                        return False
+                    self.assertTrue(wait_until(served, HANG_TIMEOUT),
+                                    f"hooks={hooks}: adapter never served: "
+                                    f"{out.read_text()}")
                     child_pids = [int(tpid.read_text())]
                     if hooks:
                         child_pids.append(int(spid.read_text()))
@@ -842,18 +911,18 @@ class AdapterTest(unittest.TestCase):
                                      f"one tether per adapter, saw {sorted(seen)}")
                     proc.kill()
                     proc.wait(timeout=HANG_TIMEOUT)
-                    deadline = time.monotonic() + HANG_TIMEOUT
-                    while True:
-                        seen |= self._tethers(proc.pid)
+                    survivors, tethers, state = [], [], []
+
+                    def cleaned():
+                        nonlocal survivors, tethers, state
+                        seen.update(self._tethers(proc.pid))
                         survivors = [p for p in child_pids if self._pid_alive(p)]
                         tethers = [p for p in seen if self._pid_alive(p)]
                         state = list(tmp.glob("ccmorph-adapter-*"))
-                        if not survivors and not tethers and not state:
-                            break
-                        self.assertLess(time.monotonic(), deadline,
-                                        f"hooks={hooks}: children alive {survivors}, "
-                                        f"tethers alive {tethers}, state left {state}")
-                        time.sleep(0.2)
+                        return not survivors and not tethers and not state
+                    self.assertTrue(wait_until(cleaned, HANG_TIMEOUT),
+                                    f"hooks={hooks}: children alive {survivors}, "
+                                    f"tethers alive {tethers}, state left {state}")
                 finally:
                     if proc.poll() is None:
                         proc.kill()

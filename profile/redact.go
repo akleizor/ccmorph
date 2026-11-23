@@ -31,7 +31,7 @@ func RedactURL(raw string) string {
 	u, err := url.Parse(raw)
 	if err != nil {
 		// Go refuses hosts urlsplit takes: say nothing when no host is left.
-		scheme, netloc, path := SplitURL(raw)
+		scheme, netloc, path := splitURL(raw)
 		if netloc == "" {
 			return "<redacted>"
 		}
@@ -96,8 +96,8 @@ func closesUserinfo(raw string, i, at int) bool {
 	return err == nil && u.Port() != ""
 }
 
-// SplitURL is urlsplit's scheme, netloc and path for "scheme://netloc/path".
-func SplitURL(raw string) (scheme, netloc, path string) {
+// splitURL is urlsplit's scheme, netloc and path for "scheme://netloc/path".
+func splitURL(raw string) (scheme, netloc, path string) {
 	rest := raw
 	if i := strings.Index(raw, "://"); i >= 0 {
 		scheme, rest = strings.ToLower(raw[:i]), raw[i+3:]

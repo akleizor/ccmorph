@@ -599,6 +599,38 @@ func TestEitherMarkerSpellingResolvesTheSameWindowIssue544(t *testing.T) {
 	}
 }
 
+// GH-561: the discovered values and sources tables are built once per Inputs:
+// after a Resolve, replacing the cached doc's models and sources changes no
+// later answer — a picker walk over N models does one build of each table.
+func TestResolverInputsBuildTheDiscoveredTablesOnceIssue561(t *testing.T) {
+	e := setup(t)
+	write(t, e.a, "type=apikey\nbase_url=https://a.invalid\napi_key={{SECRET_mnvzztcsdqnk}}\n"+
+		"model_map={\"proxy-model\":\"real-model\"}\n")
+	// A stored window for the mapped target with its provenance, keyed to the
+	// conf's route.
+	_, pre, _ := ReadConf(e.a)
+	write(t, DiscoveredPath(e.a), `{"route":"`+RouteFingerprint(pre)+
+		`","models":{"real-model":654000},"sources":{"real-model":{"source":"catalogue"}}}`+"\n")
+
+	_, fields, _ := ReadConf(e.a)
+	in := NewInputs(fields)
+	in.Preload()
+	if got := in.Resolve("proxy-model"); got.Window != 654000 || got.Source != "conf-discovered-catalogue" || got.SendID != "proxy-model" {
+		t.Fatalf("first resolve: %+v", got)
+	}
+	// Corrupt the cached doc after the first Resolve: a table rebuilt now would
+	// hold only other-model and no provenance, so the answers below prove both
+	// tables were built once and kept.
+	doc := in.discoveredDoc()
+	doc["models"] = obj{"other-model": json.Number("111000")}
+	delete(doc, "sources")
+	for i := 0; i < 3; i++ {
+		if got := in.Resolve("proxy-model"); got.Window != 654000 || got.Source != "conf-discovered-catalogue" || got.SendID != "proxy-model" {
+			t.Fatalf("resolve %d lost the built tables: %+v", i, got)
+		}
+	}
+}
+
 func TestGlobMatchesStarAndQuestionMark(t *testing.T) {
 	for _, c := range []struct {
 		name, pat string

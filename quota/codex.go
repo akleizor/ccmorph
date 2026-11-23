@@ -5,58 +5,13 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"os"
-	"path/filepath"
 	"strings"
-	"time"
 )
 
 // codexUsageURL is Codex's own usage read, the one its /status shows:
 // codex-rs/backend-client/src/client/rate_limit_resets.rs builds
 // `<base>/wham/usage` for ChatGPT backends. A var so tests can watch it.
 var codexUsageURL = "https://chatgpt.com/backend-api/wham/usage"
-
-type codexAuth struct {
-	Type        string `json:"type"`
-	AccessToken string `json:"access_token"`
-	AccountID   string `json:"account_id"`
-	Expired     string `json:"expired"`
-}
-
-// codexAuthFile finds the cliproxyapi Codex sign-in under the profile's auth
-// dir. Symlinks are not followed: a credential outside the 0700 auth root is
-// not this profile's.
-func codexAuthFile(dir string) (codexAuth, error) {
-	var found codexAuth
-	paths := []string{}
-	for _, pattern := range []string{filepath.Join(dir, "*.json"), filepath.Join(dir, "*", "*.json")} {
-		m, _ := filepath.Glob(pattern)
-		paths = append(paths, m...)
-	}
-	for _, p := range paths {
-		if fi, err := os.Lstat(p); err != nil || !fi.Mode().IsRegular() {
-			continue
-		}
-		raw, err := os.ReadFile(p)
-		if err != nil {
-			continue
-		}
-		var a codexAuth
-		if json.Unmarshal(raw, &a) == nil && a.Type == "codex" && a.AccessToken != "" {
-			found = a
-			break
-		}
-	}
-	if found.AccessToken == "" {
-		return found, errors.New("not signed in")
-	}
-	if found.Expired != "" {
-		if t, err := time.Parse(time.RFC3339, found.Expired); err == nil && now().After(t) {
-			return found, errors.New("sign-in expired; start a session on it to refresh")
-		}
-	}
-	return found, nil
-}
 
 type codexWindow struct {
 	UsedPercent        *float64 `json:"used_percent"`
@@ -68,7 +23,7 @@ type codexWindow struct {
 // readCodex reads one Codex subscription's windows and plan.
 func readCodex(client *http.Client, name, dir string) Entry {
 	e := Entry{Profile: name, Kind: "codex", Windows: []Window{}}
-	a, err := codexAuthFile(dir)
+	a, err := clipAuthFile(dir, "codex")
 	if err != nil {
 		e.Error = err.Error()
 		return e
@@ -125,7 +80,8 @@ func codexReading(body []byte) (string, []Window, error) {
 		if resets > 0 {
 			at = &resets
 		}
-		ws = append(ws, Window{ID: id, Label: windowLabel(id), Used: *w.UsedPercent / 100, ResetsAt: at})
+		used := *w.UsedPercent / 100
+		ws = append(ws, Window{ID: id, Label: windowLabel(id), Used: &used, ResetsAt: at})
 	}
 	if u.RateLimit != nil {
 		add(u.RateLimit.PrimaryWindow)

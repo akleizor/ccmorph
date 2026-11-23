@@ -156,9 +156,9 @@ func TestACrashWhileDecidingTheFallbackRefuses(t *testing.T) {
 
 func TestMalformedTombstonesFailTheProjection(t *testing.T) {
 	f := newFixture(t)
-	write(t, filepath.Join(f.profile, layerFile), `{"$ccmorphUnset": null}`)
+	write(t, filepath.Join(f.profile, layerFile), readFixture(t, "layer-null-tombstones.json"))
 	code, stderr := f.run("materialize")
-	if code != 1 || !strings.Contains(stderr, unsetKey) {
+	if code != 1 || !strings.Contains(stderr, establishedTombstoneKey(t)) {
 		t.Fatalf("got %d %q", code, stderr)
 	}
 }
@@ -203,7 +203,7 @@ func TestFoldKeepsClaudeEditsInTheLayer(t *testing.T) {
 	layer, _ := os.ReadFile(filepath.Join(f.profile, layerFile))
 	// The rewritten settings lost the projection's status line (#275), so the
 	// fold records that deletion too: the next projection leaves it out.
-	want := "{\n  \"verbose\": true,\n  \"$ccmorphUnset\": [\n    [\n      \"statusLine\"\n    ]\n  ]\n}\n"
+	want := readFixture(t, "fold-layer.json")
 	if got := string(layer); got != want {
 		t.Fatalf("layer = %q, want %q", layer, want)
 	}
@@ -389,6 +389,26 @@ func TestIsUsageCommandMatchesOnlyTheLaunchersCommand(t *testing.T) {
 	for _, c := range theirs {
 		if isUsageCommand(c) {
 			t.Errorf("a user's command read as the launcher's: %q", c)
+		}
+	}
+}
+
+// GH-638: the matcher is built from the builder's word shapes, so every command
+// the builder writes is ccmorph's own — including a core path, profile or
+// pricing value that has to be quoted. A table that edits either spelling alone
+// fails here.
+func TestUsageHookCommandRoundTripsThroughTheMatcher(t *testing.T) {
+	for _, c := range []struct{ core, profile, pricing string }{
+		{"/opt/cc/libexec/ccmorph-core", "work", "anthropic"},
+		{"/opt/cc/libexec/ccmorph-core", "work", "any"},
+		{"/Users/a b/libexec/ccmorph-core", "work", "anthropic"},
+		{"/Users/o'brien/libexec/ccmorph-core", "work", "any"},
+		{"$HOME/bin/ccmorph-core", "sub", "provider slice"},
+		{"~/bin/ccmorph-core", "sub", "o'brien"},
+	} {
+		command := UsageHookCommand(c.core, c.profile, c.pricing)
+		if !isUsageCommand(command) {
+			t.Errorf("the builder wrote a command the matcher refuses: %q", command)
 		}
 	}
 }

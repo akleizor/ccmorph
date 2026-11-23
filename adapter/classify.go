@@ -49,6 +49,15 @@ func (r Row) capped() bool { return r.Cap != nil && *r.Cap != 0 }
 // truncated write) is dropped at load, which re-probes exactly that model.
 var rowKeys = []string{"model", "dialect", "note", "cap", "nothink", "id_recycle", "status"}
 
+// classifyFallback is the inventory failure the last classification pass fell
+// back to its cache from; nil when the pass reached the endpoint, or had no
+// cache to fall back on and returned the error itself. A fallback returns the
+// cached rows with no error, so the failure is invisible to the caller unless
+// it reads this. Main clears it before each pass and reads it after for
+// --print-config (GH-592): a print that fell back cannot know the endpoint
+// answered, and must carry the failure as the note a failed probe carries.
+var classifyFallback error
+
 // usableRow converts a cached row, or reports it unusable.
 func usableRow(v any) (Row, bool) {
 	m, ok := v.(map[string]any)
@@ -236,6 +245,18 @@ func classify(base, key, cache, required string, auto bool) ([]Row, error) {
 	return classifyLocked(base, key, cache, required, auto)
 }
 
+// autoVerdict answers one fresh model's protocol for the auto sweep from the
+// model listing this classify pass already fetched. Only a pass holding no
+// listing — a selected-model launch never ran inventory, or inventory failed —
+// falls back to dialectAuto's own GET; re-fetching the same document once per
+// model is what shoved a large gateway's launch past selectTimeout (#598).
+func autoVerdict(listing []any, base, key, model string) (string, string, int) {
+	if listing == nil {
+		return dialectAutoFn(base, key, model)
+	}
+	return declaredVerdict(listing, model)
+}
+
 func classifyLocked(base, key, cache, required string, auto bool) ([]Row, error) {
 	// Load the cache FIRST so an inventory failure can fall back to it.
 	cached := cachedRows(base, cache)
@@ -263,6 +284,10 @@ func classifyLocked(base, key, cache, required string, auto bool) ([]Row, error)
 	}
 	// A selected model absent from the cache is classified ALONE: a full
 	// inventory sweep buys nothing this launch needs. Every cached row is kept.
+	// listing is the model listing this pass fetched, nil when none was fetched
+	// (the selected-model path skips inventory, or inventory failed); the auto
+	// sweep answers its fresh models from it rather than GET it once per model.
+	var listing []any
 	var models []string
 	if _, have := known[required]; required != "" && !have {
 		logf("classifying only the requested model %s on %s (%d cached row(s) kept, no inventory scan)",
@@ -272,8 +297,9 @@ func classifyLocked(base, key, cache, required string, auto bool) ([]Row, error)
 		// Inventory only discovers models NEW since the last launch; if it fails,
 		// fall back to the cache rather than dying.
 		var err error
-		models, err = inventoryFn(base, key, nil)
+		listing, models, err = inventoryFn(base, key, nil)
 		if err != nil {
+			listing = nil
 			// A refusal the endpoint answered is not a discovery failure: with no
 			// model named, cached rows are endpoint knowledge, not a model choice,
 			// and a launch must not front a session that never picked one (#357).
@@ -284,6 +310,9 @@ func classifyLocked(base, key, cache, required string, auto bool) ([]Row, error)
 			if len(known) == 0 {
 				return nil, err // no cache to fall back on
 			}
+			// The cache answers with no error from here on, so record why: a
+			// --print-config pass must still know its probes failed (GH-592).
+			classifyFallback = err
 			logf("inventory failed (%v); falling back to %d cached model(s) for %s", err, len(known), base)
 			models = knownNames()
 		}
@@ -306,7 +335,7 @@ func classifyLocked(base, key, cache, required string, auto bool) ([]Row, error)
 
 		one := func(model string) Row {
 			if auto {
-				dialect, note, status := dialectAutoFn(base, key, model)
+				dialect, note, status := autoVerdict(listing, base, key, model)
 				if dialect == "unusable" && model == required && status != 401 && status != 403 {
 					// A key the endpoint rejected answers every inference request
 					// the same way; the listing already said so (#374).

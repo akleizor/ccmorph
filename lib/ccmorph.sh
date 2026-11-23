@@ -2,7 +2,7 @@
 # Loaded by the `ccmorph` executable itself; not meant to be sourced
 # directly into an interactive shell.
 
-_CCMORPH_VERSION="0.5.12"
+_CCMORPH_VERSION="0.5.13"
 
 # TWO directories, deliberately. They were one, which worked only because a
 # git clone was also the install: the same path held ccmorph.sh and the helper
@@ -25,16 +25,6 @@ _CCMORPH_LIBEXEC_DIR="${_CCMORPH_LIB_DIR:h}/libexec"
 _CCMORPH_PROFILE_DIRS="$_CCMORPH_DIR/profiles"
 _CCMORPH_CONTEXT_POLICY="${CCMORPH_CONTEXT_POLICY:-$HOME/.agents/runtime/policies/context.json}"
 _CCMORPH_LOG="${TMPDIR:-/tmp}/ccmorph-${UID}.log"
-_CCMORPH_LOG_MAX=102400  # rotate at 100KB
-
-# The schema bounds Claude Code enforces on its own `autoCompactWindow` setting
-# (.int().min(1e5).max(1e6) in the settings validator). These are NOT any model's
-# window -- no window is ever written in this file; every one is probed and read
-# from the registry. They exist only to keep a probed value inside the range the
-# setting will accept, because a value outside it is DROPPED silently and the
-# session then falls back to Claude Code's own default budget.
-_CCMORPH_ACW_MIN=100000
-_CCMORPH_ACW_MAX=1000000
 
 # EPOCHREALTIME backs relay-id uniqueness; the module is NOT loaded by default
 # and an unset expansion silently degrades the id to <pid>..<RANDOM>. Load it

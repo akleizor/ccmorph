@@ -1,6 +1,7 @@
 package util
 
 import (
+	"errors"
 	"io"
 	"os/exec"
 	"regexp"
@@ -17,14 +18,24 @@ import (
 // is honoured: it is how a bridge reaches a private endpoint.
 func LaunchListing(base, key string, maxSeconds int) (body string, ok bool) {
 	return fetchModels(key, io.Discard, "-sS", "-f", "--connect-timeout", "2", "--max-time", strconv.Itoa(maxSeconds),
-		apiURL(base, "/v1/models?limit=1000"), "-H", "anthropic-version: 2023-06-01")
+		ctxwindow.APIURL(base, "/v1/models?limit=1000"), "-H", "anthropic-version: 2023-06-01")
+}
+
+// listingArgs is the one curl line every listing fetch asks with: silent, failing
+// an HTTP error, the largest page, no anthropic-version (proxies disguise
+// non-Claude ids when they see it) — the shape `ccmorph models` reads, so a
+// route answers every reader of its listing with the same body. bounds are the
+// caller's own and sit before the URL.
+func listingArgs(base string, bounds ...string) []string {
+	args := append([]string{"-sS", "-f"}, bounds...)
+	return append(args, ctxwindow.APIURL(base, "/v1/models?limit=1000"))
 }
 
 // ModelsListing is the listing `ccmorph models` and model-known read: no
 // anthropic-version (proxies disguise non-Claude ids when they see it). curl's
 // complaint goes to errw.
 func ModelsListing(base, key string, errw io.Writer) (body string, ok bool) {
-	return fetchModels(key, errw, "-sS", "-f", "--max-time", "20", apiURL(base, "/v1/models?limit=1000"))
+	return fetchModels(key, errw, listingArgs(base, "--max-time", "20")...)
 }
 
 // ModelsAnswer is ModelsListing for a person: curl's complaint is read, never
@@ -39,6 +50,49 @@ func ModelsAnswer(base, key string) (body string, status int, ok bool) {
 		}
 	}
 	return body, status, ok
+}
+
+// ListingReply is the one listing request set's model check reads (gh728),
+// with what that request met kept instead of asked again: body is the
+// undisguised listing, empty when none came back; status is the HTTP status
+// the endpoint refused the request with, 0 when the answer was not a refusal;
+// answered is whether any HTTP answer arrived. The status curl writes out is
+// the response's own word and is kept even when the transfer breaks after the
+// status line (exit 18, 56) or curl -f fails an HTTP error (exit 22), so a
+// body that did not arrive never turns an answer into silence. The flag is
+// the long --write-out with %{response_code}, not -w with %{http_code}: the
+// test stubs answer that shape as a status probe, and this is a listing.
+func ListingReply(base, key string) (body string, status int, answered bool) {
+	var complaint strings.Builder
+	args := append(listingArgs(base, "--max-time", "20"), "--write-out", "\n"+statusMarker+"%{response_code}")
+	raw, err := curlKeyed(key, args, &complaint)
+	payload, code := splitListingReply(raw)
+	if err == nil {
+		return undisguise(payload), 0, true
+	}
+	if n, conv := strconv.Atoi(code); conv == nil && n != 0 {
+		// Something answered before curl gave up: a refused status is named,
+		// anything else is an answer whose listing did not arrive.
+		if n >= 400 {
+			status = n
+		}
+		return "", status, true
+	}
+	if m := refused.FindStringSubmatch(complaint.String()); m != nil {
+		status, _ = strconv.Atoi(m[1])
+	}
+	var exit *exec.ExitError
+	return "", status, status != 0 || (errors.As(err, &exit) && exit.ExitCode() == 22)
+}
+
+// splitListingReply splits the listing answer at the status marker curl writes
+// out: the body before it, the HTTP status after it, "" when no marker came
+// back — a stub that never answered that shape, or a curl too old for it.
+func splitListingReply(raw string) (payload, code string) {
+	if i := strings.LastIndex(raw, statusMarker); i >= 0 {
+		return strings.TrimSuffix(raw[:i], "\n"), strings.TrimRight(raw[i+len(statusMarker):], "\n")
+	}
+	return raw, ""
 }
 
 func fetchModels(key string, errw io.Writer, curlArgs ...string) (string, bool) {
@@ -58,7 +112,7 @@ func ProbeListing(base, key string, headers ...string) (body, code string) {
 	for _, h := range headers {
 		args = append(args, "-H", h)
 	}
-	raw, err := curlKeyed(key, append(args, apiURL(base, "/v1/models?limit=1000")), io.Discard)
+	raw, err := curlKeyed(key, append(args, ctxwindow.APIURL(base, "/v1/models?limit=1000")), io.Discard)
 	body, code = splitProbeAnswer(raw, err)
 	return undisguise(body), code
 }
@@ -140,17 +194,7 @@ func curlBearer(token string, args []string, errw io.Writer) (string, error) {
 	return curlFed("header = \"Authorization: Bearer "+escCred(token)+"\"\n", args, errw)
 }
 
-// apiURL joins an API root or a versioned SDK base (".../v1") with a /v1 path.
-func apiURL(base, path string) string {
-	base = strings.TrimSuffix(base, "/")
-	if versioned.MatchString(strings.ToLower(base)) {
-		path = strings.TrimPrefix(path, "/v1")
-	}
-	return base + path
-}
-
 var (
-	versioned      = regexp.MustCompile(`/v[0-9]+$`)
 	quotedDisguise = regexp.MustCompile(`"(claude-[^"]*-dd-[^"]+)"`)
 	refused        = regexp.MustCompile(`returned error: ([0-9]{3})`)
 )
@@ -175,7 +219,7 @@ const (
 // native route needs a claude-* id; a provider's catalogue lives in its bridge, so
 // only a claude-* id is a definite no there.
 func ModelServed(want, typ, base, modelMap, key string) Served {
-	p := probeServed(want, typ, base, modelMap, key)
+	p := probeServed(want, typ, base, modelMap, key, modelsListingFetch)
 	if p.decided {
 		return p.answer
 	}
@@ -185,9 +229,11 @@ func ModelServed(want, typ, base, modelMap, key string) Served {
 // ContextServed reports whether the route's listing carries want the way
 // `ccmorph models` prints it: with the id as spelled, so a model the map
 // rewrites still counts through its target (#370). ModelServed stays the
-// launch judgement — the target is what a session runs.
+// launch judgement — the target is what a session runs. The listing is asked
+// with the probe's bounds, not the models verb's, because the caller is set's
+// post-save warning: a route that will not answer must not hold the save (#449).
 func ContextServed(want, typ, base, modelMap, key string) Served {
-	p := probeServed(want, typ, base, modelMap, key)
+	p := probeServed(want, typ, base, modelMap, key, boundedListingFetch)
 	if p.decided {
 		return p.answer
 	}
@@ -195,6 +241,39 @@ func ContextServed(want, typ, base, modelMap, key string) Served {
 		return ServedYes
 	}
 	return Served(modelInListing(p.listing, p.want, p.modelMap))
+}
+
+// ServedByListing is ModelServed's last step over a listing the caller already
+// fetched: ServedYes when the listing carries want, ServedNo when a readable,
+// complete one proves it absent, and ServedUnknown when the body is no listing
+// the judgement can read at all — a {} answer, a paged page, a malformed body.
+// That third state is the one that saves unchecked (gh728): an endpoint that
+// answered is not one that checked.
+func ServedByListing(listing, want, mapJSON string) Served {
+	return Served(modelInListing(listing, want, mapJSON))
+}
+
+// listingFetch asks a route for the model listing a served judgement reads. ok
+// is false when no body came back — nothing answered, or an HTTP error curl -f
+// failed — which the judgement answers as ServedUnknown; a body that did come
+// back is the listing reader's to judge.
+type listingFetch func(base, key string) (body string, ok bool)
+
+// modelsListingFetch is the full listing `ccmorph models` reads, with its 20 s
+// whole-transfer bound.
+func modelsListingFetch(base, key string) (string, bool) {
+	return ModelsListing(base, key, io.Discard)
+}
+
+// boundedListingFetch asks the listing the models verb reads — the one curl
+// line listingArgs builds, so a route answers it with the body `ccmorph models`
+// prints — under the never-failing probe's bounds: 2 s to connect, 5 s whole,
+// so a route that will not answer cannot hold a caller past them (#449). curl
+// -f fails an HTTP error and passes anything else through for the listing's
+// reader to judge; the probe's own marker shape is not used here: it asks for a
+// status, and a status-only answer is not a listing.
+func boundedListingFetch(base, key string) (string, bool) {
+	return fetchModels(key, io.Discard, listingArgs(base, "--connect-timeout", "2", "--max-time", "5")...)
 }
 
 // servedProbe is the shared prologue of the two served judgements: the
@@ -209,7 +288,7 @@ type servedProbe struct {
 	decided        bool
 }
 
-func probeServed(want, typ, base, modelMap, key string) servedProbe {
+func probeServed(want, typ, base, modelMap, key string, fetch listingFetch) servedProbe {
 	p := servedProbe{}
 	p.want, p.answer, p.decided = servedBeforeListing(want, typ, base)
 	if p.decided {
@@ -224,7 +303,7 @@ func probeServed(want, typ, base, modelMap, key string) servedProbe {
 		p.answer, p.decided = ServedUnknown, true
 		return p
 	}
-	listing, ok := ModelsListing(base, key, io.Discard)
+	listing, ok := fetch(base, key)
 	if !ok {
 		p.answer, p.decided = ServedUnknown, true
 		return p

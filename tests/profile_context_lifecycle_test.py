@@ -36,10 +36,17 @@ class ProfileCommands(unittest.TestCase):
             self.assertEqual(renamed.returncode, 0, renamed.stderr)
             self.assertIn('"m": 123456', (profiles / 'renamed/models.json').read_text())
             self.assertFalse(registry.exists())
-            removed = run('rm', 'renamed')
+            (state / 'active').write_text('renamed\n')
+            removed = run('rm', 'renamed', answer='y\n')
             self.assertEqual(removed.returncode, 0, removed.stderr)
             self.assertFalse((state / 'renamed.conf').exists())
             self.assertFalse((profiles / 'renamed').exists())
+            self.assertFalse((state / 'active').exists())
+            # Piped in with its answer (no terminal, so the [y/N] line answers;
+            # #724 made rm ask whoever runs it), removing the default still
+            # says the default is gone and how to set one (#652).
+            self.assertIn('default profile removed — set one: ccmorph use <profile>',
+                          removed.stderr)
             self.assertIn('"m": 222222', (profiles / 'other/models.json').read_text())
             self.assertEqual((shared / 'history').read_text(), 'keep')
             (profiles / 'orphan').mkdir()
@@ -55,4 +62,5 @@ class ProfileCommands(unittest.TestCase):
             cleaned = run('rm', 'orphan', answer='y\n')
             self.assertEqual(cleaned.returncode, 0, cleaned.stderr)
             self.assertFalse((profiles / 'orphan').exists())
+            self.assertNotIn('default profile removed', cleaned.stderr)
             self.assertEqual((shared / 'history').read_text(), 'keep')

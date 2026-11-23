@@ -178,7 +178,7 @@ func NormalizePluginIndex(homeDir, profileDir string) bool {
 }
 
 // normalizePluginIndexVerb is `util normalize-plugin-index <home> <profiles dir>`,
-// the one verb install.sh runs.
+// a verb install.sh runs.
 func normalizePluginIndexVerb(args []string, _ io.Reader, _, _ io.Writer) int {
 	if len(args) != 2 {
 		return 2
@@ -326,16 +326,29 @@ func listing(payload any) ([]any, bool) {
 	return nil, false
 }
 
+// DeniedForChat is whether a listing row's own capabilities deny it for chat —
+// the chat_completion: false a catalogue writes on an embed-only model (#562).
+// The models verb, the not-served refusal and the picker read this one rule;
+// the adapter's listing walk spells it for its own JSON decoder and
+// TestTheListingWalkAndDeniedForChatDenyTheSameRowsIssue617 pins the two
+// spellings to the same verdict on every capabilities shape.
+func DeniedForChat(row *ordjson.Obj) bool {
+	if caps := asObj(getKey(row, "capabilities")); caps != nil {
+		if v, ok := caps.Get("chat_completion"); ok && v == false {
+			return true
+		}
+	}
+	return false
+}
+
 // chatModel reports the id of a listing row that the endpoint does not deny for chat.
 func chatModel(m any) (string, bool) {
 	row := asObj(m)
 	if row == nil {
 		return "", false
 	}
-	if caps := asObj(getKey(row, "capabilities")); caps != nil {
-		if v, ok := caps.Get("chat_completion"); ok && v == false {
-			return "", false
-		}
+	if DeniedForChat(row) {
+		return "", false
 	}
 	id, ok := getKey(row, "id").(string)
 	return id, ok && id != ""
@@ -681,10 +694,14 @@ func modelInListingDoc(payload any, want, mapJSON string) int {
 		want = tier.TrimWindowMarker(s)
 	}
 	uncertain := false
-	// A listing that does not list cannot prove a model absent: keep the carried one.
-	data, hasData := asObj(payload).Get("data")
-	entries, isList := data.([]any)
-	if hasData && !isList {
+	// A listing that does not list cannot prove a model absent: keep the carried
+	// one. A reply with no usable data list — a proxy's error object, a wrapped
+	// reply, a 3xx body curl -f passes through, since it fails only an HTTP
+	// error — is the same ignorance (#558); only a data list, empty or not, is
+	// a route's own answer. The picker and the adapter inventory read the same
+	// verdict for the same body (#747).
+	entries, verdict := ctxwindow.ListingShape(payload)
+	if verdict == ctxwindow.ListingNotAListing {
 		return 2
 	}
 	for _, m := range entries {
@@ -701,10 +718,8 @@ func modelInListingDoc(payload any, want, mapJSON string) int {
 		if id != want {
 			continue
 		}
-		if caps := asObj(getKey(row, "capabilities")); caps != nil {
-			if v, ok := caps.Get("chat_completion"); ok && v == false {
-				return 1
-			}
+		if DeniedForChat(row) {
+			return 1
 		}
 		return 0
 	}

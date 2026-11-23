@@ -21,12 +21,13 @@ behaviour.
 
 Issue #415: the guard walked the checkout directory into `.claude/worktrees/`,
 where sibling sessions keep their private worktrees, so a sibling's in-flight
-copy of an old helper failed it on main (2026-11-10). The walk now skips a
-directory only when git itself says it is another working tree of this
-repository: `git worktree list` registers it, and git run inside it finds its
-top level there. A `.git` entry alone marks nothing, and a tracked file is
-always read; every other .go file under the checkout, tracked, untracked or
-ignored, is still read, as before.
+copy of an old helper failed it on main (2026-11-10). The walk now skips
+`.claude` whole (#449): a session's worktrees and state are never source this
+tree ships. Everywhere else, it skips a directory only when git itself says it
+is another working tree of this repository: `git worktree list` registers it,
+and git run inside it finds its top level there. A `.git` entry alone marks
+nothing, and a tracked file is always read; every other .go file under the
+checkout, tracked, untracked or ignored, is still read, as before.
 
 Issue #487: the strays the earlier sweeps missed. The shim spelled its UTC
 stamp out three times (`isoNow`, the sidecar's start, `rowTime`); ctxwindow
@@ -107,12 +108,20 @@ reached the adapter as `vendor`. The marker's one spelling is `tier.Marker`
 `tier.TrimWindowMarker`, both in the leaf every package can import; this
 guard fails on the quoted literal spelled in code, and on the first-bracket
 cut, outside that leaf.
+
+Issue #563: joining a base with a /v1 path — does a versioned SDK base
+absorb the prefix, and is /v1/messages special? — was spelled three times.
+util's `apiURL` stripped /v1 from every path, /v1/messages included; the
+adapter's appended /v1/messages verbatim, the URL the serving client sends;
+ctxwindow's `APIURL` agreed with the adapter's on every base a validated
+profile can take and kept userinfo besides. Its one definition is
+`ctxwindow.APIURL`; util's listings and the adapter's probes call it
+directly, and `versioned` and `versionRE` went out with their spellings.
 """
 import os
 import re
 import subprocess
 import sys
-from functools import lru_cache
 from pathlib import Path
 
 import pytest
@@ -144,6 +153,7 @@ CONSOLIDATED = {
     "resolvePath": "paths.Resolve",
     "isTier": "tier.IsTier",
     "endHold": "util.EndRouteHold",
+    "apiURL": "ctxwindow.APIURL",
 }
 # #422's predicates, and #520's strays beside them: the unexported spelling a
 # new copy would take, mapped to the exported definition that replaced it.
@@ -185,13 +195,10 @@ def git_output(where, *args):
     return done.stdout if done.returncode == 0 else None
 
 
-# The three walks are memoized per root (#539): every guard runs them, no
-# guard changes the tree it walks, and a test that pins ROOT builds its
-# fixture whole before its first guard call — so the second guard in a run
-# reuses the first's walk instead of re-running git and re-globbing the tree.
-# The key is always the root, never a global: a cache keyed on nothing would
-# serve one test's fixture to every other.
-@lru_cache(maxsize=None)
+# The three walks are not memoized (#449): a cache keyed on the root served a
+# walk taken before a later .go file or worktree appeared, so a guard could
+# pass a copy it never read. The walk is one glob and two git commands; every
+# guard re-reading the tree is cheaper than a guard that can miss a file.
 def tree_tracked_files(root):
     """The paths this tree's repository tracks, as a set of absolute paths.
 
@@ -201,7 +208,6 @@ def tree_tracked_files(root):
     return {root / os.fsdecode(rel) for rel in listed.split(b"\0") if rel}
 
 
-@lru_cache(maxsize=None)
 def sibling_worktrees(root):
     """The roots of the other working trees of `root`'s repository below `root`.
 
@@ -233,17 +239,22 @@ def go_sources():
     """Every .go file of this tree, by the walk `go_definitions` documents.
 
     ROOT is read at call time, so a test that pins it to its own fixture walks
-    that fixture; the walk itself is `go_sources_of`'s, memoized per root."""
+    that fixture."""
     return go_sources_of(ROOT)
 
 
-@lru_cache(maxsize=None)
 def go_sources_of(root):
-    """The walk `go_sources` resolves ROOT into, as one list per root."""
+    """The walk `go_sources` resolves ROOT into.
+
+    Every .go file under the root is this tree's unless git says the directory
+    is another working tree of this repository (#415). `.claude` is skipped
+    whole: it holds session state and workspaces, never source this tree ships,
+    so a live builder worktree there cannot fail the guard (#449)."""
     tracked = tree_tracked_files(root)
     siblings = sibling_worktrees(root)
     return [path for path in sorted(root.glob("**/*.go"))
-            if ".git" not in path.parts
+            # parts below root only: a checkout that itself sits under .claude/worktrees is still source
+            if ".git" not in path.relative_to(root).parts and ".claude" not in path.relative_to(root).parts
             and not in_a_sibling_worktree(path, siblings, tracked)]
 
 
@@ -623,10 +634,9 @@ def checkout(tmp_path):
     return repo
 
 
-def add_sibling(repo, *flags):
-    """A sibling session's worktree, as `git worktree add` makes one under
-    `.claude/worktrees/`."""
-    sibling = repo / ".claude" / "worktrees" / "sibling"
+def add_sibling(repo, *flags, where=".claude/worktrees"):
+    """A sibling session's worktree, as `git worktree add` makes one."""
+    sibling = repo / where / "sibling"
     git(repo, "worktree", "add", "-q", "--detach", *flags, str(sibling))
     return sibling
 
@@ -660,13 +670,16 @@ def assert_both_guards_fail(name):
         test_the_file_predicates_are_defined_only_in_paths()
 
 
+@pytest.mark.parametrize("where", [".claude/worktrees", "vendor/worktrees"])
 @pytest.mark.parametrize("flags", [[], ["--lock"]], ids=["unlocked", "locked"])
-def test_a_sibling_worktree_copy_does_not_fail_the_guard(tmp_path, monkeypatch, flags):
+def test_a_sibling_worktree_copy_does_not_fail_the_guard(tmp_path, monkeypatch, flags, where):
     repo = checkout(tmp_path)
-    add_sibling(repo, *flags)
-    place_copy(repo, ".claude/worktrees/sibling/shim/sidecar.go", "untracked")
+    add_sibling(repo, *flags, where=where)
+    place_copy(repo, where + "/sibling/shim/sidecar.go", "untracked")
     monkeypatch.setattr(sys.modules[__name__], "ROOT", repo)
     # The #415 reproduction: a sibling session's in-flight copy; neither guard reads it.
+    # Under .claude the walk skips the copy whole (#449); under vendor/worktrees
+    # only sibling recognition (#415) keeps it out, so that row proves recognition.
     test_the_consolidated_helpers_are_not_hand_written_again()
     test_the_file_predicates_are_defined_only_in_paths()
 
@@ -710,15 +723,38 @@ def test_a_copy_beside_a_stray_git_entry_still_fails_both_guards(
 def test_a_copy_in_a_worktree_git_cannot_open_still_fails_both_guards(
         tmp_path, monkeypatch, damage):
     repo = checkout(tmp_path)
-    sibling = add_sibling(repo)
-    place_copy(repo, ".claude/worktrees/sibling/shim/sidecar.go", "untracked")
+    # Outside .claude, which the walk skips whole (#449); the git test is the
+    # subject here.
+    add_sibling(repo, where="vendor/worktrees")
+    place_copy(repo, "vendor/worktrees/sibling/shim/sidecar.go", "untracked")
+    sibling = repo / "vendor" / "worktrees" / "sibling"
     # Registered still, but git no longer finds a tree at its root.
     if damage == "emptied":
         (sibling / ".git").write_text("")
     else:
         (sibling / ".git").unlink()
     monkeypatch.setattr(sys.modules[__name__], "ROOT", repo)
-    assert_both_guards_fail(".claude/worktrees/sibling/shim/sidecar.go")
+    assert_both_guards_fail("vendor/worktrees/sibling/shim/sidecar.go")
+
+
+def test_a_claude_tree_copy_does_not_fail_the_guard(tmp_path, monkeypatch):
+    # A session's tree under .claude is not this tree's source, whether or not
+    # git registers it (#449).
+    repo = checkout(tmp_path)
+    place_copy(repo, ".claude/worktrees/sibling/shim/sidecar.go", "untracked")
+    monkeypatch.setattr(sys.modules[__name__], "ROOT", repo)
+    test_the_consolidated_helpers_are_not_hand_written_again()
+    test_the_file_predicates_are_defined_only_in_paths()
+
+
+def test_a_go_file_created_after_a_walk_is_seen(tmp_path, monkeypatch):
+    # The walk is not cached across calls: a copy that appears after the first
+    # guard ran is read by the next one (#449).
+    repo = checkout(tmp_path)
+    monkeypatch.setattr(sys.modules[__name__], "ROOT", repo)
+    test_the_consolidated_helpers_are_not_hand_written_again()
+    place_copy(repo, "shim/late.go", "untracked")
+    assert_both_guards_fail("shim/late.go")
 
 
 # The stray the #544 guards exist for: main's own spellings — the

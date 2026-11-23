@@ -1,7 +1,10 @@
 package cli
 
 import (
+	"encoding/json"
 	"fmt"
+	"github.com/akleizor/ccmorph/router"
+	"github.com/akleizor/ccmorph/shim"
 	"github.com/akleizor/ccmorph/util"
 	"os"
 	"path/filepath"
@@ -61,9 +64,81 @@ func (l *launcher) verb(args []string) int {
 		return l.profileVerb(args[1:])
 	case "quota":
 		return l.quota(args[1:])
+	case "price":
+		return l.price(args[1:])
+	case "_plugin_dirs":
+		// Launchers that exec claude themselves (ccmorph-rc) take the session's plugin path from here.
+		fmt.Println(pluginDirs(l.libDir))
+		return 0
+	case "router":
+		router.QuotaInput = l.quotaInput
+		return router.Main(args[1:], os.Stdin, os.Stdout, os.Stderr)
 	}
 	fmt.Fprintln(os.Stderr, "usage: ccmorph-core cli <verb>")
 	return 2
+}
+
+const priceCacheHint = "Run a `provider` profile with `ccmorph run PROFILE`; its launch refreshes this cache in the background."
+
+func (l *launcher) price(args []string) int {
+	models := make([]string, 0, len(args))
+	asJSON := false
+	for _, arg := range args {
+		if arg == "--json" {
+			asJSON = true
+		} else {
+			models = append(models, arg)
+		}
+	}
+	if len(models) == 0 {
+		l.err("usage: " + usageLine("price"))
+		return 2
+	}
+	book := shim.CachedOwnedPriceBook("")
+	type listPrice struct {
+		Input  float64 `json:"input"`
+		Output float64 `json:"output"`
+	}
+	type jsonPriceResult struct {
+		Cache  string               `json:"cache"`
+		Hint   string               `json:"hint"`
+		Prices map[string]listPrice `json:"prices"`
+	}
+	prices := map[string]listPrice{}
+	if !book.HasCachedPrices() {
+		if asJSON {
+			result := jsonPriceResult{Cache: "empty", Hint: priceCacheHint, Prices: prices}
+			if err := json.NewEncoder(os.Stdout).Encode(result); err != nil {
+				l.err(err.Error())
+				return 1
+			}
+		} else {
+			fmt.Printf("No cached model prices. %s\n", priceCacheHint)
+			for _, model := range models {
+				fmt.Printf("%s  no cached price\n", model)
+			}
+		}
+		return 0
+	}
+	for _, model := range models {
+		input, output, ok := book.Lookup(model)
+		if asJSON {
+			if ok {
+				prices[model] = listPrice{input, output}
+			}
+		} else if ok {
+			fmt.Printf("%s  $%v/$%v per 1M tokens\n", model, input, output)
+		} else {
+			fmt.Printf("%s  unpriced\n", model)
+		}
+	}
+	if asJSON {
+		if err := json.NewEncoder(os.Stdout).Encode(prices); err != nil {
+			l.err(err.Error())
+			return 1
+		}
+	}
+	return 0
 }
 
 // globQuote quotes a literal path for use in front of a glob pattern. The zsh
@@ -218,7 +293,7 @@ func (l *launcher) list(args []string) int {
 	// reads the same here as it does in the picker — a provider profile with
 	// no saved model says Browser login, and a private one carries the mark.
 	// What stays list's own is the paint, via kindColour below.
-	descs := l.describeProfiles(l.active(), nil)
+	descs := l.describeProfiles(l.active(), nil, nil)
 	for _, d := range descs {
 		marker, nameFmt := " ", d.name
 		if d.active {
@@ -262,7 +337,7 @@ func (l *launcher) cred(args []string) int {
 		name = args[0]
 	}
 	if (name == "" || name == "-i" || name == "--interactive") && isTTY(0) {
-		picked, ok := l.menuProfile("apikey", "token")
+		picked, ok := l.menuProfileCred()
 		if !ok {
 			return 1
 		}
@@ -278,12 +353,9 @@ func (l *launcher) cred(args []string) int {
 	if !ok {
 		return 1
 	}
-	c := f["api_key"]
+	c := credOf(f)
 	if c == "" {
-		c = f["token"]
-	}
-	if c == "" {
-		l.err("'" + name + "' is a " + profile.KindLabel(f["type"], f["provider"]) + " profile and stores no credential here")
+		l.err("'" + name + "' is " + profile.KindPhrase(f["type"], f["provider"]) + " profile and stores no credential here")
 		l.err("sign in again: ccmorph login " + name)
 		return 1
 	}
@@ -293,6 +365,14 @@ func (l *launcher) cred(args []string) int {
 		fmt.Print(c)
 	}
 	return 0
+}
+
+// credOf is the profile's resolved API key, or its token.
+func credOf(f map[string]string) string {
+	if f["api_key"] != "" {
+		return f["api_key"]
+	}
+	return f["token"]
 }
 
 func (l *launcher) use(args []string) int {

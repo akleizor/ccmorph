@@ -24,7 +24,6 @@ const (
 	OvershootChars = 6_000_000
 	probeTimeout   = 10
 	listTimeout    = 5
-	userAgent      = "ccmorph-context-probe"
 	runTimeout     = 30
 )
 
@@ -279,9 +278,15 @@ func unhex(c byte) byte {
 	return c - '0'
 }
 
-// APIURL joins a path onto a base the way the native Anthropic client does:
-// /v1/messages is never stripped, other /v1 paths are when the base already
-// ends in a version.
+// APIURL is the one join of a base with a /v1 path (#563 — util's and the
+// adapter's spellings of it are gone): a base whose path ends in a version
+// segment (the OpenAI SDK convention, ".../v1" in either case, after every
+// trailing slash) absorbs a /v1 prefix — except /v1/messages, which is
+// appended verbatim, because Claude Code and cliproxyapi's Anthropic client
+// append it verbatim too, doubled version and all. The base is a profile's
+// validated endpoint — scheme://netloc, userinfo kept — so the shapes on
+// which the old spellings differed (a query on the base, an uppercase or
+// missing scheme) cannot reach this join.
 func APIURL(base, path string) string {
 	trimmed := strings.TrimRight(base, "/")
 	u, err := url.Parse(trimmed)
@@ -313,30 +318,31 @@ func payload(nChars int) string {
 }
 
 func pad(s string, width int) string {
-	if n := utf8.RuneCountInString(s); n < width {
+	if n := cells(s); n < width {
 		return s + strings.Repeat(" ", width-n)
 	}
 	return s
 }
 
 func padLeft(s string, width int) string {
-	if n := utf8.RuneCountInString(s); n < width {
+	if n := cells(s); n < width {
 		return strings.Repeat(" ", width-n) + s
 	}
 	return s
 }
 
-func commas(n int64) string {
-	neg := n < 0
-	if neg {
-		n = -n
-	}
+// Commas is printf "%'d" in an en_US-style locale: the digits grouped in
+// threes, a negative count keeping its minus before them (#562). The minus is
+// split off the formatted string, never negated out of the value: -n overflows
+// at math.MinInt64 and would print two minuses.
+func Commas(n int64) string {
 	s := fmt.Sprint(n)
+	minus := ""
+	if strings.HasPrefix(s, "-") {
+		minus, s = "-", s[1:]
+	}
 	for i := len(s) - 3; i > 0; i -= 3 {
 		s = s[:i] + "," + s[i:]
 	}
-	if neg {
-		return "-" + s
-	}
-	return s
+	return minus + s
 }

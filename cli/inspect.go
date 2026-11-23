@@ -2,6 +2,7 @@ package cli
 
 import (
 	"fmt"
+	"github.com/akleizor/ccmorph/ctxwindow"
 	"github.com/akleizor/ccmorph/util"
 	"strconv"
 	"strings"
@@ -16,15 +17,6 @@ func grid(w int, label, value string) {
 		return
 	}
 	fmt.Printf("  %-*s %s\n", w, label, value)
-}
-
-// thousands is printf "%'d" in an en_US-style locale.
-func thousands(n int64) string {
-	s := strconv.FormatInt(n, 10)
-	for i := len(s) - 3; i > 0; i -= 3 {
-		s = s[:i] + "," + s[i:]
-	}
-	return s
 }
 
 // inspect is `ccmorph inspect [profile|-i]`: what a profile launches as, each
@@ -129,7 +121,7 @@ func (l *launcher) inspect(args []string) int {
 			if !ok {
 				return 1
 			}
-			grid(10, "window", thousands(n)+"  "+l.dim+source+" · compaction target "+pct+"%"+l.reset)
+			grid(10, "window", ctxwindow.Commas(n)+"  "+l.dim+source+" · compaction target "+pct+"%"+l.reset)
 		} else {
 			grid(10, "window", l.dim+"unknown · compacts early to stay safe"+l.reset)
 		}

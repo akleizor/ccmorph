@@ -21,6 +21,10 @@
   and `ccmorph profile` answers from the prompt.
 - **Any endpoint.** Gateways that do not speak Anthropic's API are translated
   automatically through a per-launch adapter.
+- **Model router.** `ccmorph router on` spreads subagent work across your
+  profiles: free gateways first, then the subscription furthest behind its
+  pace, then paid keys. Off by default; `ccmorph router status` shows each
+  profile's standing.
 - **Cost per profile.** Every gateway turn leaves a receipt with the billed cost;
   [ccusage](https://github.com/ccusage/ccusage) turns them into daily reports.
 - **Leaves `claude` alone.** No wrapper, no patch: native arguments pass through.
@@ -121,6 +125,7 @@ ccmorph set <profile> model -i     # save a default model, chosen from the endpo
 ccmorph inspect [<profile>]        # effective settings and where each came from
 ccmorph doctor [<profile>]         # check why a profile is not working
 ccmorph quota [<profile>] [--json] # every profile's plan usage, spend and API balance
+ccmorph router on                  # spread subagents across your profiles (off by default)
 ```
 
 To switch a running session, type in the Claude Code prompt:
@@ -142,8 +147,9 @@ The session's status line names the profile it runs on, and changes with a hop.
 ## Usage and cost
 
 Each turn a profile serves writes one receipt under
-`~/.local/state/ccmorph/usage/<YYYY-MM-DD>/` — the day folder of the
-receipt's UTC stamp: tokens, the model that answered, and the
+`~/.local/state/ccmorph/usage/<YYYY-MM-DD>/` — under
+`$XDG_STATE_HOME/ccmorph/usage/` when `XDG_STATE_HOME` is set — the day folder
+of the receipt's UTC stamp: tokens, the model that answered, and the
 cost the gateway billed when it reports one — otherwise an estimated cost at
 the provider's models.dev list price, marked as an estimate in the receipt and
 the export. The day folders are an index, so a reader with a time window opens
@@ -198,7 +204,15 @@ Homebrew install keeps it in the formula's prefix, at
 `ccmorph help config` prints the path of the template it holds. Runtime state
 lives under `~/.config/ccmorph/profiles/<name>`. The state root is
 `$CCMORPH_STATE_DIR`, else `$XDG_CONFIG_HOME/ccmorph`, else `~/.config/ccmorph`.
-Use `ccmorph rm` and `ccmorph mv` rather than editing files by hand.
+That root holds what you configure: profile files, runtime state, and the
+registry and router settings beside them. Derived state lives under a second
+root and follows a different variable: the usage receipts above and
+`ccmorph quota`'s spend cache resolve against the XDG state root,
+`$XDG_STATE_HOME/ccmorph`, else `~/.local/state/ccmorph`. `CCMORPH_STATE_DIR`
+does not move them, so a run that sets both keeps two trees; `ccmorph quota`
+prints the receipts folder it reads, and the exporter's `--help` prints the
+folder it reads. Use `ccmorph rm` and `ccmorph mv` rather than editing files
+by hand.
 
 Common keys: `type`, `base_url`, `api_key`, `model`, `effort`,
 `excluded_models`, and `context_window.<model>`. To reach a private endpoint,

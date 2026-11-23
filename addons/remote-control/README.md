@@ -68,7 +68,9 @@ their login`. A logged-out account is not restarted: signing in fixes it. A phon
 turn a host restart cut off is handed back to its host once that host is up again,
 so it carries on without being opened on the phone. Any active phone
 session left without a process (unarchived, exited while idle, crashed) is handed
-back to its folder's host within ~20s, so a message never waits on a dead session; an archived session's kept worktree is removed
+back to its folder's host within ~20s, so a message never waits on a dead session. An idle session with no
+event for `park_hours` (default 6, `park_hours=0` keeps every process) is parked: its process ends to free
+memory, and its next message wakes it within ~20s. An archived session's kept worktree is removed
 after `idle_days` (unarchiving still resumes it), and the session itself is deleted
 after `purge_days` (default 7); either step skips a worktree holding uncommitted or
 unmerged work. A days value that is not a valid number falls back to its default,
@@ -117,6 +119,26 @@ Check the `pid` in it is gone, move the file aside, and start again.
 Credentials inherited from the calling shell (`CLAUDE_CODE_OAUTH_TOKEN`,
 `ANTHROPIC_API_KEY`, ...) are dropped, as in every ccmorph launch: the session
 always signs in with the account profile's own claude.ai login.
+
+## Switch inference live
+
+```sh
+ccmorph-rc <route-profile> --switch  # every host's next turn goes to that profile
+ccmorph-rc <route-profile> --switch  # an account profile the phone signs in with (Anthropic, its own quota)
+ccmorph-rc <route-profile> --switch  # back to the edge's route
+```
+
+No host restarts and no session is interrupted: each proxy reads the switch on every
+turn. The account profile sends calls to Anthropic untouched; the edge's route uses the
+edge as before; any other route or provider profile is brought up beside the edge
+(its adapter, and a provider's bridge, live as long as the edge does) and handed to the
+proxy through a 0600 file it deletes on read, so its key stays in memory only. Its model
+map is applied, so a provider such as codex receives its own models. `inference=<profile>`
+in `rc-hosts` does the same from the config. A proxy started before this feature needs one
+restart to load it.
+
+A tier pinned with `tier.<alias>=` names the route's model on that bare alias, so under
+another target pick that model by its full id instead.
 
 ## How it works
 

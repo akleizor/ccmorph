@@ -13,8 +13,10 @@ import (
 	"regexp"
 	"runtime"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -52,6 +54,9 @@ func reply(status int, body string) *http.Response {
 func useClock(t *testing.T, at time.Time) {
 	t.Helper()
 	old := now
+	oldCompact := compactUsage
+	compactUsage = func(string, time.Time, int) (int, error) { return 0, nil }
+	t.Cleanup(func() { compactUsage = oldCompact })
 	now = func() time.Time { return at }
 	local := time.Local
 	time.Local = time.UTC
@@ -229,7 +234,7 @@ func TestQuota(t *testing.T) {
 	if live.Profile != "live" || live.Kind != "claude" || live.Plan != "Max 20x" {
 		t.Fatalf("live entry %+v", live)
 	}
-	if len(live.Windows) != 3 || live.Windows[0].ID != "5h" || live.Windows[0].Used != 0.12 {
+	if len(live.Windows) != 3 || live.Windows[0].ID != "5h" || live.Windows[0].Used == nil || *live.Windows[0].Used != 0.12 {
 		t.Fatalf("windows %+v", live.Windows)
 	}
 	if live.Windows[1].ID != "7d" || live.Windows[2].ID != "7d_opus" {
@@ -334,7 +339,7 @@ func TestQuotaStale(t *testing.T) {
 	})
 	save("slow", Reading{
 		Plan:    "Pro",
-		Windows: []Window{{ID: "5h", Label: "5h", Used: 0.2, ResetsAt: ptr(at.Add(time.Hour).Unix())}},
+		Windows: []Window{{ID: "5h", Label: "5h", Used: ptr(0.2), ResetsAt: ptr(at.Add(time.Hour).Unix())}},
 		ReadAt:  at.Add(-12 * time.Minute).Unix(),
 	})
 	in := "slow\tsub\t" + slow + "\nfresh\tsub\t" + fresh + "\n"
@@ -374,11 +379,25 @@ func TestQuotaStale(t *testing.T) {
 	if !s.Stale || s.Error != "rate-limited" || s.AgeSeconds == nil || *s.AgeSeconds != 720 {
 		t.Fatalf("stale entry %+v", s)
 	}
-	if s.Plan != "Pro" || len(s.Windows) != 1 || s.Windows[0].Used != 0.2 {
+	if s.Plan != "Pro" || len(s.Windows) != 1 || s.Windows[0].Used == nil || *s.Windows[0].Used != 0.2 {
 		t.Fatalf("cached reading %+v", s)
 	}
 	if doc.Profiles[1].Stale || doc.Profiles[1].Error == "" {
 		t.Fatalf("never-read entry %+v", doc.Profiles[1])
+	}
+
+	// A cache written before Window.Used could say "no share" carries the share
+	// as a plain JSON number; it still decodes to the same 0.2, so a stored
+	// reading keeps answering across the shape change (#795).
+	old := `{"plan":"Pro","windows":[{"id":"5h","label":"5h","used":0.2,` +
+		`"resets_at":` + strconv.FormatInt(at.Add(time.Hour).Unix(), 10) + `}],` +
+		`"read_at":` + strconv.FormatInt(at.Add(-12*time.Minute).Unix(), 10) + `}`
+	if err := os.WriteFile(cachePath("old"), []byte(old), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if r, ok := load("old"); !ok || len(r.Windows) != 1 || r.Windows[0].ID != "5h" ||
+		r.Windows[0].Used == nil || *r.Windows[0].Used != 0.2 {
+		t.Fatalf("old numeric cache reading %+v, ok=%v", r, ok)
 	}
 }
 
@@ -390,7 +409,14 @@ func TestQuotaSpend(t *testing.T) {
 	// steps local midnights as instants stops before today's folder. HKT is the
 	// machine ccmorph is measured on.
 	time.Local = time.FixedZone("HKT", 8*3600)
-	state := t.TempDir()
+	// #731: a short non-default root under HOME, so the receipts footer is the
+	// ~/… spelling the docs carry and fits the 60 columns checkWidth holds
+	// every line to — and so a reader that ignored XDG_STATE_HOME and used the
+	// ~/.local/state fallback would find no receipts, failing the budget
+	// lines below.
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	state := filepath.Join(home, "xdg")
 	t.Setenv("XDG_STATE_HOME", state)
 	useTransport(t, func(r *http.Request) (*http.Response, error) {
 		t.Errorf("a gateway or budget entry must not reach the network: %s", r.URL)
@@ -431,6 +457,10 @@ func TestQuotaSpend(t *testing.T) {
 	// must say the cost is unknown, never 0% — the picture of no spend.
 	receipt("15", "capu", "2026-10-20T09:00:00Z", map[string]any{"input_tokens": 200, "output_tokens": 30}, true)
 	receipt("16", "capu", "2026-10-06T09:00:00Z", map[string]any{"input_tokens": 50}, true)
+	// A budget with some priced and some unpriced turns keeps the share of the
+	// money it could price: only an all-unpriced month has none (#795).
+	receipt("17", "capm", "2026-10-08T00:00:00Z", map[string]any{"cost": 20.0}, true)
+	receipt("18", "capm", "2026-10-09T00:00:00Z", map[string]any{"input_tokens": 40}, true)
 	// The same store sharded by day: a row lands in the day folder of its UTC
 	// stamp, and the spend still reads it beside the flat rows (#227).
 	receipt("11", "gw", "2026-10-20T08:00:00Z", map[string]any{"cost": 0.25}, true, "2026-10-20")           // today, sharded
@@ -438,7 +468,7 @@ func TestQuotaSpend(t *testing.T) {
 	receipt("13", "gw", "2026-09-15T00:00:00Z", map[string]any{"cost": 50.0}, true, "2026-09-15")           // last month
 	receipt("14", "other", "2026-10-20T07:00:00Z", map[string]any{"cost": 6.0}, true, "2026-10-20")         // another profile
 
-	in := "gw\tgateway\t\t\ncap\tgateway\t\t500\ncapu\tgateway\t\t40\ncap0\tgateway\t\t40\ngw2\tgateway\t\t\nwork\tgateway\t\t\n"
+	in := "gw\tgateway\t\t\ncap\tgateway\t\t500\ncapu\tgateway\t\t40\ncap0\tgateway\t\t40\ncapm\tgateway\t\t40\ngw2\tgateway\t\t\nwork\tgateway\t\t\n"
 	out, _, code := run(t, nil, in)
 	if code != 0 {
 		t.Fatalf("exit %d", code)
@@ -457,6 +487,10 @@ func TestQuotaSpend(t *testing.T) {
 		"cap0",
 		row("month", 0, "0%", "Nov 1"),
 		"  not used this month",
+		"capm",
+		row("month", 8, "50%", "Nov 1"),
+		"  today $0.00 · month $20.00 of $40",
+		"  1 turn with no price · cost unknown",
 		"",
 		"API key and provider profiles",
 		"gw",
@@ -466,6 +500,8 @@ func TestQuotaSpend(t *testing.T) {
 		"  2 turns · 254 tokens this month · cost unknown",
 		"work",
 		"  not used this month",
+		"",
+		"receipts: ~/xdg/ccmorph/usage",
 		"",
 	}, "\n")
 	if out != want {
@@ -493,33 +529,163 @@ func TestQuotaSpend(t *testing.T) {
 	if cap.Kind != "budget" || cap.Spend == nil || cap.Spend.BudgetUSD == nil || *cap.Spend.BudgetUSD != 500 {
 		t.Fatalf("cap entry %+v", cap)
 	}
-	if len(cap.Windows) != 1 || cap.Windows[0].ID != "month" || cap.Windows[0].Used != 0.2 {
+	if len(cap.Windows) != 1 || cap.Windows[0].ID != "month" || cap.Windows[0].Used == nil || *cap.Windows[0].Used != 0.2 {
 		t.Fatalf("budget window %+v", cap.Windows)
 	}
-	// The all-unpriced budget keeps its --json shape: the window's used stays 0
-	// beside the spend counts that say why, and the text view carries the
-	// unknown (#301).
+	// The all-unpriced budget carries no share on the tool surface: the month
+	// window is there, `used` is null — never the confident 0% of a month whose
+	// cost is unknown (#301, #795) — beside the spend counts that say why, and
+	// the text view carries the unknown.
 	capu := doc.Profiles[2]
 	if capu.Kind != "budget" || capu.Spend == nil || capu.Spend.BudgetUSD == nil || *capu.Spend.BudgetUSD != 40 {
 		t.Fatalf("capu entry %+v", capu)
 	}
-	if len(capu.Windows) != 1 || capu.Windows[0].Used != 0 ||
+	if len(capu.Windows) != 1 || capu.Windows[0].Used != nil ||
 		capu.Spend.MonthTurns != 2 || capu.Spend.MonthTokens != 280 || capu.Spend.UnpricedTurns != 2 {
 		t.Fatalf("capu unknown-cost entry %+v", capu)
+	}
+	// The raw tool surface: no numeric share may be encoded for a month whose
+	// cost is unknown. `used` absent or null both say "no share"; a number —
+	// 0 above all — is the picture #301 forbids (#795).
+	var rawDoc struct {
+		Profiles []struct {
+			Profile string           `json:"profile"`
+			Windows []map[string]any `json:"windows"`
+		} `json:"profiles"`
+	}
+	if err := json.Unmarshal([]byte(jout), &rawDoc); err != nil {
+		t.Fatal(err)
+	}
+	if len(rawDoc.Profiles) != 7 || len(rawDoc.Profiles[2].Windows) != 1 {
+		t.Fatalf("raw profiles %+v", rawDoc.Profiles)
+	}
+	if used, ok := rawDoc.Profiles[2].Windows[0]["used"]; ok && used != nil {
+		t.Fatalf("all-unpriced month window used = %v, want null or absent", used)
 	}
 	cap0 := doc.Profiles[3]
 	if cap0.Kind != "budget" || cap0.Spend == nil || cap0.Spend.MonthTurns != 0 || len(cap0.Windows) != 1 {
 		t.Fatalf("cap0 entry %+v", cap0)
 	}
-	gw2 := doc.Profiles[4]
+	// A month with no turns at all is a month with no spend: its share stays the
+	// numeric 0, unlike the unknown cost above (#301).
+	if cap0.Windows[0].Used == nil || *cap0.Windows[0].Used != 0 {
+		t.Fatalf("cap0 month window %+v", cap0.Windows[0])
+	}
+	// Some unpriced turns beside priced ones still price the month: the share is
+	// the priced money over the budget (#795).
+	capm := doc.Profiles[4]
+	if capm.Kind != "budget" || capm.Spend == nil || capm.Spend.MonthUSD != 20 ||
+		capm.Spend.MonthTurns != 2 || capm.Spend.UnpricedTurns != 1 ||
+		len(capm.Windows) != 1 || capm.Windows[0].Used == nil || *capm.Windows[0].Used != 0.5 {
+		t.Fatalf("capm mixed-cost entry %+v", capm)
+	}
+	gw2 := doc.Profiles[5]
 	if gw2.Spend == nil || gw2.Spend.TodayUSD != 0 || gw2.Spend.MonthUSD != 0 ||
 		gw2.Spend.TodayTurns != 1 || gw2.Spend.MonthTurns != 2 ||
 		gw2.Spend.TodayTokens != 134 || gw2.Spend.MonthTokens != 254 || gw2.Spend.UnpricedTurns != 2 {
 		t.Fatalf("gw2 entry %+v", gw2.Spend)
 	}
-	work := doc.Profiles[5]
+	work := doc.Profiles[6]
 	if work.Spend == nil || work.Spend.MonthTurns != 0 || work.Spend.MonthTokens != 0 || work.Spend.UnpricedTurns != 0 {
 		t.Fatalf("work entry %+v", work.Spend)
+	}
+}
+
+// #731: debugging cost starts by finding the receipts, and no command printed
+// where they live — the README's path is a default install's, because a
+// CCMORPH_STATE_DIR run keeps profiles under its root while the receipts stay
+// under the XDG state root. A text view that read receipts names the folder the
+// read actually used; a view that read none names nothing (TestQuota's exact
+// view, all accounts and tokens, is that case), and --json keeps its machine
+// shape. The folder is spelled ~/… under the home, as the help pages spell the
+// state root, and moves to its own line rather than pass the 60 columns, so
+// checkWidth holds every line as on main.
+func TestQuotaTextNamesTheReceiptsFolder(t *testing.T) {
+	useClock(t, time.Date(2026, 10, 20, 12, 0, 0, 0, time.UTC))
+	useTransport(t, func(r *http.Request) (*http.Response, error) {
+		t.Errorf("a gateway entry must not reach the network: %s", r.URL)
+		return nil, nil
+	})
+	view := func(argv ...string) string {
+		t.Helper()
+		out, errOut, code := run(t, argv, "gw\tgateway\t\t\n")
+		if code != 0 {
+			t.Fatalf("exit %d: %s", code, errOut)
+		}
+		return out
+	}
+	// seed lays one priced turn in root's receipts, so the spend line proves
+	// the reader opened that root — not the fallback, not CCMORPH_STATE_DIR.
+	seed := func(root, id string) {
+		t.Helper()
+		usage := filepath.Join(root, "ccmorph", "usage")
+		if err := os.MkdirAll(usage, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		raw, _ := json.Marshal(map[string]any{
+			"complete": true, "profile": "gw", "timestamp": "2026-10-20T09:00:00Z",
+			"usage": map[string]any{"cost": 2.5},
+		})
+		if err := os.WriteFile(filepath.Join(usage, id+".json"), raw, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// A default install: the folder is under the home, spelled as README and
+	// guide spell it (tests/docs_claims_test.py RECEIPTS_DEFAULT), the reader
+	// opens it rather than the CCMORPH_STATE_DIR profile root set here, and
+	// CCMORPH_STATE_DIR does not move the footer.
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_STATE_HOME", "")
+	t.Setenv("CCMORPH_STATE_DIR", t.TempDir())
+	seed(filepath.Join(home, ".local", "state"), "1")
+	out := view()
+	if !strings.Contains(out, "  today $2.50 · month $2.50\n") {
+		t.Fatalf("the default root's receipt was not read:\n%s", out)
+	}
+	if !strings.HasSuffix(out, "\n\nreceipts: ~/.local/state/ccmorph/usage\n") {
+		t.Fatalf("default folder not named as the docs spell it:\n%s", out)
+	}
+	checkWidth(t, out)
+	colored := view("--color")
+	if !strings.HasSuffix(colored, "\x1b[2mreceipts: ~/.local/state/ccmorph/usage\x1b[0m\n") {
+		t.Fatalf("colour footer %q", colored)
+	}
+	checkWidth(t, colored)
+
+	// Drop the fallback tree: from here only the XDG override holds receipts,
+	// so a reader that ignores it reads none.
+	if err := os.RemoveAll(filepath.Join(home, ".local")); err != nil {
+		t.Fatal(err)
+	}
+
+	// An XDG root under the home whose one-line form passes 60 columns: the
+	// folder takes its own line, whole, and every line still fits. A reader
+	// that ignored XDG_STATE_HOME would read no receipt here.
+	long := strings.Repeat("s", 39) // ~/ + 39 + /ccmorph/usage = 55 runes; with "receipts: " 65
+	t.Setenv("XDG_STATE_HOME", filepath.Join(home, long))
+	seed(filepath.Join(home, long), "1")
+	out = view()
+	if !strings.Contains(out, "  today $2.50 · month $2.50\n") {
+		t.Fatalf("the XDG root's receipt was not read:\n%s", out)
+	}
+	if want := "\n\nreceipts:\n~/" + long + "/ccmorph/usage\n"; !strings.HasSuffix(out, want) {
+		t.Fatalf("want suffix %q in:\n%s", want, out)
+	}
+	checkWidth(t, out)
+
+	// An XDG root outside the home is the absolute path it is.
+	state := t.TempDir()
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("XDG_STATE_HOME", state)
+	out = view()
+	if !strings.Contains(out, "\nreceipts:") || !strings.HasSuffix(out, filepath.Join(state, "ccmorph", "usage")+"\n") {
+		t.Fatalf("absolute folder not named:\n%s", out)
+	}
+
+	if jout := view("--json"); strings.Contains(jout, "receipts:") {
+		t.Fatalf("--json carries the person's footer: %s", jout)
 	}
 }
 
@@ -753,7 +919,9 @@ func checkWidth(t *testing.T, out string) {
 func TestQuotaFixtureHomes(t *testing.T) {
 	at := time.Date(2026, 10, 29, 15, 0, 0, 0, time.UTC)
 	useClock(t, at)
-	state := t.TempDir()
+	userHome := t.TempDir()
+	t.Setenv("HOME", userHome)
+	state := filepath.Join(userHome, "xdg") // #731: short, non-default, under HOME
 	t.Setenv("XDG_STATE_HOME", state)
 	var seen []string
 	useTransport(t, func(r *http.Request) (*http.Response, error) {
@@ -790,8 +958,8 @@ func TestQuotaFixtureHomes(t *testing.T) {
 	save("max", Reading{
 		Plan: "Max 5x",
 		Windows: []Window{
-			{ID: "5h", Label: "5h", Used: 0.55, ResetsAt: ptr(at.Add(90 * time.Minute).Unix())},
-			{ID: "7d", Label: "7d", Used: 0.7, ResetsAt: ptr(at.Add(48 * time.Hour).Unix())},
+			{ID: "5h", Label: "5h", Used: ptr(0.55), ResetsAt: ptr(at.Add(90 * time.Minute).Unix())},
+			{ID: "7d", Label: "7d", Used: ptr(0.7), ResetsAt: ptr(at.Add(48 * time.Hour).Unix())},
 		},
 		ReadAt: at.Add(-12 * time.Minute).Unix(),
 	})
@@ -825,6 +993,7 @@ func TestQuotaFixtureHomes(t *testing.T) {
 		"cx  Plus", row("5h", 6, "35%", "in 2h 14m"), row("7d", 10, "60%", "Sun 15:00"),
 		"  today $2.50 · month $2.50",
 		string([]rune(long)[:maxWidth-1]) + "…",
+		"receipts: ~/xdg/ccmorph/usage",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("missing %q in\n%s", want, out)
@@ -847,10 +1016,10 @@ func TestQuotaFixtureHomes(t *testing.T) {
 	if len(doc.Profiles) != 4 {
 		t.Fatalf("%d entries", len(doc.Profiles))
 	}
-	if p := doc.Profiles[1]; !p.Stale || p.AgeSeconds == nil || *p.AgeSeconds != 720 || len(p.Windows) != 2 || p.Windows[0].Used != 0.55 {
+	if p := doc.Profiles[1]; !p.Stale || p.AgeSeconds == nil || *p.AgeSeconds != 720 || len(p.Windows) != 2 || p.Windows[0].Used == nil || *p.Windows[0].Used != 0.55 {
 		t.Fatalf("stale fixture %+v", p)
 	}
-	if c := doc.Profiles[2]; c.Plan != "Plus" || len(c.Windows) != 2 || c.Windows[0].Used != 0.35 || c.Windows[1].ID != "7d" {
+	if c := doc.Profiles[2]; c.Plan != "Plus" || len(c.Windows) != 2 || c.Windows[0].Used == nil || *c.Windows[0].Used != 0.35 || c.Windows[1].ID != "7d" {
 		t.Fatalf("codex fixture %+v", c)
 	}
 	if g := doc.Profiles[3]; g.Profile != long || g.Spend == nil || g.Spend.MonthUSD != 2.5 || g.Spend.BudgetUSD != nil {
@@ -920,7 +1089,12 @@ func TestSubscriptionTokenNamesTheKeychainAccount(t *testing.T) {
 
 func TestQuotaBalance(t *testing.T) {
 	useClock(t, time.Date(2026, 10, 20, 12, 0, 0, 0, time.UTC))
-	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	// #731: a short non-default root under HOME — not the ~/.local/state
+	// fallback — so the footer can spell it ~/… and a reader that ignored
+	// XDG_STATE_HOME would read no receipts at all.
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_STATE_HOME", filepath.Join(home, "xdg"))
 	replies := map[string]string{
 		"api.deepseek.com/user/balance":                                  `{"is_available":true,"balance_infos":[{"currency":"USD","total_balance":"0.00"},{"currency":"CNY","total_balance":"40.75"}]}`,
 		"openrouter.ai/api/v1/credits":                                   `{"data":{"total_credits":100,"total_usage":25.5}}`,
@@ -930,8 +1104,27 @@ func TestQuotaBalance(t *testing.T) {
 		"api.z.ai/api/biz/account/query-customer-account-report":         `{"success":true,"data":{"availableBalance":7}}`,
 		"open.bigmodel.cn/api/biz/account/query-customer-account-report": `{"success":false,"msg":"token expired or incorrect"}`,
 	}
-	var sent []string
+	// #726: each gateway line's own endpoint is also asked for its model
+	// listing. Those probes are named here host by host and logged apart, so
+	// sent below still holds the balance requests alone and every check made
+	// on it reads a balance request, never a probe.
+	probes := map[string]bool{
+		"api.deepseek.com/anthropic/v1/models":     true,
+		"openrouter.ai/api/v1/models":              true,
+		"api.moonshot.ai/anthropic/v1/models":      true,
+		"api.siliconflow.cn/v1/models":             true,
+		"api.z.ai/api/anthropic/v1/models":         true,
+		"open.bigmodel.cn/api/anthropic/v1/models": true,
+		"api.stepfun.ai/step_plan/v1/models":       true,
+		"api.deepseek.com/v1/models":               true,
+		"gateway.example/v1/models":                true,
+	}
+	var sent, probed []string
 	useTransport(t, func(r *http.Request) (*http.Response, error) {
+		if probes[r.URL.Host+r.URL.Path] {
+			probed = append(probed, r.URL.Host+r.URL.Path+" "+r.Header.Get("Authorization"))
+			return reply(200, `{"data":[]}`), nil
+		}
 		sent = append(sent, r.URL.Host+" "+r.Header.Get("Authorization"))
 		if strings.HasSuffix(r.Header.Get("Authorization"), "bad") {
 			return reply(401, ""), nil
@@ -983,9 +1176,157 @@ func TestQuotaBalance(t *testing.T) {
 	if strings.Contains(joined, "sk-gw") || !strings.Contains(joined, "api.z.ai zk") || !strings.Contains(joined, "Bearer sk-ds") {
 		t.Fatalf("sent %v", sent)
 	}
+	// #726: each profile's listing probe went once to its own base URL's host,
+	// carrying that profile's own key, and nowhere else.
+	wantProbes := []string{
+		"api.deepseek.com/anthropic/v1/models Bearer sk-ds",
+		"openrouter.ai/api/v1/models Bearer sk-or",
+		"api.moonshot.ai/anthropic/v1/models Bearer sk-k",
+		"api.siliconflow.cn/v1/models Bearer sk-sf",
+		"api.z.ai/api/anthropic/v1/models Bearer zk",
+		"open.bigmodel.cn/api/anthropic/v1/models Bearer refused",
+		"api.stepfun.ai/step_plan/v1/models Bearer sk-st",
+		"api.deepseek.com/v1/models Bearer bad",
+		"gateway.example/v1/models Bearer sk-gw",
+	}
+	sort.Strings(probed)
+	sort.Strings(wantProbes)
+	if strings.Join(probed, ",") != strings.Join(wantProbes, ",") {
+		t.Fatalf("probes\n got %v\nwant %v", probed, wantProbes)
+	}
 	out, _, _ := run(t, nil, "ds\tgateway\thttps://api.deepseek.com/anthropic\t\tsk-ds\n")
-	if want := "API key and provider profiles\nds\n  not used this month\n  balance ¥40.75\n"; out != want {
+	if want := "API key and provider profiles\nds\n  not used this month\n  balance ¥40.75\n\n" +
+		"receipts: ~/xdg/ccmorph/usage\n"; out != want {
 		t.Fatalf("\n got %q\nwant %q", out, want)
+	}
+}
+
+// #726: an endpoint that answered nothing must not print as a month with no
+// spend. A gateway whose endpoint is silent says its spend is from local
+// receipts only and names the command that checks the endpoint; a reachable
+// gateway with no spend keeps the bare row. In JSON the two rows carry the
+// same difference through one field: checked.
+func TestQuotaUnreachableGatewayIsNotAZeroMonth(t *testing.T) {
+	useClock(t, time.Date(2026, 10, 20, 12, 0, 0, 0, time.UTC))
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	useTransport(t, func(r *http.Request) (*http.Response, error) {
+		if r.URL.Host == "gw-down.example" {
+			return nil, fmt.Errorf("dial gw-down.example: no answer")
+		}
+		return reply(200, `{"data":[]}`), nil
+	})
+	in := "gw-down\tgateway\thttps://gw-down.example\t\tk1\n" +
+		"gw-up\tgateway\thttps://gw-up.example\t\tk2"
+	out, errOut, code := run(t, nil, in)
+	if code != 0 {
+		t.Fatalf("exit %d: %s", code, errOut)
+	}
+	down := "gw-down\n  not used this month\n" +
+		"  gateway not reachable — spend from local receipts only\n" +
+		"  check it: ccmorph doctor gw-down\n"
+	up := "gw-up\n  not used this month\n"
+	if !strings.Contains(out, down) || !strings.Contains(out, up) {
+		t.Fatalf("the two rows do not differ as promised:\n%q", out)
+	}
+	jout, _, code := run(t, []string{"--json"}, in)
+	if code != 0 {
+		t.Fatalf("exit %d", code)
+	}
+	var doc struct {
+		Profiles []struct {
+			Profile string `json:"profile"`
+			Checked *bool  `json:"checked"`
+		} `json:"profiles"`
+	}
+	if err := json.Unmarshal([]byte(jout), &doc); err != nil {
+		t.Fatalf("%v: %s", err, jout)
+	}
+	checked := map[string]*bool{}
+	for _, p := range doc.Profiles {
+		checked[p.Profile] = p.Checked
+	}
+	if c := checked["gw-down"]; c == nil || *c {
+		t.Fatalf("gw-down checked %v, want false: %s", c, jout)
+	}
+	if c := checked["gw-up"]; c == nil || !*c {
+		t.Fatalf("gw-up checked %v, want true: %s", c, jout)
+	}
+}
+
+// #726: the reachability probe answers once and goes nowhere else. Go drops
+// Authorization across a cross-host redirect but not a custom x-api-key, so
+// following a gateway's redirect would hand the profile's credential to the
+// host the endpoint names. The key stays on the host the profile's own base URL
+// names, and the redirect still counts as the answer it is: the row is not
+// marked unchecked.
+func TestQuotaProbeCarriesTheKeyOnlyToItsOwnHost(t *testing.T) {
+	useClock(t, time.Date(2026, 10, 20, 12, 0, 0, 0, time.UTC))
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	var hosts []string
+	useTransport(t, func(r *http.Request) (*http.Response, error) {
+		hosts = append(hosts, r.URL.Host+" "+r.Header.Get("x-api-key"))
+		if r.URL.Host != "gw-302.example" {
+			return reply(200, `{"data":[]}`), nil
+		}
+		moved := reply(302, "")
+		moved.Header.Set("Location", "https://elsewhere.example/v1/models")
+		return moved, nil
+	})
+	jout, _, code := run(t, []string{"--json"}, "gw\tgateway\thttps://gw-302.example\t\tsk-secret\n")
+	if code != 0 {
+		t.Fatalf("exit %d", code)
+	}
+	if strings.Join(hosts, ",") != "gw-302.example sk-secret" {
+		t.Fatalf("the probe left its own host: %v", hosts)
+	}
+	var doc struct {
+		Profiles []struct {
+			Profile string `json:"profile"`
+			Checked *bool  `json:"checked"`
+		} `json:"profiles"`
+	}
+	if err := json.Unmarshal([]byte(jout), &doc); err != nil {
+		t.Fatalf("%v: %s", err, jout)
+	}
+	if len(doc.Profiles) != 1 || doc.Profiles[0].Checked == nil || !*doc.Profiles[0].Checked {
+		t.Fatalf("a redirect is an answer, so the row is not unchecked: %s", jout)
+	}
+}
+
+// The shared reader must answer exactly as the hand-written struct decoders
+// did: json matches struct tags without case, skips fields the reader does not
+// name, and merges a repeated object key into the field already decoded.
+func TestBalanceFieldAnswersLikeTheStructReaders(t *testing.T) {
+	readers := map[string]func([]byte) (string, error){
+		"moonshot":    balanceField("data.available_balance", "USD"),
+		"siliconflow": balanceField("data.totalBalance", "CNY"),
+		"stepfun":     balanceField("balance", "USD"),
+	}
+	cases := []struct {
+		gateway, body, want string
+		unreadable          bool
+	}{
+		{"moonshot", `{"Data":{"Available_Balance":12.3}}`, "$12.30", false},
+		{"siliconflow", `{"DATA":{"TOTALBALANCE":"8.5"}}`, "¥8.50", false},
+		{"stepfun", `{"Balance":3}`, "$3.00", false},
+		{"stepfun", `{"balance":3,"unused":1e400}`, "$3.00", false},
+		{"moonshot", `{"data":{"available_balance":12.3},"data":{"unused":1}}`, "$12.30", false},
+		{"moonshot", `{"data":{"available_balance":12.3},"data":null}`, "$12.30", false},
+		{"moonshot", `{"data":[]}`, "", true},
+		{"siliconflow", `{"data":{"totalBalance":true}}`, "", true},
+		{"stepfun", `{}`, "", true},
+	}
+	for _, c := range cases {
+		got, err := readers[c.gateway]([]byte(c.body))
+		if c.unreadable {
+			if err == nil {
+				t.Errorf("%s %s: got %q, want unreadable", c.gateway, c.body, got)
+			}
+			continue
+		}
+		if err != nil || got != c.want {
+			t.Errorf("%s %s: got %q %v, want %q", c.gateway, c.body, got, err, c.want)
+		}
 	}
 }
 
@@ -1400,6 +1741,77 @@ func TestQuotaSpendCountsARowMovedBeforeTheFlatRead(t *testing.T) {
 	}
 }
 
+// A move lands between the flat read's listing and its reads — the link into
+// the day folder, then the flat name's remove, as the background move every
+// adapter start runs does. A name the listing saw but the reads cannot open is
+// gone, not unreadable: the read stays whole with no permission verdict, and
+// the row counts through the day name the link made, this same read's day
+// listing holding it (#552).
+func TestQuotaSpendCountsARowAMoveRelocatesBetweenItsListingAndReads(t *testing.T) {
+	useClock(t, time.Date(2026, 10, 20, 12, 0, 0, 0, time.UTC))
+	state := t.TempDir()
+	t.Setenv("XDG_STATE_HOME", state)
+	usage := filepath.Join(state, "ccmorph", "usage")
+	closed := time.Date(2026, 10, 18, 9, 0, 0, 0, time.UTC)
+	today := time.Date(2026, 10, 20, 9, 0, 0, 0, time.UTC)
+	writeReceipt(t, filepath.Join(usage, "2026-10-18", "a.json"),
+		"resp_a", "turn_a", "2026-10-18T09:00:00Z", 1, closed)
+	flat := filepath.Join(usage, "b.json")
+	writeReceipt(t, flat, "resp_b", "turn_b", "2026-10-18T10:00:00Z", 2, closed)
+	writeReceipt(t, filepath.Join(usage, "2026-10-20", "t.json"),
+		"resp_t", "turn_t", "2026-10-20T09:00:00Z", 1, today)
+	// The move's relocation lands between the flat listing and its reads: the
+	// day-folder name is linked, then the flat name removed.
+	var hookErr error
+	receiptsMarked = func(dir string) {
+		if dir != usage {
+			return
+		}
+		receiptsMarked = nil
+		if hookErr = os.Link(flat, filepath.Join(usage, "2026-10-18", "b.json")); hookErr == nil {
+			hookErr = os.Remove(flat)
+		}
+	}
+	t.Cleanup(func() { receiptsMarked = nil })
+	read := func() Entry { tallyMemo.key = ""; return spendEntry("gw", "") }
+	e := read()
+	if e.Error != "" || e.Spend == nil {
+		t.Fatalf("a receipt the move relocated mid-read was answered as an unreadable store: %+v", e)
+	}
+	if s := e.Spend; s.MonthUSD != 4 || s.MonthTurns != 3 || s.TodayUSD != 1 || s.TodayTurns != 1 {
+		t.Fatalf("a row a move relocated between the listing and the reads was lost: %+v", s)
+	}
+	if hookErr != nil {
+		t.Fatal(hookErr)
+	}
+}
+
+// A name that leaves between the listing and its own stat — the move's remove
+// landing inside the listing's step — is skipped the way canRead skips a path
+// that is gone: no partial, and the folder's read stays whole (#552).
+func TestQuotaSpendSkipsANameThatLeftBeforeItsStat(t *testing.T) {
+	dir := t.TempDir()
+	writeReceipt(t, filepath.Join(dir, "a.json"), "resp_a", "turn_a",
+		"2026-10-18T09:00:00Z", 1, time.Date(2026, 10, 18, 9, 0, 0, 0, time.UTC))
+	receiptsListed = func(dir string) {
+		receiptsListed = nil
+		if err := os.Remove(filepath.Join(dir, "a.json")); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Cleanup(func() { receiptsListed = nil })
+	marks, partial, ok := receiptMarks(dir)
+	if !ok {
+		t.Fatal("a folder whose receipt left before its stat was not readable")
+	}
+	if partial {
+		t.Fatal("a name that left before its stat marked the read partial")
+	}
+	if len(marks) != 0 {
+		t.Fatalf("a name that left before its stat was kept: %+v", marks)
+	}
+}
+
 // A writer rewrites a receipt in place while its day is open: the file changes
 // and the folder does not, so the first closed read must stat the receipts
 // rather than trust the open read's snapshot (#538).
@@ -1451,15 +1863,57 @@ func TestQuotaSpendRetriesAFlatReceiptItCouldNotRead(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = os.Chmod(path, 0o600) })
-	read := func() *Spend { tallyMemo.key = ""; return spendEntry("gw", "").Spend }
-	if s := read(); s.MonthUSD != 0 || s.MonthTurns != 0 {
-		t.Fatalf("an unreadable receipt counted: %+v", s)
+	read := func() Entry { tallyMemo.key = ""; return spendEntry("gw", "") }
+	// The receipt is skipped and named, never counted and never a healthy zero:
+	// the spend is every other receipt's (none here), the total report and the
+	// export give the same store (#654).
+	if e := read(); !strings.Contains(e.Error, "a.json") || e.Spend == nil ||
+		e.Spend.MonthTurns != 0 || e.Spend.UnreadableReceipts != 1 {
+		t.Fatalf("an unreadable receipt was not skipped and named: %+v %+v", e, e.Spend)
 	}
 	if err := os.Chmod(path, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if s := read(); s.MonthUSD != 2 || s.MonthTurns != 1 {
+	if s := read().Spend; s.MonthUSD != 2 || s.MonthTurns != 1 {
 		t.Fatalf("a receipt that could not be read was remembered as absent: %+v", s)
+	}
+}
+
+// The same retry holds for a name the move took between the listing and the
+// read: a vanished receipt is not remembered as absence either, so the name's
+// return — same bytes, same size, same mtime — is read again and counts, the
+// way a permission that returns is (#552, kin to #538).
+func TestQuotaSpendRetriesAFlatReceiptTheMoveTook(t *testing.T) {
+	useClock(t, time.Date(2026, 10, 20, 12, 0, 0, 0, time.UTC))
+	state := t.TempDir()
+	t.Setenv("XDG_STATE_HOME", state)
+	usage := filepath.Join(state, "ccmorph", "usage")
+	flat := filepath.Join(usage, "a.json")
+	when := time.Date(2026, 10, 18, 9, 0, 0, 0, time.UTC)
+	writeReceipt(t, flat, "resp_a", "turn_a", "2026-10-18T09:00:00Z", 2, when)
+	// The move's remove lands between the flat listing and its reads; its link
+	// went to a folder outside this month's window, so nothing holds the row.
+	receiptsMarked = func(dir string) {
+		if dir != usage {
+			return
+		}
+		receiptsMarked = nil
+		if err := os.Remove(flat); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Cleanup(func() { receiptsMarked = nil })
+	read := func() Entry { tallyMemo.key = ""; return spendEntry("gw", "") }
+	if e := read(); e.Error != "" || e.Spend == nil {
+		t.Fatalf("a receipt the move took mid-read was answered as an unreadable store: %+v", e)
+	}
+	if s := read().Spend; s.MonthUSD != 0 || s.MonthTurns != 0 {
+		t.Fatalf("a store whose one receipt was moved out was not empty: %+v", s)
+	}
+	// The name returns with the very bytes and times it left with.
+	writeReceipt(t, flat, "resp_a", "turn_a", "2026-10-18T09:00:00Z", 2, when)
+	if s := read().Spend; s.MonthUSD != 2 || s.MonthTurns != 1 {
+		t.Fatalf("a receipt that returned after a mid-read move was remembered as absent: %+v", s)
 	}
 }
 
@@ -1481,15 +1935,362 @@ func TestQuotaSpendRetriesAClosedDayReceiptItCouldNotRead(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = os.Chmod(path, 0o600) })
-	read := func() *Spend { tallyMemo.key = ""; return spendEntry("gw", "").Spend }
-	if s := read(); s.MonthUSD != 0 || s.MonthTurns != 0 {
-		t.Fatalf("an unreadable receipt counted: %+v", s)
+	read := func() Entry { tallyMemo.key = ""; return spendEntry("gw", "") }
+	// The receipt is skipped and named, never counted and never a healthy zero:
+	// the spend is every other receipt's (none here), the total report and the
+	// export give the same store (#654).
+	if e := read(); !strings.Contains(e.Error, "a.json") || e.Spend == nil ||
+		e.Spend.MonthTurns != 0 || e.Spend.UnreadableReceipts != 1 {
+		t.Fatalf("an unreadable receipt was not skipped and named: %+v %+v", e, e.Spend)
 	}
 	if err := os.Chmod(path, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if s := read(); s.MonthUSD != 2 || s.MonthTurns != 1 {
+	if s := read().Spend; s.MonthUSD != 2 || s.MonthTurns != 1 {
 		t.Fatalf("a closed day remembered an unreadable receipt as absent: %+v", s)
+	}
+}
+
+// A month whose store could not be read is not an empty month: the run says so
+// in one plain line and fails, never a healthy $0.00, and the day folder's
+// permissions returning is the only fix the next run needs (#545).
+func TestQuotaSpendNamesAMonthWhoseStoreItCouldNotRead(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root reads a folder with mode 0")
+	}
+	useClock(t, time.Date(2026, 10, 20, 12, 0, 0, 0, time.UTC))
+	state := t.TempDir()
+	t.Setenv("XDG_STATE_HOME", state)
+	usage := filepath.Join(state, "ccmorph", "usage")
+	day := filepath.Join(usage, "2026-10-18")
+	writeReceipt(t, filepath.Join(day, "a.json"), "resp_a", "turn_a", "2026-10-18T09:00:00Z", 2,
+		time.Date(2026, 10, 18, 9, 0, 0, 0, time.UTC))
+	if err := os.Chmod(day, 0); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(day, 0o700) })
+	// A fresh process reads the store again: the tally memo is this process's.
+	read := func() (string, int) {
+		tallyMemo.key = ""
+		out, _, code := run(t, nil, "gw\tgateway\t\t\n")
+		return out, code
+	}
+	out, code := read()
+	if code == 0 {
+		t.Fatal("a run that could not read the store exited zero")
+	}
+	if !strings.Contains(out, "usage store not readable") {
+		t.Fatalf("the run did not say the store was unreadable: %q", out)
+	}
+	if strings.Contains(out, "$0.00") || strings.Contains(out, "not used this month") {
+		t.Fatalf("the run answered a store it could not read as a healthy zero: %q", out)
+	}
+	// The read recovers: nothing kept the empty month as the answer.
+	if err := os.Chmod(day, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	out, code = read()
+	if code != 0 {
+		t.Fatalf("exit %d after the store returned", code)
+	}
+	if !strings.Contains(out, "month $2.00") {
+		t.Fatalf("the recovered read did not report the receipt: %q", out)
+	}
+}
+
+// The whole store unreadable is the same never-a-zero rule at the listing's
+// own surface, and it is never remembered as absence: neither the month memo
+// nor the closed-days base is kept for a read that could not list the store,
+// so the next run retries it instead of serving the cached empty month (#545).
+func TestQuotaSpendDoesNotKeepAStoreItCouldNotReadAsTheMonth(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root reads a folder with mode 0")
+	}
+	useClock(t, time.Date(2026, 10, 20, 12, 0, 0, 0, time.UTC))
+	state := t.TempDir()
+	t.Setenv("XDG_STATE_HOME", state)
+	usage := filepath.Join(state, "ccmorph", "usage")
+	writeReceipt(t, filepath.Join(usage, "a.json"), "resp_a", "turn_a", "2026-10-18T09:00:00Z", 2,
+		time.Date(2026, 10, 18, 9, 0, 0, 0, time.UTC))
+	if err := os.Chmod(usage, 0); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(usage, 0o700) })
+	read := func() (string, int) {
+		tallyMemo.key = ""
+		out, _, code := run(t, nil, "gw\tgateway\t\t\n")
+		return out, code
+	}
+	out, code := read()
+	if code == 0 || !strings.Contains(out, "usage store not readable") {
+		t.Fatalf("an unreadable store was answered as a healthy zero (exit %d): %q", code, out)
+	}
+	for _, cache := range []string{monthMemoPath(), monthBasePath()} {
+		if _, err := os.Stat(cache); err == nil {
+			t.Fatalf("%s kept a month it could not read as complete", cache)
+		}
+	}
+	// The permissions return and the next run counts the receipt: no cache
+	// survives to serve the empty month.
+	if err := os.Chmod(usage, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	out, code = read()
+	if code != 0 || !strings.Contains(out, "month $2.00") {
+		t.Fatalf("the recovered read (exit %d) did not report the receipt: %q", code, out)
+	}
+}
+
+// A month read in part writes no cache at all, and the closed days' base is a
+// cache: a flat receipt this run could not read leaves the month partial, and a
+// base kept for it would remember the unread part as absent (#545).
+func TestQuotaSpendDoesNotKeepABaseForAMonthItCouldNotReadWhole(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root reads a file with mode 0")
+	}
+	useClock(t, time.Date(2026, 10, 20, 12, 0, 0, 0, time.UTC))
+	state := t.TempDir()
+	t.Setenv("XDG_STATE_HOME", state)
+	usage := filepath.Join(state, "ccmorph", "usage")
+	receipt := filepath.Join(usage, "a.json")
+	writeReceipt(t, receipt, "resp_a", "turn_a", "2026-10-18T09:00:00Z", 2,
+		time.Date(2026, 10, 18, 9, 0, 0, 0, time.UTC))
+	if err := os.Chmod(receipt, 0); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(receipt, 0o600) })
+	tallyMemo.key = ""
+	out, _, code := run(t, nil, "gw\tgateway\t\t\n")
+	if code == 0 || !strings.Contains(out, "usage store not readable") {
+		t.Fatalf("an unreadable receipt was answered as a healthy zero (exit %d): %q", code, out)
+	}
+	if _, err := os.Stat(monthBasePath()); err == nil {
+		t.Fatal("a base was kept for a month whose flat store could not be read")
+	}
+}
+
+// A day folder that goes unreadable without changing its mtime — permissions,
+// not content — is not still a day the caches may answer from: every path that
+// serves a closed day is reached through a listing that asks the folder to be
+// readable and searchable, so the run names the store instead of quoting the
+// cached month (#545).
+func TestQuotaSpendNamesADayWhoseFolderWentUnreadable(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root reads a folder with mode 0")
+	}
+	useClock(t, time.Date(2026, 10, 20, 12, 0, 0, 0, time.UTC))
+	state := t.TempDir()
+	t.Setenv("XDG_STATE_HOME", state)
+	usage := filepath.Join(state, "ccmorph", "usage")
+	day := filepath.Join(usage, "2026-10-18")
+	writeReceipt(t, filepath.Join(day, "a.json"), "resp_a", "turn_a", "2026-10-18T09:00:00Z", 2,
+		time.Date(2026, 10, 18, 9, 0, 0, 0, time.UTC))
+	read := func() (string, int) {
+		tallyMemo.key = ""
+		out, _, code := run(t, nil, "gw\tgateway\t\t\n")
+		return out, code
+	}
+	// The store reads whole first, so the memo, the base and the day cache all
+	// hold the day: the next read is every cache-hit path, not a cold one.
+	if out, code := read(); code != 0 || !strings.Contains(out, "month $2.00") {
+		t.Fatalf("the readable store was not answered (exit %d): %q", code, out)
+	}
+	if err := os.Chmod(day, 0); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(day, 0o700) })
+	out, code := read()
+	if code == 0 || !strings.Contains(out, "usage store not readable") {
+		t.Fatalf("a day this run cannot read was answered from cache (exit %d): %q", code, out)
+	}
+	if strings.Contains(out, "month $2.00") {
+		t.Fatalf("the caches answered a month whose day folder is unreadable: %q", out)
+	}
+	if err := os.Chmod(day, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if out, code := read(); code != 0 || !strings.Contains(out, "month $2.00") {
+		t.Fatalf("the recovered read (exit %d) did not report the receipt: %q", code, out)
+	}
+}
+
+// A permission change moves no size and no mtime, the only things the caches
+// compare: whichever cache would answer, a path the run cannot read now is a
+// store it could not read, named in one line with a nonzero exit, and nothing is
+// kept for it. Each case warms every cache on a readable store, drops the
+// caches the variant says are gone, changes one mode and reads again; restoring
+// the mode makes the next read the real spend (#545).
+func TestQuotaSpendNamesAPermissionChangeUnderEveryCache(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root reads a path with mode 0")
+	}
+	closed := time.Date(2026, 10, 18, 9, 0, 0, 0, time.UTC)
+	today := time.Date(2026, 10, 20, 9, 0, 0, 0, time.UTC)
+	cases := []struct {
+		name, receipt, stamp, target string
+		when                         time.Time
+		mode                         os.FileMode
+	}{
+		{"closed folder unsearchable", "2026-10-18/a.json", "2026-10-18T09:00:00Z", "2026-10-18", closed, 0o400},
+		{"closed folder unlistable", "2026-10-18/a.json", "2026-10-18T09:00:00Z", "2026-10-18", closed, 0o300},
+		{"closed folder shut", "2026-10-18/a.json", "2026-10-18T09:00:00Z", "2026-10-18", closed, 0},
+		{"store unsearchable", "2026-10-18/a.json", "2026-10-18T09:00:00Z", "", closed, 0o400},
+		{"today folder unsearchable", "2026-10-20/t.json", "2026-10-20T09:00:00Z", "2026-10-20", today, 0o400},
+		{"closed receipt shut", "2026-10-18/a.json", "2026-10-18T09:00:00Z", "2026-10-18/a.json", closed, 0},
+		{"flat receipt shut", "a.json", "2026-10-18T09:00:00Z", "a.json", closed, 0},
+		{"today receipt shut", "2026-10-20/t.json", "2026-10-20T09:00:00Z", "2026-10-20/t.json", today, 0},
+	}
+	// drop is what the variant removes before the read; gone is what must still
+	// not exist after it: a month the run could not read keeps no cache.
+	variants := []struct {
+		name       string
+		drop, gone func() []string
+	}{
+		{"memo", func() []string { return nil }, func() []string { return nil }},
+		{"base", func() []string { return []string{monthMemoPath()} }, func() []string { return []string{monthMemoPath()} }},
+		{"day cache", func() []string { return []string{monthMemoPath(), monthBasePath()} },
+			func() []string { return []string{monthMemoPath(), monthBasePath()} }},
+		{"cold", func() []string { return []string{spendCacheDir()} },
+			func() []string { return []string{monthMemoPath(), monthBasePath()} }},
+	}
+	for _, c := range cases {
+		for _, v := range variants {
+			t.Run(c.name+"/"+v.name, func(t *testing.T) {
+				useClock(t, time.Date(2026, 10, 20, 12, 0, 0, 0, time.UTC))
+				state := t.TempDir()
+				t.Setenv("XDG_STATE_HOME", state)
+				usage := filepath.Join(state, "ccmorph", "usage")
+				writeReceipt(t, filepath.Join(usage, c.receipt), "resp_a", "turn_a", c.stamp, 2, c.when)
+				read := func() (string, int) {
+					tallyMemo.key = ""
+					out, _, code := run(t, nil, "gw\tgateway\t\t\n")
+					return out, code
+				}
+				if out, code := read(); code != 0 || !strings.Contains(out, "month $2.00") {
+					t.Fatalf("the readable store was not answered (exit %d): %q", code, out)
+				}
+				for _, p := range v.drop() {
+					if err := os.RemoveAll(p); err != nil {
+						t.Fatal(err)
+					}
+				}
+				target := filepath.Join(usage, c.target)
+				if err := os.Chmod(target, c.mode); err != nil {
+					t.Fatal(err)
+				}
+				back := os.FileMode(0o700)
+				if strings.HasSuffix(c.target, ".json") {
+					back = 0o600
+				}
+				t.Cleanup(func() { _ = os.Chmod(target, back) })
+				out, code := read()
+				if code == 0 || !strings.Contains(out, "usage store not readable") {
+					t.Fatalf("a path this run cannot read was answered (exit %d): %q", code, out)
+				}
+				if strings.Contains(out, "month $2.00") || strings.Contains(out, "$0.00") {
+					t.Fatalf("an unreadable store was answered as money: %q", out)
+				}
+				for _, cache := range v.gone() {
+					if _, err := os.Stat(cache); err == nil {
+						t.Fatalf("%s kept a month it could not read", cache)
+					}
+				}
+				if err := os.Chmod(target, back); err != nil {
+					t.Fatal(err)
+				}
+				if out, code := read(); code != 0 || !strings.Contains(out, "month $2.00") {
+					t.Fatalf("the recovered read (exit %d) did not report the receipt: %q", code, out)
+				}
+			})
+		}
+	}
+}
+
+// A permission change that lands after the memo check and before the flat read
+// is still seen, whichever cache would answer the closed day — the base, a
+// valid day cache, or none. The memo check takes only the closed days' mtimes,
+// and a mode moves none: the rebuild's own listing, taken after the flat read,
+// is what asks every closed day whether it can be read now, so the run names
+// the store instead of quoting the month (#545, #559).
+func TestQuotaSpendNamesAPermissionChangeDuringARebuild(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root reads a path with mode 0")
+	}
+	closed := time.Date(2026, 10, 18, 9, 0, 0, 0, time.UTC)
+	today := time.Date(2026, 10, 20, 9, 0, 0, 0, time.UTC)
+	cases := []struct {
+		name, target string
+		mode         os.FileMode
+	}{
+		{"closed receipt shut", "2026-10-18/a.json", 0},
+		{"closed folder unsearchable", "2026-10-18", 0o400},
+	}
+	// drop is what the variant removes after the warm read; a new receipt today
+	// then makes every variant's next read a rebuild.
+	variants := []struct {
+		name string
+		drop func() []string
+	}{
+		{"changed today", func() []string { return nil }},
+		{"base", func() []string { return []string{monthMemoPath()} }},
+		{"day cache", func() []string { return []string{monthMemoPath(), monthBasePath()} }},
+		{"cold", func() []string { return []string{spendCacheDir()} }},
+	}
+	for _, c := range cases {
+		for _, v := range variants {
+			t.Run(c.name+"/"+v.name, func(t *testing.T) {
+				useClock(t, time.Date(2026, 10, 20, 12, 0, 0, 0, time.UTC))
+				state := t.TempDir()
+				t.Setenv("XDG_STATE_HOME", state)
+				usage := filepath.Join(state, "ccmorph", "usage")
+				writeReceipt(t, filepath.Join(usage, "2026-10-18", "a.json"),
+					"resp_a", "turn_a", "2026-10-18T09:00:00Z", 1, closed)
+				writeReceipt(t, filepath.Join(usage, "2026-10-20", "t.json"),
+					"resp_t", "turn_t", "2026-10-20T09:00:00Z", 1, today)
+				read := func() (string, int) {
+					tallyMemo.key = ""
+					out, _, code := run(t, nil, "gw\tgateway\t\t\n")
+					return out, code
+				}
+				if out, code := read(); code != 0 || !strings.Contains(out, "month $2.00") {
+					t.Fatalf("the readable store was not answered (exit %d): %q", code, out)
+				}
+				for _, p := range v.drop() {
+					if err := os.RemoveAll(p); err != nil {
+						t.Fatal(err)
+					}
+				}
+				writeReceipt(t, filepath.Join(usage, "2026-10-20", "t2.json"),
+					"resp_t2", "turn_t2", "2026-10-20T10:00:00Z", 1, today)
+				target := filepath.Join(usage, c.target)
+				back := os.FileMode(0o700)
+				if strings.HasSuffix(c.target, ".json") {
+					back = 0o600
+				}
+				var hookErr error
+				beforeFlat = func() {
+					beforeFlat = nil
+					hookErr = os.Chmod(target, c.mode)
+				}
+				t.Cleanup(func() { beforeFlat = nil; _ = os.Chmod(target, back) })
+				out, code := read()
+				if hookErr != nil {
+					t.Fatal(hookErr)
+				}
+				if code == 0 || !strings.Contains(out, "usage store not readable") {
+					t.Fatalf("a permission change during the rebuild was answered (exit %d): %q", code, out)
+				}
+				if strings.Contains(out, "month $3.00") {
+					t.Fatalf("the caches answered a month whose closed day went unreadable: %q", out)
+				}
+				if err := os.Chmod(target, back); err != nil {
+					t.Fatal(err)
+				}
+				if out, code := read(); code != 0 || !strings.Contains(out, "month $3.00") {
+					t.Fatalf("the recovered read (exit %d) did not report the receipts: %q", code, out)
+				}
+			})
+		}
 	}
 }
 
@@ -1545,6 +2346,48 @@ func TestQuotaSpendAnUnchangedStoreDecodesNoRow(t *testing.T) {
 	}
 }
 
+// A read sweeps the month window's closed days — lists each folder and asks
+// every receipt in it for its readability — once: the unchanged store's memo
+// hit pays its one sweep after its marks match, and a store that changed today
+// pays its one in the rebuild's listing after the flat read, the memo check
+// having taken only the closed days' mtimes (#559).
+func TestQuotaSpendSweepsTheClosedDaysOnce(t *testing.T) {
+	useClock(t, time.Date(2026, 10, 20, 12, 0, 0, 0, time.UTC))
+	state := t.TempDir()
+	t.Setenv("XDG_STATE_HOME", state)
+	usage := filepath.Join(state, "ccmorph", "usage")
+	closed := time.Date(2026, 10, 18, 9, 0, 0, 0, time.UTC)
+	today := time.Date(2026, 10, 20, 9, 0, 0, 0, time.UTC)
+	writeReceipt(t, filepath.Join(usage, "2026-10-18", "a.json"),
+		"resp_a", "turn_a", "2026-10-18T09:00:00Z", 1, closed)
+	writeReceipt(t, filepath.Join(usage, "2026-10-20", "t.json"),
+		"resp_t", "turn_t", "2026-10-20T09:00:00Z", 1, today)
+	read := func() *Spend { tallyMemo.key = ""; return spendEntry("gw", "").Spend }
+	if s := read(); s.MonthUSD != 2 || s.MonthTurns != 2 {
+		t.Fatalf("cold read %+v", s)
+	}
+	swept := 0
+	daysSwept = func() { swept++ }
+	t.Cleanup(func() { daysSwept = nil })
+	if s := read(); s.MonthUSD != 2 || s.MonthTurns != 2 {
+		t.Fatalf("steady read %+v", s)
+	}
+	if swept != 1 {
+		t.Fatalf("an unchanged store swept the closed days %d times, want 1", swept)
+	}
+	// One new receipt today makes the next read a rebuild: the check's marks
+	// miss, so it sweeps nothing, and the rebuild's listing pays the one sweep.
+	writeReceipt(t, filepath.Join(usage, "2026-10-20", "t2.json"),
+		"resp_t2", "turn_t2", "2026-10-20T10:00:00Z", 1, today)
+	swept = 0
+	if s := read(); s.MonthUSD != 3 || s.MonthTurns != 3 || s.TodayUSD != 2 || s.TodayTurns != 2 {
+		t.Fatalf("changed read %+v", s)
+	}
+	if swept != 1 {
+		t.Fatalf("a changed store swept the closed days %d times, want 1", swept)
+	}
+}
+
 // A move whose day folder does not exist yet makes it, links the row in and
 // removes the flat name. A rebuild lists the day folders after it reads the
 // flat store, so a folder the move made during the read is found (#514, #538).
@@ -1583,5 +2426,163 @@ func TestQuotaSpendCountsARowMovedIntoANewFolderBeforeTheFlatRead(t *testing.T) 
 	}
 	if hookErr != nil {
 		t.Fatal(hookErr)
+	}
+}
+
+// A day cache's rows are answered in receipt-file name order, so a read cannot
+// change with the map's iteration order (#449).
+func TestQuotaSpendRowsAreInReceiptNameOrder(t *testing.T) {
+	files := map[string]seenFile{}
+	var want []string
+	for _, name := range []string{"d.json", "a.json", "e.json", "b.json", "c.json"} {
+		files[name] = seenFile{Row: &spendRow{Key: name}}
+		want = append(want, name)
+	}
+	sort.Strings(want)
+	rows := rowsOf(files)
+	if len(rows) != len(want) {
+		t.Fatalf("got %d rows, want %d", len(rows), len(want))
+	}
+	for i, r := range rows {
+		if r == nil || r.Key != want[i] {
+			t.Fatalf("row %d of %v, want %q: rows follow the map, not the file names", i, rows, want[i])
+		}
+	}
+}
+
+// A cache from a version this build does not know is discarded before its body
+// is decoded: a future version's shape is not this one's, so none of it is
+// read (#449). The version is found wherever the writer spelled it, after the
+// body as well as before it: the head's peek walks the body to reach it
+// without decoding it (#559). The peek may fast-reject, but a byte shape it
+// answers differently than the decoder — a duplicated key, a capital "V" —
+// is decided by the version the body decoded as, which contributes nothing
+// when it is not this one's (#581).
+func TestQuotaSpendDoesNotDecodeAFutureCacheVersion(t *testing.T) {
+	state := t.TempDir()
+	t.Setenv("XDG_STATE_HOME", state)
+	if err := os.MkdirAll(spendCacheDir(), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	files := `"files": {"a.json": {"s": 1, "m": 1, "r": {"p": "gw", "w": 1}}}`
+	day := `{"v": 99, "mtime": 1, "valid": true, ` + files + `}`
+	if err := os.WriteFile(dayCachePath("2026-10-18"), []byte(day), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	flat := `{"v": 99, ` + files + `}`
+	if err := os.WriteFile(flatCachePath(), []byte(flat), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	decoded := 0
+	rowsDecoded = func(n int) { decoded += n }
+	t.Cleanup(func() { rowsDecoded = nil })
+	if got := loadDayFile("2026-10-18"); got.Files != nil {
+		t.Fatalf("a future day cache was kept: %+v", got)
+	}
+	if decoded != 0 {
+		t.Fatalf("a future day cache decoded %d rows", decoded)
+	}
+	if got := loadFlat(); got != nil {
+		t.Fatalf("a future flat cache was kept: %+v", got)
+	}
+	if decoded != 0 {
+		t.Fatalf("a future flat cache decoded %d rows", decoded)
+	}
+	// The version spelled after the body is still the version: a peek that
+	// stopped at the head's first key would take this cache for versionless.
+	late := `{` + files + `, "v": 99}`
+	if err := os.WriteFile(dayCachePath("2026-10-19"), []byte(late), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if got := loadDayFile("2026-10-19"); got.Files != nil {
+		t.Fatalf("a future day cache was kept: %+v", got)
+	}
+	if decoded != 0 {
+		t.Fatalf("a future day cache decoded %d rows", decoded)
+	}
+	// #581: the peek answers the first top-level "v" and the decoder the last,
+	// so a file spelling the version twice is decided by what decoded — a
+	// future version hiding behind a current first key contributes nothing,
+	// whichever case the second key was spelled in.
+	dup := `{"v": ` + strconv.Itoa(spendCacheVersion) + `, "mtime": 1, "valid": true, ` + files + `, "v": 99}`
+	if err := os.WriteFile(dayCachePath("2026-10-21"), []byte(dup), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if got := loadDayFile("2026-10-21"); got.Files != nil {
+		t.Fatalf("a day cache decoding as version 99 was kept: %+v", got)
+	}
+	if decoded != 0 {
+		t.Fatalf("a future version hiding behind a current first key decoded %d rows", decoded)
+	}
+	dupCase := `{"v": ` + strconv.Itoa(spendCacheVersion) + `, "mtime": 1, "valid": true, ` + files + `, "V": 99}`
+	if err := os.WriteFile(dayCachePath("2026-10-22"), []byte(dupCase), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if got := loadDayFile("2026-10-22"); got.Files != nil {
+		t.Fatalf("a day cache decoding as version 99 through the tag's case fold was kept: %+v", got)
+	}
+	if decoded != 0 {
+		t.Fatalf("a future capital version behind a current first key decoded %d rows", decoded)
+	}
+	// The cut the other way: a capital "V" the peek does not read marks a file
+	// this reader's writer did not write — the peek fast-rejects it, and the
+	// miss decodes nothing.
+	capital := `{"V": ` + strconv.Itoa(spendCacheVersion) + `, "mtime": 1, "valid": true, ` + files + `}`
+	if err := os.WriteFile(dayCachePath("2026-10-23"), []byte(capital), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if got := loadDayFile("2026-10-23"); got.Files != nil {
+		t.Fatalf("a capital-V day cache was kept: %+v", got)
+	}
+	if decoded != 0 {
+		t.Fatalf("a capital-V day cache decoded %d rows", decoded)
+	}
+	current := `{` + files + `, "v": ` + strconv.Itoa(spendCacheVersion) + `}`
+	if err := os.WriteFile(dayCachePath("2026-10-20"), []byte(current), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if got := loadDayFile("2026-10-20"); len(got.Files) != 1 {
+		t.Fatalf("a current day cache was not kept: %+v", got)
+	}
+	if decoded != 1 {
+		t.Fatalf("a current day cache decoded %d rows, want 1", decoded)
+	}
+	// The writer's own shape still fast-path-decodes: the recheck asks the
+	// version the writer itself wrote (#581).
+	written := `{"v": ` + strconv.Itoa(spendCacheVersion) + `, "mtime": 1, "valid": true, ` + files + `}`
+	if err := os.WriteFile(dayCachePath("2026-10-24"), []byte(written), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if got := loadDayFile("2026-10-24"); len(got.Files) != 1 {
+		t.Fatalf("the writer's own shape was not kept: %+v", got)
+	}
+	if decoded != 2 {
+		t.Fatalf("the current caches decoded %d rows, want 2", decoded)
+	}
+}
+
+// The cache write never fails on a chmod it does not need (#449): it keeps the
+// write-and-rename behaviour every cache write had, which left the temp's own
+// mode. A umask tells the two paths apart — a chmod to 0600 ignores it and
+// lands 0600, while the temp's own 0600 filtered by umask 0200 lands 0400. On a
+// filesystem whose fchmod fails, the chmod path would abort the write and leave
+// no cache at all.
+func TestQuotaCacheWriteKeepsTheTempsMode(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	if err := os.MkdirAll(cacheDir(), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	old := syscall.Umask(0o200)
+	defer syscall.Umask(old)
+	save("gw", Reading{Plan: "Max", ReadAt: 1})
+	st, err := os.Stat(cachePath("gw"))
+	if err != nil {
+		t.Fatalf("a cache write that needs no chmod must still land: %v", err)
+	}
+	if got := st.Mode().Perm(); got != 0o400 {
+		t.Fatalf("the cache landed %o, want the temp's own 0400: the write chmod'd a mode it did not need", got)
+	}
+	if r, ok := load("gw"); !ok || r.Plan != "Max" {
+		t.Fatalf("the cache must read back what was saved, got %+v, %v", r, ok)
 	}
 }

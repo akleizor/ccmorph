@@ -46,6 +46,82 @@ func TestTheUnlistedModelWarningAsksTheRouteThatCannotBeAskedOffline(t *testing.
 	}
 }
 
+// #449 (from #268, #372, #390): both not-served sentences named `ccmorph
+// models` for every kind, but models refuses a sub or token profile, and probe
+// refuses them too; a provider's listing is read by its probe, not by models.
+// Each sentence names the verb its profile accepts.
+func TestTheNotServedAdviceNamesAVerbTheProfileAccepts(t *testing.T) {
+	cases := []struct{ typ, want, refused string }{
+		{"apikey", "ccmorph models gw", ""},
+		{"provider", "ccmorph probe gw", "ccmorph models gw"},
+		{"sub", "ccmorph set gw model -i", "ccmorph models gw"},
+		{"token", "ccmorph set gw model -i", "ccmorph models gw"},
+	}
+	for _, c := range cases {
+		sentences := map[string]string{
+			"read":  notServedAdvice("m-1", "gw", c.typ),
+			"write": unlistedWarningText("m-1", "gw", c.typ),
+		}
+		for form, msg := range sentences {
+			if !strings.Contains(msg, c.want) {
+				t.Errorf("%s form for %s must name %q: %q", form, c.typ, c.want, msg)
+			}
+			if c.refused != "" && strings.Contains(msg, c.refused) {
+				t.Errorf("%s form for %s names a verb that refuses it, %q: %q", form, c.typ, c.refused, msg)
+			}
+			if c.typ == "sub" || c.typ == "token" {
+				if strings.Contains(msg, "ccmorph probe gw") {
+					t.Errorf("%s form for %s names probe, which refuses it (#390): %q", form, c.typ, msg)
+				}
+			}
+		}
+	}
+}
+
+// GH-561: the save and the read are one `model-window --context <profile>
+// <model>` call to the core — the save appends the value it pins, the read
+// appends nothing — so each form spells that one argument vector and neither
+// runs anything else. A pin of the shape the simplify kept (both forms behaved
+// this way before it): a stub core records every argument vector it is given.
+func TestBothContextFormsSpellOneCoreCallIssue561(t *testing.T) {
+	for _, row := range []struct {
+		what string
+		args []string
+		want string
+	}{
+		{"the save appends the pinned value", []string{"claude-opus-5", "auto"},
+			"model-window\n--context\nctx\nclaude-opus-5\nauto\n"},
+		{"the read appends nothing", []string{"claude-opus-5"},
+			"model-window\n--context\nctx\nclaude-opus-5\n"},
+	} {
+		t.Run(row.what, func(t *testing.T) {
+			dir := t.TempDir()
+			// The stub answers the read form's record — a window pinned by hand,
+			// whose label asks no listing — and appends every argument vector it
+			// is given, so a second core call in the verb would show here too.
+			body := "#!/bin/sh\n" +
+				"for a do printf '%s\\n' \"$a\"; done >> '" + filepath.Join(dir, "argv.log") + "'\n" +
+				"printf '{\"window\":200000,\"source\":\"conf-manual\"}'\n"
+			if err := os.WriteFile(filepath.Join(dir, "ccmorph-core"), []byte(body), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			l := storeTestLauncher(t, "ctx",
+				"type=apikey\nbase_url=https://gw.test\napi_key={{SECRET_p9v3h8dqz2w4}}", "")
+			l.libexec = dir
+			// The locked child runs no migration, so the core is asked only what
+			// the verb itself asks.
+			t.Setenv("CCMORPH_CONTEXT_LOCKED", "ctx")
+			if rc := l.context(append([]string{"ctx"}, row.args...)); rc != 0 {
+				t.Fatalf("context %v: rc %d", row.args, rc)
+			}
+			got, err := os.ReadFile(filepath.Join(dir, "argv.log"))
+			if err != nil || string(got) != row.want {
+				t.Fatalf("the core was asked %q (%v); want %q", got, err, row.want)
+			}
+		})
+	}
+}
+
 // GH-370: the warning was one line of 140 cells, so an 80-column terminal broke
 // it inside "Check". Wrapped to 80, no line may be wider, and the words must be
 // exactly the single line's words: wrapping re-breaks lines, it never splits or

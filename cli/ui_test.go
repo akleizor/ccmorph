@@ -226,6 +226,24 @@ func TestTypedLinesCountsTheWrap(t *testing.T) {
 	}
 }
 
+// A numbered round is left as the receipt uiInput folded it to: one row, or
+// two when the question and the answer cannot share a line. The erase before
+// the next draw counts those rows, so a two-row receipt must not be taken for
+// one — the list's heading would survive above the redrawn block (#449).
+func TestReceiptHeightCountsTheFold(t *testing.T) {
+	plain := uiTheme{}
+	prompt := numberPrompt(2)
+	if got := plain.receiptHeight(prompt, "1", 80); got != 1 {
+		t.Fatalf("a one-line receipt is %d rows, want 1", got)
+	}
+	if got := plain.receiptHeight(prompt, strings.Repeat("m", 70), 80); got != 2 {
+		t.Fatalf("a receipt that folds onto a second row is %d rows, want 2", got)
+	}
+	if got := plain.receiptHeight(prompt, "", 80); got != 1 {
+		t.Fatalf("an empty answer leaves the question alone, want 1 row, got %d", got)
+	}
+}
+
 // A search picker the person leaves (fzf answers Esc with exit 130) prints the
 // one Cancelled line every picker answers with — not silence, not a usage line.
 func TestSearchCancelPrintsTheOneCancelledLineIssue280(t *testing.T) {

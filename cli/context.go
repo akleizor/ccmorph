@@ -337,9 +337,6 @@ func (l *launcher) contextEnv(name string, penv []string, explicit, defaultModel
 	if refresh {
 		l.probeNudge(name)
 	}
-	if (needsAdapter || isProvider) && isTTY(2) {
-		os.Stderr.WriteString("ccmorph: Gateway ready; starting Claude Code…\n")
-	}
 	return penv, true
 }
 

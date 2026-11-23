@@ -9,6 +9,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -17,6 +18,10 @@ const (
 	// A model nothing could size is asked about again after this many days, not
 	// on every launch: a new catalogue entry is worth finding, a repeated wait is not.
 	missRetryDays = 7
+	// Launch sizes unknown models a few at a time: each one can cost two bounded
+	// validation POSTs, and serial they made a slow gateway's launch wait N × 6 s
+	// before Claude started (#603).
+	sizingWorkers = 8
 )
 
 var validationWindow = regexpMust(`(?i)(?:max_model_len|max_total_tokens|maximum context length is)\D{0,20}(\d[\d,]*)`)
@@ -152,32 +157,71 @@ func SizeListing(ctx context.Context, profile, body, base, key string, op Opener
 			rest = append(rest, row)
 		}
 	}
-	for _, row := range rest {
-		model, _ := asStr(getv(row, "id"))
-		if v, ok := declared[model]; ok {
-			values[model] = v
-			continue
-		}
-		ownedBy, _ := asStr(getv(row, "owned_by"))
-		if found := CatalogueLookup(ctx, model, ownedBy, cache, to); found != nil {
-			values[model] = found.Value
-			sources[model] = CatalogueTag(found)
-			continue
-		}
-		// A provider bridge answers from the user's subscription, and a probe it
-		// accepts generates a reply: size such a model from metadata only.
-		paid := fields["type"] == "provider"
-		var stated int64
-		if base != "" && key != "" && !paid {
-			stated = validationWindowFn(ctx, base, key, model, op, to)
-		}
-		if stated > 0 {
-			values[model] = stated
-		} else {
-			missed[model] = today
+	// The remaining models are independent: the catalogue fetch is shared once
+	// and each validation POST is bounded on its own, so size a few at a time.
+	// Serial, a slow gateway listing N unknown models spent N × 6 s before
+	// Claude started (#603). Each row keeps its own outcome, applied in listing
+	// order afterwards: a listing can name one model twice, and the serial loop
+	// let the later row's answer win.
+	type sized struct {
+		model         string
+		value         int64
+		stated        int64
+		source        obj
+		declared      bool
+		fromCatalogue bool
+	}
+	results := make([]sized, len(rest))
+	work := make(chan int, len(rest))
+	var wg sync.WaitGroup
+	for range min(sizingWorkers, len(rest)) {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for i := range work {
+				row := rest[i]
+				r := &results[i]
+				r.model, _ = asStr(getv(row, "id"))
+				if v, ok := declared[r.model]; ok {
+					r.declared, r.value = true, v
+					continue
+				}
+				ownedBy, _ := asStr(getv(row, "owned_by"))
+				if found := CatalogueLookup(ctx, r.model, ownedBy, cache, to); found != nil {
+					r.fromCatalogue, r.value, r.source = true, found.Value, catalogueTag(found)
+					continue
+				}
+				// A provider bridge answers from the user's subscription, and a probe it
+				// accepts generates a reply: size such a model from metadata only.
+				paid := fields["type"] == "provider"
+				if base != "" && key != "" && !paid {
+					r.stated = validationWindowFn(ctx, base, key, r.model, op, to)
+				}
+			}
+		}()
+	}
+	for i := range rest {
+		work <- i
+	}
+	close(work)
+	wg.Wait()
+	for _, r := range results {
+		switch {
+		case r.declared:
+			values[r.model] = r.value
+		case r.fromCatalogue:
+			values[r.model] = r.value
+			sources[r.model] = r.source
+		case r.stated > 0:
+			values[r.model] = r.stated
+		default:
+			missed[r.model] = today
 		}
 	}
-	if saved, err := SaveDiscovered(profile, values, expected, false, sources, missed); err != nil {
+	// SaveDiscoveredCtx, not SaveDiscovered: the profile lock this save takes
+	// may be held by a person at `ccmorph rm`'s prompt, and the caller's
+	// deadline — the launch's --deadline — bounds that wait (#757).
+	if saved, err := SaveDiscoveredCtx(ctx, profile, values, expected, false, sources, missed); err != nil {
 		fmt.Fprintf(stderr, "%s: %s\n", prog, err)
 		return 1
 	} else if !saved {
@@ -268,15 +312,15 @@ func Commit(ctx context.Context, values map[string]int64, baseline map[string]in
 			if _, tagged := groupedSources[profile][model]; tagged {
 				note = "  (catalogue estimate)"
 			}
-			row := fmt.Sprintf("  %s %s%s", pad(model, 30), padLeft(commas(changed[model]), 11), note)
-			if runes(row) <= reportWidth {
+			row := fmt.Sprintf("  %s %s%s", pad(model, 30), padLeft(Commas(changed[model]), 11), note)
+			if cells(row) <= reportWidth {
 				fmt.Fprintln(stderr, row)
 				continue
 			}
 			// A model id too long for the row goes on its own line, with its
 			// size and provenance under it, so the id is never split.
 			fmt.Fprintln(stderr, "  "+model)
-			fmt.Fprintln(stderr, "    "+commas(changed[model])+note)
+			fmt.Fprintln(stderr, "    "+Commas(changed[model])+note)
 		}
 	}
 	if failed {

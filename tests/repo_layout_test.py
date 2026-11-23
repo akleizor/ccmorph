@@ -16,9 +16,9 @@ ROOT = Path(__file__).resolve().parents[1]
 
 LAUNCH_SURFACE = {
     "AGENTS.md", "CHANGELOG.md", "INTENT.md", "LICENSE", "Makefile", "README.md",
-    "install.sh", "pytest.ini", "go.mod",
+    "install.sh", "pytest.ini", "pyproject.toml", "go.mod", "go.sum",
     "adapter", "addons", "ordjson", "profile", "cli", "ctxwindow", "settingscompose", "assets", "bin", "cmd", "docs", "lib", "libexec", "scripts",
-    "quirks", "quota", "shim", "share", "tests", "util",
+    "netroute", "quirks", "quota", "router", "shim", "share", "tests", "util",
 }
 
 
@@ -41,6 +41,20 @@ def test_root_holds_exactly_the_launch_surface_issue_21():
     # Claude Code reads .claude/CLAUDE.md.
     assert (ROOT / ".github").is_dir(), ".github/ is part of the launch surface"
     assert (ROOT / ".claude").is_dir(), ".claude/ holds the Claude Code project memory"
+
+
+def test_the_pytest_dependencies_travel_with_the_repo():
+    """conftest.py turns xdist on only once it is installed, and the install
+    must not depend on memorized `--with` flags: a session that types
+    `uv run python -m pytest tests/` without them otherwise runs 1300+
+    spawn-bound cases serially — about four minutes against the 60 s ceiling
+    pytest.ini states. The default `test` group in pyproject.toml is what makes
+    any uv run carry them; CI's pip installs stay serial by design."""
+    text = (ROOT / "pyproject.toml").read_text()
+    assert 'default-groups = ["test"]' in text, \
+        "the test group must be a uv default, or a bare uv run stays serial"
+    for name in ("pytest", "pytest-timeout", "pytest-xdist"):
+        assert f'"{name}"' in text, f'{name} must stay in the default test group'
 
 
 def test_claude_project_memory_include_resolves_issue_21():

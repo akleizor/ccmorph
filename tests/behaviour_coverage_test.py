@@ -467,7 +467,7 @@ def test_rm_deletes_the_profile_and_clears_it_as_the_default(box):
     auth.mkdir(exist_ok=True)
     for f in ('.gw.bridge', '.gw.bridge.lock', '.gw.bridge.users', '.tok.bridge'):
         (auth / f).write_text('x')
-    done = box.run('rm', 'gw')
+    done = box.run('rm', 'gw', answer='y\n')
     assert done.returncode == 0, done.stderr
     assert not (box.state / 'gw.conf').exists()
     assert not (box.state / 'profiles/gw').exists()
@@ -481,7 +481,7 @@ def test_rm_deletes_the_profile_and_clears_it_as_the_default(box):
 def test_rm_of_a_non_default_profile_keeps_the_default(box):
     seed(box)
     box.run('use', 'work')
-    assert box.run('rm', 'tok').returncode == 0
+    assert box.run('rm', 'tok', answer='y\n').returncode == 0
     assert box.active == 'work'
 
 
@@ -799,6 +799,13 @@ def test_cred_prints_the_stored_secret_bare_and_refuses_when_there_is_none(box):
     assert box.run('cred', 'gw').stdout == 'canary-key'
     out = box.run('cred', 'work')
     assert out.returncode == 1 and out.stdout == '' and 'stores no credential' in out.stderr
+    # GH-790: the refusal puts an article before the kind label, so it must
+    # read "an API key profile", not "a API key profile"; the kinds that took
+    # "a" before still do (work above).
+    box.conf('bare', 'type=apikey\n')
+    out = box.run('cred', 'bare')
+    assert out.returncode == 1 and 'is an API key profile and stores no credential' in out.stderr
+    assert 'is a Claude account profile' in box.run('cred', 'work').stderr
     out = box.run('cred', 'ghost')
     assert out.returncode == 1 and "no profile 'ghost'" in out.stderr
 
@@ -1241,3 +1248,137 @@ def test_a_wrong_argument_names_the_help_pages_usage(box, argv):
     assert result.returncode != 0, (result.stdout, result.stderr)
     assert 'usage: ' + usage[len('Usage: '):] in result.stderr, result.stderr
     assert state_files(box.state) == before
+
+
+# --- router: help never acts, an unknown word is refused (#784) -------------
+
+def router_usage(box):
+    page = box.run('help', 'router')
+    assert page.returncode == 0, page.stderr
+    return 'usage: ' + page.stdout.splitlines()[0][len('Usage: '):]
+
+
+ROUTER_HELP = [
+    ['router', '--help'], ['router', '-h'], ['router', 'on', '--help'], ['router', 'on', '-h'],
+    ['router', 'off', '--help'], ['router', 'status', '--help'], ['router', 'on', 'extra9', '--help'],
+    ['router', 'report', '--since', '1h', '--help'],
+]
+
+
+@pytest.mark.parametrize('enabled', [None, False, True], ids=['fresh', 'off', 'on'])
+@pytest.mark.parametrize('argv', ROUTER_HELP, ids=lambda a: ' '.join(a))
+def test_router_help_prints_the_router_page_and_changes_nothing(box, argv, enabled):
+    # #784: help asked before a state-changing word used to act, and the bare
+    # help flag used to print a one-line usage error. Help must win, change
+    # nothing, and answer before secureDirs provisions any state.
+    box.env['XDG_STATE_HOME'] = str(box.home / '.local/state')
+    seed(box)
+    assert box.run('use', 'tok').returncode == 0
+    if enabled is not None:
+        assert box.run('router', 'on' if enabled else 'off').returncode == 0
+    before = state_files(box.state)
+    result = box.run(*argv)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.startswith('Usage: ccmorph router '), result.stdout
+    assert state_files(box.state) == before
+    assert (box.state / 'router.json').exists() == (enabled is not None)
+    assert box.log() == ''
+
+
+ROUTER_DISPATCH_HELP = [
+    ['router', 'dispatch', '--help'], ['router', 'dispatch', '-h'],
+    ['router', 'dispatch', 'fix the parser', '--tier', '-h'],
+    ['router', 'dispatch', '--profile', '--help', '--', '--tools', 'Read'],
+]
+
+
+@pytest.mark.parametrize('argv', ROUTER_DISPATCH_HELP, ids=lambda a: ' '.join(a))
+def test_router_dispatch_help_prints_its_flags_and_runs_nothing(box, argv):
+    # #784: dispatch's own page, answered before a brief is routed or reserved.
+    box.env['XDG_STATE_HOME'] = str(box.home / '.local/state')
+    seed(box)
+    assert box.run('use', 'tok').returncode == 0
+    before = state_files(box.state)
+    result = box.run(*argv)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.startswith('usage: ccmorph router dispatch '), result.stdout
+    assert '--no-decider' in result.stdout
+    assert state_files(box.state) == before
+    assert not (box.home / '.local/state/ccmorph/router').exists()
+    assert box.log() == ''
+
+
+def test_router_dispatch_help_after_the_delimiter_is_the_workers(box):
+    # #784: after -- the words are the worker's claude flags (INTENT 6), so a
+    # --help there is not the router's page.
+    box.env['XDG_STATE_HOME'] = str(box.home / '.local/state')
+    seed(box)
+    result = box.run('router', 'dispatch', '--', '--help')
+    assert 'usage: ccmorph router dispatch' not in result.stdout
+    assert not result.stdout.startswith('Usage: ccmorph router'), result.stdout
+    assert 'non-empty prompt' in result.stderr, result.stderr
+    assert result.returncode == 1
+
+
+ROUTER_REFUSED = [
+    (['router', 'status', '--bogus'], "unknown option '--bogus'"),
+    (['router', '--bogus'], "unknown option '--bogus'"),
+    (['router', 'bogus'], "unexpected argument 'bogus'"),
+    (['router', 'status', 'extra9'], "unexpected argument 'extra9'"),
+    (['router', 'on', 'extra9'], "unexpected argument 'extra9'"),
+    (['router', 'on', '--bogus'], "unknown option '--bogus'"),
+    (['router', 'off', 'extra9'], "unexpected argument 'extra9'"),
+    (['router', 'report', '--bogus'], "unknown option '--bogus'"),
+    (['router', 'report', 'extra9'], "unexpected argument 'extra9'"),
+    (['router', 'report', '--since', '1h', '--bogus'], "unknown option '--bogus'"),
+    (['router', 'report', '--since'], '--since needs a value'),
+    (['router', 'report', '--since', '--bogus'], "--since needs a value, not the option '--bogus'"),
+    (['router', 'dispatch', '--bogus', 'fix the parser'], "unknown option '--bogus'"),
+    (['router', 'dispatch', 'fix the parser', '--bogus'], "unknown option '--bogus'"),
+    (['router', 'dispatch', '--tier=top', 'fix the parser'], "unknown option '--tier=top'"),
+    (['router', 'dispatch', 'fix the parser', '--tier'], '--tier needs a value'),
+    (['router', 'dispatch', '--profile', '--dry-run', 'fix the parser'],
+     "--profile needs a value, not the option '--dry-run'"),
+    (['router', 'dispatch', '--timeout', '--bogus', 'fix the parser'],
+     "--timeout needs a value, not the option '--bogus'"),
+    (['router', 'dispatch', 'fix the parser', '--timeout'], '--timeout needs a value'),
+    (['router', 'dispatch', '--timeout', '--', 'fix the parser'], '--timeout needs a value'),
+    (['router', 'dispatch', '--timeout', 'x', 'fix the parser'], '--timeout has invalid value "x"'),
+]
+
+
+@pytest.mark.parametrize('enabled', [None, True], ids=['fresh', 'on'])
+@pytest.mark.parametrize('argv,message', ROUTER_REFUSED, ids=[' '.join(a) for a, _ in ROUTER_REFUSED])
+def test_router_refuses_a_word_it_does_not_take_and_changes_nothing(box, argv, message, enabled):
+    # #784: an unknown option or a word too many used to be ignored (status,
+    # report) or act (on, off) and exit 0. It must exit 2, name the word, print
+    # the help page's usage line, and change nothing.
+    box.env['XDG_STATE_HOME'] = str(box.home / '.local/state')
+    seed(box)
+    assert box.run('use', 'tok').returncode == 0
+    if enabled is not None:
+        assert box.run('router', 'on').returncode == 0
+    usage = router_usage(box)
+    before = state_files(box.state)
+    result = box.run(*argv)
+    assert result.returncode == 2, (result.stdout, result.stderr)
+    assert message in result.stderr, result.stderr
+    assert usage in result.stderr, result.stderr
+    assert result.stdout == ''
+    assert state_files(box.state) == before
+    assert not (box.home / '.local/state/ccmorph/router/ledger.jsonl').exists()
+    assert box.log() == ''
+
+
+def test_router_on_off_and_status_still_act(box):
+    # #784's guard: refusing bad words must not refuse the valid ones.
+    box.env['XDG_STATE_HOME'] = str(box.home / '.local/state')
+    seed(box)
+    on = box.run('router', 'on')
+    assert on.returncode == 0 and on.stdout.startswith('Router on.'), on.stdout
+    assert json.loads((box.state / 'router.json').read_text())['enabled'] is True
+    assert box.run('router', 'status').stdout.startswith('Router on (')
+    off = box.run('router', 'off')
+    assert off.returncode == 0, off.stderr
+    assert json.loads((box.state / 'router.json').read_text())['enabled'] is False
+    assert box.run('router').stdout.startswith('Router off (')

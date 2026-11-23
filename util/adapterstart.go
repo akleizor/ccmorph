@@ -18,6 +18,20 @@ import (
 // (#374). The exit status stays 1 either way; only this line says "refused".
 const Refused = "REFUSED"
 
+// adapterReadyLimit is the readiness wait adapterStart keeps: the same six
+// hundred seconds for either scope. The model-scoped 45 s bound only held on
+// a quiet machine — on a loaded host the translator was not ready in it and
+// the run died before it started (#766). A caller that must wait longer sets
+// CCMORPH_ADAPTER_START_TIMEOUT to a positive number of seconds that fits a
+// duration; anything else keeps the default. Parsing and the range check are
+// EnvSeconds' (#770).
+func adapterReadyLimit() time.Duration {
+	if limit, err := EnvSeconds(os.Getenv, "CCMORPH_ADAPTER_START_TIMEOUT", 600); err == nil {
+		return limit
+	}
+	return 600 * time.Second
+}
+
 // adapterStart is `util adapter-start <core> <profile> <model or ""> <parent pid> <log>`:
 // start `<core> adapter` for a launch and wait for its first readiness line. Prints
 // PID=<n> and then PORT=<n> or NATIVE=1; exit 1 with the reason on stderr —
@@ -64,11 +78,7 @@ func adapterStart(args []string, _ io.Reader, out, errw io.Writer) int {
 		line, _, _ := strings.Cut(string(b), "\n")
 		return line
 	}
-	// A selected launch has a bounded compatibility check, never a fleet sweep.
-	limit := 600 * time.Second
-	if model != "" {
-		limit = 45 * time.Second
-	}
+	limit := adapterReadyLimit()
 	label := profile
 	if model != "" {
 		label += " (" + model + ")"
@@ -108,7 +118,7 @@ func adapterStart(args []string, _ io.Reader, out, errw io.Writer) int {
 		}
 		waited := int(time.Since(start) / time.Second)
 		if time.Since(start) >= limit {
-			return fail(fmt.Sprintf("'%s': adapter timed out after %ds; session not started.", profile, int(limit.Seconds())))
+			return fail(fmt.Sprintf("'%s': adapter timed out after %ds; session not started.", profile, waited))
 		}
 		if waited > said && waited == 1 {
 			fmt.Fprintf(errw, "ccmorph: Starting adapter for '%s'…\n", label)

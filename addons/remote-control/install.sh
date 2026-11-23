@@ -44,6 +44,11 @@ done
 CONF
 
 mkdir -p "${PLIST:h}" "${LOG:h}"
+# A stably signed launcher, when installed, owns the supervisor's macOS privacy grants:
+# the interpreter running ccmorph-rc-hosts is ad-hoc signed, so each upgrade would make
+# every bridge session ask for removable volumes, Accessibility and the LAN again.
+LAUNCHER=
+[[ -x $HOME/.local/libexec/tcc-host ]] && LAUNCHER="<string>$HOME/.local/libexec/tcc-host</string>"
 # ProcessType Interactive: launchd gives the supervisor no CPU/IO throttling
 # (man launchd.plist), so the poll loop keeps its bridges online under heavy load.
 cat > "$PLIST" <<PL
@@ -53,7 +58,7 @@ cat > "$PLIST" <<PL
 <dict>
 	<key>Label</key><string>$LABEL</string>
 	<key>ProcessType</key><string>Interactive</string>
-	<key>ProgramArguments</key><array><string>$HERE/ccmorph-rc-hosts</string></array>
+	<key>ProgramArguments</key><array>$LAUNCHER<string>$HERE/ccmorph-rc-hosts</string></array>
 	<key>EnvironmentVariables</key><dict>
 		<key>PATH</key><string>$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
 	</dict>

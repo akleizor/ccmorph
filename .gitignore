@@ -83,6 +83,10 @@ dist/
 # Python bytecode and pytest state.
 __pycache__/
 .pytest_cache/
+# uv's environment and lock for the pytest deps pyproject.toml names. Both are
+# machine-local: uv rewrites the lock to the interpreter it runs.
+.venv/
+uv.lock
 
 # ── Agent and editor scratch ─────────────────────────────────────────────────
 # The project skill under .claude/skills ships; a global `.claude/` ignore must

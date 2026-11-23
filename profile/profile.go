@@ -65,11 +65,35 @@ var (
 // NAME_MAX while staying past any name a person types.
 const MaxNameLen = 200
 
-// ValidName mirrors _ccm_valid: [A-Za-z0-9_]+, at most MaxNameLen bytes, never
-// a reserved name in any case.
-func ValidName(s string) bool {
+// LegacyMaxNameLen is the longest name the rule before #373 could have stored:
+// that rule had no length bound, and the longest file a profile makes is
+// ".<name>.bridge.users" (+14), so 241 bytes is the last one inside NAME_MAX's
+// 255. RemovableName accepts this range so rm can remove a profile made before
+// the limit (#449); every other verb still requires ValidName.
+const LegacyMaxNameLen = 241
+
+// nameShape is the part of a name that never depended on its length.
+func nameShape(s string) bool {
 	l := strings.ToLower(s)
-	return len(s) <= MaxNameLen && nameRE.MatchString(s) && l != "active" && l != "ccmorph"
+	return nameRE.MatchString(s) && l != "active" && l != "ccmorph"
+}
+
+// ValidProfileName is the one gate for a profile name: [A-Za-z0-9_]+, at most
+// MaxNameLen bytes, never a reserved name in any case. Both names the packages
+// publish — ValidName here and ctxwindow.ValidProfileName — call it (#638), so
+// the shape the launcher writes and the shape the core reads cannot drift.
+func ValidProfileName(s string) bool {
+	return len(s) <= MaxNameLen && nameShape(s)
+}
+
+// ValidName is the name profile's own callers use for the gate.
+func ValidName(s string) bool { return ValidProfileName(s) }
+
+// RemovableName reports whether name is one rm can still address: a name
+// ValidName accepts, or one the pre-#373 rule accepted whose longest derived
+// file still fits NAME_MAX. Only removal takes the wider range (#449).
+func RemovableName(s string) bool {
+	return len(s) <= LegacyMaxNameLen && nameShape(s)
 }
 
 // BadNameMsg is the one refusal every command gives a word that can never be a
@@ -214,7 +238,10 @@ func checkType(name string, f map[string]string, lists Lists) error {
 	switch f["type"] {
 	case "sub":
 		if f["email"] == "" {
-			return fail("sub profile '%s' has no email — re-create it: ccmorph rm %s && ccmorph add %s", name, name, name)
+			// The same repair `add` gives for a taken name and `doctor` gives
+			// for a signed-out account (GH-649): the sign-in completes the
+			// conf, so nothing else has to be thrown away first.
+			return fail("Claude account profile '%s' has no email — sign in again: ccmorph login %s", name, name)
 		}
 	case "token":
 		if f["token"] == "" {
@@ -412,6 +439,22 @@ func KindLabel(typ, provider string) string {
 		return ProviderName(provider)
 	}
 	return typ
+}
+
+// KindPhrase is KindLabel with the article a sentence puts before it: "an API
+// key", never "a API key" (GH-790). A label whose first letter is a vowel
+// takes "an"; every other kind keeps "a". The sentences that name a profile's
+// kind — cred's refusal, login's, the model list's — read the article from
+// here, so it agrees with the label wherever a kind is named.
+func KindPhrase(typ, provider string) string {
+	label := KindLabel(typ, provider)
+	if label == "" {
+		return label
+	}
+	if strings.ContainsRune("AEIOUaeiou", rune(label[0])) {
+		return "an " + label
+	}
+	return "a " + label
 }
 
 // Env is the launch environment a profile's fields produce, in the order `ccmorph

@@ -266,7 +266,7 @@ func TestDoctorCompletionQuotesADirectoryWithSpaces(t *testing.T) {
 }
 
 // TestDoctorCompletionSpeaksWhenTheProbeCannotAnswer is the landing gate's
-// repro: a .zshrc whose fpath line and a comment naming compinit satisfy the
+// repro: a .zshrc whose fpath line and an uncommented compinit satisfy the
 // static read while the shell it would start never answers — here a sleep that
 // outlasts a deadline the test shortens, standing in for the gate's hung zsh.
 // Silence there would read as "Tab completion works"; the row must still speak.
@@ -275,7 +275,7 @@ func TestDoctorCompletionSpeaksWhenTheProbeCannotAnswer(t *testing.T) {
 	l := completionInstall(t, root)
 	dir := filepath.Join(root, "share", "zsh", "site-functions")
 	home := t.TempDir()
-	rc := "fpath=(" + dir + " $fpath)\n# compinit has not been enabled yet\nsleep 6\n"
+	rc := "fpath=(" + dir + " $fpath)\nautoload -Uz compinit && compinit\nsleep 6\n"
 	if err := os.WriteFile(filepath.Join(home, ".zshrc"), []byte(rc), 0o644); err != nil {
 		t.Fatal(err)
 	}

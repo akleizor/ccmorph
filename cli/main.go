@@ -2,6 +2,7 @@ package cli
 
 import (
 	"fmt"
+	"github.com/akleizor/ccmorph/router"
 	"github.com/akleizor/ccmorph/util"
 	"github.com/akleizor/ccmorph/util/paths"
 	"os"
@@ -24,7 +25,7 @@ const retiredVerb = "mea" + "sure"
 var ownVerbs = map[string]bool{"list": true, "inspect": true, "show": true, "add": true, "config": true,
 	"login": true, "default": true, "use": true, "rm": true, "mv": true, "get": true, "set": true,
 	"context": true, "cred": true, "secret": true, "creds": true, "probe": true, "hop": true, "profile": true,
-	"help": true, "version": true, "run": true, "start": true, retiredVerb: true}
+	"help": true, "version": true, "run": true, "start": true, "price": true, "router": true, retiredVerb: true}
 
 // helpAsked reports whether any word asks for help.
 func helpAsked(words []string) bool {
@@ -44,11 +45,10 @@ var verbArity = map[string]int{"list": 0, "use": 1, "cred": 1, "inspect": 1, "co
 // so the two cannot drift apart.
 func usageLine(topic string) string {
 	if topic == "get" || topic == "set" {
-		line := "ccmorph " + topic + " [profile] [model|effort]"
 		if topic == "set" {
-			line += " [value]"
+			return "ccmorph set [profile] [model|effort] [value]"
 		}
-		return line
+		return "ccmorph get [profile] [model|effort|base_url|api_key|--json]"
 	}
 	return usageTopics[topic][0]
 }
@@ -63,7 +63,7 @@ func (l *launcher) extraArg(verb, word string) int {
 // realVerbs is every verb `ccmorph <verb>` answers to, in one list for the typo
 // hint: a word one edit away from exactly one of these is told to run it.
 var realVerbs = []string{"add", "config", "context", "cred", "doctor", "get", "help", "hop",
-	"inspect", "list", "login", "models", "mv", "probe", "profile", "quota", "rm", "run", "set",
+	"inspect", "list", "login", "models", "mv", "price", "probe", "profile", "quota", "rm", "router", "run", "set",
 	"uninstall", "update", "use", "version"}
 
 // topFlags are the flags ccmorph itself takes before the verb.
@@ -124,11 +124,30 @@ func (l *launcher) dispatch(args []string) int {
 		if len(rest) > 0 && (rest[0] == "-h" || rest[0] == "--help") {
 			return l.usage("run")
 		}
+	} else if first == "price" {
+		if helpAsked(rest) {
+			return l.usage(first)
+		}
 	} else if first == "probe" || first == retiredVerb {
 		// The page is the cli's, as every command's is; answer it before
 		// secureDirs, so no picker opens and no state is provisioned.
 		if helpAsked(rest) {
 			return l.usage("probe")
+		}
+	} else if first == "router" {
+		// Help wins before any router action, so router on --help never turns
+		// the router on (#784). Words after dispatch's -- are the worker's
+		// claude flags, as words after a run profile are Claude Code's.
+		own := rest
+		if i := slices.Index(rest, "--"); i >= 0 {
+			own = rest[:i]
+		}
+		if helpAsked(own) {
+			if len(rest) > 0 && rest[0] == "dispatch" {
+				fmt.Print(router.TaskHelp)
+				return 0
+			}
+			return l.usage("router")
 		}
 	} else if n, public := verbArity[first]; public {
 		if helpAsked(rest) {
@@ -175,7 +194,7 @@ func (l *launcher) dispatch(args []string) int {
 	case "_env":
 		return l.envVerb(args[1:])
 	case "list", "use", "cred", "inspect", "context", "models", "_models", "rm", "mv", "get", "set",
-		"_menu", "_ui", "config", "add", "login", "hop", "profile", "quota":
+		"_menu", "_ui", "config", "add", "login", "hop", "profile", "quota", "price", "router":
 		return l.verb(args)
 	}
 	return l.unknown(first, args)
@@ -370,8 +389,21 @@ func (l *launcher) runVerb(args []string) int {
 		return 1
 	}
 	// `--` is run's own separator only in prefix position; later ones are Claude Code's.
-	if i := runSeparator(args); i >= 0 {
-		args = append(args[:i:i], args[i+1:]...)
+	sep := runSeparator(args)
+	hadSeparator := sep >= 0
+	if hadSeparator {
+		args = append(args[:sep:sep], args[sep+1:]...)
+	}
+	// #650: `ccmorph run <profile> version` must answer while the endpoint is
+	// down. Claude Code has no `version` command, so on this public verb alone
+	// the lone word is read as its version request and asked with --version,
+	// which prints and exits and opens no session. Only `ccmorph run` does
+	// this: `_ccm_launch -a <profile> version` (agent dispatch) and a hop's
+	// relaunch keep the word as the prompt it is (INTENT promise 6). And only
+	// the BARE lone word: a word behind run's `--` is on the user's side of
+	// that promise, so it stays the prompt it is (#751).
+	if !hadSeparator && len(args) == 1 && args[0] == "version" {
+		args = []string{"--version"}
 	}
 	sub := "0"
 	if l.hasClaudeSubcommand(args) {
@@ -786,23 +818,12 @@ func (l *launcher) usage(topic string) int {
 	return l.usageAt(topic, helpWidth())
 }
 
-// spelledFromHome is path cleaned and spelled ~/… under the home directory.
-func spelledFromHome(path string) string {
-	root := filepath.Clean(path)
-	if home, err := os.UserHomeDir(); err == nil {
-		if rel, ok := strings.CutPrefix(root, home+string(filepath.Separator)); ok {
-			return "~/" + rel
-		}
-	}
-	return root
-}
-
 // confDirSpelling is the state root as a help page spells a conf file's
 // directory: the root this launcher resolved, cleaned, spelled ~/… under the
 // home directory — so the default root spells itself ~/.config/ccmorph and
 // only a redirected one changes a page.
 func (l *launcher) confDirSpelling() string {
-	return spelledFromHome(l.dir)
+	return paths.SpelledFromHome(l.dir)
 }
 
 // profileTemplate is the profile.conf.example this install holds, spelled for a
@@ -820,7 +841,7 @@ func (l *launcher) profileTemplate() string {
 		filepath.Join(root, "share", "profile.conf.example"),
 	} {
 		if fi, err := os.Stat(p); err == nil && fi.Mode().IsRegular() {
-			return spelledFromHome(p)
+			return paths.SpelledFromHome(p)
 		}
 	}
 	return ""
@@ -865,7 +886,11 @@ func (l *launcher) usageAt(topic string, width int) int {
 		if all {
 			head("More commands:")
 			help("ccmorph models <profile>", "List models from an API-key endpoint")
-			help("ccmorph get <profile> <model|effort>", "Read a saved default")
+			help("ccmorph price <model>...", "Read cached model list prices")
+			// The line is the command's own synopsis, so the list and the
+			// command's page cannot drift apart again (GH-730).
+			help(router.Usage, "Spread subagents across profiles; off by default")
+			help("ccmorph get <profile> <field|--json>", "Read one profile field, or all as JSON")
 			help("ccmorph set <profile> <model|effort> [value]", "Save a default; omit value to choose")
 			help("ccmorph login <profile>", "Sign in again to a provider account")
 			help("ccmorph mv <old> <new>", "Rename a profile")
@@ -914,8 +939,25 @@ func (l *launcher) usageAt(topic string, width int) int {
 	// A page that names a conf file names the one this launcher reads: the
 	// state root follows CCMORPH_STATE_DIR and XDG_CONFIG_HOME, so a redirected
 	// root — not the default spelling — is where the advice takes effect.
+	// The settings path is copied, not read: it leaves the body here and is
+	// printed after the wrap below, so no terminal width can break it across
+	// lines or collapse the spaces inside it (GH-730).
+	settings := ""
 	if l.dir != "" {
-		body = strings.ReplaceAll(body, "~/.config/ccmorph/", l.confDirSpelling()+"/")
+		if topic == "router" {
+			// The router page names the settings file "router status" names,
+			// joined exactly as the router joins it — filepath.Join over the
+			// resolved root, the way router.ConfigPath builds its own path —
+			// so both screens print the same characters for any spelling of
+			// the root, "." among them (GH-730).
+			if before, _, found := strings.Cut(body, "\n  ~/.config/ccmorph/router.json"); found {
+				body = before
+				settings = "  " + filepath.Join(filepath.Clean(l.dir), "router.json")
+			}
+		} else {
+			// Every other page keeps spelling a root under home ~/… (GH-384).
+			body = strings.ReplaceAll(body, "~/.config/ccmorph/", l.confDirSpelling()+"/")
+		}
 	}
 	// The template's path is the code's, not the state root's: added after the
 	// conf-dir rewrite, so a redirected root never rewrites it (#392).
@@ -923,6 +965,9 @@ func (l *launcher) usageAt(topic string, width int) int {
 		body += "\n\n" + l.templateNote()
 	}
 	fmt.Println(wrapBody(body, width))
+	if settings != "" {
+		fmt.Println(settings)
+	}
 	if pickerTopics[topic] {
 		fmt.Println("\n" + wrapBody(pickerNote, width))
 	}
@@ -974,6 +1019,10 @@ Masking is a line in the profile's conf file, not a menu item: on an API-key
 gateway profile, env.CCMORPH_MASK=1 in ~/.config/ccmorph/<profile>.conf sends
 secrets as placeholders; ccmorph inspect shows whether it is on.`},
 	"list": {"ccmorph list", "List saved profiles. * marks the default used by ccmorph run; private marks one whose history is deleted when the session ends."},
+	"price": {"ccmorph price <model>... [--json]", `Read cached model list prices in US dollars per million tokens.
+A missing model in a populated cache is unpriced; --json omits it. The cache is never fetched.
+An empty cache is reported explicitly. Run a provider profile with ccmorph run <profile> to refresh it.`},
+
 	"quota": {"ccmorph quota [profile] [--json]", `Every profile in one view, grouped by kind: Claude accounts and tokens,
 Codex subscriptions, budget accounts, and API key or provider profiles. Each
 plan window is a bar with the percent used and when it resets; a plan tier
@@ -982,9 +1031,24 @@ account and Codex profiles; a pasted Claude token cannot read it. A
 rate-limited or unreachable read shows the last good reading and its age.
 Gateways and API keys show today's and this month's billed spend from their
 receipts, and the account balance where the provider publishes one (DeepSeek,
-Kimi, GLM, OpenRouter, SiliconFlow, StepFun). --json prints the same data for
-tools. No inference, nothing billed.
+Kimi, GLM, OpenRouter, SiliconFlow, StepFun). An API-key gateway's endpoint is
+also asked whether it answers: when it answers nothing, the row says its spend
+is from local receipts only and names ccmorph doctor, and --json carries that
+as checked:false. --json prints the same data for tools. No inference, nothing
+billed.
 Omit the profile to list every profile.`},
+	// The router page is an interpreted string, not a raw one: no backtick
+	// appears anywhere in this entry, so the path line visibly ends at
+	// router.json here exactly as it does on the page (GH-730).
+	"router": {router.Usage, "Route subagent work across your profiles. Off by default.\n" +
+		"on and off take effect for sessions started afterwards. With the router on,\n" +
+		"each session gets a delegate tool and Agent hooks: free profiles first, then\n" +
+		"the subscription furthest behind its pace, then paid API keys; inside a\n" +
+		"profile, the cheapest model that fits the task's kind and tier.\n" +
+		"status lists each profile's class and pace. dispatch \"<task>\" runs a task\n" +
+		"where the router picks; with --dry-run it only shows that pick. report\n" +
+		"checks the last day's routes. Its settings live in:\n" +
+		"  ~/.config/ccmorph/router.json"},
 	"use": {"ccmorph use [profile|-i]", "Set the default without launching. No argument shows the current default."},
 	"inspect": {"ccmorph inspect [profile|-i]", `Show effective settings and their sources, never the stored credential.
 Omit the profile to inspect the default; -i opens the profile picker.
@@ -1002,7 +1066,10 @@ Omit the profile to check the default. Does not repair or launch a session.`},
 	"get": {"", `Read the default model or effort level that new sessions use; nothing changes.
 Omit the profile or the setting to choose it in a picker.
 The value is printed to stdout; name both in scripts.
-Effort: ` + strings.Join(profile.Efforts, ", ") + `. Available models come from the profile.`},
+Effort: ` + strings.Join(profile.Efforts, ", ") + `. Available models come from the profile.
+base_url prints the endpoint; api_key prints the key or token (a secret,
+the same as ccmorph cred). --json prints every field in one object.
+Scripts read a profile only through get, never from its files.`},
 	"set": {"", `Save a default for new sessions: the model or the effort level.
 Omit the profile, the setting or the value to choose it in a picker.
 The saved value goes to stdout for a script to capture; a terminal shows
@@ -1015,7 +1082,10 @@ instead: ccmorph config <profile>`},
 	"mv": {"ccmorph mv <old> <new>", "Rename a profile and its private state. Existing destinations are refused."},
 	"rm": {"ccmorph rm <profile>", `Delete this profile, its saved credential and private sign-in state.
 Shared conversation history is kept. This cannot be undone.
-Leftover private state from a missing profile requires confirmation.`},
+This is always confirmed first, defaulting to No: a terminal answers
+the prompt, a pipe answers it with one line (printf 'y' | ...), and
+a stdin holding no answer removes nothing. Leftover private state
+from a missing profile is confirmed the same way.`},
 	"hop": {"ccmorph hop [profile]", `Inside a running Claude Code session, type one of:
   /ccmorph:hop <profile>
   ! ccmorph hop <profile>
