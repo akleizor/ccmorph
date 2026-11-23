@@ -396,6 +396,32 @@ func ReleaseLive(profiles, name string) {
 	}
 }
 
+// RemoveLive takes a profile's live lock file away with the profile (GH-837).
+// It drops this process's own hold first, then removes the file only when no
+// other process holds it: a running launch's lock is its cover (#185), and
+// unlinking it would let the next launch make a second lock beside the one
+// still held. nil when the file is gone (removed now, or never there);
+// ErrLiveHeld when another process holds it; the open error otherwise.
+func RemoveLive(profiles, name string) error {
+	ReleaseLive(profiles, name)
+	lock := LiveLockPath(profiles, name)
+	if !paths.Lexists(lock) {
+		return nil
+	}
+	f, err := os.OpenFile(lock, os.O_WRONLY|os.O_APPEND, 0)
+	if os.IsNotExist(err) {
+		return os.Remove(lock) // a link naming nothing holds no lock
+	}
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	if syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB) != nil {
+		return ErrLiveHeld
+	}
+	return os.Remove(lock)
+}
+
 // ErrLiveHeld is why HoldLive returned no lock: another launch holds the
 // profile's live lock exclusively and outlasted the wait (#205). Any other
 // error means the lock file itself could not be made or opened (#217), so a

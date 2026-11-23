@@ -81,13 +81,14 @@ func TestAddWizardTierColumnsArePinnedByName(t *testing.T) {
 	}
 }
 
-// GH-649: closing the terminal sends SIGHUP/SIGTERM to the whole foreground
-// process group. The sign-in child must be the one that dies — the parent has
-// to survive long enough to run the caller's rollback. Before the handoff the
-// default disposition killed this process outright, which here took the whole
-// test binary down with it: reaching the assertions is half the assertion.
+// GH-649, GH-837: closing the terminal sends SIGHUP/SIGTERM to the whole
+// foreground process group, and Ctrl-C sends SIGINT. The sign-in child must be
+// the one that dies — the parent has to survive long enough to run the caller's
+// rollback. Before the handoff the default disposition killed this process
+// outright, which here took the whole test binary down with it: reaching the
+// assertions is half the assertion.
 func TestHandSignInSignalsReachTheChildNotTheParent(t *testing.T) {
-	for _, sig := range []syscall.Signal{syscall.SIGTERM, syscall.SIGHUP} {
+	for _, sig := range []syscall.Signal{syscall.SIGTERM, syscall.SIGHUP, syscall.SIGINT} {
 		t.Run(sig.String(), func(t *testing.T) {
 			// Bounded on its own: if the handoff ever stops delivering, the
 			// child still leaves in a few seconds and the test fails on its

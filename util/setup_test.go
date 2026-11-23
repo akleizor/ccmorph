@@ -599,6 +599,57 @@ func TestHoldLiveNamesALockFileItCannotMake(t *testing.T) {
 	}
 }
 
+// GH-837: rm and add's rollback take a removed profile's live lock with it,
+// but only when no launch holds it — unlinking a held lock lets the next launch
+// make a second file beside the one still held, and the #185 cover is gone.
+func TestRemoveLiveTakesAFreeLockAndKeepsAHeldOne(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	profiles := filepath.Join(home, ".config/ccmorph/profiles")
+	lock := LiveLockPath(profiles, "p")
+	if err := RemoveLive(profiles, "p"); err != nil {
+		t.Fatalf("no lock file is nothing to remove: %v", err)
+	}
+	if _, err := os.Lstat(filepath.Dir(lock)); !os.IsNotExist(err) {
+		t.Fatalf("removing a lock that is not there must not make .locks: %v", err)
+	}
+	// This process's own hold goes first, so the file it just made can go too.
+	if f, why := HoldLive(profiles, "p", nil); f == nil {
+		t.Fatalf("the lock must be taken: %v", why)
+	}
+	if err := RemoveLive(profiles, "p"); err != nil {
+		t.Fatalf("a lock this process holds must be removable: %v", err)
+	}
+	if _, err := os.Lstat(lock); !os.IsNotExist(err) {
+		t.Fatalf("RemoveLive must remove the lock file: %v", err)
+	}
+	if f, why := HoldLive(profiles, "p", nil); f == nil {
+		t.Fatalf("the lock must be made again after removal: %v", why)
+	}
+	ReleaseLive(profiles, "p")
+	// Another process's hold is the profile's cover and stays.
+	holder, err := os.OpenFile(lock, os.O_APPEND|os.O_WRONLY, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := syscall.Flock(int(holder.Fd()), syscall.LOCK_SH); err != nil {
+		t.Fatal(err)
+	}
+	if err := RemoveLive(profiles, "p"); !errors.Is(err, ErrLiveHeld) {
+		t.Fatalf("a held lock must not be unlinked: %v", err)
+	}
+	if _, err := os.Lstat(lock); err != nil {
+		t.Fatalf("a held lock must still exist: %v", err)
+	}
+	holder.Close()
+	if err := RemoveLive(profiles, "p"); err != nil {
+		t.Fatalf("the freed lock must be removable: %v", err)
+	}
+	if _, err := os.Lstat(lock); !os.IsNotExist(err) {
+		t.Fatalf("the freed lock must be gone: %v", err)
+	}
+}
+
 // #185: the transcripts v0.5.0 and earlier merges parked beside a profile
 // exist nowhere else and are merged into the shared store at the next idle
 // launch, so their sessions return to /resume; a file the store already holds

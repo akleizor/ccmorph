@@ -18,6 +18,15 @@
 
 ### Fixed
 
+- **Ctrl-C at the Claude-account sign-in cancels setup and frees the name.**
+  `ccmorph add` promised the cancel, but SIGINT killed the process before the
+  rollback, leaving a half-made profile home and its `.locks/<name>.live` that
+  `list` never showed and the next `add` refused as leftover state. Now the
+  signal reaches the sign-in child like HUP and TERM, the rollback takes the
+  home and the lock, and the same name adds again with no `rm`. `rm` of a
+  leftover lists only the paths that exist and removes the live lock too,
+  keeping it only while a running launch still holds it.
+
 - **Remote Control hosts pin the route profile's tiers.** `ccmorph-rc-hosts` kept
   its own tier map in `tier.<alias>=` lines, which drifted from the profile: an alias
   the profile mapped to a gateway model went out as the native Claude id, which the
