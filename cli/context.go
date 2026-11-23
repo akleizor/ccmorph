@@ -411,6 +411,10 @@ func (l *launcher) probeNudge(name string) {
 	cmd := exec.Command(bin, "context-probe", "--declared-only", "--profile", name, "--deadline", "30")
 	cmd.Stdout, cmd.Stderr = f, f
 	if cmd.Start() == nil {
+		// The launcher records the spawn itself, before it goes on: whoever
+		// waits for the launch to exit reads a decided answer, never a race
+		// with the detached child's own first write (#768).
+		l.log("probe nudge spawned profile=" + name)
 		go cmd.Wait()
 	}
 	f.Close()

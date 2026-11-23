@@ -149,3 +149,35 @@ func TestTheUnlistedModelWarningNeverCutsAWordAtEightyColumns(t *testing.T) {
 		t.Errorf("an empty warning prints nothing: %q", lines)
 	}
 }
+
+// GH-768: a launch that opens no session must spawn no sizing probe, and the
+// zsh suite proves it by reading the launcher's own record at the moment
+// `ccmorph run` returns -- never by racing the detached child's first write.
+// That record only exists if the launcher writes it synchronously, right after
+// a successful Start: a line written by the child, or from the Wait goroutine,
+// can arrive after the launch has already exited.
+func TestTheProbeNudgeRecordsItsSpawnBeforeItReturns(t *testing.T) {
+	libexec := t.TempDir()
+	logPath := filepath.Join(t.TempDir(), "launch.log")
+	l := &launcher{libexec: libexec, logPath: logPath, memo: map[string]string{}}
+
+	// No core beside libexec: nothing is spawned, and no spawn is recorded.
+	l.probeNudge("gw")
+	if b, _ := os.ReadFile(logPath); strings.Contains(string(b), "probe nudge spawned") {
+		t.Fatalf("a missing core must spawn nothing, yet the log records a spawn: %q", b)
+	}
+
+	if err := os.WriteFile(filepath.Join(libexec, "ccmorph-core"), []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	l.probeNudge("gw")
+	// Read immediately: no retry, no sleep. The record belongs to probeNudge's
+	// own return, not to the detached child.
+	b, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatalf("the spawn record must be on disk when probeNudge returns: %v", err)
+	}
+	if !strings.Contains(string(b), "probe nudge spawned profile=gw") {
+		t.Fatalf("the launcher must record the spawn before it goes on, got: %q", b)
+	}
+}
