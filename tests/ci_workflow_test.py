@@ -25,6 +25,9 @@ def test_every_job_ends_inside_merge_gates_30_minutes():
 
 
 def test_apt_gives_up_on_a_dead_mirror():
-    for line in CI.read_text().splitlines():
-        if "apt-get update" in line:
-            assert "Acquire::http::Timeout" in line, line
+    apt_updates = [line for line in CI.read_text().splitlines()
+                   if re.search(r"\bapt-get\b.*\bupdate\b", line)]
+    assert apt_updates, "no apt-get update line matched in ci.yml: the matcher drifted, so this guard enforced nothing"
+    for line in apt_updates:
+        assert "Acquire::http::Timeout" in line, line
+        assert "Acquire::Retries" in line, line
