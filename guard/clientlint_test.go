@@ -209,6 +209,58 @@ func NewClient() *http.Client { return &http.Client{Transport: NewTransport()} }
 		{"parameter rebound in a branch", guardSrc("func f(tr *http.Transport, x bool) *http.Client {\n\tif x {\n\t\ttr = netroute.NewTransport()\n\t}\n\treturn &http.Client{Transport: tr}\n}"), "refused"},
 		{"address taken", guardSrc("func f(set func(**http.Transport)) *http.Client {\n\ttr := netroute.NewTransport()\n\tset(&tr)\n\treturn &http.Client{Transport: tr}\n}"), "refused"},
 		{"config rebound", guardSrc("func f(o *tls.Config) *http.Client {\n\tcfg := netroute.ExtraCAs()\n\tcfg = o\n\treturn &http.Client{Transport: &http.Transport{Proxy: http.ProxyFromEnvironment, TLSClientConfig: cfg}}\n}"), "refused"},
+
+		// A local name shadows the import: the qualifier is no package there.
+		{"shadowed netroute alias", `package route
+
+import (
+	"net/http"
+	nr "github.com/akleizor/ccmorph/netroute"
+)
+
+var safe = nr.NewClient(0)
+
+type factory struct{ tr http.RoundTripper }
+
+func (f factory) NewTransport() http.RoundTripper { return f.tr }
+
+func wrap(nr factory) *http.Client { return &http.Client{Transport: nr.NewTransport()} }
+
+var broken = wrap(factory{})
+`, "refused"},
+		{"shadowed net/http alias", `package p
+
+import web "net/http"
+
+type Client struct{}
+
+func f() {
+	web := struct{ Client int }{}
+	_ = web.Client
+	var c Client
+	_ = c
+}
+`, "none"},
+
+		// A field with an HTTP name on a non-HTTP receiver is no rewiring.
+		{"non-HTTP field names", `package settings
+
+import "net/http"
+
+type Options struct {
+	Client          *http.Client
+	Transport       string
+	Proxy           string
+	TLSClientConfig string
+}
+
+func configure(o *Options) *http.Client {
+	o.Transport = "stdio"
+	o.Proxy = "inherit"
+	o.TLSClientConfig = "system"
+	return o.Client
+}
+`, "none"},
 	}
 	for _, k := range cases {
 		k := k
@@ -262,6 +314,50 @@ func f() { _ = netroute.NewClient(1); _ = &http.Client{} }
 		}
 	}
 	t.Fatal("guard allowed a bare client because an unrelated netroute.NewClient call appears in the same function")
+}
+
+// TestAShadowedAliasIsNotTheBuilder is the evaluator's shadowing repro: a
+// parameter named nr hides the netroute import, so nr.NewTransport() is a
+// method on the local factory (returning a nil RoundTripper, which makes the
+// client dial http.DefaultTransport) and not the CA-aware builder.
+func TestAShadowedAliasIsNotTheBuilder(t *testing.T) {
+	const src = `package route
+import ("net/http"; nr "github.com/akleizor/ccmorph/netroute")
+var safe = nr.NewClient(0)
+type factory struct { tr http.RoundTripper }
+func (f factory) NewTransport() http.RoundTripper { return f.tr }
+func wrap(nr factory) *http.Client { return &http.Client{Transport: nr.NewTransport()} }
+var broken = wrap(factory{})`
+	fset := token.NewFileSet()
+	f, err := parser.ParseFile(fset, "route.go", src, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, x := range inspectFile(fset, f) {
+		if !x.allowed {
+			return
+		}
+	}
+	t.Fatal("the local factory method is not netroute.NewTransport")
+}
+
+// TestAnOptionsOwnFieldsAreNoClientRewire is the evaluator's false-positive
+// repro:
+// an options type may have its own Transport, Proxy or TLSClientConfig fields;
+// only a receiver this file shows to be an http client or transport is
+// rewiring, so none of these assignments is refused.
+func TestAnOptionsOwnFieldsAreNoClientRewire(t *testing.T) {
+	const src = `package settings; import "net/http"; type Options struct { Client *http.Client; Transport string; Proxy string; TLSClientConfig string }; func configure(o *Options) *http.Client { o.Transport = "stdio"; o.Proxy = "inherit"; o.TLSClientConfig = "system"; return o.Client }`
+	fset := token.NewFileSet()
+	f, err := parser.ParseFile(fset, "settings.go", src, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, x := range inspectFile(fset, f) {
+		if !x.allowed {
+			t.Errorf("%s: unrelated field refused: %s", x.pos, x.why)
+		}
+	}
 }
 
 // TestASecondPackageNamedNetrouteIsRefused: the guard trusts a bare
@@ -343,16 +439,18 @@ func fileSrc(rest string) string { return "package p\n\n" + rest }
 
 // names is how one file spells the packages the guard reasons about: every
 // local name of net/http and of this module's netroute, whether the file is
-// package netroute (its bare NewTransport/ExtraCAs count), and any dot import,
-// which hides both from the guard.
+// package netroute (its bare NewTransport/ExtraCAs count), any dot import,
+// which hides both from the guard, and every qualifier a local declaration
+// shadows, which is then no package at all.
 type names struct {
 	http, netroute map[string]bool
 	inNetroute     bool
 	dots           []*ast.ImportSpec
+	shadowed       map[*ast.Ident]bool
 }
 
 func fileNames(f *ast.File) names {
-	n := names{http: map[string]bool{}, netroute: map[string]bool{}, inNetroute: f.Name.Name == "netroute"}
+	n := names{http: map[string]bool{}, netroute: map[string]bool{}, inNetroute: f.Name.Name == "netroute", shadowed: map[*ast.Ident]bool{}}
 	for _, spec := range f.Imports {
 		path, err := strconv.Unquote(spec.Path.Value)
 		if err != nil {
@@ -382,14 +480,119 @@ func fileNames(f *ast.File) names {
 	return n
 }
 
-// is is whether expr names <a package name in pkgs>.<sel>.
-func is(expr ast.Expr, pkgs map[string]bool, sel string) bool {
+// is is whether expr names <a package name in pkgs>.<sel>, and that name is
+// still the package there: a parameter, local variable or receiver of the same
+// name shadows the import, so `nr.NewTransport()` inside func f(nr factory) is
+// a method on the local value, not netroute's builder (#829).
+func (n names) is(expr ast.Expr, pkgs map[string]bool, sel string) bool {
 	s, ok := expr.(*ast.SelectorExpr)
 	if !ok || s.Sel.Name != sel {
 		return false
 	}
 	id, ok := s.X.(*ast.Ident)
-	return ok && pkgs[id.Name]
+	return ok && pkgs[id.Name] && !n.shadowed[id]
+}
+
+// shadowQualifiers marks every package-qualifier ident, and the new builtin, a
+// local declaration shadows at that point. A use inside a function sees that
+// function's parameters, receivers and named results, and every := or var
+// declared before it in a block of that function or of a literal around it; a
+// nested literal's own declarations stay there.
+func shadowQualifiers(regions []ast.Node, n names) map[*ast.Ident]bool {
+	out := map[*ast.Ident]bool{}
+	mark := func(id *ast.Ident) {
+		if out[id] {
+			return
+		}
+		for _, scope := range regions {
+			if containsNode(scope, id) && scopeDeclares(scope, id.Name, id.Pos()) {
+				out[id] = true
+				return
+			}
+		}
+	}
+	for _, r := range regions {
+		ast.Inspect(r, func(node ast.Node) bool {
+			switch x := node.(type) {
+			case *ast.SelectorExpr:
+				if id, ok := x.X.(*ast.Ident); ok && (n.http[id.Name] || n.netroute[id.Name]) {
+					mark(id)
+				}
+			case *ast.CallExpr:
+				if id, ok := x.Fun.(*ast.Ident); ok && id.Name == "new" {
+					mark(id)
+				}
+			}
+			return true
+		})
+	}
+	return out
+}
+
+// scopeDeclares is whether scope binds name before at: a parameter, receiver or
+// named result anywhere in its signature, or a := / var / range declaration
+// ahead of the use. A nested func literal's bindings are not asked here; that
+// literal is its own region.
+func scopeDeclares(scope ast.Node, name string, at token.Pos) bool {
+	found := false
+	ast.Inspect(scope, func(node ast.Node) bool {
+		switch x := node.(type) {
+		case *ast.FuncDecl:
+			if signatureNames(x.Type, x.Recv, name) {
+				found = true
+			}
+		case *ast.FuncLit:
+			if signatureNames(x.Type, nil, name) {
+				found = true
+			}
+			if node != scope {
+				return false // its declarations are not this scope's
+			}
+		case *ast.AssignStmt:
+			if x.Tok == token.DEFINE {
+				for _, lhs := range x.Lhs {
+					if id, ok := lhs.(*ast.Ident); ok && id.Name == name && id.Pos() < at {
+						found = true
+					}
+				}
+			}
+		case *ast.ValueSpec:
+			for _, id := range x.Names {
+				if id.Name == name && id.Pos() < at {
+					found = true
+				}
+			}
+		case *ast.RangeStmt:
+			if x.Tok == token.DEFINE {
+				for _, e := range []ast.Expr{x.Key, x.Value} {
+					if id, ok := e.(*ast.Ident); ok && id.Name == name && id.Pos() < at {
+						found = true
+					}
+				}
+			}
+		}
+		return true
+	})
+	return found
+}
+
+// signatureNames is whether a function type's parameters or results, or a
+// method's receiver, declare name.
+func signatureNames(t *ast.FuncType, recv *ast.FieldList, name string) bool {
+	check := func(fl *ast.FieldList) bool {
+		if fl == nil {
+			return false
+		}
+		for _, f := range fl.List {
+			for _, id := range f.Names {
+				if id.Name == name {
+					return true
+				}
+			}
+		}
+		return false
+	}
+	return check(recv) || check(t.Params) || check(t.Results)
 }
 
 // inspectFile reports every client construction, transport construction and
@@ -399,6 +602,7 @@ func is(expr ast.Expr, pkgs map[string]bool, sel string) bool {
 func inspectFile(fset *token.FileSet, f *ast.File) []finding {
 	regions := proofRegions(f)
 	n := fileNames(f)
+	n.shadowed = shadowQualifiers(regions, n)
 	var out []finding
 	add := func(node ast.Node, allowed bool, msg string) {
 		out = append(out, finding{pos: fset.Position(node.Pos()), allowed: allowed, why: msg})
@@ -427,20 +631,20 @@ func inspectFile(fset *token.FileSet, f *ast.File) []finding {
 		case *ast.CompositeLit:
 			scope := innermost(regions, x)
 			switch {
-			case is(x.Type, n.http, "Client"):
+			case n.is(x.Type, n.http, "Client"):
 				add(x, clientTransportAllowed(x, scope, n), clientMessage)
-			case is(x.Type, n.http, "Transport"):
+			case n.is(x.Type, n.http, "Transport"):
 				add(x, tlsClientConfigCA(x, scope, n) || directTransport(x), transportMessage)
 			case x.Type != nil && mentionsHTTPType(x.Type, n):
 				add(x, false, typeUseMessage)
 			}
 		case *ast.SelectorExpr:
 			switch {
-			case is(x, n.http, "DefaultTransport"):
+			case n.is(x, n.http, "DefaultTransport"):
 				add(x, cloneGetsTheCA(x, innermost(regions, x), n), defaultTransportMessage)
-			case (is(x, n.http, "Client") || is(x, n.http, "Transport")) && !framed[x]:
+			case (n.is(x, n.http, "Client") || n.is(x, n.http, "Transport")) && !framed[x]:
 				add(x, false, typeUseMessage)
-			case is(x, n.http, "DefaultClient") || is(x, n.http, "Get") || is(x, n.http, "Head") || is(x, n.http, "Post") || is(x, n.http, "PostForm"):
+			case n.is(x, n.http, "DefaultClient") || n.is(x, n.http, "Get") || n.is(x, n.http, "Head") || n.is(x, n.http, "Post") || n.is(x, n.http, "PostForm"):
 				add(x, false, defaultClientMessage)
 			}
 		case *ast.AssignStmt:
@@ -454,14 +658,27 @@ func inspectFile(fset *token.FileSet, f *ast.File) []finding {
 				if len(x.Lhs) == len(x.Rhs) {
 					rhs = x.Rhs[i]
 				}
-				switch {
-				case throughTLS(sel.X):
-					add(sel, false, mutationMessage)
-				case sel.Sel.Name == "Transport":
+				// Only a receiver this file shows to be an http client or
+				// transport is HTTP rewiring; an options struct's own Transport
+				// or Proxy string is no client (#829).
+				if throughTLS(sel.X) {
+					if httpReceiver(baseIdent(sel.X), regions, n) {
+						add(sel, false, mutationMessage)
+					}
+					continue
+				}
+				if sel.Sel.Name != "Transport" && sel.Sel.Name != "Proxy" && sel.Sel.Name != "TLSClientConfig" {
+					continue
+				}
+				if !httpReceiver(baseIdent(sel.X), regions, n) {
+					continue
+				}
+				switch sel.Sel.Name {
+				case "Transport":
 					add(sel, rhs != nil && transportAllowed(rhs, scope, n), mutationMessage)
-				case sel.Sel.Name == "Proxy":
+				case "Proxy":
 					add(sel, rhs != nil && spelled(rhs) == "nil", mutationMessage)
-				case sel.Sel.Name == "TLSClientConfig":
+				case "TLSClientConfig":
 					add(sel, rhs != nil && caConfig(rhs, scope, n), mutationMessage)
 				}
 			}
@@ -484,13 +701,140 @@ func throughTLS(expr ast.Expr) bool {
 	return found
 }
 
+// baseIdent is the identifier an assignment's receiver starts from:
+// c in c.Transport, c.Transport.(*http.Transport).TLSClientConfig, or *c. nil
+// when the receiver is not a named local.
+func baseIdent(expr ast.Expr) ast.Expr {
+	switch x := expr.(type) {
+	case *ast.Ident:
+		return x
+	case *ast.SelectorExpr:
+		return baseIdent(x.X)
+	case *ast.TypeAssertExpr:
+		return baseIdent(x.X)
+	case *ast.IndexExpr:
+		return baseIdent(x.X)
+	case *ast.ParenExpr:
+		return baseIdent(x.X)
+	case *ast.UnaryExpr:
+		return baseIdent(x.X)
+	}
+	return nil
+}
+
+// httpReceiver is whether expr is a local this file shows to hold an http
+// client or transport: bound to one (netroute's builders, a literal, new, a
+// DefaultTransport clone) or declared with that type. Only such a receiver is
+// HTTP rewiring; an options struct with its own Transport string is not (#829).
+func httpReceiver(expr ast.Expr, regions []ast.Node, n names) bool {
+	id, ok := expr.(*ast.Ident)
+	if !ok {
+		return false
+	}
+	for _, r := range regions {
+		if containsNode(r, id) && scopeHoldsHTTP(r, id.Name, n) {
+			return true
+		}
+	}
+	return false
+}
+
+// scopeHoldsHTTP is whether scope binds name to an http client or transport, or
+// declares it with that type. A nested literal's bindings belong to that literal.
+func scopeHoldsHTTP(scope ast.Node, name string, n names) bool {
+	found := false
+	ast.Inspect(scope, func(node ast.Node) bool {
+		switch x := node.(type) {
+		case *ast.FuncDecl:
+			if signatureHoldsHTTP(x.Type, x.Recv, name, n) {
+				found = true
+			}
+		case *ast.FuncLit:
+			if signatureHoldsHTTP(x.Type, nil, name, n) {
+				found = true
+			}
+			if node != scope {
+				return false
+			}
+		case *ast.AssignStmt:
+			for i, lhs := range x.Lhs {
+				if id, ok := lhs.(*ast.Ident); ok && id.Name == name && i < len(x.Rhs) && isHTTPValue(x.Rhs[i], n) {
+					found = true
+				}
+			}
+		case *ast.ValueSpec:
+			for i, id := range x.Names {
+				if id.Name != name {
+					continue
+				}
+				if i < len(x.Values) && isHTTPValue(x.Values[i], n) {
+					found = true
+				}
+				if x.Type != nil && isHTTPTypeExpr(x.Type, n) {
+					found = true
+				}
+			}
+		}
+		return true
+	})
+	return found
+}
+
+// signatureHoldsHTTP is whether a parameter, result or receiver named name is
+// declared as an http client or transport.
+func signatureHoldsHTTP(t *ast.FuncType, recv *ast.FieldList, name string, n names) bool {
+	check := func(fl *ast.FieldList) bool {
+		if fl == nil {
+			return false
+		}
+		for _, f := range fl.List {
+			for _, id := range f.Names {
+				if id.Name == name && isHTTPTypeExpr(f.Type, n) {
+					return true
+				}
+			}
+		}
+		return false
+	}
+	return check(recv) || check(t.Params) || check(t.Results)
+}
+
+// isHTTPTypeExpr is *http.Client, http.Client, *http.Transport, http.Transport
+// or http.RoundTripper.
+func isHTTPTypeExpr(expr ast.Expr, n names) bool {
+	if expr == nil {
+		return false
+	}
+	if star, ok := expr.(*ast.StarExpr); ok {
+		expr = star.X
+	}
+	return n.is(expr, n.http, "Client") || n.is(expr, n.http, "Transport") || n.is(expr, n.http, "RoundTripper")
+}
+
+// isHTTPValue is an expression that builds an http client or transport: a
+// literal, new of one, netroute's builders, or a DefaultTransport clone.
+func isHTTPValue(expr ast.Expr, n names) bool {
+	switch v := expr.(type) {
+	case *ast.UnaryExpr, *ast.CompositeLit:
+		lit, ok := compositeOf(expr)
+		return ok && isHTTPTypeExpr(lit.Type, n)
+	case *ast.CallExpr:
+		if namedNetrouteCall(v, n, "NewClient") || namedNetrouteCall(v, n, "NewTransport") || isDefaultTransportClone(v, n) {
+			return true
+		}
+		id, ok := v.Fun.(*ast.Ident)
+		return ok && id.Name == "new" && !n.shadowed[id] && len(v.Args) == 1 && isHTTPTypeExpr(v.Args[0], n)
+	}
+	return false
+}
+
 // mentionsHTTPType is whether a literal's type names a client or transport, as
 // a slice or map element or a type argument does: such an element is elided,
 // so the client rules never see it.
 func mentionsHTTPType(expr ast.Expr, n names) bool {
 	found := false
 	ast.Inspect(expr, func(x ast.Node) bool {
-		if e, ok := x.(ast.Expr); ok && (is(e, n.http, "Client") || is(e, n.http, "Transport")) {
+		if e, ok := x.(ast.Expr); ok && (n.is(e, n.http, "Client") || n.is(e, n.http, "Transport")) {
 			found = true
 		}
 		return true
@@ -539,7 +883,7 @@ func transportAllowed(expr ast.Expr, scope ast.Node, n names) bool {
 		return boundTransport(v.Name, scope, n)
 	case *ast.UnaryExpr, *ast.CompositeLit:
 		lit, ok := compositeOf(expr)
-		if !ok || !is(lit.Type, n.http, "Transport") {
+		if !ok || !n.is(lit.Type, n.http, "Transport") {
 			return false
 		}
 		return tlsClientConfigCA(lit, scope, n) || directTransport(lit)
@@ -740,7 +1084,7 @@ func isDefaultTransportClone(expr ast.Expr, n names) bool {
 	if star, ok := typ.(*ast.StarExpr); ok {
 		typ = star.X // http.DefaultTransport.(*http.Transport).Clone()
 	}
-	return is(typ, n.http, "Transport") && is(ta.X, n.http, "DefaultTransport")
+	return n.is(typ, n.http, "Transport") && n.is(ta.X, n.http, "DefaultTransport")
 }
 
 // namedNetrouteCall is a call to netroute's name, bare inside package netroute
@@ -750,7 +1094,7 @@ func namedNetrouteCall(call *ast.CallExpr, n names, name string) bool {
 	case *ast.Ident:
 		return n.inNetroute && f.Name == name
 	case *ast.SelectorExpr:
-		return is(f, n.netroute, name)
+		return n.is(f, n.netroute, name)
 	}
 	return false
 }
