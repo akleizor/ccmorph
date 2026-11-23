@@ -1606,8 +1606,7 @@ func TestTheRunEntryReadsRmAsClaudesOwnSubcommand(t *testing.T) {
 	}
 	// The table answers neither way from memory: a word the installed binary
 	// does not list stays not-a-subcommand, whatever ccmorph's own list holds.
-	absent := &launcher{memo: map[string]string{"claude --help":
-		"Usage: claude [options] [command]\n\nCommands:\n  mcp   configure MCP servers\n"}}
+	absent := &launcher{memo: map[string]string{"claude --help": "Usage: claude [options] [command]\n\nCommands:\n  mcp   configure MCP servers\n"}}
 	if absent.isClaudeSubcommand("rm") || absent.isClaudeSubcommand("list") {
 		t.Fatal("a word the installed binary does not list is not a Claude subcommand")
 	}
