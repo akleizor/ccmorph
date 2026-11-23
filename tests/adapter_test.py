@@ -8,6 +8,7 @@ behaviour rather than a vendor's.
 
 from __future__ import annotations
 
+import io
 import json
 import os
 import re
@@ -21,6 +22,8 @@ import threading
 import unittest
 from http.server import BaseHTTPRequestHandler, HTTPServer, ThreadingHTTPServer
 from pathlib import Path
+from unittest import mock
+from weakref import WeakKeyDictionary
 
 from support import (CORE, FAKE_SERVER_NO_DNS, HANG_TIMEOUT, adapter_cmd,
                      needs_loopback, port_outside_the_ephemeral_pool, wait_until)
@@ -47,6 +50,33 @@ class Gateway(BaseHTTPRequestHandler):
     # `test_selected_launch_has_its_own_global_deadline` reads it instead of
     # racing the stall with a client timeout.
     stall_released = threading.Event()
+    # Every arrival is stamped with the test generation ACCEPTING its
+    # connection (see _GatewayServer). An adapter terminated mid-probe (#454:
+    # the fixed-port test ends while its sweep is in flight) leaves request
+    # bytes in the kernel's socket buffer, and a handler starved by a loaded
+    # runner records them after the next test has begun — an arrival no
+    # running test asked for. Only the stamp tells such a leftover from the
+    # running test's own probe, and turn_window() fences the kernel's accept
+    # queue before a window turns, so a connection still waiting there is
+    # stamped with its own window rather than the next one.
+    generation = 0
+    # Held by the #454 regression tests only: a handler sits between reading a
+    # /v1/messages request's head and recording it (read_started), until the
+    # test releases it after turning the window — the starvation a loaded
+    # runner causes, on demand, with no clock in the ordering.
+    hold_reads = False
+    read_started = threading.Event()
+    read_release = threading.Event()
+
+    def setup(self):
+        super().setup()
+        self.gen = ACCEPT_GEN.get(self.connection, Gateway.generation)
+
+    def _drop(self, path, model):
+        # An arrival of an earlier window: counted nowhere, logged for
+        # attribution, and closed unanswered.
+        self.close_connection = True
+        STALE.append((path.split("?")[0], model, self.gen, Gateway.generation))
 
     def log_message(self, format, *args):  # noqa: A002
         pass
@@ -60,19 +90,51 @@ class Gateway(BaseHTTPRequestHandler):
         self.wfile.write(payload)
 
     def do_GET(self):
-        XFF_SEEN.append(self.headers.get("X-Forwarded-For"))
         ids = list(MODELS) + list(Gateway.extra_models)
-        self._json(200, {"data": [{"id": i, "object": "model"} for i in ids]})
+        payload = {"data": [{"id": i, "object": "model"} for i in ids]}
+        xff = self.headers.get("X-Forwarded-For")
+        # Record only at the moment of recording, atomically against the
+        # next test's turn: reading the head can itself span the switch
+        # (#454), and then this arrival belongs to the window that accepted
+        # it, never to the one running now.
+        with RECORD:
+            if self.gen != Gateway.generation:
+                self._drop(self.path, "")
+                return
+            XFF_SEEN.append(xff)
+        self._json(200, payload)
 
     def do_POST(self):
-        XFF_SEEN.append(self.headers.get("X-Forwarded-For"))
+        # No entry pre-check here: the body is read before any drop, so a
+        # dropped arrival is always logged with the model really on it.
+        if Gateway.hold_reads and self.path.startswith("/v1/messages"):
+            # The loaded runner's starvation, held open for the regression
+            # tests: the request is accepted and stamped, and the read below
+            # completes only when the test releases it after the turn. No
+            # clock: reaping a slow child and fencing the accept queue may
+            # each fit inside the shared bound while their sum does not, and a
+            # hold that expired would record in the window the turn then
+            # clears — a correct drop reported as 'never dropped' (the gate's
+            # finding). setUp and every holding test release it.
+            Gateway.read_started.set()
+            Gateway.read_release.wait()
         raw = self.rfile.read(int(self.headers.get("content-length") or 0))
-        # What the upstream really received — path, headers (lowercased), raw
-        # body — so a test can assert on the wire the shim produced.
-        UPSTREAM.append((self.path, {k.lower(): v for k, v in self.headers.items()}, raw))
         body = json.loads(raw or b"{}")
         model = body.get("model", "")
-        PROBES.append((self.path.split("?")[0], model))
+        # Decide at the moment of recording, not of reading: the next test's
+        # window may have turned — and cleared the lists — while this handler
+        # was still reading, the exact race of #454. The lock makes the check
+        # and the appends one step against the turn; the accept-time stamp is
+        # the whole decision.
+        with RECORD:
+            if self.gen != Gateway.generation:
+                self._drop(self.path, model)
+                return
+            # What the upstream really received — path, headers (lowercased),
+            # raw body — so a test can assert on the wire the shim produced.
+            XFF_SEEN.append(self.headers.get("X-Forwarded-For"))
+            UPSTREAM.append((self.path, {k.lower(): v for k, v in self.headers.items()}, raw))
+            PROBES.append((self.path.split("?")[0], model))
         # A gateway-level refusal answers before any model-specific handling:
         # it is the account or the gateway saying no, whatever the model.
         if Gateway.message_refusal is not None:
@@ -177,6 +239,85 @@ class Gateway(BaseHTTPRequestHandler):
 PROBES: list[tuple[str, str]] = []
 XFF_SEEN: list[str | None] = []
 UPSTREAM: list[tuple[str, dict, bytes]] = []
+# Arrivals of an earlier window, dropped instead of counted: path, model, the
+# generation that accepted the connection, the generation running when it was
+# read. Attribution only (#454) — no count asserts on it.
+STALE: list[tuple[str, str, int, int]] = []
+# A window turn and the clears that begin a test hold this lock, and an
+# arrival is checked-and-recorded while holding it: no handler may pass the
+# stamp check and then append into a window that has already turned over.
+RECORD = threading.Lock()
+# The generation that ACCEPTED each live connection, keyed by its socket;
+# gone with the socket. The handler thread can start only after the next
+# test has begun, and a stamp taken there would name the wrong window for a
+# leftover that was already waiting (#454).
+ACCEPT_GEN: "WeakKeyDictionary[socket.socket, int]" = WeakKeyDictionary()
+# The class stub gateway, set by setUpClass: the window a test turns is the
+# one its handlers record into. The gate's socket-free repros never run
+# setUpClass, so turn_window() must work with no server at all.
+SERVING = None
+
+
+def fence_accepts(srv=None):
+    """Wait until the serve loop has accepted every connection queued so far.
+
+    The kernel's accept queue is first-in first-out, so one connection queued
+    now is accepted after everything already waiting. A loaded runner can
+    starve the serve loop past the switch, and an accept then stamps a
+    connection with the new window although its bytes arrived for the old one
+    — the one signal the handler has would name the wrong window. Queueing
+    this fence and waiting for its accept makes every earlier arrival stamped
+    under the window it belongs to (#454).
+    """
+    if srv is None:
+        srv = SERVING
+    if srv is not None:
+        fence = socket.socket()
+        try:
+            fence.settimeout(HANG_TIMEOUT)
+            fence.bind(("127.0.0.1", 0))
+            srv.fenced.clear()
+            srv.fence = fence.getsockname()
+            fence.connect(srv.server_address)
+            if not srv.fenced.wait(HANG_TIMEOUT):
+                raise AssertionError("the stub gateway never accepted the window's fence")
+        finally:
+            fence.close()
+
+
+def turn_now():
+    """Turn the generation and clear the lists: the next test's window begins."""
+    with RECORD:
+        Gateway.generation += 1
+        PROBES.clear()
+        XFF_SEEN.clear()
+        UPSTREAM.clear()
+        STALE.clear()
+
+
+def turn_window(srv=None):
+    """Begin a test's window: every arrival queued before it is stamped first,
+    then the turn cannot relabel one as belonging to the new window (#454)."""
+    fence_accepts(srv)
+    turn_now()
+
+
+class _GatewayServer(ThreadingHTTPServer):
+    # The address turn_window()'s fence connects from; set just before the
+    # connect and compared here.
+    fence = None
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.fenced = threading.Event()
+
+    def process_request(self, request, client_address):
+        # On the serve thread, at the moment of accept: this is the last
+        # point that still knows which window the bytes arrived in.
+        ACCEPT_GEN[request] = Gateway.generation
+        if client_address == self.fence:
+            self.fenced.set()
+        super().process_request(request, client_address)
 
 
 def listener_outside_the_ephemeral_pool(addr: str) -> tuple[socket.socket, int]:
@@ -207,22 +348,37 @@ def listener_outside_the_ephemeral_pool(addr: str) -> tuple[socket.socket, int]:
 class AdapterTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
+        global SERVING
         # Threaded: on a single-threaded server a stalled probe queued the
         # next requests, and a dead client's queued probe then landed in a
         # later test's PROBES (seen as six stray /v1/messages on macOS CI).
-        cls.srv = ThreadingHTTPServer(("127.0.0.1", 0), Gateway)
+        # _GatewayServer stamps each connection with its arrival's window, so
+        # the same landing under load cannot be counted twice (#454).
+        cls.srv = _GatewayServer(("127.0.0.1", 0), Gateway)
+        SERVING = cls.srv
         cls.port = cls.srv.server_address[1]
         threading.Thread(target=cls.srv.serve_forever, daemon=True).start()
         cls.base = f"http://127.0.0.1:{cls.port}"
 
     @classmethod
     def tearDownClass(cls):
+        global SERVING
         cls.srv.shutdown()
+        SERVING = None
 
     def setUp(self):
-        PROBES.clear()
-        XFF_SEEN.clear()
-        UPSTREAM.clear()
+        # The test that begins here counts only arrivals of its own window:
+        # everything stamped earlier is a dead client's leftover arriving
+        # late, and must not enter this test's lists. turn_window bumps and
+        # clears under RECORD, so an in-flight handler cannot append into a
+        # window that has already turned (#454).
+        Gateway.hold_reads = False
+        # Always released: a handler a failed test left held must never block
+        # the next one. setUp is the only place that clears read_started, so
+        # a gate repro may pre-set it.
+        Gateway.read_release.set()
+        turn_window()
+        Gateway.read_started.clear()
         Gateway.extra_models = []
         Gateway.message_refusal = None
         Gateway.messages_not_implemented = False
@@ -1426,6 +1582,241 @@ class AdapterTest(unittest.TestCase):
         self.assertNotIn("no route", out.stdout + out.stderr)
         # The stale row was re-asked, not served.
         self.assertEqual([p for p, _m in PROBES], ["/v1/messages"])
+
+    def test_a_dead_clients_late_request_is_not_counted_in_a_later_test_issue_454(self):
+        # Issue #454: the re-ask pin above failed on loaded runners only, with
+        # a second /v1/messages no test asked for. The fixed-port test ends
+        # while its adapter's classification sweep is still in flight, and its
+        # cleanup terminates that adapter: the POST bytes the dead client wrote
+        # sit in the kernel's socket buffer, and a handler starved by the load
+        # records one after the next test has already begun and cleared the
+        # lists. An arrival whose connection was accepted in an earlier test
+        # generation is such a leftover — the gateway must never count it.
+        Gateway.read_release.clear()
+        Gateway.hold_reads = True
+        self.addCleanup(Gateway.read_release.set)
+        body = json.dumps({"model": "m-anthropic"}).encode()
+        sock = socket.create_connection(("127.0.0.1", self.port),
+                                        timeout=HANG_TIMEOUT)
+        sock.sendall(b"POST /v1/messages HTTP/1.1\r\nhost: x\r\n"
+                     b"content-type: application/json\r\ncontent-length: "
+                     + str(len(body)).encode() + b"\r\n\r\n" + body)
+        sock.close()  # the client is gone; only the kernel holds the bytes now
+        # The handler has accepted and stamped the connection, and sits on the
+        # held read; only now does the next test begin, so the leftover's read
+        # lands in the new generation, as it did on the loaded runner.
+        self.assertTrue(Gateway.read_started.wait(HANG_TIMEOUT),
+                        "the gateway never accepted the dead client")
+        gen = Gateway.generation
+        turn_window()
+        Gateway.read_release.set()
+        # The held read completes either as a counted arrival (the bug: the
+        # leftover enters the new test's list) or as a drop of an earlier
+        # window's arrival. Only absence is asserted: the drop is pinned on
+        # the real adapter's own request below.
+        self.assertTrue(wait_until(lambda: PROBES or any(e[2] == gen for e in STALE),
+                                   HANG_TIMEOUT),
+                        "the gateway never read the dead client's request")
+        self.assertEqual(PROBES, [],
+                         "a dead client's late request must not be counted")
+        self.assertEqual(UPSTREAM, [],
+                         "a dead client's late request must not be counted")
+        self.assertFalse(XFF_SEEN, "a dead client's late request must not be counted")
+        # (What exactly crossed the window is pinned, on the real adapter's
+        # own request, in test_a_terminated_adapters_inflight_post... below.)
+        # The drop must not cost the running test its own arrivals: a live
+        # probe of the current generation is recorded, as always. No proxy:
+        # the fixture must be reached directly whatever the operator's
+        # environment exports (the gate's finding — a default-proxy opener
+        # would aim this control at HTTP_PROXY instead of the stub).
+        import urllib.request
+        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+        req = urllib.request.Request(self.base + "/v1/messages",
+                                     data=body, method="POST")
+        with opener.open(req, timeout=HANG_TIMEOUT) as response:
+            response.read()
+        self.assertEqual([p for p, _m in PROBES], ["/v1/messages"])
+        self.assertTrue(XFF_SEEN)
+
+    def test_a_terminated_adapters_inflight_post_is_dropped_not_counted_issue_454(self):
+        # The attribution #454 asked for, with the REAL adapter: run exactly
+        # as the fixed-port test runs it — no cache, no translator, so the
+        # classification sweep POSTs each model to the stub gateway — and
+        # terminated mid-sweep exactly as that test's cleanup terminates it.
+        # Its in-flight POST, carrying the model it really put on the wire,
+        # arrives in a later window and must be dropped there, never counted.
+        Gateway.read_release.clear()
+        Gateway.hold_reads = True
+        self.addCleanup(Gateway.read_release.set)
+        p = port_outside_the_ephemeral_pool()
+        f = self.token_file()
+        proc = subprocess.Popen(
+            [*adapter_cmd(), "p", "--port", str(p),
+             "--inbound-token-file", str(f)],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+            env=self._launch_env(XDG_STATE_HOME=str(self.home / ".local/state")))
+
+        def stop():
+            if proc.poll() is None:
+                proc.terminate()
+            proc.communicate(timeout=HANG_TIMEOUT)
+
+        self.addCleanup(stop)
+        for line in proc.stderr:
+            if "new model(s)" in line:
+                break
+        else:
+            self.fail("classification never started")
+        # The sweep's first classification POST is in flight: the gateway
+        # accepted and stamped it, and the starved read has not returned.
+        self.assertTrue(Gateway.read_started.wait(HANG_TIMEOUT),
+                        "no classification POST reached the gateway")
+        # The fixed-port test's cleanup — terminate — lands mid-POST, as it
+        # did in the window the loaded runner never closed.
+        proc.terminate()
+        proc.communicate(timeout=HANG_TIMEOUT)
+        gen = Gateway.generation
+        turn_window()  # the next test begins before the held read returns
+        Gateway.read_release.set()
+        self.assertTrue(wait_until(
+            lambda: any(e[0] == "/v1/messages" and e[2] == gen and e[3] == gen + 1
+                        for e in STALE), HANG_TIMEOUT),
+            "the dead adapter's POST was never dropped")
+        self.assertEqual(PROBES, [],
+                         "a terminated adapter's leftover POST must not be counted")
+        self.assertEqual(UPSTREAM, [],
+                         "a terminated adapter's leftover POST must not be counted")
+        self.assertFalse(XFF_SEEN,
+                         "a terminated adapter's leftover POST must not be counted")
+        # And every arrival that crossed into this window is the adapter's
+        # own request: the stub's own path, one of the models the adapter
+        # really probed. The sweep is concurrent, so more than one POST is
+        # in flight at terminate — which is exactly why CI's pin sometimes
+        # saw the doubled /v1/messages: on main every one of these was a
+        # counted arrival in the next window. Here every one is a drop.
+        crossed = [e for e in STALE
+                   if e[0] == "/v1/messages" and e[2] == gen and e[3] == gen + 1]
+        self.assertTrue(crossed, f"the sweep leaked nothing: {STALE}")
+        for _path, model, _stamp, _now in crossed:
+            self.assertIn(model, MODELS, STALE)
+
+    def test_a_held_post_never_gives_up_on_the_window_turn_issue_454(self):
+        # The gate's finding on acd286b: a hold bounded by the shared timeout
+        # could expire while the test was still reaping a slow child and
+        # fencing the accept queue — each phase inside the bound, their sum
+        # outside it — and the handler would record in the window the turn
+        # then cleared, so a correct drop looked like 'never dropped'. The
+        # hold ends on the release alone: give it a clock four times shorter
+        # than the wait below and it still records nothing before the turn.
+        bound = HANG_TIMEOUT
+        Gateway.read_release.clear()
+        Gateway.hold_reads = True
+        self.addCleanup(Gateway.read_release.set)
+        client, server = socket.socketpair()
+        self.addCleanup(client.close)
+        self.addCleanup(server.close)
+        body = json.dumps({"model": "m-anthropic"}).encode()
+        g = Gateway.__new__(Gateway)
+        g.gen = Gateway.generation
+        g.connection = server
+        g.path = "/v1/messages"
+        g.headers = {"content-length": str(len(body))}
+        g.rfile = io.BytesIO(body)
+        g._json = lambda *_: None
+        with mock.patch.object(sys.modules[__name__], "HANG_TIMEOUT", 0.05):
+            threading.Thread(target=g.do_POST, daemon=True).start()
+            self.assertTrue(Gateway.read_started.wait(bound),
+                            "the held request was never read")
+            gen = Gateway.generation
+            # Four times the patched bound: the sum of the test's own phases
+            # (reaping, fencing) can outlast the bound while each fits inside
+            # it, so a hold that trusted any clock this short has already
+            # recorded in the old window — and the turn below clears it.
+            threading.Event().wait(0.2)
+            self.assertEqual(STALE, [],
+                             "the held request gave up before the turn")
+            self.assertEqual(PROBES, [])
+            turn_now()
+            self.assertEqual(STALE, [])
+        Gateway.read_release.set()
+        self.assertTrue(wait_until(lambda: any(e[2] == gen for e in STALE), bound),
+                        "the released request was never recorded")
+        self.assertEqual(PROBES, [],
+                         "an earlier window's held POST must not be counted")
+        self.assertEqual(UPSTREAM, [])
+        self.assertFalse(XFF_SEEN)
+        self.assertEqual([e for e in STALE if e[2] == gen],
+                         [("/v1/messages", "m-anthropic", gen, gen + 1)])
+
+    def test_a_connection_still_queued_when_the_next_test_begins_is_not_counted_there_issue_454(self):
+        # The starvation no stamp alone can catch: the accept loop itself was
+        # starved past the switch, so the kernel still held the dead client's
+        # connection unaccepted when the next test began, and its accept
+        # stamped it with the new window. A private stub that is not serving
+        # yet holds the client in its accept queue exactly as the starved loop
+        # did; turn_window's fence is queued behind it, so the turn waits
+        # until every earlier arrival is stamped — with its own window.
+        Gateway.read_release.clear()
+        Gateway.hold_reads = True
+        self.addCleanup(Gateway.read_release.set)
+        srv = _GatewayServer(("127.0.0.1", 0), Gateway)
+        self.addCleanup(srv.server_close)
+        body = json.dumps({"model": "m-anthropic"}).encode()
+        dead = socket.create_connection(srv.server_address, timeout=HANG_TIMEOUT)
+        dead.sendall(b"POST /v1/messages HTTP/1.1\r\nhost: x\r\n"
+                     b"content-type: application/json\r\ncontent-length: "
+                     + str(len(body)).encode() + b"\r\n\r\n" + body)
+        dead.close()  # the client is gone; the kernel holds the connection
+        gen = Gateway.generation
+        turner = threading.Thread(target=turn_window, args=(srv,), daemon=True)
+        turner.start()
+        self.assertTrue(wait_until(lambda: srv.fence is not None or not turner.is_alive(),
+                                   HANG_TIMEOUT),
+                        "the window turn never started")
+        # The serve loop starts only now: the queued client is accepted after
+        # the fence was queued, so the turn waits for it.
+        threading.Thread(target=srv.serve_forever, daemon=True).start()
+        self.addCleanup(srv.shutdown)  # only once the loop runs: shutdown() waits on it
+        turner.join(HANG_TIMEOUT)
+        self.assertFalse(turner.is_alive(), "the window never turned")
+        self.assertEqual(Gateway.generation, gen + 1)
+        Gateway.read_release.set()
+        self.assertTrue(wait_until(lambda: PROBES or any(e[2] == gen for e in STALE),
+                                   HANG_TIMEOUT),
+                        "the gateway never read the queued request")
+        self.assertEqual(PROBES, [],
+                         "a connection queued in an earlier window must not be counted")
+        self.assertEqual(UPSTREAM, [],
+                         "a connection queued in an earlier window must not be counted")
+        self.assertFalse(XFF_SEEN,
+                         "a connection queued in an earlier window must not be counted")
+        self.assertEqual([e for e in STALE if e[2] == gen],
+                         [("/v1/messages", "m-anthropic", gen, gen + 1)])
+
+    def test_an_earlier_windows_listing_never_enters_the_next_tests_records_issue_454(self):
+        # The classification sweep also asks for the model list, so a GET left
+        # by a terminated adapter is the same leftover as a POST, and the same
+        # accept-time stamp keeps it out of the next test's records (#454).
+        srv = _GatewayServer(("127.0.0.1", 0), Gateway)
+        self.addCleanup(srv.server_close)
+        threading.Thread(target=srv.serve_forever, daemon=True).start()
+        self.addCleanup(srv.shutdown)
+        # A live client whose connection is accepted before the turn and whose
+        # request bytes arrive after it: the handler sits in the request line
+        # while the window turns, exactly as a starved handler does.
+        client = socket.create_connection(srv.server_address, timeout=HANG_TIMEOUT)
+        self.addCleanup(client.close)
+        fence_accepts(srv)  # the client's connection is accepted and stamped
+        gen = Gateway.generation
+        turn_now()
+        client.sendall(b"GET /v1/models HTTP/1.1\r\nhost: x\r\n\r\n")
+        self.assertTrue(wait_until(lambda: XFF_SEEN or any(e[2] == gen for e in STALE),
+                                   HANG_TIMEOUT),
+                        "the gateway never read the accepted request")
+        self.assertEqual(XFF_SEEN, [],
+                         "an earlier window's model listing must not be recorded")
+        self.assertEqual([e for e in STALE if e[2] == gen],
+                         [("/v1/models", "", gen, gen + 1)])
 
     def test_an_unimplemented_messages_path_is_not_a_refusal_issue_375(self):
         # The merge gate's finding: a 501 answers "this gateway does not
