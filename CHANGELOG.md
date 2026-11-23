@@ -7,6 +7,30 @@
 
 ## Unreleased
 
+## v0.5.29 — 2026-11-23
+
+Cut from main, so it carries every change merged after v0.5.28.
+
+### Changed
+
+- **`ccmorph router dispatch --no-decider` skips the finished-answer score too.** A caller that judges the outcome itself no longer gets a small model's verdict appended to the worker's report (#816).
+
+### Fixed
+
+- Remote Control hosts pin the route profile's tiers, not a second hand-kept map (#815)
+- The Remote Control supervisor and its signed-out 401 report name the account without dying (#805, #807)
+- One damaged day no longer wedges, splits or hangs the usage store (#654)
+- The installer sets its own zsh options before its globs and braces (#778)
+- One owner turns env seconds into durations (#770)
+- The credential picker offers only profiles with a stored key or token (#790)
+- An all-unpriced month carries no share on `quota --json`; `AllUnpriced` owns that answer (#776, #795)
+- The adapter shim reads the upstream knob from the profile conf alone (#773)
+- `ccmorph price` reports an empty price cache (#786)
+- The router refuses a word it does not take instead of acting on it (#784)
+- One resolver routes a profile's calls, exemptions included (#580)
+- The Antigravity rewrite is gated on cliproxyapi 8.0.70 (#631)
+- The pre-start sizing save gives up at its deadline, and a model-scoped readiness wait waits like any other (#757, #766)
+
 ### Added
 
 - **`ccmorph router on` routes subagent work across your profiles.** Off by default. With it on, sessions get a `delegate` tool and Agent hooks: free gateways first, then the subscription furthest behind its pace, then paid keys, and inside a profile the cheapest model that fits the task's kind and tier. `ccmorph router status`, `dispatch` (`--dry-run` to see the pick only) and `report` show and check it. `dispatch` also serves scripts and services: `--timeout` bounds the whole run, flags after `--` reach the worker's claude, and the caller's `CCMORPH_TASK` tags its spend. The hooks never deny an Agent call: when no pick fits the session, the call runs as written.
