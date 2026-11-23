@@ -272,3 +272,17 @@ func TestAnUndeclaredArgumentsSpellingNeverReplacesTheArguments(t *testing.T) {
 		t.Fatalf("the call must route on the pinned profile, ledgered %+v: %s", row, out.String())
 	}
 }
+
+// GH-544: a tier pinned with the window marker in either case is the alias
+// that runs its bare model natively.
+func TestAliasForReadsAPinUnderEitherMarkerSpellingIssue544(t *testing.T) {
+	for _, a := range []string{"opus", "sonnet", "haiku"} {
+		t.Setenv(tier.TierEnvKey(a), "")
+	}
+	for _, pin := range []string{"gw-opus[1m]", "gw-opus[1M]"} {
+		t.Setenv(tier.TierEnvKey("opus"), pin)
+		if got := aliasFor("gw-opus"); got != "opus" {
+			t.Errorf("pin %q: alias %q, want opus", pin, got)
+		}
+	}
+}

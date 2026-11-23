@@ -77,7 +77,7 @@ func readServed(name string) (served, bool) {
 	}
 	set[f["model"]] = true
 	for m := range set {
-		m = strings.TrimSuffix(m, "[1m]")
+		m = tier.TrimWindowMarker(m)
 		if m != "" && !ctxwindow.IsExcluded(f, m) && !slices.Contains(s.models, m) {
 			s.models = append(s.models, m)
 		}

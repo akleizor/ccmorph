@@ -274,3 +274,13 @@ func TestANamedProfileAndModelRunAsNamedPastEveryRoutingFilter(t *testing.T) {
 		t.Fatal("an unknown named profile must fail loudly")
 	}
 }
+
+// GH-544: a model id's window marker comes off in either case before the
+// label reads the name, so an unknown family is named without it.
+func TestLabelsReadAModelUnderEitherMarkerSpellingIssue544(t *testing.T) {
+	for _, model := range []string{"mistral[1m]", "mistral[1M]"} {
+		if got := HeuristicLabel(model); got.Family != "mistral" {
+			t.Errorf("%s: family %q, want mistral", model, got.Family)
+		}
+	}
+}
