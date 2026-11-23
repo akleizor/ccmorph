@@ -296,8 +296,13 @@ func TestRetireRouteNeverSignalsAPidNotRunningTheBridge(t *testing.T) {
 
 // TestMain lets a test run this binary as a route hold: with
 // CCMORPH_TEST_HOLD_USERS set it takes routeHold's hold on that file, whatever
-// its argv says, and runs no test.
+// its argv says, and runs no test. It is also the fake security the keychain
+// tests put on PATH under the name "security" (GH-830): that dispatch needs
+// both variables, so an operator's env alone runs no test differently.
 func TestMain(m *testing.M) {
+	if state := os.Getenv(fakeSecurityEnv); state != "" && filepath.Base(os.Args[0]) == "security" {
+		os.Exit(fakeSecurity(state, os.Args[1:], os.Stdin, os.Stdout, os.Stderr))
+	}
 	if users := os.Getenv("CCMORPH_TEST_HOLD_USERS"); users != "" {
 		os.Exit(routeHold([]string{users}, nil, os.Stdout, io.Discard))
 	}
