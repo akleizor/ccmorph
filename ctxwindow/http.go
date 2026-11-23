@@ -17,6 +17,8 @@ import (
 	"time"
 	"unicode"
 	"unicode/utf8"
+
+	"github.com/akleizor/ccmorph/netroute"
 )
 
 const (
@@ -81,13 +83,12 @@ func origin(u *url.URL) string { return strings.ToLower(u.Scheme) + "://" + stri
 // BuildOpener never carries the credential to another origin: Go, like urllib,
 // copies request headers (x-api-key included) onto a redirect, so a cross-origin
 // redirect fails as a transport error and a same-origin one is followed. It
-// reads HTTPS_PROXY/NO_PROXY from the environment, so an ambient proxy exported
-// by whatever bridge the operator runs reaches the probe unchanged.
+// reads HTTPS_PROXY/NO_PROXY from the environment, and the CA a Remote Control
+// session exports through NODE_EXTRA_CA_CERTS, so the ambient proxy the edge
+// plants and the certificate it signs every host with both reach the probe (#829).
 func BuildOpener() Opener {
-	tr := http.DefaultTransport.(*http.Transport).Clone()
-	tr.Proxy = http.ProxyFromEnvironment
 	return &sameOriginClient{&http.Client{
-		Transport: tr,
+		Transport: netroute.NewTransport(),
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
 			if len(via) >= 10 {
 				return errors.New("stopped after 10 redirects")
