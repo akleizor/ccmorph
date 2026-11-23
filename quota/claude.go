@@ -154,10 +154,10 @@ func claudePlan(subscriptionType, rateLimitTier string) string {
 	return ""
 }
 
-// subscriptionToken is the profile's claude.ai access token and the plan tier
+// SubscriptionToken is the profile's claude.ai access token and the plan tier
 // recorded beside it, from the keychain item Claude Code keeps for that config
 // dir (macOS) or its .credentials.json.
-func subscriptionToken(dir string) (string, string, error) {
+func SubscriptionToken(dir string) (string, string, error) {
 	raw, err := util.ReadSigninCredentials(dir, readKeychain)
 	if err != nil {
 		return "", "", errors.New("not signed in")

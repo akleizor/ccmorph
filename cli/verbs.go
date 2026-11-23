@@ -66,6 +66,8 @@ func (l *launcher) verb(args []string) int {
 		return l.quota(args[1:])
 	case "price":
 		return l.price(args[1:])
+	case "check":
+		return l.check(args[1:])
 	case "_plugin_dirs":
 		// Launchers that exec claude themselves (ccmorph-rc) take the session's plugin path from here.
 		fmt.Println(pluginDirs(l.libDir))
