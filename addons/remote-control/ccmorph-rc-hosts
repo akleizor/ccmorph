@@ -433,7 +433,7 @@ class Host:
         self.login_scans: dict[Path, int] = {}  # bytes of each log the login reader has taken
         self.login_lost: str | None = None     # the failure this run printed, held until acted on
         self.login_restarted = float("-inf")    # when this host was last restarted for its login
-        name = re.sub(r"[^A-Za-z0-9]+", "-", folder.replace(str(Path.home()), "~")).strip("-")
+        name = rc_module().safe_part(folder.replace(str(Path.home()), "~"))
         self.logfile = LOGS / f"{name}.log"
         self.debugfile = LOGS / f"{name}.debug.log"
 
@@ -1821,10 +1821,16 @@ def main(argv: list[str]) -> int:
                     if (h.edge or want.get(folder) != (h.route, h.args) or h.tiers != tiers.get(h.route)
                             or h.permission != perm):
                         hosts.pop(folder).stop()
+                edge_names = {}                # every route owns its edge's log and state name;
                 for route in sorted(routes):   # edges first: bridges start only once theirs is up
+                    name = rc_module().edge_name(route)
+                    if name in edge_names:     # a digest has equal-name cases somewhere, so the
+                        log(f"edge: {route} refused, {edge_names[name]} already owns the name {name}")
+                        continue               # supervisor refuses one rather than share it (#846)
+                    edge_names[name] = route
                     if f"edge:{route}" not in hosts:
                         e = Host(str(EDGES.parent), route, tiers=tiers[route])
-                        e.edge, e.logfile = True, LOGS / f"edge-{route}.log"
+                        e.edge, e.logfile = True, LOGS / f"edge-{name}.log"
                         hosts = {f"edge:{route}": e, **hosts}
                 for folder, (route, args) in want.items():
                     hosts.setdefault(folder, Host(folder, route, args, tiers[route], perm))
