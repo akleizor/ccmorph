@@ -64,3 +64,55 @@ func TestKeychainMigrateMovesThePlainKeyAndReadsItBack(t *testing.T) {
 		t.Fatalf("got %q %v", got, err)
 	}
 }
+
+// GH-848: the keychain walk scanned the state root with the same unescaped
+// join as the router (see router/profiles_test.go for the cause); a root
+// holding `[` made the pattern bad and the walk silently migrated nothing.
+// The walk runs against a fake security on PATH, so it is checked wherever
+// the tests run, not only where a real keychain exists.
+func TestKeychainWalkMigratesEveryConfUnderABracketedRoot(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "state[cd")
+	if err := os.MkdirAll(root, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	fake := t.TempDir()
+	script := filepath.Join(fake, "security")
+	if err := os.WriteFile(script, []byte("#!/bin/sh\ncat >/dev/null\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", fake+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	for _, name := range []string{"a", "b", "bad-name"} {
+		if err := os.WriteFile(filepath.Join(root, name+".conf"),
+			[]byte("type=apikey\napi_key=sk-plain-"+name+"\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.Symlink(filepath.Join(root, "a.conf"), filepath.Join(root, "c.conf")); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := keychainWalk(root); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"a", "b"} {
+		data, err := os.ReadFile(filepath.Join(root, name+".conf"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(string(data), "api_key=keychain:"+name+".api_key") {
+			t.Fatalf("%s.conf was not migrated under a root holding `[`: %s", name, data)
+		}
+	}
+	for _, skipped := range []string{"bad-name", "c"} {
+		data, err := os.ReadFile(filepath.Join(root, skipped+".conf"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		// c.conf is a link to a.conf, so its bytes are a's; what must not
+		// appear anywhere is c's own reference — the walk skipped the link.
+		if strings.Contains(string(data), "keychain:"+skipped+".") {
+			t.Fatalf("%s.conf holds no valid (or is symlinked) profile yet was migrated as it: %s", skipped, data)
+		}
+	}
+}

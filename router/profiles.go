@@ -36,7 +36,7 @@ type served struct {
 
 // profileNames is every valid, non-symlinked conf in the profile root.
 func profileNames() []string {
-	confs, _ := filepath.Glob(filepath.Join(paths.ProfileRoot(), "*.conf"))
+	confs, _ := filepath.Glob(filepath.Join(util.GlobQuote(paths.ProfileRoot()), "*.conf"))
 	var names []string
 	for _, c := range confs {
 		n := strings.TrimSuffix(filepath.Base(c), ".conf")

@@ -70,7 +70,15 @@ func KeychainMigrate(state string) error {
 	if exec.Command("security", "default-keychain").Run() != nil {
 		return nil // no login keychain (a CI or scratch $HOME): the conf stays 0600
 	}
-	confs, _ := filepath.Glob(filepath.Join(state, "*.conf"))
+	return keychainWalk(state)
+}
+
+// keychainWalk migrates every valid, non-symlinked conf under state. Split from
+// KeychainMigrate so the walk itself (GH-848: the root must reach the glob
+// quoted) is testable where no security(1) binary answers; the fake on PATH
+// stands in for it there.
+func keychainWalk(state string) error {
+	confs, _ := filepath.Glob(filepath.Join(GlobQuote(state), "*.conf"))
 	var errs []error
 	for _, conf := range confs {
 		name := strings.TrimSuffix(filepath.Base(conf), ".conf")
