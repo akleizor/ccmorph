@@ -89,6 +89,43 @@ def test_the_hook_never_writes_through_a_planted_link_issue_410(suffix, tmp_path
     assert victim.read_text(encoding="utf-8") == "keep me", "the hook wrote through a planted link"
 
 
+@pytest.mark.parametrize("suffix", ["", ".json"])
+@pytest.mark.parametrize("kind", ["link to a directory", "directory"])
+def test_the_hook_never_creates_a_file_through_a_planted_directory_issue_410(kind, suffix, tmp_path):
+    # `ln SRC DEST` puts the link inside DEST when DEST is a directory, or a link
+    # to one, so a directory planted at a record name would take a file of the
+    # attacker's choosing in the place the link names. The hook must create
+    # exactly the record name or nothing (#410).
+    victim = tmp_path / "victim"
+    victim.mkdir()
+    planted = tmp_path / f"ccmorph-session-end.4194304{suffix}"
+    if kind == "directory":
+        planted.mkdir()
+        victim = planted
+    else:
+        planted.symlink_to(victim, target_is_directory=True)
+    env = {
+        "TMPDIR": str(tmp_path),
+        "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
+        "CLAUDE_CODE_SESSION_ATTENDED": "1",
+        "CLAUDE_CODE_SESSION_ID": "sid-410",
+        "CLAUDE_CONFIG_DIR": "/profiles/work",
+        "CLAUDE_PID": "4194304",
+    }
+    ran = subprocess.run(
+        ["/bin/sh", "-c", _session_end_command()],
+        env=env,
+        input='{"session_id":"sid-410","transcript_path":"/p/sid-410.jsonl"}',
+        text=True,
+        timeout=HANG_TIMEOUT,
+    )
+    assert ran.returncode == 0, "no outcome may fail the hook at session end"
+    assert [e.name for e in victim.iterdir()] == [], "the hook created a file through a planted directory"
+    leftovers = sorted(e.name for e in tmp_path.iterdir() if e.name.startswith("ccmorph-session-end.") and e != planted)
+    other = ".json" if suffix == "" else ""
+    assert leftovers == [f"ccmorph-session-end.4194304{other}"], "the hook left a temporary file behind"
+
+
 def test_the_hook_does_not_wait_on_a_planted_fifo_issue_410(tmp_path):
     # A FIFO at the record's name would leave the hook's own write waiting for
     # a reader that never comes, so the session that is ending never ends (#410).
