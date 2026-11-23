@@ -226,8 +226,19 @@ def pinned_tiers(base) -> dict[str, str]:
 
 
 def profile_field(profile: str, field: str) -> str:
+    """One `field=value` from the profile's conf, or "" when the file is missing
+    or cannot be read as text. An unreadable (mode 000) or undecodable conf is no
+    field, not a crash: the hosts supervisor resolves its account through here at
+    every config reload, so one damaged profile file ended it every time and
+    launchd restarted it into the same crash (GH-845). The cause reaches the
+    supervisor's log (stderr is merged into rc-hosts.log) once per lookup."""
     conf = STATE_ROOT / f"{profile}.conf"
-    for line in conf.read_text().splitlines() if conf.exists() else ():
+    try:
+        text = conf.read_text() if conf.exists() else ""
+    except (OSError, UnicodeDecodeError) as e:
+        print(f"ccmorph-rc: {conf}: unreadable ({e}); treating it as no {field}", file=sys.stderr)
+        return ""
+    for line in text.splitlines():
         if line.startswith(field + "="):
             return line.split("=", 1)[1].strip()
     return ""
