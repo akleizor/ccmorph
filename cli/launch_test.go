@@ -214,6 +214,17 @@ func TestReadEndedSession(t *testing.T) {
 	}
 }
 
+// realTempDir is t.TempDir with its links resolved: macOS spells it under
+// /var, a link to /private/var, and readEndedTranscript returns resolved paths.
+func realTempDir(t *testing.T) string {
+	t.Helper()
+	d, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	return d
+}
+
 // fifoWriter answers a reader that opens the FIFO at path, so a reader that
 // wrongly takes the FIFO for a record completes instead of hanging the test:
 // it writes body and closes. A reader that refuses the FIFO never opens it, so
@@ -311,7 +322,7 @@ func TestResumeHintNeedsAConversationToOffer(t *testing.T) {
 func TestReadEndedTranscript(t *testing.T) {
 	tmp := t.TempDir()
 	t.Setenv("TMPDIR", tmp)
-	home := t.TempDir()
+	home := realTempDir(t)
 	t.Setenv("HOME", home)
 	spoken := filepath.Join(home, ".claude", "projects", "p", "sid-359.jsonl")
 	f := filepath.Join(tmp, "ccmorph-session-end.4194304.json")
@@ -336,7 +347,7 @@ func TestReadEndedTranscript(t *testing.T) {
 	}
 	// A profile keeps its sessions under its own config dir; that store is
 	// trusted as Claude Code's own is.
-	profiles := t.TempDir()
+	profiles := realTempDir(t)
 	profileTranscript := filepath.Join(profiles, "work", "projects", "p", "sid-359.jsonl")
 	if err := os.MkdirAll(filepath.Dir(profileTranscript), 0o755); err != nil {
 		t.Fatal(err)

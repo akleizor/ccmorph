@@ -812,24 +812,37 @@ func readEndedTranscript(pid int, profileDirs string, configDirs ...string) stri
 	var in struct {
 		TranscriptPath string `json:"transcript_path"`
 	}
-	if json.Unmarshal(b, &in) != nil || !transcriptStore(in.TranscriptPath, profileDirs, configDirs...) {
+	if json.Unmarshal(b, &in) != nil {
 		return ""
 	}
-	return in.TranscriptPath
+	p, ok := transcriptStore(in.TranscriptPath, profileDirs, configDirs...)
+	if !ok {
+		return ""
+	}
+	return p
 }
 
-// transcriptStore reports whether p lies inside a projects store Claude Code
-// writes this account's sessions to: its own history, the session's effective
-// config dir (a profile's env may override it), or any profile's under
-// profileDirs. The session-end input arrives at a name in a shared TMPDIR, so
-// the one path it may name is one of these — a file elsewhere, however large,
-// is not read (#410). A profile's root is only trusted while its projects
-// folder exists, the same walk sessionFile takes.
-func transcriptStore(p, profileDirs string, configDirs ...string) bool {
-	if p == "" || !filepath.IsAbs(p) {
-		return false
+// transcriptStore returns the path to read for a transcript path the
+// session-end input named, and whether it lies inside a projects store Claude
+// Code writes this account's sessions to: its own history, the session's
+// effective config dir (a profile's env may override it), or any profile's
+// under profileDirs. The input arrives at a name in a shared TMPDIR, so the one
+// path it may name is one of these. The path must be spelled inside a store and
+// must also lead into one once its links are resolved: carrySession's link
+// resolves into another store, but a link to anywhere else must not steer the
+// read, however large the file (#410). The resolved path is returned, so the
+// later read has no link left to follow. A relative CLAUDE_CONFIG_DIR, or a
+// transcript path Claude Code built from one, is resolved against this
+// process's working directory, which is the child's: runClaude leaves cmd.Dir
+// unset.
+func transcriptStore(p, profileDirs string, configDirs ...string) (string, bool) {
+	if p == "" {
+		return "", false
 	}
-	p = filepath.Clean(p)
+	abs, err := filepath.Abs(p)
+	if err != nil {
+		return "", false
+	}
 	roots := []string{filepath.Join(os.Getenv("HOME"), ".claude", "projects")}
 	for _, dir := range configDirs {
 		if dir != "" {
@@ -840,11 +853,56 @@ func transcriptStore(p, profileDirs string, configDirs ...string) bool {
 		more, _ := filepath.Glob(filepath.Join(globQuote(profileDirs), "*", "projects"))
 		roots = append(roots, more...)
 	}
+	var spelled, resolved []string
 	for _, root := range roots {
-		if !filepath.IsAbs(root) {
+		r, err := filepath.Abs(root)
+		if err != nil {
 			continue
 		}
-		rel, err := filepath.Rel(filepath.Clean(root), p)
+		spelled = append(spelled, r)
+		if real, ok := resolveExisting(r); ok {
+			resolved = append(resolved, real)
+		}
+	}
+	if !underAny(abs, spelled) {
+		return "", false
+	}
+	real, ok := resolveExisting(abs)
+	if !ok || !underAny(real, resolved) {
+		return "", false
+	}
+	return real, true
+}
+
+// resolveExisting resolves every link along p's longest existing prefix and
+// keeps the rest as spelled: nothing below that prefix exists yet, so no link
+// there can lead a later read elsewhere. A name that exists but does not
+// resolve — a dangling or looping link — is refused, since what it leads to
+// could appear after the check (#410).
+func resolveExisting(p string) (string, bool) {
+	tail := ""
+	for {
+		real, err := filepath.EvalSymlinks(p)
+		if err == nil {
+			return filepath.Join(real, tail), true
+		}
+		if _, lerr := os.Lstat(p); !os.IsNotExist(lerr) {
+			return "", false
+		}
+		parent := filepath.Dir(p)
+		if parent == p {
+			return "", false
+		}
+		tail = filepath.Join(filepath.Base(p), tail)
+		p = parent
+	}
+}
+
+// underAny reports whether p lies strictly inside one of roots; every path is
+// absolute and clean.
+func underAny(p string, roots []string) bool {
+	for _, root := range roots {
+		rel, err := filepath.Rel(root, p)
 		if err == nil && rel != "." && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
 			return true
 		}
@@ -1752,6 +1810,8 @@ func (l *launcher) runClaude(env, args []string) int {
 	l.child = nil
 	l.mu.Unlock()
 	l.ended = readEndedSession(cmd.Process.Pid)
+	// The child runs in this process's working directory (cmd.Dir is unset), so a
+	// relative CLAUDE_CONFIG_DIR names the store transcriptStore resolves against it.
 	configDir, _ := envGet(env, "CLAUDE_CONFIG_DIR")
 	l.endedTranscript = readEndedTranscript(cmd.Process.Pid, l.profileDirs, configDir)
 	if err == nil {
