@@ -1,7 +1,9 @@
 package cli
 
 import (
+	"errors"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -29,6 +31,136 @@ func doctorOutput(t *testing.T, l *launcher, name string) (string, int) {
 		t.Fatal(err)
 	}
 	return string(b), rc
+}
+
+// TestDoctorProviderAsksTheLaunchRefusal is GH-787: a provider profile's launch
+// refuses to start its bridge when cliproxyapi is missing or the profile has no
+// usable auth directory (providerStartRefusal, the check run and hop share), yet
+// doctor checked only the saved fields and ended `OK ready`. Doctor asks that
+// same check, prints its words as a failing row and names them in the verdict;
+// a non-provider profile does not depend on the bridge at all.
+func TestDoctorProviderAsksTheLaunchRefusal(t *testing.T) {
+	for _, tc := range []struct {
+		name, conf string
+		bridge     bool
+		auth       string // "", "dir", "symlink", "rootsymlink"
+		row        string // a line the report must contain, in full
+		lastStart  string // what the final verdict line must start with
+		wantRC     int
+	}{
+		{
+			name: "bridge missing", conf: "type=provider\nprovider=antigravity\n", auth: "dir",
+			wantRC: 1,
+		},
+		{
+			name: "bridge and auth missing", conf: "type=provider\nprovider=antigravity\n",
+			wantRC: 1,
+		},
+		{
+			name: "auth missing", conf: "type=provider\nprovider=antigravity\n", bridge: true,
+			row:       "FAIL provider bridge: no auth directory for 'prov' — run: ccmorph login prov",
+			lastStart: "FAIL not ready: no auth directory for 'prov' — run: ccmorph login prov",
+			wantRC:    1,
+		},
+		{
+			name: "auth symlink", conf: "type=provider\nprovider=antigravity\n", bridge: true,
+			auth:      "symlink",
+			lastStart: "FAIL not ready: auth directory for 'prov' is a symlink, refusing: ",
+			wantRC:    1,
+		},
+		{
+			name: "auth root symlink", conf: "type=provider\nprovider=antigravity\n", bridge: true,
+			auth:      "rootsymlink",
+			lastStart: "FAIL not ready: auth directory root is a symlink, refusing: ",
+			wantRC:    1,
+		},
+		{
+			name: "ready", conf: "type=provider\nprovider=antigravity\n", bridge: true, auth: "dir",
+			row:       "OK provider bridge: cliproxyapi installed, auth directory present",
+			lastStart: "OK ready: start it with ccmorph run prov",
+		},
+		{
+			// No bridge on PATH, and the profile is not failed for it: its
+			// verdict is the sign-in's own question, not the bridge's.
+			name: "account profile", conf: "type=sub\nemail=a@example.test\n",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			state := t.TempDir()
+			if err := os.WriteFile(filepath.Join(state, "prov.conf"), []byte(tc.conf), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			bin := t.TempDir()
+			claude := "#!/bin/sh\nprintf '{\"loggedIn\": true}\\n'\n"
+			if err := os.WriteFile(filepath.Join(bin, "claude"), []byte(claude), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if tc.bridge {
+				if err := os.WriteFile(filepath.Join(bin, "cliproxyapi"), []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+					t.Fatal(err)
+				}
+			}
+			switch tc.auth {
+			case "dir":
+				if err := os.MkdirAll(filepath.Join(state, "auth", "prov"), 0o700); err != nil {
+					t.Fatal(err)
+				}
+			case "symlink":
+				if err := os.MkdirAll(filepath.Join(state, "auth"), 0o700); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Symlink(t.TempDir(), filepath.Join(state, "auth", "prov")); err != nil {
+					t.Fatal(err)
+				}
+			case "rootsymlink":
+				real := t.TempDir()
+				if err := os.MkdirAll(filepath.Join(real, "prov"), 0o700); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Symlink(real, filepath.Join(state, "auth")); err != nil {
+					t.Fatal(err)
+				}
+			}
+			// The stubs' directory alone: no brew and no host cliproxyapi decides
+			// the install step or the bridge verdict.
+			t.Setenv("PATH", bin)
+			t.Setenv("HOME", t.TempDir())
+			step := util.ClipInstallStep()
+
+			l := &launcher{dir: state, profileDirs: filepath.Join(t.TempDir(), "profiles")}
+			out, rc := doctorOutput(t, l, "prov")
+			if rc != tc.wantRC {
+				t.Fatalf("doctor exit status = %d, want %d:\n%s", rc, tc.wantRC, out)
+			}
+			last := strings.TrimSpace(out)
+			if i := strings.LastIndex(last, "\n"); i >= 0 {
+				last = last[i+1:]
+			}
+			switch tc.name {
+			case "bridge missing", "bridge and auth missing":
+				why := "cliproxyapi not found — install it: " + step
+				tc.row = "FAIL provider bridge: " + why
+				tc.lastStart = "FAIL not ready: " + why
+			}
+			if tc.row != "" && !strings.Contains(out, "\n"+tc.row+"\n") {
+				t.Fatalf("doctor report missing row %q:\n%s", tc.row, out)
+			}
+			if tc.lastStart != "" && !strings.HasPrefix(last, tc.lastStart) {
+				t.Fatalf("doctor verdict = %q, want it to start with %q:\n%s", last, tc.lastStart, out)
+			}
+			if tc.wantRC != 0 && strings.Contains(out, "OK ready") {
+				t.Fatalf("doctor claimed the refused provider was ready:\n%s", out)
+			}
+			if tc.name == "account profile" && strings.Contains(out, "provider bridge") {
+				t.Fatalf("a non-provider profile must not report a provider bridge:\n%s", out)
+			}
+			if tc.name == "auth missing" {
+				if _, err := os.Lstat(filepath.Join(state, "auth")); !errors.Is(err, fs.ErrNotExist) {
+					t.Fatalf("doctor must not create %s/auth: %v", state, err)
+				}
+			}
+		})
+	}
 }
 
 // TestDoctorTranslatorVerdictUsesTheModelLaunchClassifies is GH-412: a gateway
