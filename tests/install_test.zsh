@@ -41,7 +41,7 @@ typeset -gA _unit_cost=(
   xdg        4   # 5f: XDG_CONFIG_HOME cannot hide the runtime from the command (#834)
   linkspell  9   # 5d + 5e: equivalent spellings, links and the rm line
   histlink   2   # 5f: shared-history store links and the rm line (#810)
-  rmguard    3   # 5g: no printed rm reaches native claude, its chain, plugins or the home (#810)
+  rmguard    4   # 5g: no printed rm reaches native claude, its chain, plugins or the home (#810)
   rerun      1   # 6
   optdeps    2   # 7
   remote    12   # 8, incl. the make-dist release build
@@ -1215,7 +1215,7 @@ rg_native_kept() {  # $1 = case dir: follows the printed rm, then checks the hom
 }
 rg_left_off() {  # $1 = case dir, $2 = the operand as the report spells it
   if [[ ! -s "$1/rm" ]] && grep -qF "  $2  (" "$1/out" && grep -qF "$2 is left off the rm" "$1/out" \
-     && ! grep -qxF 'To remove those too:' "$1/out"; then
+     && ! grep -qxF 'To remove those too:' "$1/out" && ! grep -qF "$2 is a symlink to" "$1/out"; then
     ok "rmguard: ${1:t}: the root stays on the kept list, off the rm, and is named on its own line"
   else
     fail "rmguard: ${1:t}: the rm still names a root that reaches native claude or the home"; cat "$1/out"
@@ -1347,6 +1347,105 @@ rg_left_off "$c" "$c/hop"; rg_native_kept "$c"
 [[ -L "$c/hop" && -f "$c/home/.claude/settings.json" ]] \
   && ok "rmguard: twohop: a mid-chain link survives" \
   || { fail "rmguard: twohop: the printed rm cut ~/.claude off"; cat "$c/out"; }
+
+# A link ~/.claude is reached through that sits INSIDE a target path, not at
+# its end: ~/.claude -> actual/state/native with actual/state itself a link to
+# data (#810 gate). Whether the override names that link through `..` past
+# another link, plainly, or names a relative target's middle hop — or a real
+# root holds such a link — the rm must leave it alone: removing it cuts native
+# claude off. Each case dir is resolved (`:P`) so the expected spellings match
+# a host whose temp dir sits behind a symlink (macOS /tmp).
+rg_hop() {  # $1 = case name; prints a resolved case dir: ~/.claude -> actual/state/native, actual/state -> data, alias -> actual/child
+  local c; c=$(rg_case "$1"); c="${c:P}"
+  mkdir -p "$c/actual/child" "$c/data"
+  mv "$c/home/.claude" "$c/data/native"
+  ln -s "$c/data" "$c/actual/state"
+  ln -s "$c/actual/state/native" "$c/home/.claude"
+  ln -s "$c/actual/child" "$c/alias"
+  print -r -- "$c"
+}
+for rg_ps in midhop:alias/../state/ midhopplain:alias/../state midhopdirect:actual/state; do
+  rg_n="${rg_ps%%:*}"; c=$(rg_hop "$rg_n")
+  rg_run "$c" CCMORPH_STATE_DIR="$c/${rg_ps#*:}"
+  rg_left_off "$c" "$c/actual/state"; rg_native_kept "$c"
+  [[ -L "$c/actual/state" && -f "$c/home/.claude/settings.json" ]] \
+    && ok "rmguard: $rg_n: the mid-path link ~/.claude is reached through survives" \
+    || { fail "rmguard: $rg_n: the printed rm cut ~/.claude off"; cat "$c/out"; }
+done
+# A relative target whose middle hop is a link: ~/.claude -> ../mid/native.
+c=$(rg_case relhop); c="${c:P}"; mkdir -p "$c/data"
+mv "$c/home/.claude" "$c/data/native"; ln -s "$c/data" "$c/mid"; ln -s ../mid/native "$c/home/.claude"
+rg_run "$c" CCMORPH_STATE_DIR="$c/mid"; rg_left_off "$c" "$c/mid"; rg_native_kept "$c"
+# A real root that HOLDS a link ~/.claude is reached through.
+c=$(rg_case holdslink); c="${c:P}"; mkdir -p "$c/root" "$c/data"
+mv "$c/home/.claude" "$c/data/native"; ln -s "$c/data" "$c/root/lnk"; ln -s "$c/root/lnk/native" "$c/home/.claude"
+rg_run "$c" CCMORPH_STATE_DIR="$c/root"; rg_left_off "$c" "$c/root"; rg_native_kept "$c"
+[[ -L "$c/root/lnk" ]] && ok "rmguard: holdslink: the link inside the root survives" \
+  || { fail "rmguard: holdslink: the printed rm deleted the link inside the root"; cat "$c/out"; }
+
+# A symlink in ~/.claude or its plugin store leads out: settings kept in a
+# dotfiles directory, an agents dir linked in, a plugin store moved with a link
+# inside it, and ~/.claude.json linked the same way or named as the root. A root
+# that holds what one leads to, or lies inside it, stays off the rm.
+c=$(rg_case dotfiles); mkdir -p "$c/dots/claude"
+mv "$c/home/.claude/settings.json" "$c/dots/claude/settings.json"; ln -s "$c/dots/claude/settings.json" "$c/home/.claude/settings.json"
+rg_run "$c" CCMORPH_STATE_DIR="$c/dots"; rg_left_off "$c" "$c/dots"; rg_native_kept "$c"
+c=$(rg_case linkedagents); mkdir -p "$c/ext/agents/ccmorph"; print x >"$c/ext/agents/a.md"; ln -s "$c/ext/agents" "$c/home/.claude/agents"
+rg_run "$c" CCMORPH_STATE_DIR="$c/ext/agents/ccmorph"; rg_left_off "$c" "$c/ext/agents/ccmorph"; rg_native_kept "$c"
+[[ -f "$c/home/.claude/agents/a.md" && -d "$c/ext/agents/ccmorph" ]] && ok "rmguard: linkedagents: the linked agents dir survives" \
+  || { fail "rmguard: linkedagents: the printed rm reached the linked agents dir"; cat "$c/out"; }
+c=$(rg_case deeplink); mv "$c/home/.claude/plugins" "$c/pl"; ln -s "$c/pl" "$c/home/.claude/plugins"
+mkdir -p "$c/vault/cache/x"; ln -s "$c/vault/cache" "$c/pl/cache"
+rg_run "$c" CCMORPH_STATE_DIR="$c/vault"; rg_left_off "$c" "$c/vault"; rg_native_kept "$c"
+[[ -d "$c/home/.claude/plugins/cache/x" ]] && ok "rmguard: deeplink: what a link in the moved plugin store leads to survives" \
+  || { fail "rmguard: deeplink: the printed rm reached the plugin cache"; cat "$c/out"; }
+c=$(rg_case chain2); mkdir -p "$c/ext/agents" "$c/vault/sub"; print x >"$c/vault/sub/x.md"
+ln -s "$c/ext/agents" "$c/home/.claude/agents"; ln -s "$c/vault/sub" "$c/ext/agents/sub"
+rg_run "$c" CCMORPH_STATE_DIR="$c/vault"; rg_left_off "$c" "$c/vault"; rg_native_kept "$c"
+[[ -f "$c/home/.claude/agents/sub/x.md" ]] && ok "rmguard: chain2: what a link two links away from ~/.claude leads to survives" \
+  || { fail "rmguard: chain2: the printed rm reached a file native claude reads through two links"; cat "$c/out"; }
+c=$(rg_case claudejson); mkdir -p "$c/dots"; print -r -- '{}' >"$c/dots/claude.json"; ln -s "$c/dots/claude.json" "$c/home/.claude.json"
+rg_run "$c" CCMORPH_STATE_DIR="$c/dots"; rg_left_off "$c" "$c/dots"; rg_native_kept "$c"
+[[ -f "$c/home/.claude.json" ]] && ok "rmguard: claudejson: ~/.claude.json survives" \
+  || { fail "rmguard: claudejson: the printed rm deleted ~/.claude.json"; cat "$c/out"; }
+c=$(rg_case claudejsonroot); print -r -- '{}' >"$c/home/.claude.json"
+rg_run "$c" CCMORPH_STATE_DIR="$c/home/.claude.json"; rg_left_off "$c" "$c/home/.claude.json"; rg_native_kept "$c"
+
+# The plugin store linked into the projects store: the rm may name a history
+# store, never one that holds the plugin store.
+c=$(rg_case storeplugins); mkdir -p "$c/home/.claude/projects"
+mv "$c/home/.claude/plugins" "$c/home/.claude/projects/plugins"; ln -s projects/plugins "$c/home/.claude/plugins"
+rg_run "$c"
+if [[ "$(<"$c/rm")" == "  rm -rf $c/home/.config/ccmorph" ]] && grep -qF "$c/home/.claude/projects is left off the rm" "$c/out"; then
+  ok "rmguard: storeplugins: a projects store that holds the plugin store stays off the rm"
+else
+  fail "rmguard: storeplugins: the rm names a projects store that holds the plugin store"; cat "$c/out"
+fi
+rg_native_kept "$c"
+
+# Controls: links native claude keeps that lead nowhere near ccmorph's files —
+# a link inside ~/.claude to a file beside it, one to the home itself, a loop,
+# a dangling link, and a projects store moved into the state root — never take
+# an ordinary operand off the rm.
+c=$(rg_case innerlinks); mkdir -p "$c/home/.config/ccmorph/profiles/work" "$c/home/.claude/debug"
+print x >"$c/home/.claude/debug/1.txt"; ln -s 1.txt "$c/home/.claude/debug/latest"; ln -s .. "$c/home/.claude/up"
+ln -s loop "$c/home/.claude/loop"; ln -s "$c/nowhere" "$c/home/.claude/dangling"
+rg_run "$c"
+if [[ "$(<"$c/rm")" == "  rm -rf $c/home/.config/ccmorph" ]] && ! grep -qF 'is left off the rm' "$c/out"; then
+  ok "rmguard: innerlinks: links inside ~/.claude leave the state root on the rm"
+else
+  fail "rmguard: innerlinks: an inner link took the state root off the rm"; cat "$c/out"
+fi
+rg_native_kept "$c"
+c=$(rg_case histinroot); mkdir -p "$c/home/.config/ccmorph/profiles/work/projects/-x"
+ln -s "$c/home/.config/ccmorph/profiles/work/projects" "$c/home/.claude/projects"
+rg_run "$c"; rm_line=" $(<"$c/rm") "
+if [[ "$rm_line" == *" $c/home/.config/ccmorph "* ]] && ! grep -qF 'is left off the rm' "$c/out"; then
+  ok "rmguard: histinroot: a projects store moved into the state root leaves the root on the rm"
+else
+  fail "rmguard: histinroot: the state root left the rm"; cat "$c/out"
+fi
+rg_native_kept "$c"
 
 # Control: a plain home keeps every operand — state root, receipts and the
 # real history stores — and following the rm removes exactly those.
