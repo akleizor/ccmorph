@@ -6,6 +6,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"syscall"
 	"testing"
 	"time"
@@ -606,4 +607,118 @@ func TestAnUnreadableRecordWhileHeldIsRefusedLoudly(t *testing.T) {
 		t.Fatal("the bridge another session holds must keep running")
 	}
 	a.Release(auth)
+}
+
+// fdsNaming is how many of this process's descriptors are open on the file fi
+// describes, read from /proc/self/fd: it is how the test below sees Release
+// open the mutex without a hook in Release itself.
+func fdsNaming(t *testing.T, fi os.FileInfo) int {
+	t.Helper()
+	entries, err := os.ReadDir("/proc/self/fd")
+	if err != nil {
+		t.Fatal(err)
+	}
+	n := 0
+	for _, e := range entries {
+		if di, err := os.Stat(filepath.Join("/proc/self/fd", e.Name())); err == nil && os.SameFile(fi, di) {
+			n++
+		}
+	}
+	return n
+}
+
+// GH-837 (merge gate, c513c37): rm takes a profile's bridge files while a
+// session of it still runs. That session's Release opened the old mutex before
+// the unlink; a fresh launch then made a new mutex and is starting its bridge.
+// The old Release must finish on the generation it owns, the old mutex and its
+// own users lock, and never queue on the fresh bridge's mutex and then remove
+// the fresh record: a bridge left running with no record lets the next launch
+// start a second one on the same auth directory (#250).
+func TestAReleaseQueuedOnARemovedMutexLeavesTheNextBridgesRecord(t *testing.T) {
+	if _, err := os.ReadDir("/proc/self/fd"); err != nil {
+		t.Skip("needs /proc/self/fd to see Release open the mutex")
+	}
+	root := t.TempDir()
+	files := BridgeFiles(root, "p")
+	old, ok, err := AcquireBridge(root, "p", func() (string, string, string, string, bool) {
+		return "0", "4100", "stub", filepath.Join(root, "old"), true
+	})
+	if err != nil || !ok {
+		t.Fatalf("the old bridge must start: ok=%v err=%v", ok, err)
+	}
+	mu, err := os.OpenFile(files[1], os.O_RDWR, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mu.Close()
+	muInfo, err := mu.Stat()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := syscall.Flock(int(mu.Fd()), syscall.LOCK_EX); err != nil {
+		t.Fatal(err)
+	}
+	released := make(chan struct{})
+	go func() { old.Release(filepath.Join(root, "p")); close(released) }()
+	for until := time.Now().Add(5 * time.Second); fdsNaming(t, muInfo) < 2; time.Sleep(time.Millisecond) {
+		if time.Now().After(until) {
+			t.Fatal("the old Release never opened the mutex")
+		}
+	}
+	for _, p := range files { // rm takes the bridge files with the profile
+		if err := os.Remove(p); err != nil {
+			t.Fatal(err)
+		}
+	}
+	type acquired struct {
+		ok  bool
+		err error
+	}
+	entered, resume := make(chan struct{}), make(chan struct{})
+	fresh := make(chan acquired, 1)
+	go func() {
+		_, ok, err := AcquireBridge(root, "p", func() (string, string, string, string, bool) {
+			close(entered)
+			<-resume
+			return "0", "4200", "stub", filepath.Join(root, "new"), true
+		})
+		fresh <- acquired{ok, err}
+	}()
+	select {
+	case <-entered:
+	case got := <-fresh:
+		t.Fatalf("the fresh acquire ended before its start: ok=%v err=%v", got.ok, got.err)
+	case <-time.After(5 * time.Second):
+		t.Fatal("the fresh acquire never reached its start")
+	}
+	if err := syscall.Flock(int(mu.Fd()), syscall.LOCK_UN); err != nil {
+		t.Fatal(err)
+	}
+	releasedFirst := false
+	select {
+	case <-released:
+		releasedFirst = true
+	case <-time.After(5 * time.Second):
+	}
+	close(resume)
+	select {
+	case got := <-fresh:
+		if got.err != nil || !got.ok {
+			t.Fatalf("the fresh bridge must start: ok=%v err=%v", got.ok, got.err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the fresh acquire never finished")
+	}
+	select {
+	case <-released:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the old Release never finished")
+	}
+	raw, err := os.ReadFile(files[0])
+	if err != nil || !strings.Contains(string(raw), " 4200 ") {
+		t.Fatalf("the old Release removed the fresh bridge's record: %q (%v)", raw, err)
+	}
+	if !releasedFirst {
+		t.Fatal("the old Release queued on the fresh bridge's mutex instead of finishing on the one it opened")
+	}
 }
