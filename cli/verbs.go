@@ -232,22 +232,38 @@ func (l *launcher) noProfile(name string) { l.err(l.noProfileMsg(name)) }
 // badNameMsg is profile.BadNameMsg plus the profiles that do exist, when any:
 // one line, the same from every verb, and the list that spots a typo the way
 // the no-profile reply does (#228, #373).
-func (l *launcher) badNameMsg(name string) string {
-	msg := profile.BadNameMsg(name)
+func (l *launcher) badNameMsg(name string) string { return l.nameRefusal(profile.BadNameMsg(name)) }
+
+// rmBadNameMsg is badNameMsg in rm's voice: rm takes the legacy range, so the
+// length reason names the bound rm applies (#551).
+func (l *launcher) rmBadNameMsg(name string) string {
+	return l.nameRefusal(profile.RemovableBadNameMsg(name))
+}
+
+// nameRefusal appends the profiles that do exist, when any, so a refusal's one
+// line spots a typo the way the no-profile reply does.
+func (l *launcher) nameRefusal(msg string) string {
 	if names := l.confNames(); len(names) > 0 {
 		msg += ". Profiles: " + strings.Join(names, " ")
 	}
 	return msg
 }
 
-// badName is the one refusal every verb gives a word that can never be a
-// profile name (#373). A name left out is a usage fault, not a bad word.
-func (l *launcher) badName(verb, name string) int {
+// badName is the refusal a verb gives a word that can never be a profile name
+// (#373). A name left out is a usage fault, not a bad word.
+func (l *launcher) badName(verb, name string) int { return l.refuseName(verb, name, l.badNameMsg) }
+
+// rmBadName is badName for the one verb whose name rule is wider than
+// ValidName's: the refusal names rm's own bound (#551).
+func (l *launcher) rmBadName(verb, name string) int { return l.refuseName(verb, name, l.rmBadNameMsg) }
+
+// refuseName prints a name refusal and is the exit it gives.
+func (l *launcher) refuseName(verb, name string, msg func(string) string) int {
 	if name == "" {
 		l.err("usage: " + usageLine(verb))
 		return 1
 	}
-	l.err(l.badNameMsg(name))
+	l.err(msg(name))
 	return 1
 }
 
