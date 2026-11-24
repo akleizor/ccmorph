@@ -9,7 +9,7 @@ import tempfile
 
 import pytest
 
-from support import CLAUDE_MISSING, HANG_TIMEOUT, anthropic_accepts_the_key
+from support import CLAUDE_MISSING, HANG_TIMEOUT, anthropic_accepts_the_key, path_without
 from fake_adapter import CORE_DISPATCH
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -349,7 +349,8 @@ def test_update_and_uninstall_under_homebrew_name_the_brew_command(tmp_path):
 
 
 def _help_add(tmp_path, bridge, providers='claude antigravity codex'):
-    """help add with a PATH that has only a fake cliproxyapi, when bridge is given."""
+    """help add with a PATH that has only a fake cliproxyapi, when bridge is
+    given — and holds none otherwise, wherever the runner carries one (#414)."""
     bin_dir = tmp_path / 'bin'
     bin_dir.mkdir(exist_ok=True)
     if bridge:
@@ -359,7 +360,8 @@ def _help_add(tmp_path, bridge, providers='claude antigravity codex'):
                         ' echo "  -$p-login"; done; exit 0; fi\n'
                         'exit 1\n')
         fake.chmod(0o755)
-    env = {**os.environ, 'HOME': str(tmp_path / 'home'), 'PATH': f'{bin_dir}:/usr/bin:/bin',
+    env = {**os.environ, 'HOME': str(tmp_path / 'home'),
+           'PATH': f'{bin_dir}:{path_without("cliproxyapi", path="/usr/bin:/bin")}',
            'CCMORPH_LIB_DIR': str(ROOT / "lib"), 'CCMORPH_STATE_DIR': str(tmp_path / 'state')}
     result = subprocess.run([str(ROOT / "bin/ccmorph"), 'help', 'add'], env=env,
                             capture_output=True, text=True, timeout=HANG_TIMEOUT)
@@ -408,7 +410,11 @@ def test_add_more_signins_names_the_machines_own_install_step_gh_369(tmp_path):
     state, home, bindir, tmp = (tmp_path / d for d in ('state', 'home', 'bin', 'tmp'))
     for d in (state, home, bindir, tmp):
         d.mkdir()
-    env = {**os.environ, 'HOME': str(home), 'PATH': f'{bindir}:/usr/bin:/bin',
+    # The system directories keep every tool but the ones this test seeds its
+    # own answers for: a machine that carries the real brew would otherwise
+    # decide which step is the machine's own before the test asks (#414).
+    env = {**os.environ, 'HOME': str(home),
+           'PATH': f'{bindir}:{path_without("cliproxyapi", "brew", path="/usr/bin:/bin")}',
            'TMPDIR': str(tmp), 'CCMORPH_STATE_DIR': str(state),
            'CCMORPH_LIB_DIR': str(ROOT / 'lib')}
     assert shutil.which('cliproxyapi', path=env['PATH']) is None, 'the test PATH must not hold a cliproxyapi'
@@ -430,6 +436,66 @@ def test_add_more_signins_names_the_machines_own_install_step_gh_369(tmp_path):
     assert 'router-for-me' not in result.stdout, result.stdout
 
 
+def test_add_claude_account_without_claude_names_the_missing_cli_gh_789(tmp_path):
+    """#789: Enter on the highlighted "Claude account" row on a machine whose
+    PATH holds no claude exited 1 with only "logout failed" — it named neither
+    the missing program nor the fix, and left no next step. The account
+    sign-in now asks the question `ccmorph run` asks first (#282): the one
+    sentence with the install link answers, for `add` and for `login`, and
+    saves nothing: the install command and the way to another method answer
+    with it. Methods that exec no claude keep working with it absent, and a
+    PATH that holds one keeps the account flow reaching its own login."""
+    state, home, bindir, tmp = (tmp_path / d for d in ('state', 'home', 'bin', 'tmp'))
+    for d in (state, home, bindir, tmp):
+        d.mkdir()
+    # The system directories keep every tool but claude: the gate's machine
+    # carries the real one, and a PATH that found it would answer before the
+    # refusal the test is about ever ran (#414).
+    env = {**os.environ, 'HOME': str(home),
+           'PATH': f'{bindir}:{path_without("claude", path="/usr/bin:/bin")}',
+           'TMPDIR': str(tmp), 'CCMORPH_STATE_DIR': str(state),
+           'CCMORPH_LIB_DIR': str(ROOT / 'lib')}
+    assert shutil.which('claude', path=env['PATH']) is None, 'the test PATH must not hold a claude'
+    result = subprocess.run([str(ROOT / 'bin/ccmorph'), 'add', 'demo'], env=env,
+                            input='sub\n', capture_output=True, text=True, timeout=HANG_TIMEOUT)
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert CLAUDE_MISSING in result.stderr, result.stderr
+    assert 'curl -fsSL https://claude.ai/install.sh' in result.stderr, result.stderr
+    assert 'pick another sign-in method: 2) Claude token, 3) API key' in result.stderr, result.stderr
+    assert 'logout failed' not in result.stderr, result.stderr
+    assert not (state / 'demo.conf').exists()
+    # login signs the same flow: a signed-out Claude account profile on the
+    # same PATH gets the same sentence, never the bare "login failed".
+    (state / 'demo.conf').write_text('type=sub\nemail=a@b.c\n')
+    result = subprocess.run([str(ROOT / 'bin/ccmorph'), 'login', 'demo'], env=env,
+                            input='', capture_output=True, text=True, timeout=HANG_TIMEOUT)
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert CLAUDE_MISSING in result.stderr, result.stderr
+    assert 'then run: ccmorph login demo' in result.stderr, result.stderr
+    assert 'login failed' not in result.stderr, result.stderr
+    assert (state / 'demo.conf').read_text() == 'type=sub\nemail=a@b.c\n'
+    # A method that execs no claude still adds with it absent.
+    (state / 'demo.conf').unlink()
+    anthropic_accepts_the_key(bindir)
+    result = subprocess.run([str(ROOT / 'bin/ccmorph'), 'add', 'demo'], env=env,
+                            input='token\nsk-ant-oat01-abcdefghij0123456789ABCD\n',
+                            capture_output=True, text=True, timeout=HANG_TIMEOUT)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert 'Added' in result.stdout, result.stdout
+    # The same sign-in on a PATH that does hold claude reaches its login:
+    # the answer above refuses only a machine with no claude to run. (The
+    # fake signs in no one, so the add still ends 1 — past the refusal.)
+    (bindir / 'claude').write_text('#!/bin/sh\nexit 0\n')
+    (bindir / 'claude').chmod(0o755)
+    (state / 'demo.conf').unlink()
+    shutil.rmtree(state / 'profiles' / 'demo', ignore_errors=True)
+    result = subprocess.run([str(ROOT / 'bin/ccmorph'), 'add', 'demo'], env=env,
+                            input='sub\n', capture_output=True, text=True, timeout=HANG_TIMEOUT)
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert CLAUDE_MISSING not in result.stderr, result.stderr
+    assert 'no Claude account profile found after login' in result.stderr, result.stderr
+
+
 def test_run_without_claude_names_the_problem_and_the_path_it_searched(tmp_path):
     """#282: a launch that cannot find claude says what is missing, links its
     setup page and shows the PATH it searched (the sentence doctor and the
@@ -440,8 +506,10 @@ def test_run_without_claude_names_the_problem_and_the_path_it_searched(tmp_path)
     (state / 'demo.conf').write_text('type=apikey\napi_key=k\n')
     # The launch asks Anthropic about the key before it looks for claude (#255).
     anthropic_accepts_the_key(bindir)
-    # A PATH with no claude on it: the host's own PATH may carry one.
-    env = {**os.environ, 'HOME': str(home), 'PATH': f'{bindir}:/usr/bin:/bin',
+    # A PATH with no claude on it: the host's own PATH may carry one, so the
+    # system directories are taken with it filtered out (#414).
+    env = {**os.environ, 'HOME': str(home),
+           'PATH': f'{bindir}:{path_without("claude", path="/usr/bin:/bin")}',
            'TMPDIR': str(tmp), 'CCMORPH_STATE_DIR': str(state),
            'CCMORPH_LIB_DIR': str(ROOT / 'lib')}
     result = subprocess.run([str(ROOT / 'bin/ccmorph'), 'run', 'demo'], env=env,
