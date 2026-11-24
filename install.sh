@@ -187,9 +187,10 @@ COMPONENTS=($LIBS $EXECUTABLES $DATA_FILES)
 #
 # Only the command goes; nothing else in ~/.local/bin is ours to touch. Everything
 # else ccmorph wrote is the user's — the state root (profiles, credentials and
-# each profile's session history), the usage receipts, and on macOS the keychain
-# items the confs point at — so it is NAMED, with the command that removes it,
-# rather than deleted here or left for them to discover later.
+# each profile's session history), the shared session history under ~/.claude,
+# the usage receipts, and on macOS the keychain items the confs point at — so it
+# is NAMED, with the command that removes it, rather than deleted here or left
+# for them to discover later (#810).
 if [[ "${1:-}" == "--uninstall" ]]; then
   # The state root the RUNTIME uses, derived exactly as lib/ccmorph.sh derives
   # it: CCMORPH_STATE_DIR, else XDG_CONFIG_HOME/ccmorph, else ~/.config/ccmorph.
@@ -280,13 +281,83 @@ if [[ "${1:-}" == "--uninstall" ]]; then
   # `$ERRNO`/`$errnos` name the stat failure; without the module they stay empty,
   # which counts as "could not be asked", never as proof of a dangling link.
   zmodload zsh/system 2>/dev/null || :
+  # The native claude layer, resolved: the one directory this report must never
+  # hand to rm. A root, code dir or receipts link that resolves to it, contains
+  # it (the home, /) or sits inside it would delete native settings and the
+  # plugin store the report promises keep working (#810 gate). Two assignments
+  # each: inside ${...} zsh reads `/.claude:A` as a ${name/pattern/repl}
+  # substitution and yields the home.
+  _un_home="${HOME:A}"
+  _un_claude="$_un_home/.claude"
+  _un_claude="${_un_claude:A}"
+  # $1 = a resolved or lexically normalized link target. True when naming it for
+  # deletion would reach the native layer. Both the path as given and its
+  # resolution are compared: the unreadable branch can only normalize
+  # lexically, and `~/.claude` is compared resolved (`/tmp` and `/private/tmp`
+  # are one directory).
+  _un_in_layer() {
+    local r
+    for r in "$1" "${1:A}"; do
+      [[ "$r" == / || "$r" == "$_un_claude" ||
+         "$_un_claude" == "$r"/* || "$r" == "$_un_claude"/* ]] && return 0
+    done
+    return 1
+  }
+  # The entry a spelling names, read the way the kernel reads it: the head
+  # resolved PHYSICALLY, so a `..` after a symlink goes where the kernel goes,
+  # and the last component kept unfollowed, so a link is still a link. A
+  # trailing `/`, `//` or `/.` names that same entry. `${1:a}` cannot be used:
+  # it collapses `..` lexically, so `alias/../state` (with `alias` a symlink)
+  # names an unrelated entry instead of the root the override selects — an
+  # override one reader honours and another forgets (`.github/REVIEW.md`).
+  # $1 = a spelling. REPLY = the entry it names; _un_spell = the same entry
+  # without a trailing `/`, `//` or `/.` — what the report prints for it, since
+  # `rm -rf path/.` is refused outright by BSD rm.
+  _un_leaf() {
+    local s="$1" head part hasdd=0
+    # What the report prints when the entry is not a link: the caller's own
+    # spelling, with any trailing `/.` removed (a trailing `/` alone is fine).
+    _un_spell="$1"
+    while [[ "$_un_spell" == */. ]]; do _un_spell="${_un_spell%/.}"; done
+    while :; do
+      s="${s%%/}"
+      if [[ "$s" == */. ]]; then s="${s%/.}"; else break; fi
+    done
+    if [[ -z "$s" || "$s" == / ]]; then REPLY=/; return 0; fi
+    if [[ "${s:t}" == .. ]]; then REPLY="${s:P}"; return 0; fi
+    # A `..` in the head is resolved PHYSICALLY, or the entry named is not the
+    # one the kernel reaches (`alias/../state` with `alias` a link). Without
+    # one the caller's own spelling names the same entry and reads better: a
+    # `/tmp/...` path stays `/tmp/...` rather than `/private/tmp/...`.
+    head="${s:h}"
+    for part in ${(s:/:)head}; do
+      [[ "$part" == .. ]] && { hasdd=1; break; }
+    done
+    if (( hasdd )); then
+      [[ "$head" == / ]] || head="${head:P}"
+    else
+      head="${head:a}"
+    fi
+    if [[ "$head" == / ]]; then REPLY="/${s:t}"; else REPLY="$head/${s:t}"; fi
+    return 0
+  }
   _un_unlinked() {
-    local p="${1:a}" t n first="" e=""
-    REPLY="$1"
+    local p t n first="" e=""
+    _un_leaf "$1"; p="$REPLY"; REPLY="$_un_spell"
     [[ -L "$p" ]] || return 0
     ERRNO=0
     if [[ -e "$p" ]]; then
-      REPLY="${p:A}"
+      t="${p:A}"
+      if _un_in_layer "$t"; then
+        # The link under its normalized spelling, not the resolved one: the rm
+        # removes only the link, and the target is named beside it (#810 gate).
+        # $p, never $1: a CCMORPH_STATE_DIR spelled `link/`, `link//` or `link/.`
+        # hands rm a path it follows into the target, deleting ~/.claude's files.
+        REPLY="$p"
+        _un_links+=("$p is a symlink to $t, which sits inside ~/.claude or contains it: naming it would remove native claude's own files, so the rm removes only the link; $t stays: it is yours to resolve.")
+        return 0
+      fi
+      REPLY="$t"
       _un_links+=("$p is a symlink to $REPLY and stays: it is yours to remove.")
       return 0
     fi
@@ -309,6 +380,14 @@ if [[ "${1:-}" == "--uninstall" ]]; then
       _un_links+=("$p is a symlink to ${first:-an unreadable target}, which does not exist now: nothing there is counted above, and the rm removes only the link.")
     else
       REPLY="${t:a}"
+      if _un_in_layer "$REPLY"; then
+        # An unreadable target that would reach the native layer is never named:
+        # the rm carries only the link, and the count stays unknown (#810 gate).
+        REPLY="$p"
+        _un_unread+=("$p")
+        _un_links+=("$p is a symlink to ${first:-an unreadable target}, which could not be reached (${e:-unknown error}) and may be or contain ~/.claude: nothing in it is named, and the rm removes only the link; it is yours to resolve.")
+        return 0
+      fi
       _un_unread+=("$REPLY")
       _un_links+=("$p is a symlink to ${first:-an unreadable target}, which could not be reached (${e:-unknown error}): nothing in it could be read or counted above, and the rm names it unread; the link stays: it is yours to remove.")
     fi
@@ -335,6 +414,166 @@ if [[ "${1:-}" == "--uninstall" ]]; then
     _un_unlinked "$_un_state"; _un_state_named="$REPLY"
     _un_rm+=("$_un_state_named")
   fi
+  # The shared session history (#177): transcripts, prompt history and pasted
+  # text — the three stores every profile links into ~/.claude, which native
+  # claude reads and writes too. It outlives the rm above, so it is named with
+  # it (#810); only what exists is named. A store that is a real file or
+  # directory is named as spelled: rm reaches through a symlinked ~/.claude to
+  # the real store. A store that is itself a symlink is named by where it leads
+  # only when _un_hist_ok proves that target is the store moved elsewhere;
+  # every other target, and a link that cannot be followed, never reaches the
+  # rm: the rm removes only the link, and the target is named beside it.
+  # _un_home and _un_claude were resolved above, before the root resolver.
+  _un_plugins="$HOME/.claude/plugins"; _un_plugins="${_un_plugins:A}"
+  # $1 = a fully resolved link target, $2 = the store's name. True only when
+  # the target carries the store's own name and kind (history.jsonl a file,
+  # projects and paste-cache directories), lies outside ~/.claude, and is
+  # neither /, the home, ~/.claude nor the plugin store, nor a directory above
+  # any of them — so following the printed rm never deletes native claude's
+  # files, the plugins this report promises keep working, or the home.
+  _un_hist_ok() {
+    local t="$1" x
+    [[ "$t" != / && "${t:t}" == "$2" ]] || return 1
+    if [[ "$2" == history.jsonl ]]; then
+      [[ -f "$t" ]] || return 1
+    else
+      [[ -d "$t" ]] || return 1
+    fi
+    [[ "$t" == "$_un_claude"/* ]] && return 1
+    for x in "$_un_home" "$_un_claude" "$_un_plugins"; do
+      [[ "$t" == "$x" || "$x" == "$t"/* ]] && return 1
+    done
+    return 0
+  }
+  # $1 = the store's name under ~/.claude. REPLY = the path the kept line and
+  # the rm name for it.
+  _un_hist_named() {
+    local s="$HOME/.claude/$1" t
+    REPLY="$s"
+    [[ -L "$s" ]] || return 0
+    if [[ -e "$s" ]]; then
+      t="${s:A}"
+      if _un_hist_ok "$t" "$1"; then
+        REPLY="$t"
+        _un_links+=("$s is a symlink to $t and stays: it is yours to remove.")
+      else
+        _un_links+=("$s is a symlink to $t, which this report cannot vouch for as session history: the rm removes only the link; $t stays: it is yours to check.")
+      fi
+      return 0
+    fi
+    t="$(command readlink "$s" 2>/dev/null || :)"
+    _un_links+=("$s is a symlink to ${t:-an unreadable target}, which could not be followed (it does not exist now, or could not be read): nothing there is counted, and the rm removes only the link.")
+    return 0
+  }
+  _un_hist=()
+  for _un_h in history.jsonl projects paste-cache; do
+    [[ -e "$HOME/.claude/$_un_h" || -L "$HOME/.claude/$_un_h" ]] || continue
+    _un_hist_named "$_un_h"
+    _un_hist+=("$REPLY")
+  done
+  (( ${#_un_hist} )) && _un_rm+=("${_un_hist[@]}")
+  # The last word on the printed rm (#810 gate). Whatever produced an operand —
+  # a spelling with a trailing slash, a state root that IS ~/.claude or the
+  # home, a plugin store or a ~/.claude linked into the state root — following
+  # the printed `rm -rf` must never delete /, the home, ~/.claude or its plugin
+  # store, anything that holds one of them, the link that leads to one of them,
+  # or anything inside ~/.claude or the plugin store but the three history
+  # stores. Judged by file identity (`-ef`: same device and inode), never by
+  # spelling alone: a case-folded, firmlinked or bind-mounted spelling of
+  # ~/.claude is still ~/.claude. An operand that fails is left off the rm and
+  # named on its own line; its kept line stays.
+  # Two assignments each, never ${${x}/y:P}: see _un_claude above.
+  _un_p_home="${HOME:P}"
+  _un_p_claude="$HOME/.claude"; _un_p_claude="${_un_p_claude:P}"
+  _un_p_plugins="$HOME/.claude/plugins"; _un_p_plugins="${_un_p_plugins:P}"
+  # Every link native claude's layer is reached THROUGH, hop by hop: removing
+  # one of these entries leaves ~/.claude (or its plugin store) without its
+  # files even though the entry is not the layer itself (#810 gate: an
+  # intermediate hop is still a link claude depends on). Each hop is named as
+  # its physical parent plus its own name — the form _un_rm_reach gives a link
+  # operand — and the walk resolves a target against the hop's own directory,
+  # so a relative or `..` target is read the way the kernel reads it.
+  _un_dep=()
+  for _un_x in "$HOME/.claude" "$HOME/.claude/plugins"; do
+    _un_c="$_un_x"
+    repeat 40; do
+      [[ -L "$_un_c" ]] || break
+      _un_cd="${_un_c:h}"
+      [[ "$_un_cd" == / ]] || _un_cd="${_un_cd:P}"
+      if [[ "$_un_cd" == / ]]; then _un_e="/${_un_c:t}"; else _un_e="$_un_cd/${_un_c:t}"; fi
+      _un_dep+=("$_un_e")
+      _un_n="$(command readlink "$_un_e" 2>/dev/null || :)"
+      [[ -n "$_un_n" ]] || break
+      if [[ "$_un_n" == /* ]]; then _un_c="$_un_n"; else _un_c="$_un_cd/$_un_n"; fi
+    done
+  done
+  # $1 = an rm operand. REPLY = the physical path `rm -rf` on it deletes: the
+  # link entry alone for a symlink spelled without a trailing slash, else the
+  # tree the spelling resolves to (:P, never :A, whose lexical `..` can name
+  # another directory than the one rm reaches).
+  _un_rm_reach() {
+    local h
+    if [[ "$1" != */ && -L "$1" ]]; then
+      h="${1:h}"; h="${h:P}"
+      if [[ "$h" == / ]]; then REPLY="/${1:t}"; else REPLY="$h/${1:t}"; fi
+    else
+      REPLY="${1:P}"
+    fi
+    return 0
+  }
+  # $1 = a path from _un_rm_reach. True when `rm -rf` on it deletes the home,
+  # ~/.claude, its plugin store, an ancestor of one of them, a link native
+  # claude is reached through (the layer's own or any hop of that chain), or
+  # anything inside ~/.claude or the plugin store except the three history
+  # stores themselves. Only ever called inside `if`.
+  _un_reaches_native() {
+    local r="$1" a x
+    [[ "$r" == / ]] && return 0
+    # It is, or holds, the home, ~/.claude or the plugin store.
+    if [[ ! -L "$r" ]]; then
+      for x in "$_un_p_home" "$_un_p_claude" "$_un_p_plugins"; do
+        a="$x"
+        while :; do
+          [[ "$a" -ef "$r" ]] && return 0
+          [[ "$a" == / ]] && break
+          a="${a:h}"
+        done
+      done
+    fi
+    # It is a link native claude reaches them through — its own ~/.claude or
+    # plugin-store link, or any hop beneath them.
+    if [[ -L "$r" ]]; then
+      for x in "$HOME" "$HOME/.claude" "$HOME/.claude/plugins" "${_un_dep[@]}"; do
+        [[ "${r:h}" -ef "${x:h}" && "${(L)r:t}" == "${(L)x:t}" ]] && return 0
+      done
+    fi
+    # It lies inside ~/.claude or the plugin store.
+    a="$r"
+    while [[ "$a" != / ]]; do
+      x="${a:h}"
+      if [[ "$x" -ef "$_un_p_claude" ]]; then
+        if [[ "$a" == "$r" ]]; then
+          case "${(L)a:t}" in
+            history.jsonl|projects|paste-cache) return 1 ;;
+          esac
+        fi
+        return 0
+      fi
+      [[ "$x" -ef "$_un_p_plugins" ]] && return 0
+      a="$x"
+    done
+    return 1
+  }
+  _un_rm_ok=()
+  for _un_o in "${_un_rm[@]}"; do
+    _un_rm_reach "$_un_o"
+    if _un_reaches_native "$REPLY"; then
+      _un_links+=("$_un_o is left off the rm: rm -rf on it would delete $REPLY, which is or holds the home, ~/.claude or its plugin store, is a link ~/.claude is reached through, or lies inside ~/.claude; what ccmorph wrote there stays: remove it by hand.")
+    else
+      _un_rm_ok+=("$_un_o")
+    fi
+  done
+  _un_rm=("${_un_rm_ok[@]}")
   # The keychain items are read off the confs, never by scanning the keychain
   # (which prompts): a conf is the only thing that names them, so every conf
   # counted above is read — a redirect that came later must not hide the items
@@ -360,10 +599,15 @@ if [[ "${1:-}" == "--uninstall" ]]; then
   _un_code="the installed code"
   (( ${#_un_prior} )) && _un_code="the installed code, and ${#_un_prior} profile(s), their credentials and session history, from before the state root was redirected"
   [[ -d "$CONFIG_DIR" ]] && (( _un_redirected )) && print -r -- "  $_un_code_dir  ($_un_code)"
+  (( ${#_un_hist} )) && print -r -- "  ${(j:, :)_un_hist}  (shared session history, shared with claude)"
   (( _un_has_state )) && print -r -- "  $_un_state_named  (usage receipts)"
   (( ${#_un_keychain} )) && print -r -- "  login keychain  (${#_un_keychain} ccmorph item(s))"
-  print -r -- "To remove those too:"
-  print -r -- "  rm -rf" "${(q-)_un_rm[@]}"
+  if (( ${#_un_rm} + ${#_un_keychain} )); then
+    print -r -- "To remove those too:"
+  fi
+  if (( ${#_un_rm} )); then
+    print -r -- "  rm -rf" "${(q-)_un_rm[@]}"
+  fi
   for _un_ref in "${_un_keychain[@]}"; do
     print -r -- "  security delete-generic-password -s ccmorph -a ${(q-)_un_ref}"
   done
