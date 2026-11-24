@@ -994,6 +994,25 @@ class PickerTTYTest(unittest.TestCase):
         self.assertEqual(out.count('Cancelled'), 1, out)
         self.assertNotIn('\x1b[', out)
 
+    def test_numbered_fallback_slides_a_cut_list_with_the_pointer_issue_840(self):
+        """GH-840: on a list longer than the screen the pointer must stay in
+        view — the window slides, both edges name what they cut, and the
+        numbered answer still means the row it always did."""
+        env = self.env()
+        env['ROWS'] = '\n'.join(f'r{n:02d}\trow {n}' for n in range(1, 31))
+        # A 12-row screen shows rows plus heading, question and edges; the
+        # window is 5 rows, so six moves reach row 6 — two past the window.
+        rc, out, missed = run_pty(
+            'source "$1"\nccm_ui_select search "long" "$ROWS" all', env,
+            [(b'(q to cancel):', b'j' * 6), (b'\xe2\x9d\xaf 6) ', b'\r')], size=(12, 80))
+        self.assertIsNone(missed, out)
+        self.assertEqual(rc, 0, out)
+        self.assertEqual(screen(out), ['  long › r06', 'r06'], out)
+        view = screen(out[:out.rfind('❯')])
+        self.assertTrue(any('↑ 1 · ↓ 24 more' in row for row in view), view)
+        self.assertFalse(any('r01' in row for row in view), view)  # the slid-off row is gone
+        self.assertTrue(any(row.startswith('❯ 6) r06') for row in view), view)
+
     def test_headless_refusal_carries_no_internal_records_issue_840(self):
         """GH-840: `set <profile> model </dev/null` refused by name and then
         dumped the menu's @keep/@custom records on stderr after the refusal.
