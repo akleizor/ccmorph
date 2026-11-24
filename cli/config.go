@@ -30,6 +30,40 @@ func valueRows(value string, columns int) int {
 	return (max(cells(value), 1)-1)/columns + 1
 }
 
+// settingWord reports whether word is the model or effort setting, the two the
+// shorthand lets lead a command when the profile is left out (#788).
+func settingWord(word string) bool {
+	return word == "model" || word == "effort"
+}
+
+// explicitKey reports whether word is a key the command reads or writes right
+// after the profile. A key there means the word before it is the profile, never
+// the shorthand: `get model base_url` reads the endpoint of a profile named
+// model, the explicit form this change must keep.
+func explicitKey(verb, word string) bool {
+	switch word {
+	case "model", "effort":
+		return true
+	case "base_url", "api_key", "--json":
+		return verb == "get"
+	}
+	return false
+}
+
+// jsonLast moves a get's leading --json behind the profile slot: the flag reads
+// the same wherever it stands (#788). The word after it, if any, is the profile;
+// "" when it was left out. moved reports a leading --json.
+func jsonLast(args []string) (out []string, moved bool) {
+	if len(args) == 0 || args[0] != "--json" {
+		return args, false
+	}
+	name := ""
+	if len(args) > 1 {
+		name = args[1]
+	}
+	return []string{name, "--json"}, true
+}
+
 // getSet is `ccmorph get [profile] [model|effort|base_url|api_key|--json]` and `ccmorph set [profile]
 // [model|effort] [value]`. A missing profile, key or value opens its chooser.
 func (l *launcher) getSet(verb string, args []string) int {
@@ -45,7 +79,30 @@ func (l *launcher) getSet(verb string, args []string) int {
 		}
 		return ""
 	}
+	// --json is a flag wherever it stands, so a leading one moves behind the
+	// profile slot before any word is read as a profile (#788).
+	jsonFirst := false
+	if verb == "get" {
+		args, jsonFirst = jsonLast(args)
+	}
 	name := at(0)
+	shorthand := settingWord(name) && !explicitKey(verb, at(1))
+	if shorthand {
+		// The documented shorthand: the usage line marks the profile optional
+		// (`set [profile] [model|effort] [value]`), so a leading model or effort
+		// is the setting and the profile is chosen, not required (#788). A key
+		// behind it keeps the explicit form reachable for a profile named after
+		// a setting: `get model model`, and `get model base_url` for its other
+		// fields.
+		args = append([]string{""}, args...)
+		name = ""
+	}
+	if (shorthand || jsonFirst) && name == "" {
+		// One saved profile is the choice the picker would make; more ask it.
+		if names := l.confNames(); len(names) == 1 {
+			name = names[0]
+		}
+	}
 	if !l.requireProfile(&name, verb) {
 		return 1
 	}

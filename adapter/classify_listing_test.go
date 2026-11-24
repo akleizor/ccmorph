@@ -61,7 +61,7 @@ func (l *listingTransport) listingGets() (int, []string) {
 func TestClassifyAutoFetchesTheListingOnceIssue598(t *testing.T) {
 	ids := []string{"alpha-1", "beta-2", "gamma-3", "delta-4", "epsilon-5"}
 	gw := &listingTransport{ids: ids}
-	swap(t, &client, &http.Client{Transport: gw})
+	swap(t, &probeClient, func() *http.Client { return &http.Client{Transport: gw} })
 	rows, err := classify("https://gateway", "k", filepath.Join(t.TempDir(), "cache.json"), "", true)
 	if err != nil {
 		t.Fatalf("classify: %v", err)

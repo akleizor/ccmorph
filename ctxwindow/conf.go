@@ -628,14 +628,22 @@ func profileLock(profile string, fn func() error) error {
 
 // ProfileLockCtx is profileLock for a caller with a deadline: it stops waiting
 // at ctx.Done and reports whether fn ran. A lock held by another ccmorph must
-// not make a run outlive the deadline that asked it to write.
+// not make a run outlive the deadline that asked it to write. Cancellation that
+// lands while the lock is being taken cancels the callback too, not only the
+// wait: a free flock can succeed after ctx.Done.
 func ProfileLockCtx(ctx context.Context, profile string, fn func() error) (bool, error) {
 	path, err := ProfilePath(profile)
 	if err != nil {
 		return false, err
 	}
-	if heldLock(path) {
+	ran := func() (bool, error) {
+		if ctx.Err() != nil {
+			return false, nil
+		}
 		return true, fn()
+	}
+	if heldLock(path) {
+		return ran()
 	}
 	// The lock holds no configuration data; its inode stays stable across remove/recreate.
 	lock, err := lockPath(path)
@@ -653,7 +661,7 @@ func ProfileLockCtx(ctx context.Context, profile string, fn func() error) (bool,
 		}
 		return false, err
 	}
-	return true, fn()
+	return ran()
 }
 
 // flockCtx takes an exclusive flock, polling only when the caller has a
@@ -874,15 +882,26 @@ func SaveDiscovered(profile string, values map[string]int64, expected *Identity,
 	return SaveDiscoveredCtx(context.Background(), profile, values, expected, overwrite, sources, misses)
 }
 
-// SaveDiscoveredCtx is SaveDiscovered under a caller's deadline: when the
-// profile lock is still held elsewhere at ctx.Done it writes nothing and
-// returns false.
+// SaveDiscoveredCtx is SaveDiscovered under a caller's deadline: a context
+// already done writes nothing, and a deadline that lands while the profile lock
+// is taken or the record is merged skips the callback's write. A lock still held
+// elsewhere at ctx.Done writes nothing either. A pass cut short by its deadline
+// therefore leaves the profile as it was, to retry next time (#757, #775).
 func SaveDiscoveredCtx(ctx context.Context, profile string, values map[string]int64, expected *Identity, overwrite bool,
 	sources map[string]obj, misses map[string]string) (saved bool, err error) {
 	if expected == nil {
 		return false, nil
 	}
+	if ctx.Err() != nil {
+		return false, nil
+	}
 	ran, err := ProfileLockCtx(ctx, profile, func() error {
+		// The deadline can land between taking the lock and this callback, or
+		// while the record is being merged: either way the pass asked for no
+		// write past ctx.Done (#775).
+		if ctx.Err() != nil {
+			return nil
+		}
 		// One read of the profile carries the identity to check, the fields to
 		// merge and the text to rewrite (GH-485).
 		snap, serr := profileSnapshot(profile)
@@ -949,6 +968,9 @@ func SaveDiscoveredCtx(ctx context.Context, profile string, values map[string]in
 		}
 		if len(keptMisses) > 0 {
 			record["misses"] = keptMisses
+		}
+		if ctx.Err() != nil {
+			return nil // the deadline landed while merging; write nothing
 		}
 		saved, err = writeDiscovered(path, snap.Text, record, expected)
 		return err

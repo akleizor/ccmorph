@@ -28,10 +28,11 @@ concurrency:
 
 jobs:
   syntax:
+    timeout-minutes: 20  # a hung step (an apt mirror, 2026-11-23) fails inside merge-gate's 30 minutes, not at GitHub's 6 h (#827)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - run: sudo apt-get update && sudo apt-get install -y zsh
+      - run: sudo apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=30 update && sudo apt-get install -y zsh
       - name: parse every zsh file
         run: |
           for f in bin/ccmorph lib/ccmorph.sh lib/ccmorph-*.zsh install.sh \
@@ -76,7 +77,7 @@ jobs:
       - name: install zsh
         run: |
           if [ "$RUNNER_OS" = "Linux" ]; then
-            sudo apt-get update && sudo apt-get install -y zsh
+            sudo apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=30 update && sudo apt-get install -y zsh
           fi
           zsh --version
       - uses: actions/setup-go@v5
@@ -101,7 +102,8 @@ jobs:
             hdiutil create -size 32m -fs HFS+ -volname ccmsecond -attach "$RUNNER_TEMP/second.dmg"
             export CCMORPH_TEST_SECOND_FS=/Volumes/ccmsecond
           fi
-          go vet ./... && go build ./... && go test ./... && make shim
+          # the gate's own Go target: vet, test, and the umask 077 and NO_PROXY='*' reruns (#774), never a copy of it
+          go build ./... && make test-go shim
       - name: zsh suite
         run: zsh tests/ccmorph_test.zsh
       - name: installer suite
@@ -123,9 +125,10 @@ jobs:
           python -m pip install pytest pytest-timeout
           # -v names each test as it runs, so a log cut off by the cap above still
           # shows where it stopped; --durations names the slow ones on a full run.
-          python -m pytest tests/ -v --durations=25
+          CCMORPH_LIB_DIR="$PWD/lib" python -m pytest tests/ -v --durations=25  # as gate-py, CONTRIBUTING and INTENT run it
 
   python-floor:
+    timeout-minutes: 20
     # The floor is 3.8, and only the Remote Control add-on (a mitmproxy add-on) and
     # the pytest suite still run on Python. Prove both on 3.8, 3.12 and 3.13 — the
     # failure this guards against surfaced days after install, inside a child
@@ -144,7 +147,7 @@ jobs:
         with:
           python-version: ${{ matrix.python }}
       # Most Python tests drive the zsh library; the Ubuntu image ships no zsh.
-      - run: sudo apt-get update && sudo apt-get install -y zsh
+      - run: sudo apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=30 update && sudo apt-get install -y zsh
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
@@ -155,6 +158,7 @@ jobs:
           python -m pytest tests/ -q
 
   install-check:
+    timeout-minutes: 20
     # The real installer, run as a real user against a throwaway $HOME — not the
     # suite's harness. Catches anything that only shows up on a first install.
     # Each runner is a fresh VM, so on macOS this is the clean-machine check:
@@ -167,7 +171,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y zsh python3 curl
+        run: sudo apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=30 update && sudo apt-get install -y zsh python3 curl
       - name: stub the claude CLI (the installer requires it, npm is not the point here)
         run: |
           mkdir -p "$HOME/.local/bin"
@@ -232,6 +236,7 @@ jobs:
           test -d "$HOME/.config/ccmorph"
 
   release-artifact:
+    timeout-minutes: 20
     # A release tarball must come from `git archive` at a tag, never a working
     # tree: this project's working directory doubles as its author's live install,
     # so a tree-built tarball would ship real credentials. Prove the artifact is
@@ -240,7 +245,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with: { fetch-depth: 0 }
-      - run: sudo apt-get update && sudo apt-get install -y zsh
+      - run: sudo apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=30 update && sudo apt-get install -y zsh
       - name: build from HEAD the way make release builds from a tag
         run: |
           git archive --format=tar.gz --prefix=ccmorph/ -o /tmp/probe.tar.gz HEAD
