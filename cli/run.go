@@ -755,6 +755,17 @@ func authKey(env []string) string {
 
 var sessionID = regexp.MustCompile(`^[A-Za-z0-9_-]+$`)
 
+// endedRecordMax bounds a session-end record read; a real one is a session id
+// or Claude Code's small JSON input, so anything larger is not a record.
+const endedRecordMax = 64 << 10
+
+// recordOwner is whose private file a session-end record must be: the account
+// the hook wrote it as. The names sit in a shared TMPDIR, where another account
+// can write first, and a planted record can name any transcript it likes, so
+// the bytes are trusted only from a file this account owns (#410). A variable
+// so a test can pose as the other account.
+var recordOwner = os.Geteuid
+
 // readEndedSession reads the session id Claude Code's SessionEnd hook recorded
 // for the claude that ran as pid, and consumes the record: the hint prints
 // once, and a launcher that died leaves reaping to gc-stale, never a re-read.
@@ -762,11 +773,13 @@ var sessionID = regexp.MustCompile(`^[A-Za-z0-9_-]+$`)
 // session's claude is a grandchild with another pid, and its transcripts die
 // with its view, so nothing of it is ever read here. The file sits in a shared
 // TMPDIR anyone can write, so a record that is not a session id reads as no
-// session rather than reaching the terminal (#285).
+// session rather than reaching the terminal (#285); a planted link, FIFO or
+// device at its name is refused without being followed or waited on, and so is
+// a file another account wrote or group and others can write (#410).
 func readEndedSession(pid int) string {
 	f := filepath.Join(tmpDir(), "ccmorph-session-end."+strconv.Itoa(pid))
-	b, err := os.ReadFile(f)
-	if err != nil {
+	b, ok := util.ReadPrivateRegular(f, endedRecordMax, recordOwner())
+	if !ok {
 		return ""
 	}
 	os.Remove(f)
@@ -781,11 +794,19 @@ func readEndedSession(pid int) string {
 // hook of the claude that ran as pid — the hook keeps Claude Code's JSON input
 // beside the id record — and consumes the file, as readEndedSession does. It
 // names where that session's conversation is, or would be had a message been
-// sent. "" when there is no input, or it is not Claude Code's JSON (#359).
-func readEndedTranscript(pid int) string {
+// sent. "" when there is no input, it is not Claude Code's JSON (#359), it is
+// not this account's own private file at the name the hook is expected to write
+// (#410), or it names a path outside the stores Claude Code writes this
+// account's sessions to (#410): the input is untrusted, so the one file it may
+// steer a read to is a transcript inside those stores, whatever its size.
+// profileDirs is where the profiles keep their config dirs, whose own projects
+// stores count with Claude Code's; configDirs are the session's effective
+// CLAUDE_CONFIG_DIR entries, when the caller knows them (a profile's env may
+// override the store Claude Code writes to).
+func readEndedTranscript(pid int, profileDirs string, configDirs ...string) string {
 	f := filepath.Join(tmpDir(), "ccmorph-session-end."+strconv.Itoa(pid)+".json")
-	b, err := os.ReadFile(f)
-	if err != nil {
+	b, ok := util.ReadPrivateRegular(f, endedRecordMax, recordOwner())
+	if !ok {
 		return ""
 	}
 	os.Remove(f)
@@ -795,7 +816,99 @@ func readEndedTranscript(pid int) string {
 	if json.Unmarshal(b, &in) != nil {
 		return ""
 	}
-	return in.TranscriptPath
+	p, ok := transcriptStore(in.TranscriptPath, profileDirs, configDirs...)
+	if !ok {
+		return ""
+	}
+	return p
+}
+
+// transcriptStore returns the path to read for a transcript path the
+// session-end input named, and whether it lies inside a projects store Claude
+// Code writes this account's sessions to: its own history, the session's
+// effective config dir (a profile's env may override it), or any profile's
+// under profileDirs. The input arrives at a name in a shared TMPDIR, so the one
+// path it may name is one of these. The path must be spelled inside a store and
+// must also lead into one once its links are resolved: carrySession's link
+// resolves into another store, but a link to anywhere else must not steer the
+// read, however large the file (#410). The resolved path is returned, so the
+// later read has no link left to follow. A relative CLAUDE_CONFIG_DIR, or a
+// transcript path Claude Code built from one, is resolved against this
+// process's working directory, which is the child's: runClaude leaves cmd.Dir
+// unset.
+func transcriptStore(p, profileDirs string, configDirs ...string) (string, bool) {
+	if p == "" {
+		return "", false
+	}
+	abs, err := filepath.Abs(p)
+	if err != nil {
+		return "", false
+	}
+	roots := []string{filepath.Join(os.Getenv("HOME"), ".claude", "projects")}
+	for _, dir := range configDirs {
+		if dir != "" {
+			roots = append(roots, filepath.Join(dir, "projects"))
+		}
+	}
+	if profileDirs != "" {
+		more, _ := filepath.Glob(filepath.Join(globQuote(profileDirs), "*", "projects"))
+		roots = append(roots, more...)
+	}
+	var spelled, resolved []string
+	for _, root := range roots {
+		r, err := filepath.Abs(root)
+		if err != nil {
+			continue
+		}
+		spelled = append(spelled, r)
+		if real, ok := resolveExisting(r); ok {
+			resolved = append(resolved, real)
+		}
+	}
+	if !underAny(abs, spelled) {
+		return "", false
+	}
+	real, ok := resolveExisting(abs)
+	if !ok || !underAny(real, resolved) {
+		return "", false
+	}
+	return real, true
+}
+
+// resolveExisting resolves every link along p's longest existing prefix and
+// keeps the rest as spelled: nothing below that prefix exists yet, so no link
+// there can lead a later read elsewhere. A name that exists but does not
+// resolve — a dangling or looping link — is refused, since what it leads to
+// could appear after the check (#410).
+func resolveExisting(p string) (string, bool) {
+	tail := ""
+	for {
+		real, err := filepath.EvalSymlinks(p)
+		if err == nil {
+			return filepath.Join(real, tail), true
+		}
+		if _, lerr := os.Lstat(p); !os.IsNotExist(lerr) {
+			return "", false
+		}
+		parent := filepath.Dir(p)
+		if parent == p {
+			return "", false
+		}
+		tail = filepath.Join(filepath.Base(p), tail)
+		p = parent
+	}
+}
+
+// underAny reports whether p lies strictly inside one of roots; every path is
+// absolute and clean.
+func underAny(p string, roots []string) bool {
+	for _, root := range roots {
+		rel, err := filepath.Rel(root, p)
+		if err == nil && rel != "." && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+			return true
+		}
+	}
+	return false
 }
 
 // resumeHint prints the command that resumes the session Claude Code just
@@ -1698,7 +1811,10 @@ func (l *launcher) runClaude(env, args []string) int {
 	l.child = nil
 	l.mu.Unlock()
 	l.ended = readEndedSession(cmd.Process.Pid)
-	l.endedTranscript = readEndedTranscript(cmd.Process.Pid)
+	// The child runs in this process's working directory (cmd.Dir is unset), so a
+	// relative CLAUDE_CONFIG_DIR names the store transcriptStore resolves against it.
+	configDir, _ := envGet(env, "CLAUDE_CONFIG_DIR")
+	l.endedTranscript = readEndedTranscript(cmd.Process.Pid, l.profileDirs, configDir)
 	if err == nil {
 		return 0
 	}

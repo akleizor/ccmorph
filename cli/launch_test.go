@@ -158,7 +158,10 @@ func TestRunClaudeStartsWhenTmpdirCannotBeWritten(t *testing.T) {
 // for the claude that ran as pid, and consumes the record: a launcher that
 // died is swept by gc-stale, never re-read. The file sits in a shared TMPDIR
 // anyone can write, so a record that is not a session id reads as no session
-// rather than reaching the terminal (#285).
+// rather than reaching the terminal (#285); a name that is not a regular file
+// — a link another account planted, or a FIFO that would wait for a writer —
+// reads as no record rather than being followed or waited on, and neither does
+// a file another account wrote or group and others can write (#410).
 func TestReadEndedSession(t *testing.T) {
 	tmp := t.TempDir()
 	t.Setenv("TMPDIR", tmp)
@@ -184,6 +187,57 @@ func TestReadEndedSession(t *testing.T) {
 	if got := readEndedSession(4194305); got != "" {
 		t.Fatalf("another session's record read as %q", got)
 	}
+	// A record anyone could rewrite is not this account's own record: the hook
+	// writes its own through mktemp, 0600. An own record others may read but
+	// not write is still the hook's (#410).
+	if err := os.WriteFile(f, []byte("sid-410"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(f, 0o666); err != nil {
+		t.Fatal(err)
+	}
+	if got := readEndedSession(4194304); got != "" {
+		t.Fatalf("a record anyone can write read as %q", got)
+	}
+	if err := os.Chmod(f, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if got := readEndedSession(4194304); got != "sid-410" {
+		t.Fatalf("a record this account owns and others cannot write read as %q", got)
+	}
+	if err := syscall.Mkfifo(f, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	fifoWriter(f, "sid-410")
+	if got := readEndedSession(4194304); got != "" {
+		t.Fatalf("a fifo at the record's name read as %q", got)
+	}
+}
+
+// realTempDir is t.TempDir with its links resolved: macOS spells it under
+// /var, a link to /private/var, and readEndedTranscript returns resolved paths.
+func realTempDir(t *testing.T) string {
+	t.Helper()
+	d, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	return d
+}
+
+// fifoWriter answers a reader that opens the FIFO at path, so a reader that
+// wrongly takes the FIFO for a record completes instead of hanging the test:
+// it writes body and closes. A reader that refuses the FIFO never opens it, so
+// the writer stays where it is; nothing waits on it.
+func fifoWriter(path, body string) {
+	go func() {
+		w, err := os.OpenFile(path, os.O_WRONLY, 0)
+		if err != nil {
+			return
+		}
+		_, _ = w.WriteString(body)
+		w.Close()
+	}()
 }
 
 // runClaude reads the record the SessionEnd hook of the claude it waited on
@@ -216,7 +270,8 @@ func TestRunClaudeReadsTheEndedSessionRecord(t *testing.T) {
 // draws Claude Code's own "No conversation found", and the failed resume run
 // would print the same unusable command again (#359). A session that spoke keeps
 // its hint (#285), and so does one whose record names no transcript: nothing
-// says it is empty.
+// says it is empty. A transcript path that is a FIFO is not read at all: it
+// would wait for a writer that never comes and hang the launch (#410).
 func TestResumeHintNeedsAConversationToOffer(t *testing.T) {
 	dir := t.TempDir()
 	// The record a first message writes: the identity a --resume looks for (#288).
@@ -227,6 +282,11 @@ func TestResumeHintNeedsAConversationToOffer(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "quiet.jsonl"), nil, 0o600); err != nil {
 		t.Fatal(err)
 	}
+	fifo := filepath.Join(dir, "fifo.jsonl")
+	if err := syscall.Mkfifo(fifo, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	fifoWriter(fifo, spoken)
 	hint := "\nccmorph: resume this session with: ccmorph run work --resume sid-359\n"
 	for _, c := range []struct {
 		name       string
@@ -237,6 +297,7 @@ func TestResumeHintNeedsAConversationToOffer(t *testing.T) {
 		{"a session that ended before its first message", filepath.Join(dir, "quiet.jsonl"), ""},
 		{"a session whose transcript was never written", filepath.Join(dir, "ghost.jsonl"), ""},
 		{"a record that names no transcript", "", hint},
+		{"a transcript that is a fifo", fifo, ""},
 	} {
 		l := &launcher{ended: "sid-359", endedTranscript: c.transcript}
 		if out, _ := captureStdout(t, func() int { l.resumeHint("work"); return 0 }); out != c.want {
@@ -251,28 +312,159 @@ func TestResumeHintNeedsAConversationToOffer(t *testing.T) {
 // readEndedTranscript returns the transcript path Claude Code gave the
 // SessionEnd hook for the claude that ran as pid, and consumes the file the
 // hook kept it in: a launcher that died is swept by gc-stale, never re-read.
-// Input that is not Claude Code's JSON reads as no transcript (#359).
+// Input that is not Claude Code's JSON reads as no transcript (#359), and a
+// name that is not this account's own regular file — a link another account
+// planted, a FIFO that would wait for a writer, or a file that account may
+// write — reads as no input rather than being followed or waited on (#410).
+// The one path the input may name is a transcript inside a store Claude Code
+// writes this account's sessions to; anything else, however large, is not read
+// at all (#410).
 func TestReadEndedTranscript(t *testing.T) {
 	tmp := t.TempDir()
 	t.Setenv("TMPDIR", tmp)
+	home := realTempDir(t)
+	t.Setenv("HOME", home)
+	spoken := filepath.Join(home, ".claude", "projects", "p", "sid-359.jsonl")
 	f := filepath.Join(tmp, "ccmorph-session-end.4194304.json")
 	for _, c := range []struct{ name, body, want string }{
-		{"claude code's input", `{"session_id":"sid-359","transcript_path":"/p/sid-359.jsonl","hook_event_name":"SessionEnd"}`, "/p/sid-359.jsonl"},
+		{"claude code's input", `{"session_id":"sid-359","transcript_path":"` + spoken + `","hook_event_name":"SessionEnd"}`, spoken},
+		{"a transcript outside Claude Code's stores", `{"session_id":"sid-359","transcript_path":"/p/sid-359.jsonl"}`, ""},
 		{"input that is not json", "not json", ""},
 		{"empty input", "", ""},
 	} {
 		if err := os.WriteFile(f, []byte(c.body), 0o600); err != nil {
 			t.Fatal(err)
 		}
-		if got := readEndedTranscript(4194304); got != c.want {
+		if got := readEndedTranscript(4194304, ""); got != c.want {
 			t.Errorf("%s: read %q, want %q", c.name, got, c.want)
 		}
 		if _, err := os.Stat(f); !os.IsNotExist(err) {
 			t.Errorf("%s: file left behind: %v", c.name, err)
 		}
 	}
-	if got := readEndedTranscript(4194305); got != "" {
+	if got := readEndedTranscript(4194305, ""); got != "" {
 		t.Fatalf("another session's input read as %q", got)
+	}
+	// A profile keeps its sessions under its own config dir; that store is
+	// trusted as Claude Code's own is.
+	profiles := realTempDir(t)
+	profileTranscript := filepath.Join(profiles, "work", "projects", "p", "sid-359.jsonl")
+	if err := os.MkdirAll(filepath.Dir(profileTranscript), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(f, []byte(`{"session_id":"sid-359","transcript_path":"`+profileTranscript+`"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if got := readEndedTranscript(4194304, profiles); got != profileTranscript {
+		t.Fatalf("a profile's transcript read as %q, want %q", got, profileTranscript)
+	}
+	if err := syscall.Mkfifo(f, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	fifoWriter(f, `{"session_id":"sid-410","transcript_path":"`+spoken+`"}`)
+	if got := readEndedTranscript(4194304, ""); got != "" {
+		t.Fatalf("a fifo at the input's name read as %q", got)
+	}
+}
+
+// The record names sit in a shared TMPDIR, where another account can write
+// first. Only a record this account owned is trusted, because a planted one
+// can name any transcript it likes and would steer the launch's read (#410).
+func TestTheSessionEndChannelRefusesARecordAnotherAccountWrote(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("TMPDIR", tmp)
+	id := filepath.Join(tmp, "ccmorph-session-end.4194304")
+	in := id + ".json"
+	if err := os.WriteFile(id, []byte("sid-410"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(in, []byte(`{"session_id":"sid-410","transcript_path":"/p/sid-410.jsonl"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	prev := recordOwner
+	recordOwner = func() int { return os.Geteuid() + 1 }
+	defer func() { recordOwner = prev }()
+	if got := readEndedSession(4194304); got != "" {
+		t.Fatalf("a record another account wrote read as %q", got)
+	}
+	if got := readEndedTranscript(4194304, ""); got != "" {
+		t.Fatalf("an input another account wrote read as %q", got)
+	}
+}
+
+// A hop carries a session into the target profile's projects with a symlink,
+// and Claude Code writes that session's transcript through it, so a valid
+// SessionEnd input names the link. The reader resolves it to the real
+// transcript instead of dropping the hint for a carried conversation (#410).
+func TestAResumeHintFollowsACarriedSessionLink(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	tmp := t.TempDir()
+	t.Setenv("TMPDIR", tmp)
+	profiles := t.TempDir()
+	dir := filepath.Join(home, ".claude", "projects", "proj")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	spoken := `{"type":"user","sessionId":"s1","uuid":"u1","timestamp":"2026-01-01T00:00:00.000Z","message":{"role":"user","content":"hi"}}` + "\n"
+	real := filepath.Join(dir, "s1.jsonl")
+	if err := os.WriteFile(real, []byte(spoken), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	l := &launcher{profileDirs: profiles, ended: "s1"}
+	if !l.carrySession("s1", filepath.Join(profiles, "work", "projects")) {
+		t.Fatal("the session must be carried into the target profile")
+	}
+	link := filepath.Join(profiles, "work", "projects", "proj", "s1.jsonl")
+	if fi, err := os.Lstat(link); err != nil || fi.Mode()&os.ModeSymlink == 0 {
+		t.Fatalf("carrySession must leave a link at %s: %v", link, err)
+	}
+	f := filepath.Join(tmp, "ccmorph-session-end.42.json")
+	if err := os.WriteFile(f, []byte(`{"session_id":"s1","transcript_path":"`+link+`"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	l.endedTranscript = readEndedTranscript(42, profiles)
+	out, _ := captureStdout(t, func() int { l.resumeHint("work"); return 0 })
+	hint := "\nccmorph: resume this session with: ccmorph run work --resume s1\n"
+	if out != hint {
+		t.Fatalf("a carried conversation lost its resume hint: %q", out)
+	}
+}
+
+// A profile's env may point CLAUDE_CONFIG_DIR somewhere of its own, and Claude
+// Code writes that session's transcript there. The session-end reader trusts
+// that effective store: an empty transcript in it must not offer a resume
+// command, and a spoken one must (#410).
+func TestAnEndedSessionReadsTheConfiguredStore(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("TMPDIR", t.TempDir())
+	cfg := filepath.Join(root, "custom")
+	transcript := filepath.Join(cfg, "projects", "proj", "s1.jsonl")
+	if err := os.MkdirAll(filepath.Dir(transcript), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	script := "#!/bin/sh\nf=\"$TMPDIR/ccmorph-session-end.$$\"\nprintf s1 > \"$f\"\n" +
+		"printf '%s' '{\"session_id\":\"s1\",\"transcript_path\":\"" + transcript + "\"}' > \"$f.json\"\n"
+	if err := os.WriteFile(filepath.Join(root, "ccmorph-core"), []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	spoken := `{"type":"user","sessionId":"s1","uuid":"u1","timestamp":"2026-01-01T00:00:00.000Z","message":{"role":"user","content":"hi"}}` + "\n"
+	hint := "\nccmorph: resume this session with: ccmorph run work --resume s1\n"
+	for _, c := range []struct{ name, body, want string }{
+		{"an empty transcript in the configured store", "", ""},
+		{"a spoken transcript in the configured store", spoken, hint},
+	} {
+		if err := os.WriteFile(transcript, []byte(c.body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		l := &launcher{libexec: root, profileDirs: filepath.Join(root, "profiles")}
+		if rc := l.runClaude([]string{"CLAUDE_CONFIG_DIR=" + cfg}, nil); rc != 0 {
+			t.Fatalf("%s: launch rc %d", c.name, rc)
+		}
+		if out, _ := captureStdout(t, func() int { l.resumeHint("work"); return 0 }); out != c.want {
+			t.Errorf("%s: hint %q, want %q", c.name, out, c.want)
+		}
 	}
 }
 
@@ -2168,4 +2360,187 @@ func TestAWrongAnswerIsRetriedInsteadOfReadFromTheListingMemo(t *testing.T) {
 			t.Fatalf("the recovered listing must be the memo's answer, got %q %v", body, ok)
 		}
 	})
+}
+
+// The session-end input names a transcript, and the reader may only be steered
+// to one inside a store Claude Code writes this account's sessions to. A link in
+// a store that leads out of every store, however it is spelled or whenever its
+// target appears, steers nothing: the refused path reads as no transcript named,
+// so the line is kept and the outside file changes nothing (#410).
+func TestASessionEndLinkOutOfTheStoresIsNotRead(t *testing.T) {
+	spoken := `{"type":"user","sessionId":"s1","uuid":"u1","timestamp":"2026-01-01T00:00:00.000Z","message":{"role":"user","content":"hi"}}` + "\n"
+	hint := "\nccmorph: resume this session with: ccmorph run work --resume s1\n"
+	setup := func(t *testing.T) (root, store, outside string) {
+		root = realTempDir(t)
+		t.Setenv("TMPDIR", root)
+		t.Setenv("HOME", filepath.Join(root, "home"))
+		store = filepath.Join(root, "home", ".claude", "projects")
+		outside = filepath.Join(root, "outside")
+		for _, d := range []string{filepath.Join(store, "p"), outside} {
+			if err := os.MkdirAll(d, 0o700); err != nil {
+				t.Fatal(err)
+			}
+		}
+		return
+	}
+	read := func(t *testing.T, root, named string) string {
+		t.Helper()
+		b, err := json.Marshal(map[string]string{"session_id": "s1", "transcript_path": named})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(root, "ccmorph-session-end.42.json"), b, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		return readEndedTranscript(42, "")
+	}
+	t.Run("an in-store file link to an outside file", func(t *testing.T) {
+		root, store, outside := setup(t)
+		named := filepath.Join(store, "p", "s1.jsonl")
+		if err := os.Symlink(filepath.Join(outside, "s1.jsonl"), named); err != nil {
+			t.Fatal(err)
+		}
+		for _, body := range []string{"", spoken} {
+			if err := os.WriteFile(filepath.Join(outside, "s1.jsonl"), []byte(body), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			got := read(t, root, named)
+			if got != "" {
+				t.Fatalf("body %q: read %q, want no transcript", body, got)
+			}
+			l := &launcher{ended: "s1", endedTranscript: got}
+			if out, _ := captureStdout(t, func() int { l.resumeHint("work"); return 0 }); out != hint {
+				t.Fatalf("body %q: hint %q, want %q", body, out, hint)
+			}
+		}
+	})
+	t.Run("a dangling in-store link whose target appears later", func(t *testing.T) {
+		root, store, outside := setup(t)
+		named := filepath.Join(store, "p", "s1.jsonl")
+		late := filepath.Join(outside, "late.jsonl")
+		if err := os.Symlink(late, named); err != nil {
+			t.Fatal(err)
+		}
+		got := read(t, root, named)
+		if err := os.WriteFile(late, []byte(spoken), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if got != "" {
+			t.Fatalf("read %q, want no transcript", got)
+		}
+	})
+	t.Run("an in-store directory link to an outside directory", func(t *testing.T) {
+		root, store, outside := setup(t)
+		if err := os.Symlink(outside, filepath.Join(store, "q")); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(outside, "s1.jsonl"), []byte(spoken), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if got := read(t, root, filepath.Join(store, "q", "s1.jsonl")); got != "" {
+			t.Fatalf("read %q, want no transcript", got)
+		}
+	})
+	t.Run("a path spelled outside a store that resolves into one", func(t *testing.T) {
+		root, store, _ := setup(t)
+		real := filepath.Join(store, "p", "s1.jsonl")
+		if err := os.WriteFile(real, []byte(spoken), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		named := filepath.Join(root, "elsewhere.jsonl")
+		if err := os.Symlink(real, named); err != nil {
+			t.Fatal(err)
+		}
+		if got := read(t, root, named); got != "" {
+			t.Fatalf("read %q, want no transcript", got)
+		}
+	})
+}
+
+// A store reached through a linked directory (macOS spells /var as a link to
+// /private/var) is still a store: a carried link, a home transcript and a name
+// never written keep their answers (#410).
+func TestASessionEndStoreSpelledThroughALinkKeepsItsLine(t *testing.T) {
+	spoken := `{"type":"user","sessionId":"s1","uuid":"u1","timestamp":"2026-01-01T00:00:00.000Z","message":{"role":"user","content":"hi"}}` + "\n"
+	hint := "\nccmorph: resume this session with: ccmorph run work --resume s1\n"
+	real := realTempDir(t)
+	via := filepath.Join(t.TempDir(), "via")
+	if err := os.Symlink(real, via); err != nil {
+		t.Fatal(err)
+	}
+	home := filepath.Join(via, "home")
+	profiles := filepath.Join(via, "profiles")
+	tmp := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("TMPDIR", tmp)
+	dir := filepath.Join(home, ".claude", "projects", "proj")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "s1.jsonl"), []byte(spoken), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	l := &launcher{profileDirs: profiles}
+	if !l.carrySession("s1", filepath.Join(profiles, "work", "projects")) {
+		t.Fatal("the session must be carried into the target profile")
+	}
+	for _, c := range []struct{ name, path, want string }{
+		{"the carried link", filepath.Join(profiles, "work", "projects", "proj", "s1.jsonl"), hint},
+		{"the home transcript", filepath.Join(dir, "s1.jsonl"), hint},
+		{"a name never written", filepath.Join(home, ".claude", "projects", "other", "s1.jsonl"), ""},
+	} {
+		b, _ := json.Marshal(map[string]string{"transcript_path": c.path})
+		if err := os.WriteFile(filepath.Join(tmp, "ccmorph-session-end.42.json"), b, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		l.ended, l.endedTranscript = "s1", readEndedTranscript(42, profiles)
+		if c.name == "the home transcript" {
+			want := filepath.Join(real, "home", ".claude", "projects", "proj", "s1.jsonl")
+			if l.endedTranscript != want {
+				t.Errorf("%s: read %q, want the resolved %q", c.name, l.endedTranscript, want)
+			}
+		}
+		if out, _ := captureStdout(t, func() int { l.resumeHint("work"); return 0 }); out != c.want {
+			t.Errorf("%s: hint %q, want %q", c.name, out, c.want)
+		}
+	}
+}
+
+// A relative CLAUDE_CONFIG_DIR is passed to the child unchanged and resolved
+// against the launch's working directory, which is the child's, so its projects
+// store is the session's store whether the hook names the transcript absolutely
+// or relatively (#410).
+func TestAnEndedSessionReadsARelativeConfiguredStore(t *testing.T) {
+	root := realTempDir(t)
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("TMPDIR", t.TempDir())
+	t.Chdir(root)
+	transcript := filepath.Join(root, "custom", "projects", "proj", "s1.jsonl")
+	if err := os.MkdirAll(filepath.Dir(transcript), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	spoken := `{"type":"user","sessionId":"s1","uuid":"u1","timestamp":"2026-01-01T00:00:00.000Z","message":{"role":"user","content":"hi"}}` + "\n"
+	hint := "\nccmorph: resume this session with: ccmorph run work --resume s1\n"
+	for _, named := range []string{transcript, "custom/projects/proj/s1.jsonl"} {
+		script := "#!/bin/sh\nf=\"$TMPDIR/ccmorph-session-end.$$\"\nprintf s1 > \"$f\"\n" +
+			"printf '%s' '{\"session_id\":\"s1\",\"transcript_path\":\"" + named + "\"}' > \"$f.json\"\n"
+		if err := os.WriteFile(filepath.Join(root, "ccmorph-core"), []byte(script), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		for _, c := range []struct{ name, body, want string }{
+			{"an empty transcript", "", ""},
+			{"a spoken transcript", spoken, hint},
+		} {
+			if err := os.WriteFile(transcript, []byte(c.body), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			l := &launcher{libexec: root, profileDirs: filepath.Join(root, "profiles")}
+			if rc := l.runClaude([]string{"CLAUDE_CONFIG_DIR=custom"}, nil); rc != 0 {
+				t.Fatalf("%s named %q: launch rc %d", c.name, named, rc)
+			}
+			if out, _ := captureStdout(t, func() int { l.resumeHint("work"); return 0 }); out != c.want {
+				t.Errorf("%s named %q: hint %q, want %q", c.name, named, out, c.want)
+			}
+		}
+	}
 }
