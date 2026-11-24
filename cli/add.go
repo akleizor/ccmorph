@@ -17,6 +17,7 @@ import (
 	"github.com/akleizor/ccmorph/profile"
 	"github.com/akleizor/ccmorph/util"
 	"github.com/akleizor/ccmorph/util/paths"
+	"github.com/akleizor/ccmorph/util/tier"
 )
 
 // add is `ccmorph add [name]`: a sign-in method, its credential, and a saved
@@ -459,18 +460,18 @@ func (l *launcher) presets() [][]string {
 }
 
 // tierColumns maps a preset's three tier columns to the env lines the wizard
-// writes, each key built from its word in util.TierWords. The words are the
+// writes, each key built from its word in tier.TierWords. The words are the
 // ones after fable: no gateway column maps fable, which is left to `ccmorph
 // config set`, not given a fourth column here. add_test.go pins the three
 // columns to opus, sonnet and haiku by name, so reordering TierWords cannot
 // silently point a column at another tier (#449).
 func tierColumns(tiers []string) []string {
 	var lines []string
-	for i, tier := range util.TierWords[1:] {
+	for i, word := range tier.TierWords[1:] {
 		if i >= len(tiers) {
 			break
 		}
-		lines = append(lines, "env."+util.TierEnvKey(tier)+"="+tiers[i])
+		lines = append(lines, "env."+tier.TierEnvKey(word)+"="+tiers[i])
 	}
 	return lines
 }

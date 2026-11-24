@@ -11,6 +11,8 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+
+	"github.com/akleizor/ccmorph/util/tier"
 )
 
 var Kinds = []string{"writing", "search", "x", "mechanical", "code", "design", "image_gen", "vision"}
@@ -123,8 +125,8 @@ var digits = regexp.MustCompile(`\d+`)
 
 // newer compares served IDs by their numbers, then by name.
 func newer(a, b string) bool {
-	na := digits.FindAllString(strings.TrimSuffix(a, "[1m]"), -1)
-	nb := digits.FindAllString(strings.TrimSuffix(b, "[1m]"), -1)
+	na := digits.FindAllString(tier.TrimWindowMarker(a), -1)
+	nb := digits.FindAllString(tier.TrimWindowMarker(b), -1)
 	for i := 0; i < len(na) && i < len(nb); i++ {
 		x, _ := strconv.Atoi(na[i])
 		y, _ := strconv.Atoi(nb[i])

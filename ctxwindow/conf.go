@@ -32,6 +32,7 @@ import (
 
 	"github.com/akleizor/ccmorph/profile"
 	"github.com/akleizor/ccmorph/util/paths"
+	"github.com/akleizor/ccmorph/util/tier"
 )
 
 const (
@@ -385,8 +386,6 @@ func RealID(modelID string) string {
 	return modelID
 }
 
-var oneMSuffix = regexp.MustCompile(`(?i)\[1m\]$`)
-
 // IsExcluded reports whether excluded_models names this model, directly or
 // through the tier alias it maps.
 func IsExcluded(fields map[string]string, modelID string) bool {
@@ -396,12 +395,12 @@ func IsExcluded(fields map[string]string, modelID string) bool {
 			excluded[m] = true
 		}
 	}
-	bare := oneMSuffix.ReplaceAllString(RealID(modelID), "")
-	mapped, ok := fields["env.ANTHROPIC_DEFAULT_"+strings.ToUpper(bare)+"_MODEL"]
+	bare := tier.TrimWindowMarker(RealID(modelID))
+	mapped, ok := fields["env."+tier.TierEnvKey(bare)]
 	if !ok {
 		mapped = bare
 	}
-	return excluded[bare] || excluded[oneMSuffix.ReplaceAllString(mapped, "")]
+	return excluded[bare] || excluded[tier.TrimWindowMarker(mapped)]
 }
 
 // ValidModel rejects empty ids and ids with whitespace or "=".
@@ -583,7 +582,7 @@ func mappedTarget(fields map[string]string, mapping obj, bare string) string {
 	if !ok || s == "" {
 		return bare
 	}
-	return strings.TrimSuffix(s, "[1m]")
+	return tier.TrimWindowMarker(s)
 }
 
 // RouteKnown is whether the route's discovered table carries model, as itself
@@ -689,15 +688,28 @@ func flockCtx(ctx context.Context, f *os.File) error {
 	}
 }
 
+// modelChoiceKeys is the conf's model-choice section: the picker's own keys,
+// every tier word's env key — opus's glob carries its name and description rows
+// behind its model row — the two Claude Code aliases, and the exclusion list.
+// Built from the tier words, so a word the list gains lands here too (#544).
+func modelChoiceKeys() []string {
+	keys := []string{"model", "model_map", "effort", "effort.*"}
+	for _, w := range tier.TierWords {
+		k := "env." + tier.TierEnvKey(w)
+		if w == "opus" {
+			k += "*"
+		}
+		keys = append(keys, k)
+	}
+	return append(keys, "env.ANTHROPIC_SMALL_FAST_MODEL", "env.CLAUDE_CODE_SUBAGENT_MODEL", "excluded_models")
+}
+
 // Canonical layout of a <profile>.conf: connection, model choice, behaviour,
 // context, then machine-written state. A comment block travels with the key
 // line below it.
 var confSections = [][]string{
 	{"type", "provider", "email", "token", "base_url", "api_key", "adapter", "tag"},
-	{"model", "model_map", "effort", "effort.*",
-		"env.ANTHROPIC_DEFAULT_FABLE_MODEL", "env.ANTHROPIC_DEFAULT_OPUS_MODEL*",
-		"env.ANTHROPIC_DEFAULT_SONNET_MODEL", "env.ANTHROPIC_DEFAULT_HAIKU_MODEL",
-		"env.ANTHROPIC_SMALL_FAST_MODEL", "env.CLAUDE_CODE_SUBAGENT_MODEL", "excluded_models"},
+	modelChoiceKeys(),
 	{"private", "usage_route", "env.*"},
 	{"window_sources", "context_window.*"},
 	{"model_defaults", "context_discovered"},

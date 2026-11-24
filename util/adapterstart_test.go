@@ -35,6 +35,20 @@ func TestAdapterStartHandsBackPortAndNeverTheTTY(t *testing.T) {
 	}
 }
 
+// GH-544: an id's own brackets are part of the id — the launch hands the
+// adapter the picked model whole, its trailing window marker alone removed.
+func TestAdapterStartHandsTheAdapterABracketBearingModelWholeIssue544(t *testing.T) {
+	saw := filepath.Join(t.TempDir(), "model")
+	core := fakeCore(t, `printf '%s\n' "$5" > '`+saw+`'; echo PORT=4242`)
+	var out, errw bytes.Buffer
+	if rc := adapterStart([]string{core, "p", "vendor[beta]", "1", os.DevNull}, nil, &out, &errw); rc != 0 {
+		t.Fatalf("rc %d: %s", rc, errw.String())
+	}
+	if b, _ := os.ReadFile(saw); strings.TrimSpace(string(b)) != "vendor[beta]" {
+		t.Fatalf("the adapter saw %q", b)
+	}
+}
+
 func TestAdapterReadyLimit(t *testing.T) {
 	// One bound for either scope (#766): the model-scoped 45 s only held on a
 	// quiet machine, and a loaded host killed every --model run with it. The

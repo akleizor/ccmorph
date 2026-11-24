@@ -144,3 +144,16 @@ func TestTheChatListIsReadWhenTheResendRuns(t *testing.T) {
 		t.Fatalf("resend\n%s\nwant\n%s", got, want)
 	}
 }
+
+// GH-544: the chat list names bare ids, and Claude Code may send the model
+// with its window marker in either case: the resend keeps the carrier for
+// both spellings, as it does for the bare id.
+func TestTheResendKeepsTheCarrierUnderEitherMarkerSpellingIssue544(t *testing.T) {
+	for _, model := range []string{"gemini-4-carbon[1m]", "gemini-4-carbon[1M]"} {
+		req := strings.Replace(carrierRequest, `"model":"gemini-4-carbon"`, `"model":"`+model+`"`, 1)
+		got := string(chatRoute(t).ResendBody([]byte(req), nil))
+		if want := strings.Replace(req, unsignedThinking, "", 1); got != want {
+			t.Errorf("%s: resend\n%s\nwant\n%s", model, got, want)
+		}
+	}
+}
