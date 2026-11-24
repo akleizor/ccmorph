@@ -994,6 +994,28 @@ class PickerTTYTest(unittest.TestCase):
         self.assertEqual(out.count('Cancelled'), 1, out)
         self.assertNotIn('\x1b[', out)
 
+    def test_headless_refusal_carries_no_internal_records_issue_840(self):
+        """GH-840: `set <profile> model </dev/null` refused by name and then
+        dumped the menu's @keep/@custom records on stderr after the refusal.
+        A no-terminal refusal is a refusal, not a menu listing: the named
+        help line ends it, and the picker's internal records never print."""
+        env = self.env(fzf=False, curl='fail')
+        self.profile()
+        result = subprocess.run(
+            ['zsh', '-fc', 'source "$1"\nccmorph set demo model -i', 'test', str(CCMORPH)],
+            env=env, stdin=subprocess.DEVNULL, capture_output=True, text=True,
+            timeout=HANG_TIMEOUT, start_new_session=True)
+        self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertNotIn('picker-alpha', result.stdout)  # no answer was taken
+        self.assertIn('selection needs a terminal or fzf; pass the value directly',
+                      result.stderr, result.stderr)
+        self.assertNotIn('@keep', result.stderr, result.stderr)
+        self.assertNotIn('@custom', result.stderr, result.stderr)
+        # The refusal ends at its help line; nothing follows it.
+        self.assertEqual(result.stderr.rstrip().splitlines()[-1],
+                         'ccmorph: selection needs a terminal or fzf; pass the value directly',
+                         result.stderr)
+
     def test_set_without_slot_picks_slot_then_value(self):
         env = self.env()
         self.profile()

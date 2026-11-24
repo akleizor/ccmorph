@@ -821,7 +821,11 @@ func (t uiTheme) native(prompt string, rows []string, display string) (string, i
 	}
 	if !isTTY(0) || !isTTY(2) {
 		uiErr(t, "selection needs a terminal; pass the value directly")
-		fmt.Fprintln(os.Stderr, strings.Join(rows, "\n"))
+		// Real values only: the menus' @-records are not values to pass
+		// directly and end at the help line instead (#840).
+		if rows := publicRows(rows); len(rows) > 0 {
+			fmt.Fprintln(os.Stderr, strings.Join(rows, "\n"))
+		}
 		// rc 2, not a cancel: no picker ran, so the caller needs the direct
 		// command, not a Cancelled line.
 		return "", 2
@@ -1188,17 +1192,36 @@ func (t uiTheme) search(prompt string, rows []string) (string, int) {
 	return "", 2
 }
 
+// publicRows drops the menus' internal records — @keep, @custom and any other
+// @-prefixed sentinel — from a list being printed for someone who cannot
+// pick. Those IDs are the commands' own bookkeeping, never values a direct
+// command takes, and after a named refusal they read as a dump of internals
+// (#840).
+func publicRows(rows []string) []string {
+	var out []string
+	for _, r := range rows {
+		if !strings.HasPrefix(rowID(r), "@") {
+			out = append(out, r)
+		}
+	}
+	return out
+}
+
 // refuseNoTerminal prints the named cause and what there was to choose from,
 // so every no-terminal refusal reads the same. fzfNamed tells a caller who
 // already has fzf that what is missing is the terminal it cannot reach —
-// naming the tool would send them after what they hold (#725).
+// naming the tool would send them after what they hold (#725). The menus'
+// @-records stay out of the listing: the refusal ends at the help line plus
+// any real values (#840).
 func (t uiTheme) refuseNoTerminal(rows []string, fzfNamed bool) {
 	if fzfNamed {
 		uiErr(t, "selection needs a terminal; pass the value directly")
 	} else {
 		uiErr(t, "selection needs a terminal or fzf; pass the value directly")
 	}
-	fmt.Fprintln(os.Stderr, strings.Join(rows, "\n"))
+	if rows := publicRows(rows); len(rows) > 0 {
+		fmt.Fprintln(os.Stderr, strings.Join(rows, "\n"))
+	}
 }
 
 // uiInput is ccm_ui_input: one line, hidden when secret. rc 1 cancelled or EOF.
