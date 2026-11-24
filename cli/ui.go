@@ -820,12 +820,13 @@ func (t uiTheme) native(prompt string, rows []string, display string) (string, i
 		return "", 1
 	}
 	if !isTTY(0) || !isTTY(2) {
-		uiErr(t, "selection needs a terminal; pass the value directly")
-		// Real values only: the menus' @-records are not values to pass
-		// directly and end at the help line instead (#840).
+		// Real values first, and only real values — the menus' @-records are
+		// not values the direct command takes — so the refusal ends at its
+		// help line (#840).
 		if rows := publicRows(rows); len(rows) > 0 {
 			fmt.Fprintln(os.Stderr, strings.Join(rows, "\n"))
 		}
+		uiErr(t, "selection needs a terminal; pass the value directly")
 		// rc 2, not a cancel: no picker ran, so the caller needs the direct
 		// command, not a Cancelled line.
 		return "", 2
@@ -1207,20 +1208,21 @@ func publicRows(rows []string) []string {
 	return out
 }
 
-// refuseNoTerminal prints the named cause and what there was to choose from,
-// so every no-terminal refusal reads the same. fzfNamed tells a caller who
-// already has fzf that what is missing is the terminal it cannot reach —
-// naming the tool would send them after what they hold (#725). The menus'
-// @-records stay out of the listing: the refusal ends at the help line plus
-// any real values (#840).
+// refuseNoTerminal prints what there was to choose from and then the named
+// cause, so every no-terminal refusal reads the same and ends on the one line
+// to act on — a help line with a listing under it reads as an unfinished
+// sentence (#840). fzfNamed tells a caller who already has fzf that what is
+// missing is the terminal it cannot reach — naming the tool would send them
+// after what they hold (#725). The menus' @-records stay out of the listing:
+// they are bookkeeping, not values the direct command takes (#840).
 func (t uiTheme) refuseNoTerminal(rows []string, fzfNamed bool) {
+	if rows := publicRows(rows); len(rows) > 0 {
+		fmt.Fprintln(os.Stderr, strings.Join(rows, "\n"))
+	}
 	if fzfNamed {
 		uiErr(t, "selection needs a terminal; pass the value directly")
 	} else {
 		uiErr(t, "selection needs a terminal or fzf; pass the value directly")
-	}
-	if rows := publicRows(rows); len(rows) > 0 {
-		fmt.Fprintln(os.Stderr, strings.Join(rows, "\n"))
 	}
 }
 
