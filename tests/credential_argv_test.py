@@ -67,7 +67,9 @@ class CredentialArgv(unittest.TestCase):
                     nonlocal seen
                     if proc.poll() is not None:
                         return True
-                    ps = subprocess.run(["ps", "-axo", "args="], capture_output=True, text=True, timeout=HANG_TIMEOUT).stdout
+                    # -ww: a line cut at $COLUMNS (80 in an xdist worker)
+                    # would hide the key and pass unseen (#518).
+                    ps = subprocess.run(["ps", "-ww", "-axo", "args="], capture_output=True, text=True, timeout=HANG_TIMEOUT).stdout
                     seen = seen or key in ps
                     return False
                 if not wait_until(finished, HANG_TIMEOUT):

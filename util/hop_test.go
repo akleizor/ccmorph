@@ -181,6 +181,11 @@ func TestPsProcessTableReadsStartTimes(t *testing.T) {
 	if err := exec.Command("ps", "-o", "pid=", "-p", "1").Run(); err != nil {
 		t.Skipf("ps cannot run here: %v", err)
 	}
+	// ps cuts its last column at $COLUMNS, which a parallel pytest worker and
+	// many terminals export: a cut command line hides an adapter's argv from
+	// findAdapter, and doctor then reports no session as if it had checked
+	// (#518). The read must give the whole line whatever the width says.
+	t.Setenv("COLUMNS", "10")
 	before := time.Now().Add(-2 * time.Second)
 	cmd := exec.Command("/bin/sleep", "30")
 	if err := cmd.Start(); err != nil {

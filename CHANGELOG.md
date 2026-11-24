@@ -56,6 +56,13 @@
   total every other receipt. The statusline's quota read waits at most a
   second for the store lock, and its own compaction is capped in time,
   entries and bytes (#654).
+- **`ccmorph doctor` names a check it ran out of time for.** Listing running
+  programs is bounded at one second and the new-zsh completion check at five,
+  and on a busy machine either can run out. The report used to drop the
+  open-session row, or tell you to move an fpath line that was already right.
+  It now prints `SKIP adapter: could not tell whether a translator is running
+  (… within 1 second); check again: ccmorph doctor <name>` or `INFO completion:
+  not checked (a new zsh did not answer within 5 seconds)` (#518).
 - **`ccmorph update <tag>` no longer leaves a new library beside the old
   core.** A GitHub tag archive carries no `ccmorph-core`. The updater now
   checks the download for the binary before it runs that tag's installer,

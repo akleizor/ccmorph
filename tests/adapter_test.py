@@ -344,6 +344,48 @@ def listener_outside_the_ephemeral_pool(addr: str) -> tuple[socket.socket, int]:
     raise RuntimeError(f"no port below the ephemeral ranges is free on {addr}")
 
 
+def running_pid(pid):
+    """Whether pid is a process that is still running. False when no such pid
+    exists, and False for a zombie (ps state Z): a process that has exited and
+    waits only for its parent to reap it, and for an orphan that parent is
+    launchd or init. A zombie runs no code and holds no port, so it is no leak;
+    how soon it is reaped is the reaper's pace, which a loaded machine slows,
+    not the tether's work (#518)."""
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    stat = subprocess.run(["ps", "-o", "stat=", "-p", str(pid)],
+                          capture_output=True, text=True,
+                          timeout=HANG_TIMEOUT).stdout.strip()
+    # Empty: the pid was reaped between the two looks.
+    return stat != "" and not stat.startswith("Z")
+
+
+def test_running_pid_tells_a_killed_unreaped_child_from_a_running_one_issue_518():
+    # The leak verdict the SIGKILL tests read, forced both ways with no race.
+    # This test is the child's parent and reaps it only at the end, so once
+    # killed the child stays unreaped for as long as the checks take, however
+    # loaded the machine is: os.kill(pid, 0) keeps finding it, and only the
+    # verdict may change. A live child must read as running.
+    try:
+        subprocess.run(["ps", "-o", "stat=", "-p", str(os.getpid())],
+                       capture_output=True, check=True, timeout=HANG_TIMEOUT)
+    except (OSError, subprocess.CalledProcessError) as e:
+        raise unittest.SkipTest(f"ps cannot run here: {e}")
+    child = subprocess.Popen(["/bin/sleep", "30"])
+    try:
+        assert running_pid(child.pid), "a sleeping child must read as running"
+        os.kill(child.pid, signal.SIGKILL)
+        assert wait_until(lambda: not running_pid(child.pid), HANG_TIMEOUT), \
+            "a killed child that is not yet reaped must stop reading as running"
+        os.kill(child.pid, 0)  # still unreaped: kill(0) alone would call it alive
+    finally:
+        child.kill()
+        child.wait(timeout=HANG_TIMEOUT)
+    assert not running_pid(child.pid), "a reaped child is gone"
+
+
 @needs_loopback  # the stub gateway is a real listener: #611
 class AdapterTest(unittest.TestCase):
     @classmethod
@@ -1005,8 +1047,11 @@ class AdapterTest(unittest.TestCase):
         return True
 
     def _tethers(self, adapter_pid):
-        """The `ccmorph-core tether <adapter_pid> ...` processes running now."""
-        out = subprocess.run(["ps", "-A", "-o", "pid=,command="],
+        """The `ccmorph-core tether <adapter_pid> ...` processes running now.
+        -ww: ps cuts the command at $COLUMNS or the terminal's width, which an
+        xdist worker sets to 80, and a cut line loses the tether's own words
+        (#518)."""
+        out = subprocess.run(["ps", "-ww", "-A", "-o", "pid=,command="],
                              capture_output=True, text=True, check=True,
                              timeout=HANG_TIMEOUT).stdout
         pattern = re.compile(rf"\stether {adapter_pid}(\s|$)")
@@ -1019,6 +1064,22 @@ class AdapterTest(unittest.TestCase):
         # One tether per adapter now watches every child it starts (#29), so a
         # profile's own hooks build is covered by the same guarantee and the
         # whole session costs one tether process, not one per child.
+        self._sigkilled_adapter_leaves_nothing(hooks=False)
+
+    def test_sigkilled_hooks_build_does_not_leak_its_children(self):
+        # The same guarantee with a profile's own hooks build: its shim is a
+        # second child on the same tether. Its own test rather than a second
+        # subtest, so each case has pytest's whole minute (pytest.ini timeout)
+        # on a loaded machine: as subtests both shared one, and the timeout
+        # that cut the first was reported as that subtest's failure (#518).
+        self._sigkilled_adapter_leaves_nothing(hooks=True)
+
+    def _sigkilled_adapter_leaves_nothing(self, hooks):
+        """SIGKILL the adapter (hooks: with a hooks-build shim as a second
+        child) and wait, inside HANG_TIMEOUT, until no child and no tether is
+        running and the state dir is gone. Running is running_pid's verdict: a
+        child that has exited but that launchd or init has not reaped yet is
+        not a leak, and how soon it is reaped is the reaper's pace (#518)."""
         cache = self.cache_file()
         cache.parent.mkdir(parents=True, exist_ok=True)
         cache.write_text(json.dumps({
@@ -1053,72 +1114,70 @@ class AdapterTest(unittest.TestCase):
 
         translator_port = ("port = int(re.search(r'^port: (\\d+)', "
                            "open(sys.argv[2]).read(), re.M).group(1))\n")
-        for hooks in (False, True):
-            with self.subTest(hooks=hooks):
-                tmp = self.home / f"tmp-hooks-{hooks}"
-                tmp.mkdir()
-                tpid = self.home / f"translator-{hooks}.pid"
-                spid = self.home / f"shim-{hooks}.pid"
-                stub(self.home / f"stub-translator-{hooks}", tpid, translator_port)
-                self._install_fake_translator(self.home / f"stub-translator-{hooks}")
-                if hooks:
-                    hooks_shim = self.home / f"hooks-shim-{hooks}"
-                    stub(hooks_shim, spid, "port = int(sys.argv[1])\n")
-                    script.write_text(base_script.replace(
-                        "}\n", f'  print "CCMORPH_SHIM_HOOKS={hooks_shim}"\n}}\n'))
-                else:
-                    script.write_text(base_script)
-                out = tmp / "adapter.out"
-                with open(out, "w") as log:
-                    proc = subprocess.Popen(
-                        [*adapter_cmd(), "p"], stdout=log, stderr=subprocess.DEVNULL,
-                        env=dict(os.environ, HOME=str(self.home), TMPDIR=str(tmp),
-                                 CCMORPH_LIB_DIR=str(self.home / ".config/ccmorph/lib"),
-                                 CCMORPH_STATE_DIR=str(self.home),
-                                 PATH=f"{self.path_bin}:{os.environ.get('PATH', '')}"))
-                child_pids, seen = [], set()
-                try:
-                    def served():
-                        # PORT= follows both children's readiness, so every pid
-                        # has reached the tether by then.
-                        seen.update(self._tethers(proc.pid))
-                        ready = (tpid.exists() and (not hooks or spid.exists())
-                                 and "PORT=" in out.read_text())
-                        if ready and seen:
-                            return True
-                        if proc.poll() is not None:
-                            self.fail(f"hooks={hooks}: adapter exited "
-                                      f"{proc.returncode}: {out.read_text()}")
-                        return False
-                    self.assertTrue(wait_until(served, HANG_TIMEOUT),
-                                    f"hooks={hooks}: adapter never served: "
-                                    f"{out.read_text()}")
-                    child_pids = [int(tpid.read_text())]
-                    if hooks:
-                        child_pids.append(int(spid.read_text()))
-                    self.assertEqual(len(seen), 1,
-                                     f"one tether per adapter, saw {sorted(seen)}")
-                    proc.kill()
-                    proc.wait(timeout=HANG_TIMEOUT)
-                    survivors, tethers, state = [], [], []
+        tmp = self.home / f"tmp-hooks-{hooks}"
+        tmp.mkdir()
+        tpid = self.home / f"translator-{hooks}.pid"
+        spid = self.home / f"shim-{hooks}.pid"
+        stub(self.home / f"stub-translator-{hooks}", tpid, translator_port)
+        self._install_fake_translator(self.home / f"stub-translator-{hooks}")
+        if hooks:
+            hooks_shim = self.home / f"hooks-shim-{hooks}"
+            stub(hooks_shim, spid, "port = int(sys.argv[1])\n")
+            script.write_text(base_script.replace(
+                "}\n", f'  print "CCMORPH_SHIM_HOOKS={hooks_shim}"\n}}\n'))
+        else:
+            script.write_text(base_script)
+        out = tmp / "adapter.out"
+        with open(out, "w") as log:
+            proc = subprocess.Popen(
+                [*adapter_cmd(), "p"], stdout=log, stderr=subprocess.DEVNULL,
+                env=dict(os.environ, HOME=str(self.home), TMPDIR=str(tmp),
+                         CCMORPH_LIB_DIR=str(self.home / ".config/ccmorph/lib"),
+                         CCMORPH_STATE_DIR=str(self.home),
+                         PATH=f"{self.path_bin}:{os.environ.get('PATH', '')}"))
+        child_pids, seen = [], set()
+        try:
+            def served():
+                # PORT= follows both children's readiness, so every pid
+                # has reached the tether by then.
+                seen.update(self._tethers(proc.pid))
+                ready = (tpid.exists() and (not hooks or spid.exists())
+                         and "PORT=" in out.read_text())
+                if ready and seen:
+                    return True
+                if proc.poll() is not None:
+                    self.fail(f"hooks={hooks}: adapter exited "
+                              f"{proc.returncode}: {out.read_text()}")
+                return False
+            self.assertTrue(wait_until(served, HANG_TIMEOUT),
+                            f"hooks={hooks}: adapter never served: "
+                            f"{out.read_text()}")
+            child_pids = [int(tpid.read_text())]
+            if hooks:
+                child_pids.append(int(spid.read_text()))
+            self.assertEqual(len(seen), 1,
+                             f"one tether per adapter, saw {sorted(seen)}")
+            proc.kill()
+            proc.wait(timeout=HANG_TIMEOUT)
+            survivors, tethers, state = [], [], []
 
-                    def cleaned():
-                        nonlocal survivors, tethers, state
-                        seen.update(self._tethers(proc.pid))
-                        survivors = [p for p in child_pids if self._pid_alive(p)]
-                        tethers = [p for p in seen if self._pid_alive(p)]
-                        state = list(tmp.glob("ccmorph-adapter-*"))
-                        return not survivors and not tethers and not state
-                    self.assertTrue(wait_until(cleaned, HANG_TIMEOUT),
-                                    f"hooks={hooks}: children alive {survivors}, "
-                                    f"tethers alive {tethers}, state left {state}")
-                finally:
-                    if proc.poll() is None:
-                        proc.kill()
-                        proc.wait(timeout=HANG_TIMEOUT)
-                    for pid in child_pids + sorted(seen):
-                        if self._pid_alive(pid):
-                            os.kill(pid, signal.SIGKILL)
+            def cleaned():
+                nonlocal survivors, tethers, state
+                seen.update(self._tethers(proc.pid))
+                survivors = [p for p in child_pids if running_pid(p)]
+                tethers = [p for p in seen if running_pid(p)]
+                state = list(tmp.glob("ccmorph-adapter-*"))
+                return not survivors and not tethers and not state
+            self.assertTrue(wait_until(cleaned, HANG_TIMEOUT),
+                            f"hooks={hooks}: children alive {survivors}, "
+                            f"tethers alive {tethers}, state left {state}")
+        finally:
+            if proc.poll() is None:
+                proc.kill()
+                proc.wait(timeout=HANG_TIMEOUT)
+            for pid in child_pids + sorted(seen):
+                if self._pid_alive(pid):
+                    os.kill(pid, signal.SIGKILL)
 
     def test_ready_timeout_exits_non_zero(self):
         # The contract with ccmorph: anything short of "printed PORT and served"
