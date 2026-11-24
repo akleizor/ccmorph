@@ -200,9 +200,13 @@ func looksLikeURL(s string) bool {
 	return strings.Contains(s, "://") || urlHostShape.MatchString(s)
 }
 
-// rollback removes a half-made profile: private state and conf.
+// rollback removes a half-made profile: private state, its live lock and conf.
+// The lock is the profile's own cover (GH-185): a profile that is being taken
+// back owns no session, and a lock file left behind is state no verb shows
+// (GH-837). A lock another launch holds survives the rollback.
 func (l *launcher) rollback(name string) {
 	l.removeProfileDir(name)
+	_ = util.RemoveLive(l.profileDirs, name)
 	os.Remove(l.conf(name))
 	delete(l.confReads, name) // what was half-made must not be read back (GH-561)
 }
@@ -252,17 +256,18 @@ var emailRE = regexp.MustCompile(`"email": "([^"]*)"`)
 // a sign-in for the config dir it was pointed at.
 var claudeStatusRE = regexp.MustCompile(`"loggedIn":\s*(true|false)`)
 
-// handSignInSignals keeps SIGHUP and SIGTERM from killing this process while a
-// browser sign-in waits (GH-649). Closing a terminal or dropping SSH sends
-// those signals to the whole foreground process group, and a parent that dies
-// mid-wait never reaches the rollback that makes an interrupted sign-in clean
-// up the way a cancelled one does. While the returned release is pending, both
-// signals go on to the sign-in child — the child owns the wait and the terminal
-// sends it the signals too — so the child exits, the caller's failure path
-// runs, and a closed window ends like the Ctrl-C Claude Code handles itself.
+// handSignInSignals keeps SIGHUP, SIGTERM and SIGINT from killing this process
+// while a browser sign-in waits (GH-649, GH-837). Closing a terminal or
+// dropping SSH sends HUP and TERM to the whole foreground process group, and
+// Ctrl-C sends INT; a parent that dies mid-wait never reaches the rollback that
+// makes an interrupted sign-in clean up the way a cancelled one does. While the
+// returned release is pending, those signals go on to the sign-in child — the
+// child owns the wait and a terminal sends it the signals too — so the child
+// exits, the caller's failure path runs, and Ctrl-C cancels setup as the help
+// promises instead of leaving a half-made profile and its lock behind (GH-837).
 func handSignInSignals(child *os.Process) (release func()) {
 	sigs := make(chan os.Signal, 1)
-	signal.Notify(sigs, syscall.SIGHUP, syscall.SIGTERM)
+	signal.Notify(sigs, syscall.SIGHUP, syscall.SIGTERM, syscall.SIGINT)
 	go func() {
 		for s := range sigs {
 			if sig, ok := s.(syscall.Signal); ok {
