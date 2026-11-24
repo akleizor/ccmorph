@@ -68,6 +68,12 @@ func UsageRowMain(args []string, stdin io.Reader) int {
 	if profile == "" {
 		return 2
 	}
+	// Inside a Remote Control edge the edge's adapter records every response under
+	// the route that served it; a transcript row would charge the same call to
+	// this profile too. A launch that names a profile clears this variable first.
+	if os.Getenv("CCMORPH_EDGE_ROUTE_ENV") != "" {
+		return 0
+	}
 	var in struct {
 		TranscriptPath string `json:"transcript_path"`
 		HookEventName  string `json:"hook_event_name"`

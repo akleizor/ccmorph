@@ -884,6 +884,7 @@ func TestInboundTokenSwap(t *testing.T) {
 func stateHome(t *testing.T) string {
 	dir := t.TempDir()
 	t.Setenv("XDG_STATE_HOME", dir)
+	t.Setenv("CCMORPH_EDGE_ROUTE_ENV", "") // a run inside a Remote Control session must not skip the hook
 	return filepath.Join(dir, "ccmorph", "usage")
 }
 

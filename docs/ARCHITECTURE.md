@@ -1019,7 +1019,9 @@ The line's content, headers and credential are not read and never stored
 **[test]**. If a row for that response id already exists from another ccmorph
 writer — a Remote Control session and a launch nested inside one run the
 traffic through an adapter that records it — the hook leaves that row alone, so
-one turn still writes one row **[test]**.
+one turn still writes one row **[test]**. Inside a Remote Control edge (`CCMORPH_EDGE_ROUTE_ENV` set) the hook writes
+nothing at all: the adapter translates usage, so the id check alone cannot see
+the twin **[test]**.
 
 Rows from these launches carry `estimated_cost`, never `cost`: a subscription or
 long-lived token bills nothing per token, so there is no billed amount to

@@ -449,6 +449,23 @@ func TestARowAnotherWriterRecordedIsNotDuplicated(t *testing.T) {
 	}
 }
 
+// Inside a Remote Control edge the adapter records each response under the route
+// that served it, but with usage it translated, so the id check above cannot see
+// the twin: the hook must write nothing there.
+func TestTheHookWritesNothingInsideARemoteControlEdge(t *testing.T) {
+	dir := stateHome(t)
+	t.Setenv("CCMORPH_EDGE_ROUTE_ENV", "CLAUDE_CODE_DISABLE_ADVISOR_TOOL=1")
+	path := writeTranscript(t, transcriptLine("u1", "msg_1", "claude-opus-5-5", "2026-11-05T10:00:00Z",
+		`{"input_tokens":10,"output_tokens":25}`))
+	stop := `{"session_id":"s1","hook_event_name":"Stop","transcript_path":` + quote(path) + `}`
+	if rc := UsageRowMain([]string{"--profile", "sub", "--pricing", "anthropic"}, strings.NewReader(stop)); rc != 0 {
+		t.Fatalf("rc %d", rc)
+	}
+	if all := rows(t, dir); len(all) != 0 {
+		t.Fatalf("an edge session's call was charged to its profile as well: %v", all)
+	}
+}
+
 // A row that could not be written sits before the cursor forever unless the
 // cursor holds: a full or unwritable state dir must not lose that response.
 func TestRecordTranscriptRetriesARowItCouldNotWrite(t *testing.T) {
