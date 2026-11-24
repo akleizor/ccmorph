@@ -48,9 +48,12 @@ const psPipeGrace = 100 * time.Millisecond
 // psCmd is one ps pass under ctx. WaitDelay closes the pass's pipe at
 // psPipeGrace when the pass exits but something it started still holds the
 // other end, so an orphan cannot outlive the bound; a pass that pays the grace
-// returns ErrWaitDelay and its output is discarded with the error.
+// returns ErrWaitDelay and its output is discarded with the error. -ww lifts
+// the width ps takes from $COLUMNS (procps and BSD ps alike): a command line
+// cut there hides an adapter's argv, and the read would answer that nothing
+// runs (#518).
 func psCmd(ctx context.Context, args ...string) *exec.Cmd {
-	cmd := exec.CommandContext(ctx, "ps", args...)
+	cmd := exec.CommandContext(ctx, "ps", append([]string{"-ww"}, args...)...)
 	cmd.WaitDelay = psPipeGrace
 	return cmd
 }

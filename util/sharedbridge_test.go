@@ -6,6 +6,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"syscall"
 	"testing"
 	"time"
@@ -382,18 +383,56 @@ func TestRetireRouteNeverSignalsAPidNotRunningTheBridge(t *testing.T) {
 
 // TestMain lets a test run this binary as a route hold: with
 // CCMORPH_TEST_HOLD_USERS set it takes routeHold's hold on that file, whatever
-// its argv says, and runs no test. It is also the fake security the keychain
-// tests put on PATH under the name "security" (GH-830): that dispatch needs
-// both variables, so an operator's env alone runs no test differently.
+// its argv says, and runs no test. With CCMORPH_TEST_HOLD_CHILD set as well,
+// the hold first starts one child of its own per comma-separated argv[0] in
+// it — a live session's translator and, in a CCMORPH_SHIM_HOOKS build, its
+// hooks shim, as the process table shows them (#518). Each child is this
+// binary again with CCMORPH_TEST_UNTIL_EOF: it lives until the hold's end of
+// its stdin closes, so a killed hold leaves no child behind. It is also the
+// fake security the keychain tests put on PATH under the name "security"
+// (GH-830): that dispatch needs both variables, so an operator's env alone
+// runs no test differently.
 func TestMain(m *testing.M) {
 	if state := os.Getenv(fakeSecurityEnv); state != "" && filepath.Base(os.Args[0]) == "security" {
 		os.Exit(fakeSecurity(state, os.Args[1:], os.Stdin, os.Stdout, os.Stderr))
 	}
+	if os.Getenv("CCMORPH_TEST_UNTIL_EOF") != "" {
+		io.Copy(io.Discard, os.Stdin)
+		os.Exit(0)
+	}
 	if users := os.Getenv("CCMORPH_TEST_HOLD_USERS"); users != "" {
+		if names := os.Getenv("CCMORPH_TEST_HOLD_CHILD"); names != "" {
+			for _, name := range strings.Split(names, ",") {
+				holdChild(name)
+			}
+		}
 		os.Exit(routeHold([]string{users}, nil, os.Stdout, io.Discard))
 	}
 	os.Exit(m.Run())
 }
+
+// holdChild starts one hold child under argv[0] name and returns once it has
+// exec'd. Its stdin is a pipe whose write end only this process holds, kept in
+// holdChildStdins so no finalizer closes it while the hold runs.
+func holdChild(name string) {
+	exe, err := os.Executable()
+	if err != nil {
+		os.Exit(3)
+	}
+	child := exec.Command(exe)
+	child.Args = []string{name, "-config", "config.yaml"}
+	child.Env = []string{"CCMORPH_TEST_UNTIL_EOF=1"}
+	stdin, err := child.StdinPipe()
+	if err != nil {
+		os.Exit(3)
+	}
+	holdChildStdins = append(holdChildStdins, stdin)
+	if err := child.Start(); err != nil {
+		os.Exit(3)
+	}
+}
+
+var holdChildStdins []io.WriteCloser
 
 // coreCopy is this test binary under the name ccmorph-core: a hard link, or a
 // copy where the temp dir is on another volume. Never a symlink: darwin names a
