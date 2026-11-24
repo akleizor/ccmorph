@@ -273,3 +273,34 @@ func TestPsCommandLineIsNotCutAtColumns(t *testing.T) {
 		time.Sleep(20 * time.Millisecond)
 	}
 }
+
+// TestPsProcessTablePassesShareOneBound pins why the three ps passes run at
+// once (#829): runningAdapter gives the whole read one second (GH-467), and
+// passes run one after another lose it on a loaded host, so doctor answered
+// SKIP with a session live. Each fake pass takes 600ms: at once they all land
+// inside the bound; one after another the command pass is killed at it and the
+// row has no command line.
+func TestPsProcessTablePassesShareOneBound(t *testing.T) {
+	dir := t.TempDir()
+	script := "#!/bin/sh\n/bin/sleep 0.6\ncase \"$*\" in\n" +
+		"*ppid*) echo '4242 1 fake-comm' ;;\n" +
+		"*command*) echo '4242 /opt/fake/ccmorph-core adapter p' ;;\n" +
+		"*lstart*) echo '4242 Mon Jan  2 15:04:05 2006' ;;\n" +
+		"esac\n"
+	if err := os.WriteFile(filepath.Join(dir, "ps"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	r, ok := psProcessTable(ctx)[4242]
+	if !ok {
+		t.Fatal("the row pass lost the one-second bound: no row for the fake pid")
+	}
+	if r.args != "/opt/fake/ccmorph-core adapter p" {
+		t.Fatalf("the command pass lost the one-second bound: row %+v", r)
+	}
+	if r.start.IsZero() {
+		t.Fatalf("the start-time pass lost the one-second bound: row %+v", r)
+	}
+}
