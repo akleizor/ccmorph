@@ -20,11 +20,13 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/akleizor/ccmorph/ctxwindow"
 	"github.com/akleizor/ccmorph/ordjson"
+	"github.com/akleizor/ccmorph/shim"
 	"github.com/akleizor/ccmorph/util"
 	"github.com/akleizor/ccmorph/util/paths"
 )
@@ -1370,6 +1372,79 @@ func TestPrintContractPrintsOnlyAMintedTokenThenThePort(t *testing.T) {
 				t.Fatalf("contract = %q, want %q", got, tc.want)
 			}
 		})
+	}
+}
+
+// One function owns the ritual's order (#480): arm the shutdown, run the
+// route's earlier wait, start the shim with the env this route builds, wait
+// for it, print the contract, then supervise it. The two paths pass different
+// shimLaunch values and nothing else; this pin runs one and reads the order,
+// the env that reached the process, and the contract that followed readiness.
+func TestLaunchShimOwnsTheOrderAndTheEnv(t *testing.T) {
+	var steps []string
+	port := 45999
+	a := &cliArgs{profile: "demo", reserved: -1, port: &port, token: "tok", inboundToken: true}
+	done := make(chan struct{})
+	shimProc := &proc{done: done}
+	var spawned *exec.Cmd
+	swap(t, &spawnShim, func(c *exec.Cmd) (*proc, error) {
+		steps = append(steps, "start")
+		spawned = c
+		return shimProc, nil
+	})
+	stdio := captureStdio(t)
+	var shimSlot atomic.Pointer[proc]
+	code, did := exits(t, func() {
+		launchShim(a, shimLaunch{
+			bin:    "/stable/hooks.py",
+			opts:   shim.Options{Port: port},
+			route:  map[string]any{"profile": "demo"},
+			extras: map[string]string{"CCMORPH_USER_AGENT": "ua"},
+			routeEnv: map[string]string{
+				"CCMORPH_TRANSLATOR_CHAT_MODELS_FILE": "/conf.chat-models"},
+			key: "k",
+			shutdown: func(status int) {
+				steps = append(steps, "shutdown")
+				exit(status)
+			},
+			shim:   &shimSlot,
+			before: func() { steps = append(steps, "before") },
+			probe: func() bool {
+				steps = append(steps, "probe")
+				close(done) // a shim that dies the moment it is pronounced ready
+				return true
+			},
+			fail:       func(*proc, bool) { t.Error("an answered endpoint is not a failure") },
+			interposed: "shim interposed (test)",
+			serving:    "serving test",
+		})
+	})
+	if !did || code != 1 {
+		t.Fatalf("launchShim = (%d, exited=%v); a dead shim must end the launch non-zero", code, did)
+	}
+	if want := []string{"before", "start", "probe", "shutdown"}; !slices.Equal(steps, want) {
+		t.Fatalf("ritual order = %v, want %v", steps, want)
+	}
+	if spawned == nil {
+		t.Fatal("the shim was never spawned")
+	}
+	env := strings.Join(spawned.Env, "\n")
+	for _, want := range []string{
+		`CCMORPH_MODEL_ROUTE={"profile":"demo"}`,
+		"CCMORPH_USER_AGENT=ua",
+		"CCMORPH_TRANSLATOR_CHAT_MODELS_FILE=/conf.chat-models",
+		"CCMORPH_INBOUND=",
+	} {
+		if !strings.Contains(env, want) {
+			t.Errorf("the shim env lacks %q", want)
+		}
+	}
+	if shimSlot.Load() != shimProc {
+		t.Error("the started shim was not handed to the caller's shutdown")
+	}
+	wantContract := "TOKEN=" + a.token + "\nPORT=" + strconv.Itoa(port) + "\n"
+	if out := stdio(); !strings.Contains(out, wantContract) {
+		t.Errorf("the contract did not follow readiness in the one ritual: %q", out)
 	}
 }
 

@@ -395,6 +395,7 @@ func watchSignals(shutdown func(int)) {
 // The shim launch ritual, spelled once for the two paths out of Main (#480):
 // the direct route and the translator route differ in what they probe and
 // what they watch, not in how a shim is launched, pronounced ready and kept.
+// launchShim is the one owner of that order; the pieces below are its parts.
 
 // modelNames is the usable rows' wire ids: the models the shim's route offers.
 func modelNames(usable []Row) []string {
@@ -487,6 +488,58 @@ func supervise(a *cliArgs, shutdown func(int), watched ...supervised) {
 	}
 }
 
+// shimLaunch is the one ritual's inputs: a route's answer per field. The two
+// paths out of Main differ only here — the binary and streams the shim starts
+// with, its options, the model route its env carries (and any entry only that
+// route sets), the readiness wait for a process that must answer first (the
+// translator), the probe and failure wording of the shim's own wait, the two
+// log lines an operator reads, and the extra processes the supervisor keeps.
+// The order they run in belongs to launchShim alone.
+type shimLaunch struct {
+	bin        string
+	opts       shim.Options
+	route      map[string]any
+	extras     map[string]string
+	routeEnv   map[string]string
+	key        string
+	stdout     *os.File
+	stderr     *os.File
+	shutdown   func(int)
+	shim       *atomic.Pointer[proc]
+	before     func()
+	probe      func() bool
+	fail       func(p *proc, exited bool)
+	interposed string
+	serving    string
+	watched    []supervised
+}
+
+// launchShim is the ritual both paths out of Main run (#480): the caller's
+// shutdown is armed, the route's earlier wait (the translator's) runs, the
+// held port is released, the shim starts with the environment this route
+// builds, it is waited for with the route's probe and failure wording, the
+// contract is printed, the route's two lines are logged, and the shim plus
+// the route's other processes are supervised. It never returns: supervise
+// ends the loop only through a child's exit or the shutdown it calls.
+func launchShim(a *cliArgs, l shimLaunch) {
+	watchSignals(l.shutdown)
+	if l.before != nil {
+		l.before()
+	}
+	a.releasePort()
+	p, err := startShim(l.bin, l.opts, shimEnv(l.route, l.extras, a, l.key, l.routeEnv), l.stdout, l.stderr)
+	if err != nil {
+		logf("cannot start the gateway shim: %v", err)
+		l.shutdown(1)
+	}
+	l.shim.Store(p)
+	waitReady(a, l.shutdown, p, l.probe, func(exited bool) { l.fail(p, exited) })
+	logf("%s", l.interposed)
+	printContract(a, l.opts.Port)
+	logf("%s", l.serving)
+	supervise(a, l.shutdown, append(append([]supervised{}, l.watched...), supervised{p, "shim"})...)
+}
+
 // frontDirectly serves an Anthropic-native gateway through the shim
 // alone: no translator and no rendered credential, since the shim relays the
 // client's own key. Same contract as the translator path.
@@ -504,41 +557,40 @@ func frontDirectly(a *cliArgs, upstream, key, routeIdentity string, usable []Row
 	// No translator here, so the shim owns transport retries; behind cliproxyapi
 	// its request-retry does, and a second layer would multiply attempts.
 	hooksBin := strings.TrimSpace(extras["CCMORPH_SHIM_HOOKS"])
-	o := shim.Options{Port: port, Target: upstream, PreserveIDs: true, RetryTransport: true,
-		RandomDeviceID: randomDeviceID}
 	if modelMap == nil {
 		modelMap = map[string]any{}
 	}
-	route := map[string]any{
-		"profile": a.profile, "identity": routeIdentity, "upstream": upstream,
-		"models_url": ctxwindow.APIURL(upstream, "/v1/models"), "models": modelNames(usable),
-		"model_map": modelMap, "timeout": int(selectTimeout.Seconds()),
-		"key_sha256": hashHex(key)}
-	a.releasePort()
-	shimProc, err := startShim(hooksBin, o, shimEnv(route, extras, a, key), nil, os.Stderr)
-	if err != nil {
-		die("cannot start the gateway shim: %v", err)
-	}
-
+	var shimProc atomic.Pointer[proc]
 	shutdown := func(status int) {
-		stopProcesses(shimProc)
+		stopProcesses(shimProc.Load())
 		exit(status)
 	}
-	watchSignals(shutdown)
-
-	// The probe is bodiless and carries no credential, and asks only whether
-	// our shim answers — a gateway with no model list is ready too.
-	waitReady(a, shutdown, shimProc, func() bool { return answeredFn(port) },
-		func(bool) { logf("shim did not serve on :%d", port) })
 	hooks := ""
 	if extras["CCMORPH_SHIM_HOOKS"] != "" {
 		hooks = "; profile request hooks"
 	}
-	logf("shim interposed (Anthropic model ids; readable gateway errors%s)", hooks)
-	printContract(a, port)
-	logf("serving profile %s on :%d -> %s (no translator)", a.profile, port, upstream)
-	supervise(a, shutdown, supervised{shimProc, "shim"})
-	return 0 // supervise never returns: the loop ends only through shutdown
+	launchShim(a, shimLaunch{
+		bin: hooksBin,
+		opts: shim.Options{Port: port, Target: upstream, PreserveIDs: true, RetryTransport: true,
+			RandomDeviceID: randomDeviceID},
+		route: map[string]any{
+			"profile": a.profile, "identity": routeIdentity, "upstream": upstream,
+			"models_url": ctxwindow.APIURL(upstream, "/v1/models"), "models": modelNames(usable),
+			"model_map": modelMap, "timeout": int(selectTimeout.Seconds()),
+			"key_sha256": hashHex(key)},
+		extras:   extras,
+		key:      key,
+		stderr:   os.Stderr,
+		shutdown: shutdown,
+		shim:     &shimProc,
+		// The probe is bodiless and carries no credential, and asks only whether
+		// our shim answers — a gateway with no model list is ready too.
+		probe:      func() bool { return answeredFn(port) },
+		fail:       func(*proc, bool) { logf("shim did not serve on :%d", port) },
+		interposed: "shim interposed (Anthropic model ids; readable gateway errors" + hooks + ")",
+		serving:    fmt.Sprintf("serving profile %s on :%d -> %s (no translator)", a.profile, port, upstream),
+	})
+	return 0 // launchShim never returns: the loop ends only through shutdown
 }
 
 // translatorChatModels is the ids of the rows the translator serves on its
@@ -990,27 +1042,31 @@ func serve(a *cliArgs, rows []Row, required, upstream, key, routeIdentity, upstr
 		os.Remove(conf)
 		exit(status)
 	}
-	watchSignals(shutdown)
 
-	// waitEndpoint is this path's readiness wait: the shared skeleton (#480)
-	// with the translator route's failure wording — the exit code, the log —
-	// where the direct route has neither to name. Each endpoint is asked with
-	// the credential it will serve: the translator the profile's key, the shim
-	// the token the client holds (the key when none was minted).
-	waitEndpoint := func(p *proc, port int, what, auth string) {
+	// failFor words this route's readiness failures — the exit code, the log
+	// file — where the direct route has neither to name; exited tells a child
+	// that died from a deadline that passed.
+	failFor := func(what string, port int) func(p *proc, exited bool) {
+		return func(p *proc, exited bool) {
+			if exited {
+				logf("%s exited %d; see %s", what, p.code(), logPath)
+			} else {
+				logf("%s did not serve on :%d within %ds; see %s", what, port, int(readyTimeout.Seconds()), logPath)
+			}
+		}
+	}
+	// probeFor asks an endpoint with the credential it will serve: the
+	// translator the profile's key, the shim the token the client holds (the key
+	// when none was minted).
+	probeFor := func(port int, auth string) func() bool {
 		if auth == "" {
 			auth = key
 		}
-		waitReady(a, shutdown, p, func() bool { return servingFn(port, auth) },
-			func(exited bool) {
-				if exited {
-					logf("%s exited %d; see %s", what, p.code(), logPath)
-				} else {
-					logf("%s did not serve on :%d within %ds; see %s", what, port, int(readyTimeout.Seconds()), logPath)
-				}
-			})
+		return func() bool { return servingFn(port, auth) }
 	}
-	waitEndpoint(child, port, "translator", "")
+	waitEndpoint := func(p *proc, port int, what, auth string) {
+		waitReady(a, shutdown, p, probeFor(port, auth), func(exited bool) { failFor(what, port)(p, exited) })
+	}
 
 	// The stable request shim prepares newly selected models before forwarding;
 	// response-id recycling and the profile's request hooks are gated in the
@@ -1021,27 +1077,6 @@ func serve(a *cliArgs, rows []Row, required, upstream, key, routeIdentity, upstr
 	} else if shimPort, err = freePortFn(); err != nil {
 		die("no free port: %v", err)
 	}
-	route := map[string]any{
-		"adapter": selfPath(), "adapter_args": []string{"adapter"},
-		"profile": a.profile, "config": conf, "port": port, "identity": routeIdentity, "upstream": upstream,
-		"models": modelNames(usable), "model_map": modelMap, "timeout": int(selectTimeout.Seconds()),
-		"key_sha256": hashHex(key)}
-	a.releasePort()
-	sp, err := startShim(shimBinary, shim.Options{Port: shimPort, Target: "http://127.0.0.1:" + strconv.Itoa(port),
-		PreserveIDs: !recyclesIDs, RandomDeviceID: randomDeviceID},
-		// The 400 resend keeps the translator's reasoning carrier on the models
-		// its chat path serves: their next request needs it back (#646). The
-		// list is a file the adapter rewrites whenever it prepares a model, so
-		// one selected mid-session is seen by this shim too. A direct route
-		// never sets it.
-		shimEnv(route, extras, a, key,
-			map[string]string{"CCMORPH_TRANSLATOR_CHAT_MODELS_FILE": chatModelsFile(conf)}), logfile, logfile)
-	if err != nil {
-		logf("cannot start the gateway shim: %v", err)
-		shutdown(1)
-	}
-	shimProc.Store(sp)
-	waitEndpoint(sp, shimPort, "shim", a.token)
 	why := []string{"prepare models selected mid-session"}
 	if recyclesIDs {
 		why = append(why, "upstream recycles tool_use ids")
@@ -1049,10 +1084,33 @@ func serve(a *cliArgs, rows []Row, required, upstream, key, routeIdentity, upstr
 	if extras["CCMORPH_SHIM_HOOKS"] != "" {
 		why = append(why, "profile request hooks")
 	}
-	logf("shim interposed (%s)", strings.Join(why, "; "))
-	printContract(a, shimPort)
-	logf("serving %d model(s) for profile %s on :%d (translator :%d)", len(usable), a.profile, shimPort, port)
-
-	supervise(a, shutdown, supervised{child, "translator"}, supervised{sp, "shim"})
-	return 0 // supervise never returns: the loop ends only through shutdown
+	launchShim(a, shimLaunch{
+		bin: shimBinary,
+		opts: shim.Options{Port: shimPort, Target: "http://127.0.0.1:" + strconv.Itoa(port),
+			PreserveIDs: !recyclesIDs, RandomDeviceID: randomDeviceID},
+		route: map[string]any{
+			"adapter": selfPath(), "adapter_args": []string{"adapter"},
+			"profile": a.profile, "config": conf, "port": port, "identity": routeIdentity, "upstream": upstream,
+			"models": modelNames(usable), "model_map": modelMap, "timeout": int(selectTimeout.Seconds()),
+			"key_sha256": hashHex(key)},
+		extras: extras,
+		// The 400 resend keeps the translator's reasoning carrier on the models
+		// its chat path serves: their next request needs it back (#646). The
+		// list is a file the adapter rewrites whenever it prepares a model, so
+		// one selected mid-session is seen by this shim too. A direct route
+		// never sets it.
+		routeEnv:   map[string]string{"CCMORPH_TRANSLATOR_CHAT_MODELS_FILE": chatModelsFile(conf)},
+		key:        key,
+		stdout:     logfile,
+		stderr:     logfile,
+		shutdown:   shutdown,
+		shim:       &shimProc,
+		before:     func() { waitEndpoint(child, port, "translator", "") },
+		probe:      probeFor(shimPort, a.token),
+		fail:       failFor("shim", shimPort),
+		interposed: "shim interposed (" + strings.Join(why, "; ") + ")",
+		serving:    fmt.Sprintf("serving %d model(s) for profile %s on :%d (translator :%d)", len(usable), a.profile, shimPort, port),
+		watched:    []supervised{{child, "translator"}},
+	})
+	return 0 // launchShim never returns: the loop ends only through shutdown
 }
