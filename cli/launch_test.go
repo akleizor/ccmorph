@@ -610,7 +610,7 @@ func newRouteFixtureWithHold(t *testing.T, hold string) *routeFixture {
 	libexec := t.TempDir()
 	starts := filepath.Join(libexec, "starts")
 	// The stub bridge's config dir comes from a clean directory of the test's
-	// own, never from $TMPDIR as given: ours() matches the cleaned
+	// own, never from $TMPDIR as given: owns() matches the cleaned
 	// <tmp>/config.yaml against the bridge's argv, and a '//' from a TMPDIR
 	// ending in '/' would make a live, held bridge read as dead.
 	bridges := filepath.Clean(t.TempDir())

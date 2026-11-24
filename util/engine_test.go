@@ -83,3 +83,22 @@ func TestEngineBoolReadsLikeTheEngine(t *testing.T) {
 		}
 	}
 }
+
+// GH-544: the registry id keeps an id's own brackets whole and drops only the
+// trailing window marker, in either case; a [1m] tag spelled mid-id is the
+// kill-switch spelling and is cut with what follows it.
+func TestBareIDKeepsABracketBearingIDWholeIssue544(t *testing.T) {
+	for in, want := range map[string]string{
+		"vendor[beta]":     "vendor[beta]",
+		"vendor[beta][1m]": "vendor[beta]",
+		"vendor[beta][1M]": "vendor[beta]",
+		"x[2M]":            "x[2M]",
+		"glm-4.6[1M]":      "glm-4.6",
+		"plain":            "plain",
+		"claude-x[1m]-eu":  "claude-x",
+	} {
+		if got := bareID(in); got != want {
+			t.Errorf("bareID(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
