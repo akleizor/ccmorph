@@ -140,7 +140,7 @@ func DoctorRoute(name, typ, base, model, modelMap string, need func(listing stri
 	case key == "":
 		row("SKIP", "gateway: no API credential for metadata request")
 	default:
-		body, code := ProbeListing(base, key)
+		body, code, why := ProbeListingWhy(base, key)
 		switch ProbeVerdict(code) {
 		case ProbeAccepted:
 			payload, perr := ordjson.Parse([]byte(body))
@@ -176,7 +176,12 @@ func DoctorRoute(name, typ, base, model, modelMap string, need func(listing stri
 				"replace the API key: ccmorph config "+name)
 			keyRejected = true
 		case ProbeSilent:
-			row("WARN", "gateway: did not answer within 5 seconds (if it is a private endpoint, connect that network)")
+			// The cause in plain words with its host and port; only a gateway
+			// that never answered is told to join a private network (#260).
+			if why == "" {
+				why = "did not answer; check the endpoint: ccmorph config " + name
+			}
+			row("WARN", "gateway: "+why)
 		default:
 			if code == "404" {
 				// The gateway answered, so it is not unreachable: it offers no model
