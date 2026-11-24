@@ -1,6 +1,7 @@
 """Remote Control bridge add-on: routing decision and credential isolation."""
 import contextlib
 import json
+import re
 import signal
 import socket
 import sys
@@ -341,6 +342,112 @@ def test_the_edge_record_names_the_tiers_its_proxy_pins():
                             {"ANTHROPIC_DEFAULT_FABLE_MODEL": "new-model[1m]", "PATH": "/bin"})
     assert record["tiers"] == {"fable": "new-model"}
     assert (record["pid"], record["port"], record["ca"]) == (1, 47100, "/ca.pem")
+
+
+def _edge_record_at(rc, name, tmp_path):
+    ca = tmp_path / "ca.pem"
+    ca.write_text("pem")
+    (tmp_path / f"{name}.json").write_text(json.dumps({"pid": 4242, "port": 1, "ca": str(ca)}))
+
+
+def test_an_edge_state_name_keeps_a_profile_name_and_cleans_every_other_route(tmp_path, monkeypatch):
+    """A folder host's log name is cleaned of path characters before it is joined onto
+    LOGS; the edge's state names were built from the raw `route=` (issue #846):
+    `route=gw/eu` sent the record and its temp write into a subdirectory that is
+    never created, and live_edge read `EDGES/gw/eu.json`, so a bridge of such a
+    route could never find the edge that was up. The rule: a valid profile name
+    -- the only route `ccmorph _route_env` accepts (cli/main.go routeEnv ->
+    profile.ValidName, [A-Za-z0-9_]{1,200}) -- keeps its name WHOLE, because a
+    rule that renames `gw_eu` moves the name of a record already on disk,
+    blinding a restarted supervisor to its live edge (REVIEW.md; the gate
+    refused the first fix for exactly this). EVERY other route is cleaned and
+    carries a sha256 digest: cleaning alone merges `gw/eu`, `gw-eu` and `gw.eu`
+    onto one name, and CRC32 was refused too because two names can be steered
+    onto one checksum. Every emitted name is short ASCII, so two names are one
+    file on a case- or normalization-insensitive volume exactly when they are
+    equal after .lower(): letter case, Unicode normalisation and NAME_MAX are
+    closed by construction (review round 4)."""
+    rc = _launcher()
+    monkeypatch.setattr(rc, "EDGES", tmp_path)
+    whole = ["gw", "gw_eu", "GW", "a" * 200]                 # rows on disk keep their names
+    assert [rc.edge_name(r) for r in whole] == whole
+    cleaned = ["gw/eu", "GW/EU", "gw-eu", "gw.eu", "gw eu", "a" * 201,
+               "é", "é", ".", "..", "", "\x00", "///", "\udc80"]
+    names = [rc.edge_name(r) for r in cleaned]
+    for route, n in zip(cleaned, names):
+        assert re.fullmatch(r"[A-Za-z0-9_-]+", n), (route, n)
+        assert "-" in n and len(n) <= 200, (route, n)          # cleaned, and NAME_MAX holds
+        assert len(f"edge-{n}.log".encode()) <= 255 and len(f".{n}.json.tmp".encode()) <= 255
+    lowered = [n.lower() for n in names] + [r.lower() for r in ("gw", "gw_eu", "a" * 200)]
+    assert len(lowered) == len(set(lowered)), sorted(lowered)  # one file only for one route
+    assert rc.edge_name("gw").lower() == rc.edge_name("GW").lower()   # a case twin is refused
+    alias = rc.edge_name("gw/eu")                          # a route spelled as a cleaned name
+    assert re.fullmatch(r"gw-eu-[0-9a-f]{32}", alias)      # cleaned stem + a lowercase sha256 prefix
+    assert rc.edge_name(alias) != alias                    # gets its own name, never the same one
+    monkeypatch.setattr(rc.os, "kill", lambda pid, sig: None)     # the pid is fake: liveness is not under test
+    monkeypatch.setattr(rc.socket, "create_connection", lambda addr, timeout=None: contextlib.nullcontext())
+    _edge_record_at(rc, alias, tmp_path)
+    assert rc.live_edge("gw/eu") is not None                 # live_edge reads the cleaned name
+    assert not (tmp_path / "gw").exists()
+
+
+def test_an_edge_record_written_under_the_raw_route_is_still_found(tmp_path, monkeypatch):
+    """A naming rule may not change the names of rows already on disk (REVIEW.md).
+    Before #846 an edge of route `gw_eu` wrote `gw_eu.json` just fine -- only a
+    token holding a `/` ever crashed -- and a supervisor restarted while that
+    edge stayed live must still find its record: a reader on a renamed path
+    would start a SECOND edge against the same fixed port."""
+    rc = _launcher()
+    monkeypatch.setattr(rc, "EDGES", tmp_path)
+    _edge_record_at(rc, "gw_eu", tmp_path)                   # the pre-change name, untouched
+    monkeypatch.setattr(rc.os, "kill", lambda pid, sig: None)
+    monkeypatch.setattr(rc.socket, "create_connection", lambda addr, timeout=None: contextlib.nullcontext())
+    assert rc.live_edge("gw_eu") is not None
+
+
+def test_a_published_edge_record_sits_under_its_edge_name_and_names_its_route(tmp_path, monkeypatch):
+    """The record's path and its own `route` are one writer's decision (#846): a
+    supervisor reads EDGES/<edge_name(route)>.json and must be able to tell
+    whose edge it found there. publish_edge is that writer -- EDGES may not
+    exist yet (a fresh state dir's first edge), and no temp file or
+    subdirectory may be left behind."""
+    rc = _launcher()
+    monkeypatch.setattr(rc, "EDGES", tmp_path / "edges")     # never created before the first edge
+    monkeypatch.setattr(rc.os, "kill", lambda pid, sig: None)
+    monkeypatch.setattr(rc.socket, "create_connection", lambda addr, timeout=None: contextlib.nullcontext())
+    ca = tmp_path / "ca.pem"
+    ca.write_text("pem")
+    routes = ["gw/eu", "gw_eu", "GW"]
+    for route in routes:
+        path = rc.publish_edge(route, {"pid": 4242, "port": 1, "ca": str(ca)})
+        assert path == rc.EDGES / f"{rc.edge_name(route)}.json"
+        assert json.loads(path.read_text())["route"] == route
+        assert rc.live_edge(route)["route"] == route
+    assert sorted(p.name for p in rc.EDGES.iterdir()) == sorted(
+        f"{rc.edge_name(r)}.json" for r in routes)            # three records: no temp, no subdirectory
+
+
+def test_an_edge_record_naming_another_route_is_not_adopted(tmp_path, monkeypatch):
+    """On a case-insensitive volume `GW.json` and `gw.json` are one file, so a
+    reader that never asked whose record it found would adopt the twin's edge
+    at the twin's port (#846 review round 4). The record now names the route
+    that wrote it; one naming another is not this route's edge. A record from
+    before this change names none and reads as before; a JSON body that is no
+    record at all is no edge, not a crash."""
+    rc = _launcher()
+    monkeypatch.setattr(rc, "EDGES", tmp_path)
+    monkeypatch.setattr(rc.os, "kill", lambda pid, sig: None)
+    monkeypatch.setattr(rc.socket, "create_connection", lambda addr, timeout=None: contextlib.nullcontext())
+    ca = tmp_path / "ca.pem"
+    ca.write_text("pem")
+    body = {"pid": 4242, "port": 1, "ca": str(ca)}
+    (tmp_path / "GW.json").write_text(json.dumps({**body, "route": "gw"}))
+    assert rc.live_edge("GW") is None
+    (tmp_path / "GW.json").write_text(json.dumps({**body, "route": "GW"}))
+    assert rc.live_edge("GW") is not None
+    for not_a_record in ([], "x"):
+        (tmp_path / "GW.json").write_text(json.dumps(not_a_record))
+        assert rc.live_edge("GW") is None
 
 
 def test_a_tier_pinned_by_the_caller_survives_into_the_session():
