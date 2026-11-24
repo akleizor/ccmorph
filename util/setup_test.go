@@ -758,11 +758,25 @@ func TestRemoveLiveTakesADanglingLinkAway(t *testing.T) {
 	}
 }
 
-// GH-837: the merge gate's own sequence, through the public API. A launch
-// that opened the lock before the removal and flocks afterwards holds an
-// inode nothing else can see; the removal and every later holder must agree
-// on the file the path names, and only that file is the live lock.
-func TestALateFlockOnARemovedLockDoesNotDoubleIt(t *testing.T) {
+// TestRemoveLiveHelperProcess is the rm of the test below, run as its own
+// process the way `ccmorph rm` is. It does nothing unless that test starts it.
+func TestRemoveLiveHelperProcess(t *testing.T) {
+	profiles := os.Getenv("GH837_REMOVE_LIVE_PROFILES")
+	if profiles == "" {
+		t.Skip("started only by TestALaunchHoldsThePathsLockWhenAnRmRemovesItMidTake")
+	}
+	if err := RemoveLive(profiles, "p"); err != nil {
+		t.Fatalf("rm's RemoveLive: %v", err)
+	}
+}
+
+// GH-837 (merge gate): the gate's sequence with a real launch and a real rm.
+// The launch (HoldLive) has opened the live lock and not yet flocked it; an
+// rm in another process removes the file in that window; the launch then
+// flocks. The launch must end up holding the file the path names, and no
+// second taker may lock that file exclusively while it does: one live lock,
+// never an orphaned inode beside a second file at the path.
+func TestALaunchHoldsThePathsLockWhenAnRmRemovesItMidTake(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	profiles := filepath.Join(home, ".config/ccmorph/profiles")
@@ -770,37 +784,39 @@ func TestALateFlockOnARemovedLockDoesNotDoubleIt(t *testing.T) {
 	if err := os.MkdirAll(filepath.Dir(lock), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	// A launch opens the lock; no flock yet.
-	stale, err := os.OpenFile(lock, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
-	if err != nil {
+	if err := os.WriteFile(lock, nil, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	defer stale.Close()
-	if err := RemoveLive(profiles, "p"); err != nil {
-		t.Fatalf("an unlocked lock file is removable: %v", err)
+	removed := false
+	liveAfterOpen = func() {
+		liveAfterOpen = nil // one rm, inside the first take's window
+		rm := exec.Command(os.Args[0], "-test.run=^TestRemoveLiveHelperProcess$", "-test.count=1")
+		rm.Env = append(os.Environ(), "GH837_REMOVE_LIVE_PROFILES="+profiles)
+		if out, err := rm.CombinedOutput(); err != nil {
+			t.Errorf("the rm process failed: %v\n%s", err, out)
+		}
+		_, err := os.Lstat(lock)
+		removed = os.IsNotExist(err)
 	}
-	if syscall.Flock(int(stale.Fd()), syscall.LOCK_SH) != nil {
-		t.Fatalf("the late flock is what the race allows: %v", err)
-	}
+	t.Cleanup(func() { liveAfterOpen = nil })
 	f, why := HoldLive(profiles, "p", nil)
 	if f == nil {
-		t.Fatalf("the launch's take must succeed on the file the path names now: %v", why)
+		t.Fatalf("the launch's take must succeed on the file the path names: %v", why)
 	}
 	defer ReleaseLive(profiles, "p")
+	if !removed {
+		t.Fatal("the rm must have removed the lock inside the launch's open-and-flock window")
+	}
 	if !sameLockInode(f, lock) {
-		t.Fatal("HoldLive must hold the inode the path names")
+		t.Fatal("the launch must hold the file the path names, not the inode the rm removed")
 	}
-	if sameLockInode(stale, lock) {
-		t.Fatal("the late flock must cover an inode the path no longer names")
-	}
-	// Only one live lock exists: the path's, held by HoldLive.
 	other, err := os.OpenFile(lock, os.O_APPEND|os.O_WRONLY, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer other.Close()
 	if syscall.Flock(int(other.Fd()), syscall.LOCK_EX|syscall.LOCK_NB) == nil {
-		t.Fatal("the removed inode's flock must not pass for a second live lock")
+		t.Fatal("a second taker locked the live lock exclusively while the launch holds it")
 	}
 }
 

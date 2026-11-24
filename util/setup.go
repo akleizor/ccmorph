@@ -378,7 +378,11 @@ var (
 )
 
 // LiveLockPath names a profile's live lock: a launch holds it shared while its
-// session runs, and a setup takes it exclusive to merge (#185, #205).
+// session runs, and a setup takes it exclusive to merge (#185, #205). Every
+// taker goes through HoldLive or RemoveLive, which check after their flock
+// that the descriptor still names the file at the path: an rm may unlink the
+// file (GH-837), and a raw open-then-flock that skipped the check could lock
+// an inode the path no longer names.
 func LiveLockPath(profiles, name string) string {
 	return filepath.Join(filepath.Dir(profiles), ".locks", name+".live")
 }
