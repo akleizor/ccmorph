@@ -76,14 +76,23 @@ def edge_port(route: str) -> int:
 
 
 def live_edge(route: str) -> dict | None:
-    """The route's shared edge if its process is alive and its proxy answers."""
+    """The route's shared edge if its process is alive and its proxy answers.
+
+    A record names the route that wrote it, and one naming ANOTHER route is not
+    this route's edge: on a case-insensitive volume `GW.json` and `gw.json` are
+    one file, and adopting a twin's record would point this route's bridges at
+    the twin's port (#846). A record from before the field existed names none
+    and is read as before.
+    """
     try:
         edge = json.loads((EDGES / f"{edge_name(route)}.json").read_text())
+        if edge.get("route", route) != route:
+            return None
         os.kill(int(edge["pid"]), 0)
         with socket.create_connection(("127.0.0.1", int(edge["port"])), timeout=1):
             pass
         return edge if Path(edge["ca"]).exists() else None
-    except (OSError, ValueError, KeyError, TypeError):
+    except (OSError, ValueError, KeyError, TypeError, AttributeError):
         return None
 
 # By default phone sessions keep Claude Code's own aliases (fable, opus, sonnet,
@@ -554,6 +563,24 @@ def edge_record(me: int, port: int, ca, upstream: str, route_env: dict, env) -> 
                           for k in (*MODEL_ENV, *ROUTE_ENV) if k in route_env}}
 
 
+def publish_edge(route: str, record: dict) -> Path:
+    """The one writer of the route's edge record, in the one place live_edge reads.
+
+    The record names the ROUTE that wrote it: on a case-insensitive volume
+    `GW.json` and `gw.json` are one file, so a reader that never asked whose
+    record it found would adopt a case twin's edge and its port (#846). The
+    write goes through a temp beside the target so a reader never sees half a
+    record, and the name comes from edge_name -- never the raw route, which may
+    hold a `/` nothing creates a directory for.
+    """
+    EDGES.mkdir(parents=True, exist_ok=True)
+    path = EDGES / f"{edge_name(route)}.json"
+    tmp = EDGES / f".{path.name}.tmp"
+    tmp.write_text(json.dumps({**record, "route": route}))
+    tmp.replace(path)
+    return path
+
+
 def write_inference(word: str, path: Path = INFERENCE) -> None:
     """The one writer of the switch file; rc-hosts calls it too. The temp name
     is unique per write because the supervisor and a manual `--switch` both
@@ -677,11 +704,7 @@ def main(argv: list[str]) -> None:
     else:
         port, ca, upstream, route_env = own_edge(route, me, args, edge_port(route) if args.edge else None)
     if args.edge:
-        EDGES.mkdir(parents=True, exist_ok=True)
-        record = edge_record(me, port, ca, upstream, route_env, os.environ)
-        tmp = EDGES / f".{edge_name(route)}.json.tmp"
-        tmp.write_text(json.dumps(record))
-        tmp.replace(EDGES / f"{edge_name(route)}.json")
+        publish_edge(route, edge_record(me, port, ca, upstream, route_env, os.environ))
         print(f"ccmorph-rc: shared edge for '{route}' on 127.0.0.1:{port} ({upstream})", file=sys.stderr)
         while True:                        # adapter and proxy follow this pid; stay up
             time.sleep(15)

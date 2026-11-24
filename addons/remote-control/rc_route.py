@@ -38,24 +38,44 @@ def safe_part(value: str) -> str:
     return re.sub(r"[^A-Za-z0-9]+", "-", value).strip("-")
 
 
+# The shape of a valid profile name, and so of the only route `ccmorph _route_env`
+# accepts (cli/main.go routeEnv -> profile.ValidName; profile/profile.go nameRE,
+# MaxNameLen). It is a copy of the owner's rule only in the sense a reader repeats
+# a fact: the launcher still decides, this only says what an existing edge row may
+# be named.
+PROFILE_NAME = re.compile(r"[A-Za-z0-9_]{1,200}")
+
+
 def edge_name(route: str) -> str:
     """The route as the file-name part of its edge's log and state file -- the
-    one rule both scripts name edges by. A token a single path component can
-    hold keeps it WHOLE: `gw_eu.json` is the name a live edge wrote before this
-    rule existed (underscores are valid in profile names, profile/profile.go),
-    and renaming the names of rows already on disk leaves a restarted supervisor
-    blind to its own edge and starting a second one against the same fixed port.
-    Only a route that cannot be one component -- one holding `/` or a NUL, or
-    `.`/`..` -- is cleaned, and then cleaning alone would merge `gw/eu` and
-    `gw_eu` onto one state file and hand one route's proxy to the other's
-    bridges, so the cleaned name carries a digest of the whole route: sha256,
-    because an operator-steerable checksum (CRC32, the gate-refused first
-    attempt) builds that collision on purpose. Lives here, beside SWITCH_WORD,
-    so neither script must load the other -- or the launcher -- to name a file
-    during a reload (the #845 class: a partial install must not crash one)."""
-    if route and "/" not in route and "\x00" not in route and route not in (".", ".."):
+    one rule both scripts name edges by.
+
+    A valid profile name keeps it WHOLE: it is the only route whose edge can
+    ever have run (the launcher refuses every other word before a record is
+    written), and `gw_eu.json` is the name a live edge wrote before this rule
+    existed -- renaming rows already on disk leaves a restarted supervisor
+    blind to its own edge and starting a second one against the same fixed port
+    (REVIEW.md, the gate's round-2 refusal).
+
+    EVERY other route is cleaned by `safe_part` and carries a sha256 digest of
+    the whole route: cleaning alone merges `gw/eu`, `gw-eu` and `gw.eu` onto one
+    log and one record, and a checksum an operator can steer onto another name
+    (CRC32, the first attempt) builds that collision on purpose.
+
+    Every emitted name is ASCII and short, so two names are one FILE on the
+    volumes ccmorph runs on -- case-insensitive, normalisation-insensitive --
+    exactly when they are equal after `.lower()` (the supervisor compares that,
+    round 4), and `edge-<name>.log` stays inside NAME_MAX. Whole names never
+    contain `-` and cleaned names always do, so a route typed as another route's
+    cleaned name gets a digest of its own and never that name (round 3).
+
+    Lives in this pure module, beside SWITCH_WORD, so neither script must load
+    the other -- or the launcher -- to name a file during a reload (the #845
+    class: a partial install must not crash one)."""
+    if PROFILE_NAME.fullmatch(route):
         return route
-    return f"{safe_part(route)}-{hashlib.sha256(route.encode()).hexdigest()[:16]}"
+    part = safe_part(route)[:64].strip("-") or "route"
+    return f"{part}-{hashlib.sha256(route.encode('utf-8', 'surrogatepass')).hexdigest()[:32]}"
 
 
 def inference_target(switch: str | None) -> str:

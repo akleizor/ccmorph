@@ -1863,18 +1863,31 @@ def main(argv: list[str]) -> int:
                         hosts.pop(folder).stop()
                 # Every route owns its edge's log and state name, and a running edge
                 # owns its name ACROSS reloads: a route added later whose name is the
-                # same is refused, never handed the name the live edge's log and
-                # record already sit at (#846).
-                edge_names = {}
+                # same never moves that name off the live edge (#846). A name is one
+                # FILE when it differs only by letter case -- macOS's volume folds
+                # case, so `edge-gw.log` and `edge-GW.log` are one log -- and edge
+                # names are plain ASCII, so the folded spelling is what ownership
+                # compares. Among routes not yet running, the one more folders name
+                # wins (a one-folder typo `route=GW` must not take down a default
+                # `route=gw`); an equal count goes to the sorted-first. A refused
+                # route starts no edge AND hosts no folder: a bridge behind an edge
+                # that never starts would wait forever, or read the owner's record
+                # and run on another route's edge (INTENT 8, 3).
+                owners = {}
                 for h in hosts.values():
                     if h.edge:
-                        edge_names[edge_name(h.route)] = h.route
+                        owners[edge_name(h.route).lower()] = h.route
+                uses = {}
+                for r, _ in want.values():
+                    uses[r] = uses.get(r, 0) + 1
                 refused = set()
-                for route in sorted(routes):   # a digest has equal-name cases somewhere,
-                    name = edge_name(route)    # so the supervisor refuses one rather
-                    owner = edge_names.setdefault(name, route)   # than let two share
-                    if owner != route:         # one log and one state record (#846)
-                        log(f"edge: {route} refused, {owner} already owns the name {name}")
+                for route in sorted(routes, key=lambda r: (-uses[r], r)):
+                    owner = owners.setdefault(edge_name(route).lower(), route)
+                    if owner != route:
+                        why = (" (the same file on a case-insensitive volume)"
+                               if edge_name(route) != edge_name(owner) else "")
+                        log(f"edge: {route} refused, {owner} already owns the name "
+                            f"{edge_name(owner)}{why}; its folders are not hosted")
                         refused.add(route)
                 for route in sorted(routes):   # edges first: bridges start only once theirs is up
                     if route not in refused and f"edge:{route}" not in hosts:
@@ -1882,6 +1895,9 @@ def main(argv: list[str]) -> int:
                         e.edge, e.logfile = True, LOGS / f"edge-{edge_name(route)}.log"
                         hosts = {f"edge:{route}": e, **hosts}
                 for folder, (route, args) in want.items():
+                    if route in refused:
+                        log(f"{folder}: not hosted, its route {route} was refused")
+                        continue
                     hosts.setdefault(folder, Host(folder, route, args, tiers[route], perm))
                 log(f"config: {len(want)} folder(s): " + ", ".join(
                     f"{f} via {r}{' ' + ' '.join(a) if a else ''}" for f, (r, a) in want.items()))
