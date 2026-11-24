@@ -617,11 +617,7 @@ func (l *launcher) addAPIKey(name string) int {
 		l.rollback(name)
 		return 1
 	}
-	shown := url
-	if shown == "" {
-		shown = "api.anthropic.com"
-	}
-	fmt.Println(l.accent + "Added" + l.reset + " " + name + " (API key → " + shown + ")")
+	fmt.Println(l.accent + "Added" + l.reset + " " + name + " (API key → " + shownEndpoint(url) + ")")
 	if url != "" {
 		l.probeNudge(name)
 	}
@@ -643,25 +639,53 @@ func (l *launcher) addAPIKey(name string) int {
 	return 0
 }
 
+// shownEndpoint is an endpoint as add prints it: never with the login or the
+// query a URL can carry (INTENT promise 5). A URL with a scheme is RedactURL's
+// to answer. One typed without a scheme is refused by the save, but only after
+// the key check has named it, so it names no host once it holds an @, a ? or a
+// #; a bare host or host:port is shown as typed. Blank is the default endpoint,
+// spelled the way the endpoint question spells it.
+func shownEndpoint(url string) string {
+	switch {
+	case url == "":
+		return "api.anthropic.com"
+	case strings.Contains(url, "://"):
+		return profile.RedactURL(url)
+	case strings.ContainsAny(url, "@?#"):
+		return "<redacted>"
+	}
+	return url
+}
+
 // checkKey asks the endpoint the listing question doctor asks — the only
 // request that can vouch for a key before a session spends it — and reports
-// the answer in the add's own step. A 2xx accepts; 401/403 refuses and returns
-// false so the key is asked for again; anything else is not a verdict on the
-// key, so it is said as not-checked and the add continues. The key reaches curl
+// the answer in the add's own step. A 2xx accepts; 401 refuses and returns
+// false so the key is asked for again. 403, 404 and 405 answer the question
+// that was asked — the listing — and not the key: a gateway that restricts
+// listing but serves chat answers 403 while taking the same key on chat, and
+// one without a listing endpoint answers 404/405; the add says the listing is
+// not allowed and continues unchecked (#835) — a 403 on an actual inference
+// probe would refuse, but the add makes no inference probe. Anything else is
+// no verdict on the key either, so it is said as not-checked and the add
+// continues. The endpoint is named through shownEndpoint, never as typed: a
+// URL can carry a login or a key in its query, and a note that echoes it back
+// is a credential in the output (INTENT promise 5). The key reaches curl
 // through its stdin config, never a command line.
 func (l *launcher) checkKey(url, key string) bool {
 	base, native := nativeBase(url)
-	shown := url
-	if url == "" {
-		// The defaulted endpoint is shown as its host, the way the add's own
-		// endpoint question spells it.
-		shown = "api.anthropic.com"
-	}
+	shown := shownEndpoint(url)
 	var headers []string
 	if native {
 		headers = []string{"anthropic-version: 2023-06-01"}
 	}
 	_, code := util.ProbeListing(base, key, headers...)
+	switch code {
+	case "403", "404", "405":
+		// The listing itself was refused, by rule or by absence: no word
+		// here is a verdict on the key, so the save proceeds unchecked.
+		fmt.Println(l.dim + shown + ": listing not allowed (HTTP " + code + ") — the key was not checked" + l.reset)
+		return true
+	}
 	switch probeVerdict(code) {
 	case probeAccepted:
 		fmt.Println(l.dim + shown + " accepted the API key (HTTP " + code + ")" + l.reset)
