@@ -600,6 +600,11 @@ grep -qF "\"$d/home/.claude/plugins/marketplaces/example\"" "$d/home/.claude/plu
    && -f "$d/home/.claude/paste-cache/abcd1234" ]] \
   && ok "uninstall: names the shared history but removes none of it" || fail "uninstall: deleted shared session history"
 grep -qF "$cfg  (2 profiles," "$d/out" && ok "uninstall: names the state root and counts its profiles" || { fail "uninstall: state root not named"; cat "$d/out" }
+# The default state root is the install directory: its line names the runnable
+# program copy beside the profiles, and the copy is still there (#810).
+grep -qxF "  $cfg  (2 profiles, their credentials and session history, and ccmorph's own program files: bin, lib, libexec, share, install.sh)" "$d/out" \
+  && [[ -x "$cfg/bin/ccmorph" && -f "$cfg/lib/ccmorph.sh" ]] \
+  && ok "uninstall: the state root's line names the installed code it holds" || { fail "uninstall: the state root's line hides the installed code"; cat "$d/out" }
 grep -qF "$d/home/.claude/history.jsonl, $d/home/.claude/projects, $d/home/.claude/paste-cache  (shared session history" "$d/out" \
   && ok "uninstall: names the shared session history under ~/.claude" || { fail "uninstall: shared session history not named"; cat "$d/out" }
 grep -qF "$d/home/.local/state/ccmorph  (usage receipts)" "$d/out" && ok "uninstall: names the usage receipts" || { fail "uninstall: usage dir not named"; cat "$d/out" }
@@ -617,6 +622,8 @@ printf 'type=apikey\napi_key=keychain:work.api_key\n' > "$d/home/.config/ccmorph
 printf '#!/bin/sh\necho Linux\n' > "$d/bin/uname"; chmod +x "$d/bin/uname"
 env -i HOME="$d/home" ZDOTDIR="$d/home" PATH="$d/bin:/usr/bin:/bin" \
   zsh "$REPO/install.sh" --uninstall >"$d/out" 2>&1
+grep -qxF "  $d/home/.config/ccmorph  (1 profiles, their credentials and session history, and ccmorph's own program files: bin, lib, libexec, share, install.sh)" "$d/out" \
+  && ok "uninstall: a bare home's state root line names the installed code too" || { fail "uninstall: bare state root line wrong"; cat "$d/out" }
 grep -qxF "  rm -rf $d/home/.config/ccmorph" "$d/out" && ! grep -q 'usage receipts\|keychain\|shared session history' "$d/out" \
   && ok "uninstall: lists only what exists (no usage dir, no shared history, no keychain off macOS)" || { fail "uninstall: listed residue that is not there"; cat "$d/out" }
 # macOS with no keychain reference in any conf: the grep finds nothing, and that
@@ -664,6 +671,8 @@ grep -qF "$state  (2 profiles," "$d/out" \
   && ok "state-dir uninstall: names the redirected root and counts its profiles" || { fail "state-dir uninstall: redirected root not named"; cat "$d/out" }
 grep -qxF "  $cfg  (the installed code)" "$d/out" \
   && ok "state-dir uninstall: names the code dir as code, not as the profiles' home" || { fail "state-dir uninstall: code dir line wrong"; cat "$d/out" }
+grep -qxF "  $state  (2 profiles, their credentials and session history)" "$d/out" \
+  && ok "state-dir uninstall: the redirected root holds no code and its line says none" || { fail "state-dir uninstall: redirected root line wrong"; cat "$d/out" }
 grep -qxF "  rm -rf $state $cfg" "$d/out" \
   && ok "state-dir uninstall: the rm names both roots" || { fail "state-dir uninstall: rm line wrong"; cat "$d/out" }
 # Every printed entry is promised: the guide's uninstall sentence must cover the
