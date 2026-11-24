@@ -11,7 +11,7 @@ import subprocess
 
 import pytest
 
-from support import HANG_TIMEOUT, wait_until
+from support import HANG_TIMEOUT, stdin_a_terminal, wait_until
 
 ROOT = Path(__file__).resolve().parents[1]
 FZF = '#!/usr/bin/env python3\nimport sys\nsys.stdout.write(sys.stdin.read())\n'
@@ -161,16 +161,18 @@ def claude_calls(tmp_path):
     return f.read_text() if f.exists() else ''
 
 
-def zsh(script, env):
+def zsh(script, env, stdin=subprocess.DEVNULL):
     return subprocess.run(['zsh', '-fc', 'source "$1"\n' + script, '_',
                            str(Path(env['CCMORPH_LIB_DIR']) / 'ccmorph.sh')],
-                          env=env, text=True, capture_output=True, timeout=HANG_TIMEOUT, stdin=subprocess.DEVNULL)
+                          env=env, text=True, capture_output=True, timeout=HANG_TIMEOUT, stdin=stdin)
 
 
 def set_model_i(tmp_path, excluded):
     state, env = setup(tmp_path, excluded)
     # fzf stub echoes every row; the picker returns the first (sorted) one it was offered.
-    r = zsh(FAKE_CURL + 'ccmorph set demo model -i', env)
+    # A pick needs a terminal (#725): stdin is a pty, stdout/stderr stay pipes.
+    with stdin_a_terminal() as tty:
+        r = zsh(FAKE_CURL + 'ccmorph set demo model -i', env, stdin=tty)
     assert r.returncode == 0, r.stderr
     return (state / 'demo.conf').read_text()
 
@@ -266,7 +268,8 @@ def test_probe_model_interactive_honours_exclusions(tmp_path):
     stub_sizer(lib, tmp_path / 'probe.args')
     state, env = setup(tmp_path, 'allowed')
     env['CCMORPH_LIB_DIR'] = str(lib)
-    r = zsh(FAKE_CURL + 'ccmorph probe demo --model -i', env)
+    with stdin_a_terminal() as tty:
+        r = zsh(FAKE_CURL + 'ccmorph probe demo --model -i', env, stdin=tty)
     assert r.returncode == 0, r.stderr
     assert '--model blocked' in (tmp_path / 'probe.args').read_text()
 

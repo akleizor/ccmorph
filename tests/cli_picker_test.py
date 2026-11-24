@@ -13,7 +13,7 @@ import fcntl, json, os, pty, re, select, shutil, signal, struct, subprocess, sys
 from pathlib import Path
 from unittest.mock import patch
 
-from support import HANG_TIMEOUT, path_without, wait_until
+from support import HANG_TIMEOUT, path_without, stdin_a_terminal, wait_until
 
 ROOT = Path(__file__).resolve().parents[1]
 CCMORPH = ROOT / 'lib/ccmorph.sh'
@@ -560,6 +560,32 @@ class PickerTTYTest(unittest.TestCase):
         self.assertEqual(len(runs.read_text().splitlines()), 1, out)
 
     def test_headless_picker_answer_stays_clean_when_local_sh_prints(self):
+        # Headless here means stdout and stderr are pipes a caller parses. Since
+        # GH-725 a pick needs a terminal, so stdin is a pty; every check below is
+        # one this test has always made, and the answer itself is now asserted.
+        env = self.env(fzf=True)
+        self.profile()
+        self.spec('=picker-beta')
+        (self.state / 'local.sh').write_text(
+            'print local-sh-noise\nprint ran >> "$HOME/local-sh-runs"\n')
+        with stdin_a_terminal() as tty:
+            result = subprocess.run(
+                ['zsh', '-fc', 'source "$1"\nccmorph context demo -i', 'test', str(CCMORPH)],
+                env=env, stdin=tty, capture_output=True, text=True, timeout=HANG_TIMEOUT)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertNotIn('model id is invalid', result.stderr)
+        self.assertIn('demo: picker-beta', result.stdout, result.stdout + result.stderr)
+        runs = self.tmp / 'home' / 'local-sh-runs'
+        self.assertEqual(len(runs.read_text().splitlines()), 1, result.stdout + result.stderr)
+
+    def test_headless_picker_refuses_by_name_and_takes_no_answer(self):
+        # GH-725: with no terminal the picker is not offered at all — the
+        # command names the missing terminal, carries the rows, and exits
+        # non-zero. The headless pick this test used to drive no longer
+        # happens, so nothing can answer for a person. The child is its own
+        # session: a developer running this suite from a terminal must still
+        # give it no controlling terminal, or the refusal under test would be
+        # a picker waiting for keys that never come.
         env = self.env(fzf=True)
         self.profile()
         self.spec('=picker-beta')
@@ -567,9 +593,16 @@ class PickerTTYTest(unittest.TestCase):
             'print local-sh-noise\nprint ran >> "$HOME/local-sh-runs"\n')
         result = subprocess.run(
             ['zsh', '-fc', 'source "$1"\nccmorph context demo -i', 'test', str(CCMORPH)],
-            env=env, stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=HANG_TIMEOUT)
-        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            env=env, stdin=subprocess.DEVNULL, capture_output=True, text=True,
+            timeout=HANG_TIMEOUT, start_new_session=True)
+        self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn('needs a terminal', result.stderr, result.stdout + result.stderr)
         self.assertNotIn('model id is invalid', result.stderr)
+        # No pick was taken: a caller parsing stdout gets no model id, only the
+        # local.sh noise this checkout prints on every command.
+        self.assertNotIn('picker-beta', result.stdout, result.stdout + result.stderr)
+        # The refusal did not cost the prelaunch hook its once-only contract:
+        # the launching shell sources local.sh exactly once, as it always did.
         runs = self.tmp / 'home' / 'local-sh-runs'
         self.assertEqual(len(runs.read_text().splitlines()), 1, result.stdout + result.stderr)
 
@@ -1359,8 +1392,9 @@ class PickerTTYTest(unittest.TestCase):
 
     def test_cancelled_pickers_answer_with_one_line_and_status_one_issue_280(self):
         # Leaving a picker answers the same way everywhere: one short Cancelled
-        # line and exit status 1 — never silence, never a usage line. The search
-        # picker runs fzf without needing a terminal, so this is checked headless.
+        # line and exit status 1 — never silence, never a usage line. Since
+        # GH-725 a picker is only opened where a terminal can carry it, so the
+        # person has a pty on stdin; stdout and stderr stay pipes.
         env = self.env(fzf=True)
         self.profile()
         cases = [
@@ -1369,11 +1403,11 @@ class PickerTTYTest(unittest.TestCase):
             ('value picker of set', 'ccmorph set demo model -i', 'Default model=CANCEL'),
         ]
         for label, command, spec in cases:
-            with self.subTest(picker=label):
+            with self.subTest(picker=label), stdin_a_terminal() as tty:
                 self.spec(spec)
                 result = subprocess.run(
                     ['zsh', '-fc', 'source "$1"\n' + command, 'test', str(CCMORPH)],
-                    env=env, stdin=subprocess.DEVNULL, capture_output=True,
+                    env=env, stdin=tty, capture_output=True,
                     text=True, timeout=HANG_TIMEOUT)
                 self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
                 self.assertNotIn('Use: ccmorph set', result.stderr)

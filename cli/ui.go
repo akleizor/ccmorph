@@ -810,6 +810,29 @@ func fzfAtLeast(version string, minor int) bool {
 	return major > 0 || min >= minor
 }
 
+// ttyUsable reports whether a terminal answers for this process: /dev/tty
+// opens exactly when one is there — for a foreground call with piped stdin
+// as for stdin itself being the terminal, the two states where a person
+// could press keys and fzf has always drawn and read them (#725). A script,
+// pipe or CI job with no controlling terminal gets an error here. The open
+// never reads or writes, so it cannot steal input or block a caller.
+func ttyUsable() bool {
+	tty, err := os.OpenFile("/dev/tty", os.O_RDWR|syscall.O_NONBLOCK, 0)
+	if err != nil {
+		return false
+	}
+	tty.Close()
+	return true
+}
+
+// pickerHasTerminal reports whether this process has a terminal that can
+// carry the picker: stdin's own, or the controlling one. It is a variable so
+// the tests of the person's own paths — the answer's receipt, fzf's Esc
+// cancel — can run in a `go test` process, which has no terminal of its own.
+// The no-terminal refusal is tested against the real probe, in a session with
+// no controlling terminal at all (#725).
+var pickerHasTerminal = func() bool { return isTTY(0) || ttyUsable() }
+
 // search is _ccm_ui_search: fzf when present, else the numbered list.
 func (t uiTheme) search(prompt string, rows []string) (string, int) {
 	if len(rows) == 0 {
@@ -837,6 +860,19 @@ func (t uiTheme) search(prompt string, rows []string) (string, int) {
 		cmd := exec.Command(fzf, args...)
 		cmd.Env = append(os.Environ(), "FZF_DEFAULT_OPTS=", "FZF_DEFAULT_OPTS_FILE=")
 		cmd.Stdin = strings.NewReader(strings.Join(rendered, "\n") + "\n")
+		if !pickerHasTerminal() {
+			// No terminal answers this call (GH-725): a script, a pipe or a CI
+			// job. Real fzf would draw nowhere and wait for keys no script can
+			// send, so it is not launched at all, and an answer produced
+			// without a terminal is not a person's choice — none is taken.
+			// The missing terminal is named instead, with the rows and the
+			// direct command; "Cancelled" must never stand in for a hang.
+			t.refuseNoTerminal(rows, true)
+			return "", 2
+		}
+		// A terminal answers this call — stdin's own or the controlling one —
+		// so the person's picker runs exactly as ever, bound by no clock: a
+		// key may take as long as the hand reading the list.
 		cmd.Stderr = os.Stderr
 		out, err := cmd.Output()
 		choice := strings.TrimRight(string(out), "\n")
@@ -864,11 +900,25 @@ func (t uiTheme) search(prompt string, rows []string) (string, int) {
 	if isTTY(0) {
 		return t.numbered(prompt, rows, "labels")
 	}
-	uiErr(t, "selection needs a terminal or fzf; pass the value directly")
-	fmt.Fprintln(os.Stderr, strings.Join(rows, "\n"))
+	// Neither stdin nor /dev/tty answers this call, and there is no fzf that
+	// could answer without one (or a dumb terminal that forbids it).
+	t.refuseNoTerminal(rows, false)
 	// rc 2, not a cancel: no picker ran, so the caller needs the direct
 	// command, not a Cancelled line.
 	return "", 2
+}
+
+// refuseNoTerminal prints the named cause and what there was to choose from,
+// so every no-terminal refusal reads the same. fzfNamed tells a caller who
+// already has fzf that what is missing is the terminal it cannot reach —
+// naming the tool would send them after what they hold (#725).
+func (t uiTheme) refuseNoTerminal(rows []string, fzfNamed bool) {
+	if fzfNamed {
+		uiErr(t, "selection needs a terminal; pass the value directly")
+	} else {
+		uiErr(t, "selection needs a terminal or fzf; pass the value directly")
+	}
+	fmt.Fprintln(os.Stderr, strings.Join(rows, "\n"))
 }
 
 // uiInput is ccm_ui_input: one line, hidden when secret. rc 1 cancelled or EOF.
