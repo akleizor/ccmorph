@@ -342,6 +342,27 @@ func f(x bool) *http.Client {
 		{"a client overwritten whole through a field", guardSrc("type srv struct{ c *http.Client }\n\nfunc f(s *srv, o *http.Client) { *s.c = *o }"), "refused"},
 		{"the CA config edited through its local", guardSrc("func f() *http.Transport {\n\tcfg := netroute.ExtraCAs()\n\tcfg.RootCAs = nil\n\treturn &http.Transport{Proxy: http.ProxyFromEnvironment, TLSClientConfig: cfg}\n}"), "refused"},
 		{"a server-only TLS config is no client rewire", fileSrc("import (\n\t\"crypto/tls\"\n\t\"net/http\"\n)\n\nfunc serve(saved *http.Client, certs []tls.Certificate) (*http.Client, *http.Server) {\n\tcfg := &tls.Config{}\n\tcfg.Certificates = certs\n\treturn saved, &http.Server{TLSConfig: cfg}\n}\n"), "none"},
+		// A crypto/tls Config is judged by the type Go resolves, never by its
+		// spelling: one built here (a server's) is no client rewire, any other
+		// stays refused, and a whole overwrite is refused through any alias.
+		{"a server config through a type alias", tlsSrc("type serverTLS = tls.Config\n\nfunc serve(saved *http.Client, certs []tls.Certificate) (*http.Client, *http.Server) {\n\tcfg := &serverTLS{}\n\tcfg.Certificates = certs\n\treturn saved, &http.Server{TLSConfig: cfg}\n}"), "none"},
+		{"a server config of a type defined from tls.Config", tlsSrc("type serverTLS tls.Config\n\nfunc serve(certs []tls.Certificate) *http.Server {\n\tcfg := &serverTLS{}\n\tcfg.Certificates = certs\n\treturn &http.Server{TLSConfig: (*tls.Config)(cfg)}\n}"), "none"},
+		{"a server config under an aliased crypto/tls", fileSrc("import (\n\tt \"crypto/tls\"\n\t\"net/http\"\n)\n\nfunc serve(certs []t.Certificate) *http.Server {\n\tcfg := &t.Config{}\n\tcfg.Certificates = certs\n\treturn &http.Server{TLSConfig: cfg}\n}\n"), "none"},
+		{"a server config from new", tlsSrc("func serve(certs []tls.Certificate) *http.Server {\n\tcfg := new(tls.Config)\n\tcfg.Certificates = certs\n\treturn &http.Server{TLSConfig: cfg}\n}"), "none"},
+		{"a server config value", tlsSrc("func serve(certs []tls.Certificate) *http.Server {\n\tcfg := tls.Config{}\n\tcfg.Certificates = certs\n\treturn &http.Server{TLSConfig: &cfg}\n}"), "none"},
+		{"a zero-value server config", tlsSrc("func serve(certs []tls.Certificate) *http.Server {\n\tvar cfg tls.Config\n\tcfg.Certificates = certs\n\treturn &http.Server{TLSConfig: &cfg}\n}"), "none"},
+		{"a package-level server config value", tlsSrc("var serverCfg tls.Config\n\nfunc serve(certs []tls.Certificate) *http.Server {\n\tserverCfg.Certificates = certs\n\treturn &http.Server{TLSConfig: &serverCfg}\n}"), "none"},
+		{"an aliased config read back and edited", tlsSrc("type clientTLS = tls.Config\n\nfunc f() *http.Transport {\n\ttr := netroute.NewTransport()\n\tvar cfg *clientTLS = tr.TLSClientConfig\n\tcfg.InsecureSkipVerify = true\n\treturn tr\n}"), "refused"},
+		{"a transport's config overwritten whole through an alias", tlsSrc("type clientTLS = tls.Config\n\nfunc f() *http.Client {\n\ttr := netroute.NewTransport()\n\tvar p *clientTLS = tr.TLSClientConfig\n\t*p = clientTLS{InsecureSkipVerify: true}\n\treturn &http.Client{Transport: tr}\n}"), "refused"},
+		{"a transport's config overwritten whole through a defined type", tlsSrc("type clientTLS tls.Config\n\nfunc f() *http.Client {\n\ttr := netroute.NewTransport()\n\tp := (*clientTLS)(tr.TLSClientConfig)\n\t*p = clientTLS{InsecureSkipVerify: true}\n\treturn &http.Client{Transport: tr}\n}"), "refused"},
+		{"a copy of the CA config edited and handed to a transport", tlsSrc("func f() *http.Transport {\n\tcfg := *netroute.ExtraCAs()\n\tcfg.InsecureSkipVerify = true\n\treturn &http.Transport{Proxy: http.ProxyFromEnvironment, TLSClientConfig: &cfg}\n}"), "refused"},
+		{"a fresh aliased config rebound to the transport's", tlsSrc("type serverTLS = tls.Config\n\nfunc f() *http.Transport {\n\ttr := netroute.NewTransport()\n\tcfg := &serverTLS{}\n\tcfg = tr.TLSClientConfig\n\tcfg.InsecureSkipVerify = true\n\treturn tr\n}"), "refused"},
+		{"a fresh config whose address is taken", tlsSrc("type serverTLS = tls.Config\n\nfunc f(set func(**tls.Config)) *http.Transport {\n\ttr := netroute.NewTransport()\n\tcfg := &serverTLS{}\n\tset(&cfg)\n\tcfg.InsecureSkipVerify = true\n\treturn tr\n}"), "refused"},
+		{"a config held in a struct field", tlsSrc("type holder struct{ cfg *tls.Config }\n\nfunc f() *http.Client {\n\ttr := netroute.NewTransport()\n\th := holder{}\n\th.cfg = tr.TLSClientConfig\n\th.cfg.InsecureSkipVerify = true\n\treturn &http.Client{Transport: tr}\n}"), "refused"},
+		{"a parameter config written", tlsSrc("func harden(cfg *tls.Config) { cfg.InsecureSkipVerify = true }"), "refused"},
+		{"a parameter named new makes no fresh config", tlsSrc("func f(new func(*tls.Config) *tls.Config) *http.Transport {\n\ttr := netroute.NewTransport()\n\tcfg := new(tr.TLSClientConfig)\n\tcfg.InsecureSkipVerify = true\n\treturn tr\n}"), "refused"},
+		{"the transport's config written through a dereference", tlsSrc("func f() *http.Transport {\n\ttr := netroute.NewTransport()\n\tp := tr.TLSClientConfig\n\t(*p).InsecureSkipVerify = true\n\treturn tr\n}"), "refused"},
+		{"a server's TLSConfig written through the server", tlsSrc("func serve(certs []tls.Certificate) *http.Server {\n\tsrv := &http.Server{TLSConfig: &tls.Config{}}\n\tsrv.TLSConfig.Certificates = certs\n\treturn srv\n}"), "refused"},
 		{"the CA config read back and edited", guardSrc("func f() *http.Transport {\n\ttr := netroute.NewTransport()\n\tcfg := tr.TLSClientConfig\n\tcfg.InsecureSkipVerify = true\n\treturn tr\n}"), "refused"},
 		{"a parameter named nil is no direct route", fileSrc("import (\n\t\"net/http\"\n\t\"net/url\"\n)\n\nfunc f(nil func(*http.Request) (*url.URL, error)) *http.Transport { return &http.Transport{Proxy: nil} }\n"), "refused"},
 		{"a local named like the builder inside netroute", "package netroute\n\nimport \"net/http\"\n\nfunc f() *http.Client {\n\tNewTransport := func() *http.Transport { return &http.Transport{} }\n\treturn &http.Client{Transport: NewTransport()}\n}\n", "refused"},
@@ -612,6 +633,7 @@ const (
 	dotImportMessage        = "dot-imports net/http or netroute, which hides from this guard the clients the file builds and the builder it calls; a client that honours the session's proxy but not NODE_EXTRA_CA_CERTS fails its handshake inside a Remote Control session; import the package by name and build clients with netroute.NewClient (#829)"
 	mutationMessage         = "rewires a client or transport after construction (its Transport, Proxy or TLSClientConfig, a field of its TLS config, or the whole value) with a value this guard cannot prove trusts the session's CA (NODE_EXTRA_CA_CERTS); build the finished client with netroute.NewClient or netroute.NewTransport, or set Proxy: nil in the literal (#829)"
 	defaultTransportMessage = "uses http.DefaultTransport with no TLSClientConfig: it honours the session's proxy but not the CA it signs every host with (NODE_EXTRA_CA_CERTS), so its handshake fails inside a Remote Control session; clone it through netroute.NewTransport instead (#822, #829)"
+	tlsWriteMessage         = "writes into a crypto/tls Config this function did not build: it may be a transport's TLSClientConfig or the session's CA config (NODE_EXTRA_CA_CERTS, as netroute.ExtraCAs returns it) read back or handed in, so the write can undo the CA a client trusts; build the config here as a literal or new(tls.Config), however the type is spelled, or hold it as a tls.Config value, and set its fields there; never edit a transport's TLSClientConfig (#829)"
 )
 
 const (
@@ -623,6 +645,11 @@ const (
 
 // guardSrc is a row body under the shared import set.
 func guardSrc(body string) string { return guardHead + body + "\n" }
+
+// tlsSrc is a row body under the shared import set plus crypto/tls.
+func tlsSrc(body string) string {
+	return "package p\n\nimport (\n\t\"crypto/tls\"\n\t\"net/http\"\n\n\t\"github.com/akleizor/ccmorph/netroute\"\n)\n\n" + body + "\n"
+}
 
 // fileSrc is a whole file whose text follows the package clause, including its
 // own imports.
@@ -782,8 +809,9 @@ func (r *resolved) inspect(fset *token.FileSet) []finding {
 
 // rewires judges each assignment that rewires a client or transport after
 // construction: a client's Transport, a transport's Proxy or TLSClientConfig,
-// anything written through a TLSClientConfig or into a crypto/tls Config, and a
-// whole client, transport or TLS config overwritten through a pointer. Go's own
+// anything written through a TLSClientConfig or into a crypto/tls Config this
+// function did not build, and a whole client, transport or TLS config
+// overwritten through a pointer, each by the type Go resolves. Go's own
 // selection says which type owns the field, so an options struct's Transport
 // string is no client. A field Go cannot resolve (its receiver's type comes from
 // an import this guard does not load) is judged as net/http's: nothing proves
@@ -806,11 +834,14 @@ func (r *resolved) rewires(as *ast.AssignStmt, add func(ast.Node, bool, string))
 			continue // a package's own variable; DefaultTransport and DefaultClient are refused where named
 		}
 		owner := r.fieldOwner(sel)
-		if r.throughTLS(sel.X) || (owner == "crypto/tls" && !r.freshTLSConfig(sel.X)) {
+		if r.throughTLS(sel.X) {
 			add(sel, false, mutationMessage)
 			continue
 		}
 		if owner == "crypto/tls" {
+			if !r.freshTLSConfig(sel.X) {
+				add(sel, false, tlsWriteMessage)
+			}
 			continue // a config this function built itself (a server's): no outbound proof rests on it
 		}
 		if owner != "" && owner != "net/http" {
@@ -1236,39 +1267,75 @@ func (r *resolved) throughTLS(expr ast.Expr) bool {
 	return found
 }
 
-// freshTLSConfig is whether expr is a local Go binds only to tls.Config
-// literals written in this file, such as a server's own config: it is not the
-// session's CA config nor one read back from a transport, so writing it
-// rewires no client. Anything else (ExtraCAs's result, a parameter, a
-// transport's TLSClientConfig) stays refused.
+// freshTLSConfig is whether a write into expr lands in a crypto/tls Config no
+// transport's proof can share, by the type Go resolves, never by its spelling:
+// a variable whose type is the config itself (a value: the write lands in its
+// own storage, and its address never passes caConfig), or a local Go binds
+// only to configs built here, a literal or new(...) of crypto/tls's Config
+// however it is spelled (tls.Config, an aliased import, a type alias, a type
+// defined from it), such as a server's own config. Anything else (ExtraCAs's
+// result, a parameter, a field, a transport's TLSClientConfig read back, a
+// Server's TLSConfig) stays refused.
 func (r *resolved) freshTLSConfig(expr ast.Expr) bool {
-	v := r.localVar(rootOf(expr))
-	return v != nil && r.onlyBoundBy(v, func(e ast.Expr) bool {
-		lit, ok := compositeOf(e)
-		if !ok {
-			return false
+	if id, ok := unparen(expr).(*ast.Ident); ok {
+		if v, ok := r.objOf(id).(*types.Var); ok && !v.IsField() && isTLSConfig(v.Type()) {
+			return true
 		}
-		sel, ok := lit.Type.(*ast.SelectorExpr)
-		return ok && r.pkgSel(sel, "crypto/tls", "Config")
-	})
+	}
+	v := r.localVar(rootOf(expr))
+	return v != nil && r.onlyBoundBy(v, r.builtTLSConfig)
 }
 
-// holdsHTTPOrTLS is whether Go types expr as net/http's Client or Transport or
-// crypto/tls's Config: a store through such a pointer replaces the whole value.
-func (r *resolved) holdsHTTPOrTLS(expr ast.Expr) bool {
-	tv, ok := r.info.Types[expr]
+// builtTLSConfig is whether e makes a new crypto/tls Config: a composite
+// literal (or its address) or a call to the builtin new, whose type Go
+// resolves to the config's.
+func (r *resolved) builtTLSConfig(e ast.Expr) bool {
+	if lit, ok := compositeOf(e); ok {
+		return isTLSConfig(r.info.TypeOf(lit))
+	}
+	call, ok := unparen(e).(*ast.CallExpr)
+	if !ok || len(call.Args) != 1 {
+		return false
+	}
+	fn, ok := unparen(call.Fun).(*ast.Ident)
 	if !ok {
 		return false
 	}
-	n, ok := tv.Type.(*types.Named)
-	if !ok || n.Obj().Pkg() == nil {
+	if b, isBuiltin := r.info.Uses[fn].(*types.Builtin); !isBuiltin || b.Name() != "new" {
+		return false // a parameter or local named new is no allocation
+	}
+	ptr, ok := r.info.TypeOf(call).(*types.Pointer)
+	return ok && isTLSConfig(ptr.Elem())
+}
+
+// isTLSConfig is whether Go resolves t to crypto/tls's Config, an alias of it
+// or a type defined from it: all share its underlying struct, whose unexported
+// fields no other type can declare.
+func isTLSConfig(t types.Type) bool { return sameUnderlying(t, "crypto/tls", "Config") }
+
+// sameUnderlying is whether t's underlying type is that of the named type
+// path.name, as the guard's importer loads it; false when either is unknown.
+func sameUnderlying(t types.Type, path, name string) bool {
+	if t == nil {
 		return false
 	}
-	switch n.Obj().Pkg().Path() + "." + n.Obj().Name() {
-	case "net/http.Client", "net/http.Transport", "crypto/tls.Config":
-		return true
+	pkg, err := sharedImporter.Import(path)
+	if err != nil {
+		return false
 	}
-	return false
+	obj := pkg.Scope().Lookup(name)
+	if obj == nil {
+		return false
+	}
+	return types.Identical(t.Underlying(), obj.Type().Underlying())
+}
+
+// holdsHTTPOrTLS is whether Go types expr as net/http's Client or Transport or
+// crypto/tls's Config, through an alias or a type defined from one: a store
+// through such a pointer replaces the whole value.
+func (r *resolved) holdsHTTPOrTLS(expr ast.Expr) bool {
+	t := r.info.TypeOf(expr)
+	return sameUnderlying(t, "net/http", "Client") || sameUnderlying(t, "net/http", "Transport") || isTLSConfig(t)
 }
 
 // mentionsHTTPType is whether a literal's type names a client or transport, as
