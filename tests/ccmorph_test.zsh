@@ -11608,6 +11608,95 @@ test_add_sub_terminal_signal_mid_login_cleans_up() {
   return $rc
 }
 
+# GH-837: Ctrl-C is the cancel the sign-in prompt promises ("Ctrl-C to cancel"),
+# but SIGINT's default disposition killed add before the rollback that frees the
+# name. The profile home and its live lock stayed; the next add refused the name
+# as leftover private state and rm did not take the lock. add now hands SIGINT
+# to the sign-in child like HUP and TERM, so the wait ends as a failed login,
+# the rollback takes back the home and the lock, and the name adds again with no
+# rm between.
+test_add_sub_interrupt_mid_login_frees_the_name() {
+  local test_home
+  test_home=$(mktemp -d)
+  setup_home "$test_home"
+  printf '%s\n' \
+    '#!/bin/sh' \
+    'case "$1 $2" in' \
+    '  "auth logout") exit 0 ;;' \
+    '  "auth login")' \
+    '    trap "exit 1" INT' \
+    '    echo $$ > "$HOME/claude.pid"; echo $PPID > "$HOME/core.pid"' \
+    '    : > "$HOME/login.ran"' \
+    '    i=0' \
+    '    while [ ! -e "$HOME/go" ] && [ $i -lt 100 ]; do sleep 0.1; i=$((i+1)); done' \
+    '    exit 0 ;;' \
+    '  "auth status") printf '"'"'{"loggedIn": true, "authMethod": "claude.ai", "email": "a@example.com"}\n'"'"' ;;' \
+    'esac' \
+    'exit 0' \
+    > "$HOME/bin/claude"
+  chmod +x "$HOME/bin/claude"
+  source "$CCMORPH_SOURCE"
+
+  local rc=0 i=0 corepid claudpid out
+  # A shell gives an asynchronous job SIGINT ignored, so a bare `kill -INT`
+  # would be dropped and prove nothing; this launcher restores the default
+  # disposition Ctrl-C arrives under at a terminal before the add starts.
+  (
+    python3 -c 'import os, signal, sys
+signal.signal(signal.SIGINT, signal.SIG_DFL)
+os.execv(sys.argv[1], [sys.argv[1], "-fc", "source \"$1\"; print 1 | ccmorph add demo", "_", sys.argv[2]])' "$(command -v zsh)" "$CCMORPH_SOURCE"
+  ) >"$HOME/add.out" 2>&1 &
+  local job=$!
+  while (( ++i <= CCMORPH_TEST_HANG_TIMEOUT * 10 )); do [[ -s "$HOME/core.pid" ]] && break; command sleep 0.1; done
+  if [[ ! -s "$HOME/core.pid" ]]; then
+    kill -TERM $job 2>/dev/null; touch "$HOME/go"; wait $job 2>/dev/null
+    print -u2 -- 'the browser sign-in never started'
+    rm -rf "$test_home"
+    return 1
+  fi
+  corepid=$(<"$HOME/core.pid")
+  kill -INT "$corepid"
+  i=0
+  while (( ++i <= CCMORPH_TEST_HANG_TIMEOUT * 10 )); do kill -0 $job 2>/dev/null || break; command sleep 0.1; done
+  wait $job 2>/dev/null
+  touch "$HOME/go"
+  claudpid=$(<"$HOME/claude.pid")
+  i=0
+  while (( ++i <= 30 )); do kill -0 $claudpid 2>/dev/null || break; command sleep 0.1; done
+  kill -TERM $claudpid 2>/dev/null
+
+  out=$(<"$HOME/add.out")
+  assert_contains "$out" 'login failed' \
+    'a SIGINT at the sign-in must end as a failed login, not as a dead process' || rc=1
+  [[ ! -e "$HOME/.config/ccmorph/demo.conf" ]] || {
+    print -u2 -- 'a cancelled sign-in must not save a profile'
+    rc=1
+  }
+  [[ ! -e "$HOME/.config/ccmorph/profiles/demo" ]] || {
+    print -u2 -- 'the cancelled sign-in must take back the profile home it made'
+    rc=1
+  }
+  [[ ! -e "$HOME/.config/ccmorph/.locks/demo.live" ]] || {
+    print -u2 -- 'the cancelled sign-in must take back the live lock it made'
+    rc=1
+  }
+  # The cancel's promise: the same name is free, with no rm in between, and
+  # list has no profile to show for it.
+  out=$(ccmorph list 2>&1) || {
+    print -u2 -- "list must succeed after the cancel: $out"
+    rc=1
+  }
+  assert_not_contains "$out" 'demo' \
+    'a cancelled sign-in leaves no profile for list to show' || rc=1
+  out=$(print 1 | ccmorph add demo 2>&1) || { print -u2 -- "$out"; rc=1; }
+  assert_not_contains "$out" 'leftover private state' \
+    'a cancelled sign-in must not leave the name blocked' || rc=1
+  command grep -qx 'email=a@example.com' "$HOME/.config/ccmorph/demo.conf" ||
+    { print -u2 -- 'the retried add must save the signed-in account'; rc=1; }
+  rm -rf "$test_home"
+  return $rc
+}
+
 # GH-649's wall pointed at two repairs for one conf: list said "re-create it:
 # ccmorph rm && ccmorph add", add said "sign in to it again: ccmorph login" —
 # and login was the lie, because setEmail could only replace an email line the
@@ -12388,6 +12477,7 @@ run_test test_launch_skips_the_sizer_when_nothing_is_new
 run_test test_add_sub_auth_calls_scrub_securestorage_dir
 run_test test_add_sub_sigkilled_mid_login_leaves_no_profile
 run_test test_add_sub_terminal_signal_mid_login_cleans_up
+run_test test_add_sub_interrupt_mid_login_frees_the_name
 run_test test_login_repairs_a_sub_profile_that_never_got_an_email
 run_test test_one_interactive_flag_is_the_only_way_to_ask
 run_test test_every_credential_type_states_how_it_authenticates

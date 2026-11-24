@@ -18,6 +18,17 @@
 
 ### Fixed
 
+- **Ctrl-C at the Claude-account sign-in cancels setup and frees the name.**
+  `ccmorph add` promised the cancel, but SIGINT killed the process before the
+  rollback, leaving a half-made profile home and its `.locks/<name>.live` that
+  `list` never showed and the next `add` refused as leftover state. Now the
+  signal reaches the sign-in child like HUP and TERM, the rollback takes the
+  home and the lock, and the same name adds again with no `rm`. `rm` of a
+  leftover lists only the paths that exist and removes the live lock too,
+  keeping it only while a running launch still holds it, and a launch that
+  opened the lock just as `rm` removed it takes the lock at the path again
+  instead of holding a file nothing names.
+
 - **`ccmorph doctor <profile>` no longer calls a provider profile ready when
   its bridge cannot start.** Doctor now asks the launch's own check: with
   `cliproxyapi` missing it fails and names the install step, and a missing or
