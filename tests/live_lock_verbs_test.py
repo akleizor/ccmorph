@@ -183,6 +183,20 @@ def test_rm_of_a_leftover_lock_alone_offers_and_takes_it(tmp_path):
     assert not lock.exists()
 
 
+def test_rm_of_a_leftover_dangling_live_link_offers_and_takes_it(tmp_path):
+    # A link naming nothing lexists, so the offer names it; rm must then
+    # take it, or the same leftover is offered on every run (GH-837).
+    home, state = fresh_state(tmp_path)
+    lock = state / ".locks" / "gw.live"
+    lock.parent.mkdir(parents=True)
+    lock.symlink_to(state / "nowhere")
+    result = run(home, state, "rm gw", "y\n")
+    assert result.returncode == 0, result.stderr
+    assert str(lock) in result.stderr
+    assert not os.path.lexists(lock)
+    assert not (state / "nowhere").exists()
+
+
 def test_rm_answered_no_keeps_the_leftover_and_its_lock(tmp_path):
     home, state = fresh_state(tmp_path)
     leftover = state / "profiles" / "gw"

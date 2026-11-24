@@ -733,6 +733,31 @@ func TestRemoveLiveKeepsAReplacementLockItDidNotOpen(t *testing.T) {
 	}
 }
 
+// GH-837: a dangling link at the live lock path holds no lock. RemoveLive
+// takes it away, or rm would offer it as a leftover on every run.
+func TestRemoveLiveTakesADanglingLinkAway(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	profiles := filepath.Join(home, ".config/ccmorph/profiles")
+	lock := LiveLockPath(profiles, "p")
+	if err := os.MkdirAll(filepath.Dir(lock), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	target := filepath.Join(home, "nowhere")
+	if err := os.Symlink(target, lock); err != nil {
+		t.Fatal(err)
+	}
+	if err := RemoveLive(profiles, "p"); err != nil {
+		t.Fatalf("a dangling link is removable: %v", err)
+	}
+	if _, err := os.Lstat(lock); !os.IsNotExist(err) {
+		t.Fatalf("the dangling link must go: %v", err)
+	}
+	if _, err := os.Lstat(target); !os.IsNotExist(err) {
+		t.Fatalf("RemoveLive must not create the link's target: %v", err)
+	}
+}
+
 // GH-837: the merge gate's own sequence, through the public API. A launch
 // that opened the lock before the removal and flocks afterwards holds an
 // inode nothing else can see; the removal and every later holder must agree

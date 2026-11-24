@@ -411,7 +411,15 @@ func RemoveLive(profiles, name string) error {
 	for attempt := 0; attempt < liveLockTries; attempt++ {
 		f, err := os.OpenFile(lock, os.O_WRONLY|os.O_APPEND, 0)
 		if os.IsNotExist(err) {
-			return nil // removed, or a link naming nothing: either way gone
+			// Gone, or a link naming nothing. ccmorph never makes the lock a
+			// link and a dangling one holds no lock, so it goes with the
+			// profile; left, rm would offer it again on every run (GH-837).
+			if paths.IsSymlink(lock) {
+				if rerr := os.Remove(lock); rerr != nil && !os.IsNotExist(rerr) {
+					return rerr
+				}
+			}
+			return nil
 		}
 		if err != nil {
 			return err
