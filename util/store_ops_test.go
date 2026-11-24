@@ -407,3 +407,48 @@ func TestStoreAndCtxwindowAgreeOnModelIds(t *testing.T) {
 		t.Fatal("a refused model wrote")
 	}
 }
+
+// GH-839: a saved effort the store refuses is named by value and by every
+// level it accepts, and a save that replaces it is the repair.
+func TestStoreNamesAnInvalidSavedEffortAndSetEffortReplacesIt(t *testing.T) {
+	s := newStoreEnv(t)
+	s.write(s.conf, storeConf+"\neffort=ultra\n")
+	before := s.state()
+	_, errw, rc := s.run("get", "effort", StoreChange{})
+	if rc == 0 {
+		t.Fatal("a read of an invalid saved effort must refuse")
+	}
+	for _, want := range []string{"invalid effort 'ultra'", "'demo'", "low, medium, high, xhigh or max"} {
+		if !strings.Contains(errw, want) {
+			t.Fatalf("the read's refusal %q does not name %q", errw, want)
+		}
+	}
+	// A save that leaves the bad value in place is refused, naming it.
+	_, errw, rc = s.run("set", "", StoreChange{Model: "new"})
+	if rc == 0 || !strings.Contains(errw, "invalid effort 'ultra'") || s.state() != before {
+		t.Fatalf("set model with a bad saved effort: rc %d %q, state changed: %v", rc, errw, s.state() != before)
+	}
+	// Overwriting the value is the repair.
+	if _, errw, rc = s.run("set", "", StoreChange{Effort: "high"}); rc != 0 {
+		t.Fatalf("set effort high: rc %d %q", rc, errw)
+	}
+	if got := s.ok("get", "effort", StoreChange{}); got != "high\n" {
+		t.Fatalf("after the repair, effort = %q", got)
+	}
+}
+
+// The same rule over a value seeded from the native settings layer: the store
+// names it on a read and a save that replaces it goes through.
+func TestStoreNamesAnInvalidNativeEffortAndSetEffortReplacesIt(t *testing.T) {
+	s := newStoreEnv(t)
+	s.write(s.settings, `{"env":{"CLAUDE_CODE_EFFORT_LEVEL":"ultra"}}`)
+	if _, errw, rc := s.run("get", "effort", StoreChange{}); rc == 0 || !strings.Contains(errw, "invalid effort 'ultra'") {
+		t.Fatalf("a read of a bad native effort: rc %d %q", rc, errw)
+	}
+	if _, errw, rc := s.run("set", "", StoreChange{Effort: "high"}); rc != 0 {
+		t.Fatalf("set effort high: rc %d %q", rc, errw)
+	}
+	if got := s.ok("get", "effort", StoreChange{}); got != "high\n" {
+		t.Fatalf("after the repair, effort = %q", got)
+	}
+}

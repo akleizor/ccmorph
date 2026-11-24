@@ -114,13 +114,6 @@ func (r *refusal) Error() string { return r.msg }
 
 func refuse(format string, a ...any) error { return &refusal{fmt.Sprintf(format, a...)} }
 
-// effortList names the accepted levels as prose — "low, medium, high, xhigh or
-// max" — for the refusal's one sentence.
-func effortList() string {
-	ls := profile.Efforts
-	return strings.Join(ls[:len(ls)-1], ", ") + " or " + ls[len(ls)-1]
-}
-
 // StoreChange is what a set or configure operation saves; a Snapshot, when set,
 // must still match the profile's files. Type, Endpoint and Credential are read by
 // configure only.
@@ -299,11 +292,6 @@ func readStoreState(a StoreArgs) (*storeState, error) {
 		if !isStr || strings.Contains(name, "=") || strings.ContainsAny(name+value, "\r\n") || hasSpace(name) {
 			return nil, fmt.Errorf("model defaults must be single-line strings with valid keys")
 		}
-		if name == "effort" || strings.HasPrefix(name, "effort.") {
-			if !slices.Contains(profile.Efforts, value) || name == "effort." {
-				return nil, fmt.Errorf("invalid saved effort default")
-			}
-		}
 		if strings.HasPrefix(name, "effort.") {
 			row := ordjson.New()
 			row.Set("effortLevel", value)
@@ -328,6 +316,29 @@ func readStoreState(a StoreArgs) (*storeState, error) {
 	return &storeState{originals: originals, lines: lines, doc: doc, defaults: defaults, projected: projected}, nil
 }
 
+// checkSavedEfforts is the one effort rule over the defaults a store read or
+// save produces: every level is a level profile.Efforts names, and the conf's
+// own key is "effort", never the empty "effort." that names no model (#839).
+// It runs after a save's change is applied, so a save that overwrites a value
+// the files refuse is its own repair.
+func checkSavedEfforts(conf string, defaults *ordjson.Obj) error {
+	name := strings.TrimSuffix(filepath.Base(conf), ".conf")
+	for _, k := range defaults.Keys() {
+		if k != "effort" && !strings.HasPrefix(k, "effort.") {
+			continue
+		}
+		v, _ := defaults.Get(k)
+		s, _ := v.(string)
+		if k == "effort." {
+			return fmt.Errorf("invalid saved effort key 'effort.' in '%s': effort must be %s", name, profile.EffortList())
+		}
+		if !slices.Contains(profile.Efforts, s) {
+			return profile.EffortError(name, s)
+		}
+	}
+	return nil
+}
+
 // StoreRead is every read answer the store gives over one parse of a profile's
 // files (#478): each model default by key, the settings a launch projects from
 // them, and the fingerprint of the files as this read saw them — the snapshot a
@@ -345,6 +356,9 @@ type StoreRead struct {
 func ConfigStoreRead(a StoreArgs) (StoreRead, error) {
 	s, err := readStoreState(a)
 	if err != nil {
+		return StoreRead{}, err
+	}
+	if err := checkSavedEfforts(a.Conf, s.defaults); err != nil {
 		return StoreRead{}, err
 	}
 	r := StoreRead{Values: map[string]string{}, Projection: jsonOut(s.projected), Snapshot: fingerprint(s.originals[0], s.originals[1])}
@@ -381,6 +395,9 @@ func configStoreRun(a StoreArgs, out, errw io.Writer) (int, string, error) {
 	}
 	doc, defaults, projected, originals, lines := s.doc, s.defaults, s.projected, s.originals, s.lines
 	if op == "get" {
+		if err := checkSavedEfforts(conf, defaults); err != nil {
+			return 0, "", err
+		}
 		v, _ := defaults.Get(key)
 		if v == nil {
 			v = ""
@@ -389,6 +406,9 @@ func configStoreRun(a StoreArgs, out, errw io.Writer) (int, string, error) {
 		return 0, "", nil
 	}
 	if op == "model-settings" {
+		if err := checkSavedEfforts(conf, defaults); err != nil {
+			return 0, "", err
+		}
 		fmt.Fprintln(out, jsonOut(projected))
 		return 0, "", nil
 	}
@@ -404,7 +424,7 @@ func configStoreRun(a StoreArgs, out, errw io.Writer) (int, string, error) {
 			return 0, "", refuse("model must be a nonempty model id, not a flag or picker token")
 		}
 		if name == "effort" && !slices.Contains(profile.Efforts, value) {
-			return 0, "", refuse("effort must be %s", effortList())
+			return 0, "", refuse("effort must be %s", profile.EffortList())
 		}
 		defaults.Set(name, value)
 	}
@@ -412,6 +432,12 @@ func configStoreRun(a StoreArgs, out, errw io.Writer) (int, string, error) {
 	case "set", "configure", "seed-model-defaults", "prepare-launch", "migrate-native":
 	default:
 		return 0, "", fmt.Errorf("unsupported configuration operation")
+	}
+	// The save is judged on the defaults it will leave behind: the change above
+	// has already replaced the value it overwrites, so a set that repairs an
+	// invalid saved effort passes, while one that leaves it in place names it.
+	if err := checkSavedEfforts(conf, defaults); err != nil {
+		return 0, "", err
 	}
 	if paths.IsSymlink(conf) || paths.IsSymlink(settings) {
 		return 0, "", fmt.Errorf("model defaults require profile-local files")

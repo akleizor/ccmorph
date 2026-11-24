@@ -102,8 +102,9 @@ class GetSetShorthandTest(unittest.TestCase):
     def test_a_profile_named_after_a_setting_stays_reachable(self):
         # Naming both words is the unambiguous form: with a setting word in the
         # second slot, the first is the profile.
-        named = self.profile('model', 'type=apikey\napi_key=model-key\nmodel=served-model\n')
-        named.write_text(named.read_text() + '\nmodel=served-model\n')
+        named = self.profile('model', 'type=apikey\n'
+                                      'api_key=k\n'
+                                      'model=served-model\n')
         self.profile('work2', 'type=apikey\napi_key=other-key\n')
         result = self.run_cli('get', 'model', 'model')
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)

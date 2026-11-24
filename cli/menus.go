@@ -29,13 +29,18 @@ type profileDesc struct {
 // wherever a profile is described (#489: the private mark had reached `list`
 // only, the Browser login fallback the menu only). accept, when set, is the
 // chooser's own filter over a profile's fields: it decides which profiles a
-// command can answer with, not how they are described (GH-790).
-func (l *launcher) describeProfiles(active string, types []string, accept func(map[string]string) bool) []profileDesc {
+// command can answer with, not how they are described (GH-790). The count is
+// the profiles skipped as invalid, so the caller can keep "No profiles yet" for
+// a home that really holds none (GH-839).
+func (l *launcher) describeProfiles(active string, types []string, accept func(map[string]string) bool) ([]profileDesc, int) {
 	var descs []profileDesc
+	skipped := 0
 	for _, n := range l.confNames() {
-		f, ok := l.readRaw(n)
-		if !ok {
-			say("ccmorph: skipping invalid profile '" + n + "'")
+		f, err := l.readProfile(n, func(line string) { fmt.Fprintln(os.Stderr, line) })
+		if err != nil {
+			l.err(err.Error())
+			say("ccmorph: skipping invalid profile '" + n + "' — " + profile.Repair(err, n))
+			skipped++
 			continue
 		}
 		typ := f["type"]
@@ -69,7 +74,7 @@ func (l *launcher) describeProfiles(active string, types []string, accept func(m
 		d.active = n == active
 		descs = append(descs, d)
 	}
-	return descs
+	return descs, skipped
 }
 
 // profileRows is _ccm_profile_rows: ID<TAB>kind<TAB>detail<TAB>marker per
@@ -77,7 +82,8 @@ func (l *launcher) describeProfiles(active string, types []string, accept func(m
 // is the chooser's filter over the profile's fields (GH-790).
 func (l *launcher) profileRows(active string, types []string, accept func(map[string]string) bool) []string {
 	var rows []string
-	for _, d := range l.describeProfiles(active, types, accept) {
+	descs, _ := l.describeProfiles(active, types, accept)
+	for _, d := range descs {
 		detail := d.detail
 		if d.private {
 			// The mark #292 put on `list`, in the menu's single grey detail
