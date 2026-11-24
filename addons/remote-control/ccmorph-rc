@@ -610,14 +610,15 @@ def switch(profile: str, account: str) -> None:
             tmp = hand.with_suffix(".tmp")
             fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
             try:
-                os.write(fd, payload)
+                try:
+                    os.write(fd, payload)
+                finally:
+                    os.close(fd)
+                tmp.replace(hand)
             except BaseException:
                 with suppress(OSError):
-                    os.unlink(tmp)    # a half-written handoff still holds the route key
+                    os.unlink(tmp)    # a temp that never became the handoff still holds the route key
                 raise
-            finally:
-                os.close(fd)
-            tmp.replace(hand)
         try:
             write_inference(word)
         except BaseException:

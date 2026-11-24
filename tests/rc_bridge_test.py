@@ -743,6 +743,25 @@ def test_a_switch_whose_word_never_lands_leaves_no_handoff_holding_the_key(tmp_p
     assert list(rc.STATE.glob("switch-*")) == []
 
 
+def test_a_switch_whose_handoff_rename_fails_leaves_no_temp_holding_the_key(tmp_path, monkeypatch):
+    """The handoff temp is the route key on disk from its first byte. A rename that
+    fails leaves that temp as the only copy, and no request ever reads a .tmp, so the
+    failed switch removes it and writes no word (README: no lingering file, #777)."""
+    rc, _ = _switch_state(tmp_path, monkeypatch)
+    path_type = type(rc.STATE)
+    real_replace = path_type.replace
+
+    def refuse(self, target):
+        if self.name == "switch-gw.tmp":
+            raise OSError("rename refused")
+        return real_replace(self, target)
+    monkeypatch.setattr(path_type, "replace", refuse)
+    with pytest.raises(OSError, match="rename refused"):
+        rc.switch("gw", "me")
+    assert list(rc.STATE.glob("switch-*")) == []
+    assert not (rc.STATE / "inference").exists()
+
+
 @pytest.mark.parametrize("handoff,port,log", [
     pytest.param(None, 60111, "was never brought up", id="never-brought-up-keeps-the-route"),
     pytest.param({"upstream": "http://127.0.0.1:54505", "key": "route-key",
