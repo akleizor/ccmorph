@@ -494,10 +494,68 @@ func UnwireStatusline(path string, owned ...string) error {
 
 var commandArgs = regexp.MustCompile(`(?s)<command-args>(.*?)</command-args>`)
 
-// transcript reads a session transcript: one JSON record per line, unreadable lines skipped.
+// ReadPrivateRegular reads path only when it names a regular file this
+// account wrote, and never waits on what it finds: a FIFO in a directory
+// another account can write, or a device that never ends, is refused rather
+// than read, and so is a symlink at the final name (nothing ccmorph writes
+// there is one), so a planted one cannot send the read somewhere else; a file
+// owned by another account, or group and others can write, is not this
+// account's record at all (#410). A positive limit also bounds the read, for a
+// file whose whole body is one small message at a name anyone can plant.
+func ReadPrivateRegular(path string, limit int64, owner int) ([]byte, bool) {
+	return readRegular(path, limit, owner, true)
+}
+
+// ReadOwnedRegular reads path only when it names a regular file this account
+// owns. The transcript reader follows ccmorph's own carried-session link to
+// the file first, and requires the bytes to be this account's; it does not
+// apply a shared-TMPDIR record's group/other policy, because a transcript's
+// bits are the writer's umask and Claude Code may leave them group-writable —
+// such a transcript is still a valid conversation for a hop or a model
+// recovery (#410). The read is whole: a conversation's length is the user's.
+func ReadOwnedRegular(path string, limit int64, owner int) ([]byte, bool) {
+	return readRegular(path, limit, owner, false)
+}
+
+func readRegular(path string, limit int64, owner int, private bool) ([]byte, bool) {
+	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NONBLOCK|syscall.O_NOFOLLOW, 0)
+	if err != nil {
+		return nil, false
+	}
+	defer f.Close()
+	fi, err := f.Stat()
+	if err != nil || !fi.Mode().IsRegular() || (limit > 0 && fi.Size() > limit) {
+		return nil, false
+	}
+	st, ok := fi.Sys().(*syscall.Stat_t)
+	if !ok || int(st.Uid) != owner || (private && fi.Mode().Perm()&0o022 != 0) {
+		return nil, false
+	}
+	var r io.Reader = f
+	if limit > 0 {
+		r = io.LimitReader(f, limit)
+	}
+	b, err := io.ReadAll(r)
+	if err != nil {
+		return nil, false
+	}
+	return b, true
+}
+
+// transcript reads a session transcript: one JSON record per line, unreadable
+// lines skipped. carrySession carries a session into another profile with a
+// symlink, and Claude Code writes that session's transcript through it, so a
+// valid SessionEnd input names the link (#410): resolve it to the real file
+// first, then read only a regular file this account owns, refusing another
+// account's link target or a FIFO without waiting. There is no size cap — a
+// conversation's length is the user's.
 func transcript(path string) (recs []*ordjson.Obj, ok bool) {
-	b, err := os.ReadFile(path)
-	if err != nil || !utf8.Valid(b) {
+	real, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		return nil, false
+	}
+	b, ok := ReadOwnedRegular(real, 0, os.Geteuid())
+	if !ok || !utf8.Valid(b) {
 		return nil, false
 	}
 	for _, line := range strings.Split(string(b), "\n") {
