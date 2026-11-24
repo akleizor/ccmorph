@@ -1,12 +1,16 @@
 package guard
 
 import (
+	"errors"
 	"go/ast"
+	"go/importer"
 	"go/parser"
 	"go/token"
+	"go/types"
 	"io/fs"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"testing"
@@ -20,11 +24,14 @@ import (
 //
 // A client is allowed only by its own Transport: netroute.NewTransport, a
 // transport literal carrying netroute.ExtraCAs, or a literal setting Proxy: nil.
-// A transport is allowed the same way. The names each file gives net/http and
-// this module's netroute are all read (an alias is still the same package), a
-// rewire after construction is checked the same way, and a package named
-// netroute outside netroute/ is refused, because only there is a bare
-// NewTransport or ExtraCAs trusted (#829).
+// A transport is allowed the same way. Every name is Go's own: each package is
+// type-checked whole (go/types, with net/http and crypto/tls from the
+// toolchain), so an alias is the same package, a local that hides an import is
+// no package, and a proof belongs to the variable Go binds, never to a
+// same-named one in another block. A rewire after construction is judged by
+// the type Go says owns the field, and a package named netroute outside
+// netroute/ is refused, because only there is a bare NewTransport or ExtraCAs
+// trusted (#829).
 func TestEveryProductionHTTPClientTrustsTheSessionsExtraCA(t *testing.T) {
 	root := ".."
 	fset := token.NewFileSet()
@@ -36,8 +43,8 @@ func TestEveryProductionHTTPClientTrustsTheSessionsExtraCA(t *testing.T) {
 		t.Fatal("the guard read no production file")
 	}
 	refused, allowed := 0, 0
-	for _, f := range files {
-		for _, x := range inspectFile(fset, f) {
+	for _, pkg := range packagesOf(fset, files) {
+		for _, x := range inspectPackage(fset, pkg) {
 			if !x.allowed {
 				refused++
 				t.Errorf("%s: %s", x.pos, x.why)
@@ -320,6 +327,27 @@ func f(x bool) *http.Client {
 	return nil
 }
 `, "refused"},
+
+		// Go's own resolution decides which variable a client dials with: a
+		// same-named local in another block is another variable, a package
+		// variable carries no proof, and a rewire is judged by the type Go says
+		// owns the field, whatever the receiver is called.
+		{"a package variable behind a block-local builder", guardSrc("var tr http.RoundTripper\n\nfunc f() *http.Client {\n\t{\n\t\ttr := netroute.NewTransport()\n\t\t_ = tr\n\t}\n\treturn &http.Client{Transport: tr}\n}"), "refused"},
+		{"an outer clone borrows an inner clone's CA", guardSrc("func f() *http.Transport {\n\ttr := http.DefaultTransport.(*http.Transport).Clone()\n\tif true {\n\t\ttr := http.DefaultTransport.(*http.Transport).Clone()\n\t\ttr.TLSClientConfig = netroute.ExtraCAs()\n\t\t_ = tr\n\t}\n\treturn tr\n}"), "refused"},
+		{"a struct field's client rewired", guardSrc("type srv struct{ c *http.Client }\n\nfunc f(rt http.RoundTripper) *srv {\n\ts := &srv{c: netroute.NewClient(time.Second)}\n\ts.c.Transport = rt\n\treturn s\n}"), "refused"},
+		{"the CA wiped through an asserted local", guardSrc("func f() *http.Client {\n\tc := netroute.NewClient(time.Second)\n\tt := c.Transport.(*http.Transport)\n\tt.TLSClientConfig = nil\n\treturn c\n}"), "refused"},
+		{"a helper's client rewired", guardSrc("func get() *http.Client { return netroute.NewClient(time.Second) }\n\nfunc f(rt http.RoundTripper) *http.Client {\n\tc := get()\n\tc.Transport = rt\n\treturn c\n}"), "refused"},
+		{"an embedded transport's CA wiped", guardSrc("type wrap struct{ *http.Transport }\n\nfunc f() wrap {\n\tw := wrap{netroute.NewTransport()}\n\tw.TLSClientConfig = nil\n\treturn w\n}"), "refused"},
+		{"a builder's transport overwritten whole", guardSrc("func f(o *http.Transport) *http.Client {\n\ttr := netroute.NewTransport()\n\t*tr = *o\n\treturn &http.Client{Transport: tr}\n}"), "refused"},
+		{"a client overwritten whole through a field", guardSrc("type srv struct{ c *http.Client }\n\nfunc f(s *srv, o *http.Client) { *s.c = *o }"), "refused"},
+		{"the CA config edited through its local", guardSrc("func f() *http.Transport {\n\tcfg := netroute.ExtraCAs()\n\tcfg.RootCAs = nil\n\treturn &http.Transport{Proxy: http.ProxyFromEnvironment, TLSClientConfig: cfg}\n}"), "refused"},
+		{"the CA config read back and edited", guardSrc("func f() *http.Transport {\n\ttr := netroute.NewTransport()\n\tcfg := tr.TLSClientConfig\n\tcfg.InsecureSkipVerify = true\n\treturn tr\n}"), "refused"},
+		{"a parameter named nil is no direct route", fileSrc("import (\n\t\"net/http\"\n\t\"net/url\"\n)\n\nfunc f(nil func(*http.Request) (*url.URL, error)) *http.Transport { return &http.Transport{Proxy: nil} }\n"), "refused"},
+		{"a local named like the builder inside netroute", "package netroute\n\nimport \"net/http\"\n\nfunc f() *http.Client {\n\tNewTransport := func() *http.Transport { return &http.Transport{} }\n\treturn &http.Client{Transport: NewTransport()}\n}\n", "refused"},
+		{"a field Go cannot resolve is judged as net/http's", fileSrc("import \"example.com/opts\"\n\nfunc f(o *opts.Options) { o.Proxy = \"inherit\" }\n"), "refused"},
+		{"a closure dials its parent's builder-bound local", guardSrc("func f() func() *http.Client {\n\ttr := netroute.NewTransport()\n\treturn func() *http.Client { return &http.Client{Transport: tr} }\n}"), "allowed"},
+		{"a builder client's own timeout may change", guardSrc("func f() *http.Client {\n\tc := netroute.NewClient(time.Second)\n\tc.Timeout = 2 * time.Second\n\treturn c\n}"), "none"},
+		{"a same-package type's own Transport field", guardSrc("type opts struct{ Transport string }\n\nfunc f(o *opts) { o.Transport = \"stdio\" }"), "none"},
 	}
 	for _, k := range cases {
 		k := k
@@ -441,6 +469,87 @@ func f() {
 	}
 }
 
+// TestAPackageIsCheckedWhole: the production walk type-checks each package's
+// files together, so a receiver whose type another file declares resolves.
+// An options type's own Transport string in a.go is left alone when b.go sets
+// it; a client field declared in a.go and rewired in b.go is still refused.
+func TestAPackageIsCheckedWhole(t *testing.T) {
+	fset := token.NewFileSet()
+	a, err := parser.ParseFile(fset, "a.go", "package p\n\nimport \"net/http\"\n\ntype opts struct{ Transport string }\n\ntype srv struct{ c *http.Client }\n", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := parser.ParseFile(fset, "b.go", "package p\n\nimport \"net/http\"\n\nfunc f(o *opts, s *srv, rt http.RoundTripper) {\n\to.Transport = \"stdio\"\n\ts.c.Transport = rt\n}\n", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var refused []string
+	for _, x := range inspectPackage(fset, []*ast.File{a, b}) {
+		if !x.allowed {
+			refused = append(refused, x.pos.String())
+		}
+	}
+	if len(refused) != 1 || refused[0] != "b.go:7:2" {
+		t.Fatalf("refused %v, want only the client rewire at b.go:7:2", refused)
+	}
+}
+
+// TestTheGuardLoadsNetHTTPsTypes: the rewire rules read which type owns a field
+// from net/http's and crypto/tls's own types. If the toolchain cannot supply
+// them, the guard would fall back to judging fields by name alone; fail here
+// instead, so a weaker guard is never silently green.
+func TestTheGuardLoadsNetHTTPsTypes(t *testing.T) {
+	for _, c := range []struct{ path, name string }{{"net/http", "Client"}, {"net/http", "Transport"}, {"crypto/tls", "Config"}} {
+		pkg, err := sharedImporter.Import(c.path)
+		if err != nil {
+			t.Fatalf("the guard cannot load %s: %v", c.path, err)
+		}
+		if pkg.Scope().Lookup(c.name) == nil {
+			t.Fatalf("%s has no %s: the guard's types are not the toolchain's", c.path, c.name)
+		}
+	}
+}
+
+// TestTheGuardsNetrouteModelIsNetroutes: the guard types a value taken from
+// netroute's builders by its own model of them. Each modelled builder must
+// exist in netroute/ with the same result type, or the guard reasons about a
+// netroute that is not this module's.
+func TestTheGuardsNetrouteModelIsNetroutes(t *testing.T) {
+	fset := token.NewFileSet()
+	var files []*ast.File
+	paths, err := filepath.Glob(filepath.Join("..", "netroute", "*.go"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, p := range paths {
+		if strings.HasSuffix(p, "_test.go") {
+			continue
+		}
+		f, err := parser.ParseFile(fset, p, nil, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		files = append(files, f)
+	}
+	conf := types.Config{Importer: sharedImporter, Error: func(error) {}}
+	real, _ := conf.Check(netroutePath, fset, files, nil)
+	model, err := sharedImporter.Import(netroutePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range model.Scope().Names() {
+		m := model.Scope().Lookup(name).Type().(*types.Signature)
+		obj := real.Scope().Lookup(name)
+		if obj == nil {
+			t.Fatalf("the guard models netroute.%s, which netroute/ does not declare", name)
+		}
+		r, ok := obj.Type().(*types.Signature)
+		if !ok || r.Results().Len() != 1 || r.Results().At(0).Type().String() != m.Results().At(0).Type().String() {
+			t.Fatalf("netroute.%s is %v; the guard models it returning %v", name, obj.Type(), m.Results().At(0).Type())
+		}
+	}
+}
+
 // TestASecondPackageNamedNetrouteIsRefused: the guard trusts a bare
 // NewTransport or ExtraCAs inside package netroute, so a second package with
 // that name would borrow the proof. Only the module's netroute/ may use it.
@@ -500,7 +609,7 @@ const (
 	typeUseMessage          = "names http.Client or http.Transport outside a literal or a pointer type (new, a zero value, a value or embedded field, a type alias or definition, a type argument, a slice or map literal): this guard cannot see the transport such a client dials with, and a zero http.Client honours the session's proxy but not its CA (NODE_EXTRA_CA_CERTS); hold a *http.Client from netroute.NewClient or a transport from netroute.NewTransport (#829)"
 	defaultClientMessage    = "uses http.DefaultClient (directly or through http.Get, Head, Post or PostForm): it honours the session's proxy but not the CA it signs every host with (NODE_EXTRA_CA_CERTS), so the call fails inside a Remote Control session; call Do on a client from netroute.NewClient (#829)"
 	dotImportMessage        = "dot-imports net/http or netroute, which hides from this guard the clients the file builds and the builder it calls; a client that honours the session's proxy but not NODE_EXTRA_CA_CERTS fails its handshake inside a Remote Control session; import the package by name and build clients with netroute.NewClient (#829)"
-	mutationMessage         = "rewires a client or transport after construction (its Transport, Proxy or TLSClientConfig) with a value this guard cannot prove trusts the session's CA (NODE_EXTRA_CA_CERTS); build the finished client with netroute.NewClient or netroute.NewTransport, or set Proxy: nil in the literal (#829)"
+	mutationMessage         = "rewires a client or transport after construction (its Transport, Proxy or TLSClientConfig, a field of its TLS config, or the whole value) with a value this guard cannot prove trusts the session's CA (NODE_EXTRA_CA_CERTS); build the finished client with netroute.NewClient or netroute.NewTransport, or set Proxy: nil in the literal (#829)"
 	defaultTransportMessage = "uses http.DefaultTransport with no TLSClientConfig: it honours the session's proxy but not the CA it signs every host with (NODE_EXTRA_CA_CERTS), so its handshake fails inside a Remote Control session; clone it through netroute.NewTransport instead (#822, #829)"
 )
 
@@ -518,338 +627,72 @@ func guardSrc(body string) string { return guardHead + body + "\n" }
 // own imports.
 func fileSrc(rest string) string { return "package p\n\n" + rest }
 
-// names is how one file spells the packages the guard reasons about: every
-// local name of net/http and of this module's netroute, whether the file is
-// package netroute (its bare NewTransport/ExtraCAs count), any dot import,
-// which hides both from the guard, and every qualifier a local declaration
-// shadows, which is then no package at all.
-type names struct {
-	http, netroute map[string]bool
-	inNetroute     bool
-	dots           []*ast.ImportSpec
-	shadowed       map[*ast.Ident]bool
+// guardImporter loads net/http and crypto/tls from the toolchain, so Go itself
+// says which type a literal builds and which type owns the field an assignment
+// writes, and gives this module's netroute its three builders' result types
+// (netrouteModel), so a transport or config taken from one is typed too. Every
+// other import fails, and go/types then gives it an empty package and carries
+// on: its name still resolves to its path, its members resolve to nothing. One
+// instance serves the whole test binary, so each package is read once.
+type guardImporter struct {
+	std      types.Importer
+	netroute *types.Package
 }
 
-func fileNames(f *ast.File) names {
-	n := names{http: map[string]bool{}, netroute: map[string]bool{}, inNetroute: f.Name.Name == "netroute", shadowed: map[*ast.Ident]bool{}}
-	for _, spec := range f.Imports {
-		path, err := strconv.Unquote(spec.Path.Value)
-		if err != nil {
-			continue
-		}
-		var into map[string]bool
-		local := ""
-		switch path {
-		case "net/http":
-			into, local = n.http, "http"
-		case netroutePath:
-			into, local = n.netroute, "netroute"
-		default:
-			continue
-		}
-		if spec.Name != nil {
-			local = spec.Name.Name
-		}
-		switch local {
-		case "_":
-		case ".":
-			n.dots = append(n.dots, spec)
-		default:
-			into[local] = true
-		}
+func (g *guardImporter) Import(path string) (*types.Package, error) {
+	if path == netroutePath {
+		return g.netrouteModel()
 	}
-	return n
+	if path != "net/http" && path != "crypto/tls" {
+		return nil, errors.New("the client guard loads only net/http, crypto/tls and netroute's builders")
+	}
+	if g.std == nil {
+		g.std = importer.Default()
+	}
+	return g.std.Import(path)
 }
 
-// is is whether expr names <a package name in pkgs>.<sel>, and that name is
-// still the package there: a parameter, local variable or receiver of the same
-// name shadows the import, so `nr.NewTransport()` inside func f(nr factory) is
-// a method on the local value, not netroute's builder (#829).
-func (n names) is(expr ast.Expr, pkgs map[string]bool, sel string) bool {
-	s, ok := expr.(*ast.SelectorExpr)
-	if !ok || s.Sel.Name != sel {
-		return false
+// netrouteModel is netroute as the guard sees it from outside: NewTransport,
+// NewClient and ExtraCAs with their real result types, nothing else.
+// TestTheGuardsNetrouteModelIsNetroutes holds it to netroute/ca.go.
+func (g *guardImporter) netrouteModel() (*types.Package, error) {
+	if g.netroute != nil {
+		return g.netroute, nil
 	}
-	id, ok := s.X.(*ast.Ident)
-	return ok && pkgs[id.Name] && !n.shadowed[id]
+	httpPkg, err := g.Import("net/http")
+	if err != nil {
+		return nil, err
+	}
+	tlsPkg, err := g.Import("crypto/tls")
+	if err != nil {
+		return nil, err
+	}
+	pkg := types.NewPackage(netroutePath, "netroute")
+	ptr := func(p *types.Package, name string) types.Type {
+		return types.NewPointer(p.Scope().Lookup(name).Type())
+	}
+	declare := func(name string, params *types.Tuple, result types.Type) {
+		results := types.NewTuple(types.NewVar(token.NoPos, pkg, "", result))
+		pkg.Scope().Insert(types.NewFunc(token.NoPos, pkg, name, types.NewSignature(nil, params, results, false)))
+	}
+	declare("NewTransport", nil, ptr(httpPkg, "Transport"))
+	declare("ExtraCAs", nil, ptr(tlsPkg, "Config"))
+	declare("NewClient", types.NewTuple(types.NewVar(token.NoPos, pkg, "timeout", types.Typ[types.Int64])), ptr(httpPkg, "Client"))
+	pkg.MarkComplete()
+	g.netroute = pkg
+	return pkg, nil
 }
 
-// qualifierShadows marks every package-qualifier ident, and the new builtin, a
-// local binding hides at that use. Scope is lexical, as Go's is: a parameter,
-// receiver or named result covers its function's body; a :=, var, const, type
-// or range declaration covers its own block from the end of the declaration,
-// including the statements after it and the blocks nested in them, and nothing
-// after that block closes. A block's local therefore cannot hide a later
-// web.Client from the guard (#829).
-func qualifierShadows(f *ast.File, n names) map[*ast.Ident]bool {
-	w := &scopeWalk{nm: n, shadow: map[*ast.Ident]bool{}}
-	w.file(f)
-	return w.shadow
-}
+var sharedImporter = &guardImporter{}
 
-// scopeWalk carries the scopes visible at the node it is visiting.
-type scopeWalk struct {
-	nm      names
-	shadow  map[*ast.Ident]bool
-	visible []map[string]bool
-}
-
-func (w *scopeWalk) push() { w.visible = append(w.visible, map[string]bool{}) }
-
-func (w *scopeWalk) pop() { w.visible = w.visible[:len(w.visible)-1] }
-
-func (w *scopeWalk) declare(name string) {
-	if name != "" && name != "_" && len(w.visible) > 0 {
-		w.visible[len(w.visible)-1][name] = true
-	}
-}
-
-func (w *scopeWalk) isVisible(name string) bool {
-	for _, scope := range w.visible {
-		if scope[name] {
-			return true
-		}
-	}
-	return false
-}
-
-func (w *scopeWalk) file(f *ast.File) {
-	for _, decl := range f.Decls {
-		switch x := decl.(type) {
-		case *ast.FuncDecl:
-			w.funcLike(x.Type, x.Body, x.Recv)
-		case *ast.GenDecl:
-			for _, spec := range x.Specs {
-				if vs, ok := spec.(*ast.ValueSpec); ok {
-					w.typeExpr(vs.Type)
-					for _, v := range vs.Values {
-						w.expr(v)
-					}
-				}
-			}
-		}
-	}
-}
-
-// funcLike walks a function declaration or literal: its signature types see the
-// enclosing scopes, then its parameters and results cover the body.
-func (w *scopeWalk) funcLike(t *ast.FuncType, body *ast.BlockStmt, recv *ast.FieldList) {
-	w.fieldTypes(recv)
-	w.fieldTypes(t.Params)
-	w.fieldTypes(t.Results)
-	w.push()
-	w.fieldNames(recv)
-	w.fieldNames(t.Params)
-	w.fieldNames(t.Results)
-	w.block(body)
-	w.pop()
-}
-
-func (w *scopeWalk) fieldTypes(fl *ast.FieldList) {
-	if fl == nil {
-		return
-	}
-	for _, f := range fl.List {
-		w.typeExpr(f.Type)
-	}
-}
-
-func (w *scopeWalk) fieldNames(fl *ast.FieldList) {
-	if fl == nil {
-		return
-	}
-	for _, f := range fl.List {
-		for _, id := range f.Names {
-			w.declare(id.Name)
-		}
-	}
-}
-
-func (w *scopeWalk) block(b *ast.BlockStmt) {
-	if b == nil {
-		return
-	}
-	w.push()
-	for _, s := range b.List {
-		w.stmt(s)
-	}
-	w.pop()
-}
-
-func (w *scopeWalk) stmt(s ast.Stmt) {
-	if s == nil {
-		return
-	}
-	switch x := s.(type) {
-	case *ast.BlockStmt:
-		w.block(x)
-	case *ast.AssignStmt:
-		for _, e := range x.Lhs {
-			if _, ok := e.(*ast.Ident); !ok {
-				w.expr(e)
-			}
-		}
-		for _, e := range x.Rhs {
-			w.expr(e)
-		}
-		if x.Tok == token.DEFINE {
-			for _, e := range x.Lhs {
-				if id, ok := e.(*ast.Ident); ok {
-					w.declare(id.Name)
-				}
-			}
-		}
-	case *ast.DeclStmt:
-		if d, ok := x.Decl.(*ast.GenDecl); ok {
-			w.genDecl(d)
-		}
-	case *ast.ExprStmt:
-		w.expr(x.X)
-	case *ast.ReturnStmt:
-		for _, e := range x.Results {
-			w.expr(e)
-		}
-	case *ast.IfStmt:
-		w.push()
-		w.stmt(x.Init)
-		w.expr(x.Cond)
-		w.block(x.Body)
-		w.stmt(x.Else)
-		w.pop()
-	case *ast.ForStmt:
-		w.push()
-		w.stmt(x.Init)
-		w.expr(x.Cond)
-		w.stmt(x.Post)
-		w.block(x.Body)
-		w.pop()
-	case *ast.RangeStmt:
-		w.expr(x.X)
-		w.push()
-		if x.Tok == token.DEFINE {
-			for _, e := range []ast.Expr{x.Key, x.Value} {
-				if id, ok := e.(*ast.Ident); ok {
-					w.declare(id.Name)
-				}
-			}
-		} else {
-			for _, e := range []ast.Expr{x.Key, x.Value} {
-				if _, ok := e.(*ast.Ident); !ok {
-					w.expr(e)
-				}
-			}
-		}
-		w.block(x.Body)
-		w.pop()
-	case *ast.SwitchStmt:
-		w.push()
-		w.stmt(x.Init)
-		w.expr(x.Tag)
-		w.block(x.Body)
-		w.pop()
-	case *ast.TypeSwitchStmt:
-		w.push()
-		w.stmt(x.Init)
-		if as, ok := x.Assign.(*ast.AssignStmt); ok {
-			for _, e := range as.Lhs {
-				if _, ok := e.(*ast.Ident); !ok {
-					w.expr(e)
-				}
-			}
-			for _, e := range as.Rhs {
-				w.expr(e)
-			}
-			for _, e := range as.Lhs {
-				if id, ok := e.(*ast.Ident); ok {
-					w.declare(id.Name)
-				}
-			}
-		} else {
-			w.stmt(x.Assign)
-		}
-		w.block(x.Body)
-		w.pop()
-	case *ast.SelectStmt:
-		w.block(x.Body)
-	case *ast.CaseClause:
-		w.push()
-		for _, e := range x.List {
-			w.expr(e)
-		}
-		for _, s := range x.Body {
-			w.stmt(s)
-		}
-		w.pop()
-	case *ast.CommClause:
-		w.push()
-		w.stmt(x.Comm)
-		for _, s := range x.Body {
-			w.stmt(s)
-		}
-		w.pop()
-	case *ast.LabeledStmt:
-		w.stmt(x.Stmt)
-	case *ast.GoStmt:
-		w.expr(x.Call)
-	case *ast.DeferStmt:
-		w.expr(x.Call)
-	case *ast.SendStmt:
-		w.expr(x.Chan)
-		w.expr(x.Value)
-	case *ast.IncDecStmt:
-		w.expr(x.X)
-	}
-}
-
-func (w *scopeWalk) genDecl(d *ast.GenDecl) {
-	for _, spec := range d.Specs {
-		switch s := spec.(type) {
-		case *ast.ValueSpec:
-			w.typeExpr(s.Type)
-			for _, v := range s.Values {
-				w.expr(v)
-			}
-			for _, id := range s.Names {
-				w.declare(id.Name)
-			}
-		case *ast.TypeSpec:
-			w.typeExpr(s.Type)
-			w.declare(s.Name.Name)
-		}
-	}
-}
-
-// typeExpr walks a type expression: its selectors matter, but a func literal
-// cannot occur in one.
-func (w *scopeWalk) typeExpr(expr ast.Expr) {
-	if expr == nil {
-		return
-	}
-	w.expr(expr)
-}
-
-func (w *scopeWalk) expr(e ast.Expr) {
-	if e == nil {
-		return
-	}
-	ast.Inspect(e, func(node ast.Node) bool {
-		switch x := node.(type) {
-		case *ast.FuncLit:
-			w.funcLike(x.Type, x.Body, nil)
-			return false
-		case *ast.SelectorExpr:
-			if id, ok := x.X.(*ast.Ident); ok {
-				if (w.nm.http[id.Name] || w.nm.netroute[id.Name]) && w.isVisible(id.Name) {
-					w.shadow[id] = true
-				}
-			}
-		case *ast.CallExpr:
-			if id, ok := x.Fun.(*ast.Ident); ok && id.Name == "new" && w.isVisible("new") {
-				w.shadow[id] = true
-			}
-		}
-		return true
-	})
+// resolved is one file under Go's own name resolution. info says which object
+// each identifier means, so whether web.Client is net/http's, whether nr is the
+// netroute import or a parameter that hides it, and which tr a client dials
+// with are answered by go/types, not by this guard matching spellings (#829).
+type resolved struct {
+	file       *ast.File
+	info       *types.Info
+	inNetroute bool
 }
 
 // inspectFile reports every client construction, transport construction and
@@ -857,20 +700,45 @@ func (w *scopeWalk) expr(e ast.Expr) {
 // Containment in a function that happens to call a builder proves nothing: the
 // proof is the transport the client will actually dial with (#829).
 func inspectFile(fset *token.FileSet, f *ast.File) []finding {
-	regions := proofRegions(f)
-	n := fileNames(f)
-	n.shadowed = qualifierShadows(f, n)
+	return inspectPackage(fset, []*ast.File{f})
+}
+
+// inspectPackage type-checks the files of one package together and inspects
+// each: a receiver whose type another file of the package declares still
+// resolves. Check's errors are expected (every import but net/http and
+// crypto/tls is unresolved) and ignored; what resolves is Go's answer.
+func inspectPackage(fset *token.FileSet, files []*ast.File) []finding {
+	if len(files) == 0 {
+		return nil
+	}
+	info := &types.Info{
+		Types:      map[ast.Expr]types.TypeAndValue{},
+		Defs:       map[*ast.Ident]types.Object{},
+		Uses:       map[*ast.Ident]types.Object{},
+		Selections: map[*ast.SelectorExpr]*types.Selection{},
+	}
+	conf := types.Config{Importer: sharedImporter, Error: func(error) {}}
+	_, _ = conf.Check(files[0].Name.Name, fset, files, info)
+	var out []finding
+	for _, f := range files {
+		r := &resolved{file: f, info: info, inNetroute: f.Name.Name == "netroute"}
+		out = append(out, r.inspect(fset)...)
+	}
+	return out
+}
+
+func (r *resolved) inspect(fset *token.FileSet) []finding {
 	var out []finding
 	add := func(node ast.Node, allowed bool, msg string) {
 		out = append(out, finding{pos: fset.Position(node.Pos()), allowed: allowed, why: msg})
 	}
-	for _, spec := range n.dots {
+	for _, spec := range dotImports(r.file) {
 		add(spec, false, dotImportMessage)
 	}
 	// framed are the selectors that are types, not names used as values: the
 	// element of a *http.Client or the type of an &http.Client literal.
 	framed := map[*ast.SelectorExpr]bool{}
-	ast.Inspect(f, func(node ast.Node) bool {
+	ast.Inspect(r.file, func(node ast.Node) bool {
 		switch x := node.(type) {
 		case *ast.StarExpr:
 			if sel, ok := x.X.(*ast.SelectorExpr); ok {
@@ -883,449 +751,135 @@ func inspectFile(fset *token.FileSet, f *ast.File) []finding {
 		}
 		return true
 	})
-	ast.Inspect(f, func(node ast.Node) bool {
+	ast.Inspect(r.file, func(node ast.Node) bool {
 		switch x := node.(type) {
 		case *ast.CompositeLit:
-			scope := innermost(regions, x)
 			switch {
-			case n.is(x.Type, n.http, "Client"):
-				add(x, clientTransportAllowed(x, scope, n), clientMessage)
-			case n.is(x.Type, n.http, "Transport"):
-				add(x, tlsClientConfigCA(x, scope, n) || directTransport(x), transportMessage)
-			case x.Type != nil && mentionsHTTPType(x.Type, n):
+			case r.httpSel(x.Type, "Client"):
+				add(x, r.clientTransportAllowed(x), clientMessage)
+			case r.httpSel(x.Type, "Transport"):
+				add(x, r.tlsClientConfigCA(x) || r.directTransport(x), transportMessage)
+			case x.Type != nil && r.mentionsHTTPType(x.Type):
 				add(x, false, typeUseMessage)
 			}
 		case *ast.SelectorExpr:
 			switch {
-			case n.is(x, n.http, "DefaultTransport"):
-				add(x, cloneGetsTheCA(x, innermost(regions, x), n), defaultTransportMessage)
-			case (n.is(x, n.http, "Client") || n.is(x, n.http, "Transport")) && !framed[x]:
+			case r.httpSel(x, "DefaultTransport"):
+				add(x, r.cloneGetsTheCA(x), defaultTransportMessage)
+			case (r.httpSel(x, "Client") || r.httpSel(x, "Transport")) && !framed[x]:
 				add(x, false, typeUseMessage)
-			case n.is(x, n.http, "DefaultClient") || n.is(x, n.http, "Get") || n.is(x, n.http, "Head") || n.is(x, n.http, "Post") || n.is(x, n.http, "PostForm"):
+			case r.httpSel(x, "DefaultClient") || r.httpSel(x, "Get") || r.httpSel(x, "Head") || r.httpSel(x, "Post") || r.httpSel(x, "PostForm"):
 				add(x, false, defaultClientMessage)
 			}
 		case *ast.AssignStmt:
-			scope := innermost(regions, x)
-			for i, lhs := range x.Lhs {
-				sel, ok := lhs.(*ast.SelectorExpr)
-				if !ok {
-					continue
-				}
-				var rhs ast.Expr
-				if len(x.Lhs) == len(x.Rhs) {
-					rhs = x.Rhs[i]
-				}
-				// Only a receiver this file shows to be an http client or
-				// transport is HTTP rewiring; an options struct's own Transport
-				// or Proxy string is no client (#829).
-				if throughTLS(sel.X) {
-					if httpReceiver(baseIdent(sel.X), regions, n) {
-						add(sel, false, mutationMessage)
-					}
-					continue
-				}
-				if sel.Sel.Name != "Transport" && sel.Sel.Name != "Proxy" && sel.Sel.Name != "TLSClientConfig" {
-					continue
-				}
-				if !httpReceiver(baseIdent(sel.X), regions, n) {
-					continue
-				}
-				switch sel.Sel.Name {
-				case "Transport":
-					add(sel, rhs != nil && transportAllowed(rhs, scope, n), mutationMessage)
-				case "Proxy":
-					add(sel, rhs != nil && spelled(rhs) == "nil", mutationMessage)
-				case "TLSClientConfig":
-					add(sel, rhs != nil && caConfig(rhs, scope, n), mutationMessage)
-				}
-			}
+			r.rewires(x, add)
 		}
 		return true
 	})
 	return out
 }
 
-// throughTLS is whether expr reaches through a TLSClientConfig selector, so the
-// assignment rewrites the config the builder set.
-func throughTLS(expr ast.Expr) bool {
-	found := false
-	ast.Inspect(expr, func(x ast.Node) bool {
-		if s, ok := x.(*ast.SelectorExpr); ok && s.Sel.Name == "TLSClientConfig" {
-			found = true
+// rewires judges each assignment that rewires a client or transport after
+// construction: a client's Transport, a transport's Proxy or TLSClientConfig,
+// anything written through a TLSClientConfig or into a crypto/tls Config, and a
+// whole client, transport or TLS config overwritten through a pointer. Go's own
+// selection says which type owns the field, so an options struct's Transport
+// string is no client. A field Go cannot resolve (its receiver's type comes from
+// an import this guard does not load) is judged as net/http's: nothing proves
+// it is not (#829).
+func (r *resolved) rewires(as *ast.AssignStmt, add func(ast.Node, bool, string)) {
+	for i, lhs := range as.Lhs {
+		var rhs ast.Expr
+		if len(as.Lhs) == len(as.Rhs) {
+			rhs = as.Rhs[i]
 		}
-		return true
-	})
-	return found
-}
-
-// baseIdent is the identifier an assignment's receiver starts from:
-// c in c.Transport, c.Transport.(*http.Transport).TLSClientConfig, or *c. nil
-// when the receiver is not a named local.
-func baseIdent(expr ast.Expr) ast.Expr {
-	switch x := expr.(type) {
-	case *ast.Ident:
-		return x
-	case *ast.SelectorExpr:
-		return baseIdent(x.X)
-	case *ast.TypeAssertExpr:
-		return baseIdent(x.X)
-	case *ast.IndexExpr:
-		return baseIdent(x.X)
-	case *ast.ParenExpr:
-		return baseIdent(x.X)
-	case *ast.UnaryExpr:
-		return baseIdent(x.X)
+		lhs = unparen(lhs)
+		if star, ok := lhs.(*ast.StarExpr); ok {
+			if r.holdsHTTPOrTLS(star) {
+				add(star, false, mutationMessage)
+			}
+			continue
+		}
+		sel, ok := lhs.(*ast.SelectorExpr)
+		if !ok || r.isPackageName(sel.X) {
+			continue // a package's own variable; DefaultTransport and DefaultClient are refused where named
+		}
+		owner := r.fieldOwner(sel)
+		if r.throughTLS(sel.X) || owner == "crypto/tls" {
+			add(sel, false, mutationMessage)
+			continue
+		}
+		if owner != "" && owner != "net/http" {
+			continue // another type's own field
+		}
+		switch sel.Sel.Name {
+		case "Transport":
+			add(sel, rhs != nil && r.transportAllowed(rhs), mutationMessage)
+		case "Proxy":
+			add(sel, rhs != nil && r.isNil(rhs), mutationMessage)
+		case "TLSClientConfig":
+			add(sel, rhs != nil && r.caConfig(rhs), mutationMessage)
+		}
 	}
-	return nil
 }
 
-// httpReceiver is whether expr is a local this file shows to hold an http
-// client or transport: bound to one (netroute's builders, a literal, new, a
-// DefaultTransport clone) or declared with that type. Only such a receiver is
-// HTTP rewiring; an options struct with its own Transport string is not (#829).
-func httpReceiver(expr ast.Expr, regions []ast.Node, n names) bool {
+// pkgSel is whether expr is <a name Go resolves to the package at path>.<sel>.
+// An alias is the same package; a local of the same name is not one at all.
+func (r *resolved) pkgSel(expr ast.Expr, path, sel string) bool {
+	s, ok := expr.(*ast.SelectorExpr)
+	if !ok || s.Sel.Name != sel {
+		return false
+	}
+	id, ok := s.X.(*ast.Ident)
+	if !ok {
+		return false
+	}
+	pn, ok := r.info.Uses[id].(*types.PkgName)
+	return ok && pn.Imported().Path() == path
+}
+
+func (r *resolved) httpSel(expr ast.Expr, sel string) bool {
+	return r.pkgSel(expr, "net/http", sel)
+}
+
+// isPackageName is whether expr is an identifier Go resolves to an import.
+func (r *resolved) isPackageName(expr ast.Expr) bool {
 	id, ok := expr.(*ast.Ident)
 	if !ok {
 		return false
 	}
-	for _, r := range regions {
-		if containsNode(r, id) && scopeHoldsHTTP(r, id.Name, n) {
-			return true
-		}
+	_, isPkg := r.info.Uses[id].(*types.PkgName)
+	return isPkg
+}
+
+// netrouteCall is a call to netroute's name: qualified by the module's netroute
+// import, or bare inside package netroute when the name is its package-level
+// function (unresolved means a sibling file declares it, in a lone-file check).
+func (r *resolved) netrouteCall(expr ast.Expr, name string) bool {
+	call, ok := unparen(expr).(*ast.CallExpr)
+	if !ok {
+		return false
 	}
-	return false
-}
-
-// scopeHoldsHTTP is whether scope binds name to an http client or transport, or
-// declares it with that type. A nested literal's bindings belong to that literal.
-func scopeHoldsHTTP(scope ast.Node, name string, n names) bool {
-	found := false
-	ast.Inspect(scope, func(node ast.Node) bool {
-		switch x := node.(type) {
-		case *ast.FuncDecl:
-			if signatureHoldsHTTP(x.Type, x.Recv, name, n) {
-				found = true
-			}
-		case *ast.FuncLit:
-			if signatureHoldsHTTP(x.Type, nil, name, n) {
-				found = true
-			}
-			if node != scope {
-				return false
-			}
-		case *ast.AssignStmt:
-			for i, lhs := range x.Lhs {
-				if id, ok := lhs.(*ast.Ident); ok && id.Name == name && i < len(x.Rhs) && isHTTPValue(x.Rhs[i], n) {
-					found = true
-				}
-			}
-		case *ast.ValueSpec:
-			for i, id := range x.Names {
-				if id.Name != name {
-					continue
-				}
-				if i < len(x.Values) && isHTTPValue(x.Values[i], n) {
-					found = true
-				}
-				if x.Type != nil && isHTTPTypeExpr(x.Type, n) {
-					found = true
-				}
-			}
-		}
-		return true
-	})
-	return found
-}
-
-// signatureHoldsHTTP is whether a parameter, result or receiver named name is
-// declared as an http client or transport.
-func signatureHoldsHTTP(t *ast.FuncType, recv *ast.FieldList, name string, n names) bool {
-	check := func(fl *ast.FieldList) bool {
-		if fl == nil {
+	switch fn := unparen(call.Fun).(type) {
+	case *ast.Ident:
+		if !r.inNetroute || fn.Name != name {
 			return false
 		}
-		for _, f := range fl.List {
-			for _, id := range f.Names {
-				if id.Name == name && isHTTPTypeExpr(f.Type, n) {
-					return true
-				}
-			}
-		}
-		return false
-	}
-	return check(recv) || check(t.Params) || check(t.Results)
-}
-
-// isHTTPTypeExpr is *http.Client, http.Client, *http.Transport, http.Transport
-// or http.RoundTripper.
-func isHTTPTypeExpr(expr ast.Expr, n names) bool {
-	if expr == nil {
-		return false
-	}
-	if star, ok := expr.(*ast.StarExpr); ok {
-		expr = star.X
-	}
-	return n.is(expr, n.http, "Client") || n.is(expr, n.http, "Transport") || n.is(expr, n.http, "RoundTripper")
-}
-
-// isHTTPValue is an expression that builds an http client or transport: a
-// literal, new of one, netroute's builders, or a DefaultTransport clone.
-func isHTTPValue(expr ast.Expr, n names) bool {
-	switch v := expr.(type) {
-	case *ast.UnaryExpr, *ast.CompositeLit:
-		lit, ok := compositeOf(expr)
-		return ok && isHTTPTypeExpr(lit.Type, n)
-	case *ast.CallExpr:
-		if namedNetrouteCall(v, n, "NewClient") || namedNetrouteCall(v, n, "NewTransport") || isDefaultTransportClone(v, n) {
+		obj := r.info.Uses[fn]
+		if obj == nil {
 			return true
 		}
-		id, ok := v.Fun.(*ast.Ident)
-		return ok && id.Name == "new" && !n.shadowed[id] && len(v.Args) == 1 && isHTTPTypeExpr(v.Args[0], n)
+		_, isFunc := obj.(*types.Func)
+		return isFunc && obj.Pkg() != nil && obj.Parent() == obj.Pkg().Scope()
+	case *ast.SelectorExpr:
+		return r.pkgSel(fn, netroutePath, name)
 	}
 	return false
 }
 
-// mentionsHTTPType is whether a literal's type names a client or transport, as
-// a slice or map element or a type argument does: such an element is elided,
-// so the client rules never see it.
-func mentionsHTTPType(expr ast.Expr, n names) bool {
-	found := false
-	ast.Inspect(expr, func(x ast.Node) bool {
-		if e, ok := x.(ast.Expr); ok && (n.is(e, n.http, "Client") || n.is(e, n.http, "Transport")) {
-			found = true
-		}
-		return true
-	})
-	return found
-}
-
-// caConfig proves one TLS config expression: netroute.ExtraCAs, or a local
-// bound only to it.
-func caConfig(v ast.Expr, scope ast.Node, n names) bool {
-	switch x := v.(type) {
-	case *ast.CallExpr:
-		return namedNetrouteCall(x, n, "ExtraCAs")
-	case *ast.Ident:
-		return boundFromExtraCAs(x.Name, scope, n)
-	}
-	return false
-}
-
-// clientTransportAllowed asks the construction's own Transport field. A client
-// earns its place with the transport it names, never with an unrelated call in
-// the same function.
-func clientTransportAllowed(client *ast.CompositeLit, scope ast.Node, n names) bool {
-	for _, elt := range client.Elts {
-		kv, ok := elt.(*ast.KeyValueExpr)
-		if !ok {
-			continue
-		}
-		if key, ok := kv.Key.(*ast.Ident); !ok || key.Name != "Transport" {
-			continue
-		}
-		return transportAllowed(kv.Value, scope, n)
-	}
-	return false // no Transport: http.DefaultTransport, proxy honoured, CA ignored
-}
-
-// transportAllowed proves one transport expression: the CA-aware builder, a
-// transport literal that carries the session's CA (or sets Proxy: nil and so
-// never meets the session's proxy), or a local variable bound only to one of
-// those in the same scope.
-func transportAllowed(expr ast.Expr, scope ast.Node, n names) bool {
-	switch v := expr.(type) {
-	case *ast.CallExpr:
-		return namedNetrouteCall(v, n, "NewTransport")
-	case *ast.Ident:
-		return boundTransport(v.Name, scope, n)
-	case *ast.UnaryExpr, *ast.CompositeLit:
-		lit, ok := compositeOf(expr)
-		if !ok || !n.is(lit.Type, n.http, "Transport") {
-			return false
-		}
-		return tlsClientConfigCA(lit, scope, n) || directTransport(lit)
-	}
-	return false
-}
-
-// tlsClientConfigCA proves the transport literal itself sets TLSClientConfig
-// from the session's CA.
-func tlsClientConfigCA(lit *ast.CompositeLit, scope ast.Node, n names) bool {
-	for _, elt := range lit.Elts {
-		kv, ok := elt.(*ast.KeyValueExpr)
-		if !ok {
-			continue
-		}
-		if key, ok := kv.Key.(*ast.Ident); !ok || key.Name != "TLSClientConfig" {
-			continue
-		}
-		return caConfig(kv.Value, scope, n)
-	}
-	return false
-}
-
-// onlyBoundBy is whether scope binds name at least once and every binding
-// passes ok. A parameter, field, range variable, address taken or valueless
-// declaration is a binding that passes nothing, so a builder's proof is lost as
-// soon as the variable may hold anything else.
-func onlyBoundBy(name string, scope ast.Node, ok func(ast.Expr) bool) bool {
-	if scope == nil {
-		return false
-	}
-	good, other := 0, 0
-	judge := func(v ast.Expr) {
-		if ok(v) {
-			good++
-		} else {
-			other++
-		}
-	}
-	ast.Inspect(scope, func(node ast.Node) bool {
-		switch x := node.(type) {
-		case *ast.AssignStmt:
-			for i, lhs := range x.Lhs {
-				if id, isID := lhs.(*ast.Ident); !isID || id.Name != name {
-					continue
-				}
-				if len(x.Lhs) != len(x.Rhs) {
-					other++
-					continue
-				}
-				judge(x.Rhs[i])
-			}
-		case *ast.ValueSpec:
-			for i, id := range x.Names {
-				if id.Name != name {
-					continue
-				}
-				if len(x.Values) != len(x.Names) {
-					other++
-					continue
-				}
-				judge(x.Values[i])
-			}
-		case *ast.Field:
-			for _, id := range x.Names {
-				if id.Name == name {
-					other++
-				}
-			}
-		case *ast.RangeStmt:
-			for _, e := range []ast.Expr{x.Key, x.Value} {
-				if id, isID := e.(*ast.Ident); isID && id.Name == name {
-					other++
-				}
-			}
-		case *ast.UnaryExpr:
-			if id, isID := x.X.(*ast.Ident); isID && x.Op == token.AND && id.Name == name {
-				other++
-			}
-		}
-		return true
-	})
-	return good > 0 && other == 0
-}
-
-// boundTransport is a local variable in this scope bound only to
-// netroute.NewTransport, or bound only to a DefaultTransport clone whose
-// TLSClientConfig the same scope then sets from ExtraCAs.
-func boundTransport(name string, scope ast.Node, n names) bool {
-	builder := func(e ast.Expr) bool {
-		c, ok := e.(*ast.CallExpr)
-		return ok && namedNetrouteCall(c, n, "NewTransport")
-	}
-	clone := func(e ast.Expr) bool { return isDefaultTransportClone(e, n) }
-	return (onlyBoundBy(name, scope, builder) || (onlyBoundBy(name, scope, clone) && setsTLSToCA(name, scope, n))) && !tlsReset(name, scope, n)
-}
-
-// tlsReset is whether the scope assigns name.TLSClientConfig anything but the
-// session's CA; a later wipe cancels what the builder gave the transport.
-func tlsReset(name string, scope ast.Node, n names) bool {
-	reset := false
-	ast.Inspect(scope, func(node ast.Node) bool {
-		as, ok := node.(*ast.AssignStmt)
-		if !ok || len(as.Lhs) != 1 || len(as.Rhs) != 1 {
-			return true
-		}
-		sel, ok := as.Lhs[0].(*ast.SelectorExpr)
-		if !ok || sel.Sel.Name != "TLSClientConfig" {
-			return true
-		}
-		if id, ok := sel.X.(*ast.Ident); !ok || id.Name != name {
-			return true
-		}
-		if !caConfig(as.Rhs[0], scope, n) {
-			reset = true
-		}
-		return true
-	})
-	return reset
-}
-
-// setsTLSToCA is whether the scope assigns name.TLSClientConfig from ExtraCAs.
-func setsTLSToCA(name string, scope ast.Node, n names) bool {
-	found := false
-	ast.Inspect(scope, func(node ast.Node) bool {
-		as, ok := node.(*ast.AssignStmt)
-		if !ok || len(as.Lhs) != 1 || len(as.Rhs) != 1 {
-			return true
-		}
-		sel, ok := as.Lhs[0].(*ast.SelectorExpr)
-		if !ok || sel.Sel.Name != "TLSClientConfig" {
-			return true
-		}
-		if id, ok := sel.X.(*ast.Ident); !ok || id.Name != name {
-			return true
-		}
-		found = caConfig(as.Rhs[0], scope, n)
-		return true
-	})
-	return found
-}
-
-// boundFromExtraCAs is a local variable in this scope bound only to ExtraCAs.
-func boundFromExtraCAs(name string, scope ast.Node, n names) bool {
-	return onlyBoundBy(name, scope, func(e ast.Expr) bool {
-		c, ok := e.(*ast.CallExpr)
-		return ok && namedNetrouteCall(c, n, "ExtraCAs")
-	})
-}
-
-// cloneGetsTheCA: a DefaultTransport use is allowed only when the clone is
-// bound to a variable bound only to clones, whose TLSClientConfig this same
-// scope then sets from the session's CA, which is netroute.NewTransport's own
-// body.
-func cloneGetsTheCA(use ast.Node, scope ast.Node, n names) bool {
-	if scope == nil {
-		return false
-	}
-	name := ""
-	ast.Inspect(scope, func(x ast.Node) bool {
-		as, ok := x.(*ast.AssignStmt)
-		if !ok || len(as.Lhs) != len(as.Rhs) {
-			return true
-		}
-		for i, rhs := range as.Rhs {
-			if containsNode(rhs, use) && isDefaultTransportClone(rhs, n) {
-				if id, ok := as.Lhs[i].(*ast.Ident); ok {
-					name = id.Name
-				}
-			}
-		}
-		return true
-	})
-	clone := func(e ast.Expr) bool { return isDefaultTransportClone(e, n) }
-	return name != "" && onlyBoundBy(name, scope, clone) && setsTLSToCA(name, scope, n) && !tlsReset(name, scope, n)
-}
-
-// containsNode is whether root's span holds n.
-func containsNode(root ast.Node, n ast.Node) bool {
-	return root.Pos() <= n.Pos() && n.End() <= root.End()
-}
-
-// isDefaultTransportClone is http.DefaultTransport.(*http.Transport).Clone().
-func isDefaultTransportClone(expr ast.Expr, n names) bool {
-	call, ok := expr.(*ast.CallExpr)
+// isClone is http.DefaultTransport.(*http.Transport).Clone().
+func (r *resolved) isClone(expr ast.Expr) bool {
+	call, ok := unparen(expr).(*ast.CallExpr)
 	if !ok {
 		return false
 	}
@@ -1339,106 +893,437 @@ func isDefaultTransportClone(expr ast.Expr, n names) bool {
 	}
 	typ := ta.Type
 	if star, ok := typ.(*ast.StarExpr); ok {
-		typ = star.X // http.DefaultTransport.(*http.Transport).Clone()
+		typ = star.X
 	}
-	return n.is(typ, n.http, "Transport") && n.is(ta.X, n.http, "DefaultTransport")
+	return r.httpSel(typ, "Transport") && r.httpSel(ta.X, "DefaultTransport")
 }
 
-// namedNetrouteCall is a call to netroute's name, bare inside package netroute
-// and package-qualified everywhere else.
-func namedNetrouteCall(call *ast.CallExpr, n names, name string) bool {
-	switch f := call.Fun.(type) {
+func (r *resolved) isNewTransport(e ast.Expr) bool { return r.netrouteCall(e, "NewTransport") }
+
+func (r *resolved) isExtraCAs(e ast.Expr) bool { return r.netrouteCall(e, "ExtraCAs") }
+
+// isNil is the predeclared nil, not a parameter or local that borrows its name.
+func (r *resolved) isNil(expr ast.Expr) bool {
+	id, ok := unparen(expr).(*ast.Ident)
+	if !ok {
+		return false
+	}
+	_, isNil := r.info.Uses[id].(*types.Nil)
+	return isNil
+}
+
+// objOf is the object Go binds id to, declared or used.
+func (r *resolved) objOf(id *ast.Ident) types.Object {
+	if o := r.info.Defs[id]; o != nil {
+		return o
+	}
+	return r.info.Uses[id]
+}
+
+// localVar is the function-local variable expr names, or nil: a package-level
+// variable can be set from any file of its package, so it carries no proof.
+func (r *resolved) localVar(expr ast.Expr) *types.Var {
+	id, ok := unparen(expr).(*ast.Ident)
+	if !ok {
+		return nil
+	}
+	v, ok := r.objOf(id).(*types.Var)
+	if !ok || v.IsField() || v.Pkg() == nil || v.Parent() == nil || v.Parent() == v.Pkg().Scope() {
+		return nil
+	}
+	return v
+}
+
+// names is whether expr is an identifier Go binds to v.
+func (r *resolved) names(expr ast.Expr, v *types.Var) bool {
+	id, ok := unparen(expr).(*ast.Ident)
+	return ok && r.objOf(id) == v
+}
+
+// onlyBoundBy is whether v is bound at least once and every binding passes ok.
+// The bindings are v's own, by object: a same-named local in another block is
+// another variable. A parameter, range variable, valueless declaration, a
+// tuple assignment, its address taken, or a store through it (*v = ...) is a
+// binding that passes nothing, so a proof is lost as soon as v may hold
+// anything else.
+func (r *resolved) onlyBoundBy(v *types.Var, ok func(ast.Expr) bool) bool {
+	if v == nil {
+		return false
+	}
+	good, other := 0, 0
+	ast.Inspect(r.file, func(node ast.Node) bool {
+		switch x := node.(type) {
+		case *ast.AssignStmt:
+			for i, lhs := range x.Lhs {
+				if star, isStar := unparen(lhs).(*ast.StarExpr); isStar && r.names(star.X, v) {
+					other++
+					continue
+				}
+				if !r.names(lhs, v) {
+					continue
+				}
+				if len(x.Lhs) != len(x.Rhs) || !ok(x.Rhs[i]) {
+					other++
+					continue
+				}
+				good++
+			}
+		case *ast.ValueSpec:
+			for i, id := range x.Names {
+				if r.objOf(id) != v {
+					continue
+				}
+				if len(x.Values) != len(x.Names) || !ok(x.Values[i]) {
+					other++
+					continue
+				}
+				good++
+			}
+		case *ast.Field:
+			for _, id := range x.Names {
+				if r.objOf(id) == v {
+					other++
+				}
+			}
+		case *ast.RangeStmt:
+			if (x.Key != nil && r.names(x.Key, v)) || (x.Value != nil && r.names(x.Value, v)) {
+				other++
+			}
+		case *ast.UnaryExpr:
+			if x.Op == token.AND && r.names(x.X, v) {
+				other++
+			}
+		}
+		return true
+	})
+	return good > 0 && other == 0
+}
+
+// tlsWrites calls each with the value of every assignment to v.TLSClientConfig;
+// nil when the assignment is a tuple whose value cannot be paired.
+func (r *resolved) tlsWrites(v *types.Var, each func(ast.Expr)) {
+	ast.Inspect(r.file, func(node ast.Node) bool {
+		as, ok := node.(*ast.AssignStmt)
+		if !ok {
+			return true
+		}
+		for i, lhs := range as.Lhs {
+			sel, isSel := unparen(lhs).(*ast.SelectorExpr)
+			if !isSel || sel.Sel.Name != "TLSClientConfig" || !r.names(sel.X, v) {
+				continue
+			}
+			if len(as.Lhs) == len(as.Rhs) {
+				each(as.Rhs[i])
+			} else {
+				each(nil)
+			}
+		}
+		return true
+	})
+}
+
+// setsTLSToCA is whether v.TLSClientConfig is assigned the session's CA.
+func (r *resolved) setsTLSToCA(v *types.Var) bool {
+	found := false
+	r.tlsWrites(v, func(e ast.Expr) {
+		if e != nil && r.caConfig(e) {
+			found = true
+		}
+	})
+	return found
+}
+
+// tlsReset is whether v.TLSClientConfig is assigned anything but the session's
+// CA: a later wipe cancels what the builder gave the transport.
+func (r *resolved) tlsReset(v *types.Var) bool {
+	reset := false
+	r.tlsWrites(v, func(e ast.Expr) {
+		if e == nil || !r.caConfig(e) {
+			reset = true
+		}
+	})
+	return reset
+}
+
+// writesInto is whether any assignment stores into a field reached from v
+// (v.RootCAs = nil, v.X.Y = ...): a config bound to ExtraCAs and then edited
+// no longer is the session's CA.
+func (r *resolved) writesInto(v *types.Var) bool {
+	found := false
+	ast.Inspect(r.file, func(node ast.Node) bool {
+		as, ok := node.(*ast.AssignStmt)
+		if !ok {
+			return true
+		}
+		for _, lhs := range as.Lhs {
+			if _, isSel := unparen(lhs).(*ast.SelectorExpr); isSel && r.names(rootOf(lhs), v) {
+				found = true
+			}
+		}
+		return true
+	})
+	return found
+}
+
+// rootOf is the expression a selector, index, assertion or dereference chain
+// starts from: cfg in cfg.RootCAs, c in c.Transport.(*http.Transport).Proxy.
+func rootOf(expr ast.Expr) ast.Expr {
+	for {
+		switch x := expr.(type) {
+		case *ast.SelectorExpr:
+			expr = x.X
+		case *ast.IndexExpr:
+			expr = x.X
+		case *ast.TypeAssertExpr:
+			expr = x.X
+		case *ast.StarExpr:
+			expr = x.X
+		case *ast.ParenExpr:
+			expr = x.X
+		default:
+			return expr
+		}
+	}
+}
+
+// caConfig proves one TLS config expression: netroute.ExtraCAs, or a local
+// bound only to it and never edited.
+func (r *resolved) caConfig(v ast.Expr) bool {
+	if r.isExtraCAs(v) {
+		return true
+	}
+	local := r.localVar(v)
+	return local != nil && r.onlyBoundBy(local, r.isExtraCAs) && !r.writesInto(local)
+}
+
+// clientTransportAllowed asks the construction's own Transport field. A client
+// earns its place with the transport it names, never with an unrelated call in
+// the same function.
+func (r *resolved) clientTransportAllowed(client *ast.CompositeLit) bool {
+	for _, elt := range client.Elts {
+		kv, ok := elt.(*ast.KeyValueExpr)
+		if !ok {
+			continue
+		}
+		if key, ok := kv.Key.(*ast.Ident); !ok || key.Name != "Transport" {
+			continue
+		}
+		return r.transportAllowed(kv.Value)
+	}
+	return false // no Transport: http.DefaultTransport, proxy honoured, CA ignored
+}
+
+// transportAllowed proves one transport expression: the CA-aware builder, a
+// transport literal that carries the session's CA (or never meets the proxy),
+// or a local variable Go binds only to one of those.
+func (r *resolved) transportAllowed(expr ast.Expr) bool {
+	switch v := unparen(expr).(type) {
+	case *ast.CallExpr:
+		return r.isNewTransport(v)
 	case *ast.Ident:
-		return n.inNetroute && f.Name == name
-	case *ast.SelectorExpr:
-		return n.is(f, n.netroute, name)
+		return r.boundTransport(r.localVar(v))
+	case *ast.UnaryExpr, *ast.CompositeLit:
+		lit, ok := compositeOf(v)
+		if !ok || !r.httpSel(lit.Type, "Transport") {
+			return false
+		}
+		return r.tlsClientConfigCA(lit) || r.directTransport(lit)
 	}
 	return false
 }
 
-// directTransport is a transport literal written in place with Proxy: nil (or no
-// Proxy field at all): it never consults HTTPS_PROXY, so the session's proxy can
-// never sign it and no extra CA is needed.
-func directTransport(lit *ast.CompositeLit) bool {
-	proxy := ""
+// boundTransport is a local bound only to netroute.NewTransport, or bound only
+// to a DefaultTransport clone whose TLSClientConfig is then set from ExtraCAs,
+// and whose TLSClientConfig is never set to anything else.
+func (r *resolved) boundTransport(v *types.Var) bool {
+	if v == nil {
+		return false
+	}
+	built := r.onlyBoundBy(v, r.isNewTransport) || (r.onlyBoundBy(v, r.isClone) && r.setsTLSToCA(v))
+	return built && !r.tlsReset(v)
+}
+
+// tlsClientConfigCA proves the transport literal itself sets TLSClientConfig
+// from the session's CA.
+func (r *resolved) tlsClientConfigCA(lit *ast.CompositeLit) bool {
 	for _, elt := range lit.Elts {
 		kv, ok := elt.(*ast.KeyValueExpr)
 		if !ok {
 			continue
 		}
-		if key, ok := kv.Key.(*ast.Ident); ok && key.Name == "Proxy" {
-			proxy = spelled(kv.Value)
+		if key, ok := kv.Key.(*ast.Ident); !ok || key.Name != "TLSClientConfig" {
+			continue
 		}
+		return r.caConfig(kv.Value)
 	}
-	return proxy == "" || proxy == "nil" // absent means nil, a direct dial
+	return false
 }
 
-// proofRegions are the places a proof can live: every function or func-literal
-// (with its parameters, so a parameter of the same name is seen), and every
-// package-level var value. A client's proof must sit in its own innermost
-// region, so the sibling initializer of an allowed declaration cannot borrow
-// it.
-func proofRegions(f *ast.File) []ast.Node {
-	var out []ast.Node
-	for _, decl := range f.Decls {
-		switch d := decl.(type) {
-		case *ast.FuncDecl:
-			if d.Body != nil {
-				out = append(out, d)
-			}
-		case *ast.GenDecl:
-			if d.Tok != token.VAR {
-				continue
-			}
-			for _, spec := range d.Specs {
-				vs, ok := spec.(*ast.ValueSpec)
-				if !ok {
-					continue
-				}
-				for _, v := range vs.Values {
-					out = append(out, v)
-				}
-			}
+// directTransport is a transport literal with Proxy: nil (the predeclared nil)
+// or no Proxy field at all: it never consults HTTPS_PROXY, so the session's
+// proxy can never sign it and no extra CA is needed.
+func (r *resolved) directTransport(lit *ast.CompositeLit) bool {
+	for _, elt := range lit.Elts {
+		kv, ok := elt.(*ast.KeyValueExpr)
+		if !ok {
+			return false // positional fields: the guard cannot tell which is Proxy
+		}
+		if key, ok := kv.Key.(*ast.Ident); ok && key.Name == "Proxy" {
+			return r.isNil(kv.Value)
 		}
 	}
-	ast.Inspect(f, func(n ast.Node) bool {
-		if lit, ok := n.(*ast.FuncLit); ok {
-			out = append(out, lit)
+	return true // absent means nil, a direct dial
+}
+
+// cloneGetsTheCA: a DefaultTransport use is allowed only when its clone is
+// bound to a local Go binds only to clones, whose TLSClientConfig is then set
+// from the session's CA and never reset: netroute.NewTransport's own body.
+func (r *resolved) cloneGetsTheCA(use ast.Node) bool {
+	var v *types.Var
+	ast.Inspect(r.file, func(node ast.Node) bool {
+		switch x := node.(type) {
+		case *ast.AssignStmt:
+			if len(x.Lhs) != len(x.Rhs) {
+				return true
+			}
+			for i, rhs := range x.Rhs {
+				if containsNode(rhs, use) && r.isClone(rhs) {
+					v = r.localVar(x.Lhs[i])
+				}
+			}
+		case *ast.ValueSpec:
+			if len(x.Names) != len(x.Values) {
+				return true
+			}
+			for i, val := range x.Values {
+				if containsNode(val, use) && r.isClone(val) {
+					v = r.localVar(x.Names[i])
+				}
+			}
 		}
 		return true
 	})
+	return v != nil && r.onlyBoundBy(v, r.isClone) && r.setsTLSToCA(v) && !r.tlsReset(v)
+}
+
+// fieldOwner is the import path of the package whose type declares the field
+// sel writes, as Go resolves it; "" when Go cannot resolve the receiver.
+func (r *resolved) fieldOwner(sel *ast.SelectorExpr) string {
+	s := r.info.Selections[sel]
+	if s == nil || s.Kind() != types.FieldVal || s.Obj().Pkg() == nil {
+		return ""
+	}
+	return s.Obj().Pkg().Path()
+}
+
+// throughTLS is whether expr reaches through a TLSClientConfig that is
+// net/http's (or that Go cannot resolve), so the assignment edits the config
+// the builder set.
+func (r *resolved) throughTLS(expr ast.Expr) bool {
+	found := false
+	ast.Inspect(expr, func(node ast.Node) bool {
+		if s, ok := node.(*ast.SelectorExpr); ok && s.Sel.Name == "TLSClientConfig" {
+			if o := r.fieldOwner(s); o == "" || o == "net/http" {
+				found = true
+			}
+		}
+		return true
+	})
+	return found
+}
+
+// holdsHTTPOrTLS is whether Go types expr as net/http's Client or Transport or
+// crypto/tls's Config: a store through such a pointer replaces the whole value.
+func (r *resolved) holdsHTTPOrTLS(expr ast.Expr) bool {
+	tv, ok := r.info.Types[expr]
+	if !ok {
+		return false
+	}
+	n, ok := tv.Type.(*types.Named)
+	if !ok || n.Obj().Pkg() == nil {
+		return false
+	}
+	switch n.Obj().Pkg().Path() + "." + n.Obj().Name() {
+	case "net/http.Client", "net/http.Transport", "crypto/tls.Config":
+		return true
+	}
+	return false
+}
+
+// mentionsHTTPType is whether a literal's type names a client or transport, as
+// a slice or map element or a type argument does: such an element is elided,
+// so the client rules never see it.
+func (r *resolved) mentionsHTTPType(expr ast.Expr) bool {
+	found := false
+	ast.Inspect(expr, func(x ast.Node) bool {
+		if e, ok := x.(ast.Expr); ok && (r.httpSel(e, "Client") || r.httpSel(e, "Transport")) {
+			found = true
+		}
+		return true
+	})
+	return found
+}
+
+// dotImports are the file's dot imports of net/http or this module's netroute:
+// they hide the names the guard reasons about, so each is refused.
+func dotImports(f *ast.File) []*ast.ImportSpec {
+	var out []*ast.ImportSpec
+	for _, spec := range f.Imports {
+		path, err := strconv.Unquote(spec.Path.Value)
+		if err != nil || (path != "net/http" && path != netroutePath) {
+			continue
+		}
+		if spec.Name != nil && spec.Name.Name == "." {
+			out = append(out, spec)
+		}
+	}
 	return out
 }
 
-// innermost is the smallest region containing n, or nil when none does.
-func innermost(regions []ast.Node, n ast.Node) ast.Node {
-	var best ast.Node
-	for _, r := range regions {
-		if r.Pos() > n.Pos() || n.End() > r.End() {
-			continue
-		}
-		if best == nil || r.End()-r.Pos() < best.End()-best.Pos() {
-			best = r
-		}
-	}
-	return best
+// containsNode is whether root's span holds n.
+func containsNode(root ast.Node, n ast.Node) bool {
+	return root.Pos() <= n.Pos() && n.End() <= root.End()
 }
 
 // compositeOf unwraps the & of an &http.Transport literal.
 func compositeOf(expr ast.Expr) (*ast.CompositeLit, bool) {
+	expr = unparen(expr)
 	if u, ok := expr.(*ast.UnaryExpr); ok && u.Op == token.AND {
-		expr = u.X
+		expr = unparen(u.X)
 	}
 	lit, ok := expr.(*ast.CompositeLit)
 	return lit, ok
 }
 
-// spelled is the one identifier expr names, for the nil Proxy test.
-func spelled(expr ast.Expr) string {
-	if id, ok := expr.(*ast.Ident); ok {
-		return id.Name
+// unparen strips the parentheses around expr.
+func unparen(expr ast.Expr) ast.Expr {
+	for {
+		p, ok := expr.(*ast.ParenExpr)
+		if !ok {
+			return expr
+		}
+		expr = p.X
 	}
-	return "?"
+}
+
+// packagesOf groups files by directory and package clause, in a stable order,
+// so each package is type-checked whole.
+func packagesOf(fset *token.FileSet, files []*ast.File) [][]*ast.File {
+	groups := map[string][]*ast.File{}
+	var keys []string
+	for _, f := range files {
+		k := filepath.Dir(fset.Position(f.Package).Filename) + "\x00" + f.Name.Name
+		if _, seen := groups[k]; !seen {
+			keys = append(keys, k)
+		}
+		groups[k] = append(groups[k], f)
+	}
+	sort.Strings(keys)
+	out := make([][]*ast.File, 0, len(keys))
+	for _, k := range keys {
+		out = append(out, groups[k])
+	}
+	return out
 }
 
 // strayNetroute is every file under root that declares package netroute outside
