@@ -115,3 +115,31 @@ func TestHandSignInSignalsReachTheChildNotTheParent(t *testing.T) {
 		})
 	}
 }
+
+func TestShownEndpointNeverPrintsACredential(t *testing.T) {
+	const login = "user:" + "canary835"
+	const host = "gateway.invalid"
+	for _, c := range []struct{ name, url, want string }{
+		{"blank is the default host", "", "api.anthropic.com"},
+		{"bare host", host, host},
+		{"bare host with a port", host + ":8080", host + ":8080"},
+		{"scheme URL", "http://" + host, "http://" + host},
+		{"scheme URL with a login", "http://" + login + "@" + host, "http://" + host},
+		{"scheme URL with a login and a port", "http://" + login + "@" + host + ":8080", "http://" + host + ":8080"},
+		{"scheme URL with a key in its query", "http://" + host + "/v1?key=canary835", "http://" + host + "/v1"},
+		{"login without a scheme", login + "@" + host, "<redacted>"},
+		{"login without a scheme, with a port and a path", login + "@" + host + ":8080/v1", "<redacted>"},
+		{"query without a scheme", host + "/v1?key=canary835", "<redacted>"},
+		{"fragment without a scheme", host + "#canary835", "<redacted>"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			got := shownEndpoint(c.url)
+			if got != c.want {
+				t.Errorf("shownEndpoint = %q, want %q", got, c.want)
+			}
+			if strings.Contains(got, "canary835") {
+				t.Errorf("shownEndpoint printed the credential: %q", got)
+			}
+		})
+	}
+}

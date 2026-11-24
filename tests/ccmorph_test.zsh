@@ -9669,9 +9669,10 @@ test_add_reports_a_rejected_key_in_the_same_step_issue_254() {
   # The issue's first leg: a made-up key was saved as Added, and the refusal
   # surfaced only at launch (401) or a later doctor. The add now asks the
   # endpoint the same listing question doctor asks, in its own step: 2xx accepts,
-  # 401/403 is refused and the key is asked for again, and anything else is not a
-  # verdict on the key, so the profile saves and says it was not checked.
-  local test_home rc=0 out rc_die
+  # 401 is refused and the key is asked for again, and anything else — a 403
+  # that restricts the listing rather than refusing the key included (#835) — is
+  # not a verdict on the key, so the profile saves and says it was not checked.
+  local test_home rc=0 out rc_die code url n=0 canary=canary835 host=gateway.invalid
   test_home=$(mktemp -d)
   setup_home "$test_home"
   export _CCMORPH_PROFILE_DIRS="$HOME/.config/ccmorph/profiles"
@@ -9729,6 +9730,58 @@ esac'
   assert_contains "$out" 'http://private.invalid did not answer, so the API key was not checked' \
     'a silent endpoint must be reported as not-checked' || rc=1
   assert_contains "$out" 'Added quiet' 'an unanswered check must not block the add' || rc=1
+  # A gateway that answers the listing question with 403 restricts the listing,
+  # and one without a listing answers 404/405 — neither refuses the key, since
+  # each still serves chat. None is a verdict on the key: the line names the
+  # refused listing, and the profile saves unchecked (#835).
+  for code in 403 404 405; do
+    write_curl_mock "for a do
+  case \"\$a\" in */v1/models*) print -- \"__CCMORPH_STATUS__$code\"; exit 0 ;; esac
+done
+print -- '{\"object\":\"list\",\"data\":[]}'; print -- \"__CCMORPH_STATUS__200\""
+    out=$(print -l apikey custom "http://gw$code.invalid" sk-list-leg-not-real | ccmorph add "forbid$code" 2>&1)
+    assert_contains "$out" "http://gw$code.invalid: listing not allowed (HTTP $code) — the key was not checked" \
+      "a $code on the listing must say the listing is not allowed, not name the key" || rc=1
+    assert_contains "$out" "Added forbid$code" "a listing $code must not block the add" || rc=1
+    [[ "$(<"$HOME/.config/ccmorph/forbid$code.conf")" == *'api_key=sk-list-leg-not-real'* ]] \
+      || { print -u2 -- "a listing $code must still save the entered key"; rc=1 }
+  done
+  # A gateway URL can carry the login password it is served with. The check's
+  # note and the save line both name the endpoint, and both name it redacted:
+  # the password stays in the request and the profile, never in the output.
+  write_curl_mock 'for a do
+  case "$a" in */v1/models*) print -- "__CCMORPH_STATUS__403"; exit 0 ;; esac
+done
+exit 1'
+  out=$(print -l apikey custom 'http://user:pw-canary835@gateway.invalid' sk-urlleg-not-real | ccmorph add pwurl 2>/dev/null)
+  assert_contains "$out" 'http://gateway.invalid: listing not allowed (HTTP 403) — the key was not checked' \
+    'the listing note must name the endpoint host, not its login part' || rc=1
+  assert_contains "$out" 'Added pwurl' 'a login URL must still save the profile' || rc=1
+  [[ "$out" != *pw-canary835@gateway.invalid* ]] \
+    || { print -u2 -- 'a URL password must never reach stdout'; rc=1 }
+  [[ "$(<"$HOME/.config/ccmorph/pwurl.conf")" == *'base_url=http://user:pw-canary835@gateway.invalid'* ]] \
+    || { print -u2 -- 'the saved endpoint must keep the password the endpoint needs'; rc=1 }
+  # A credential in the endpoint is judged on its own text, so a leak that drops
+  # the host is still caught. Typed without a scheme the save refuses it, but
+  # only after the check has named it.
+  for url in "http://user:$canary@$host" "http://$host/v1?key=$canary" "user:$canary@$host" "$host/v1?key=$canary"; do
+    (( ++n ))
+    out=$(print -l apikey custom "$url" sk-urlleg-not-real | ccmorph add "canary$n" 2>/dev/null)
+    assert_contains "$out" 'listing not allowed (HTTP 403) — the key was not checked' \
+      'the check must have run before its output is judged' || rc=1
+    assert_not_contains "$out" "$canary" 'no part of a URL credential may reach stdout' || rc=1
+  done
+  # The blank endpoint is Anthropic's own; a 403 on its listing is the same answer.
+  out=$(print -l apikey custom '' sk-native-not-real | ccmorph add natforbid 2>&1)
+  assert_contains "$out" 'api.anthropic.com: listing not allowed (HTTP 403) — the key was not checked' \
+    'a 403 on the native listing must be named the same way' || rc=1
+  assert_contains "$out" 'Added natforbid (API key → api.anthropic.com)' 'a native listing 403 must not block the add' || rc=1
+  # Any other status is still no verdict on the key, in its own words.
+  write_curl_mock 'print -- "__CCMORPH_STATUS__500"'
+  out=$(print -l apikey custom http://gw500.invalid sk-urlleg-not-real | ccmorph add err500 2>&1)
+  assert_contains "$out" 'http://gw500.invalid answered HTTP 500, so the API key was not checked' \
+    'a status that refuses nothing keeps its own line' || rc=1
+  assert_contains "$out" 'Added err500' 'a listing 500 must not block the add' || rc=1
   rm -rf "$test_home"
   return $rc
 }
