@@ -620,6 +620,11 @@ func (l *launcher) addAPIKey(name string) int {
 	shown := url
 	if shown == "" {
 		shown = "api.anthropic.com"
+	} else if strings.Contains(shown, "://") {
+		// Named as the endpoint it answers to, not as the credential it is: a
+		// scheme URL can carry a login password, and the save line is output
+		// (promise 5). A bare host holds no userinfo to hide.
+		shown = profile.RedactURL(shown)
 	}
 	fmt.Println(l.accent + "Added" + l.reset + " " + name + " (API key → " + shown + ")")
 	if url != "" {
@@ -645,10 +650,18 @@ func (l *launcher) addAPIKey(name string) int {
 
 // checkKey asks the endpoint the listing question doctor asks — the only
 // request that can vouch for a key before a session spends it — and reports
-// the answer in the add's own step. A 2xx accepts; 401/403 refuses and returns
-// false so the key is asked for again; anything else is not a verdict on the
-// key, so it is said as not-checked and the add continues. The key reaches curl
-// through its stdin config, never a command line.
+// the answer in the add's own step. A 2xx accepts; 401 refuses and returns
+// false so the key is asked for again. 403, 404 and 405 answer the question
+// that was asked — the listing — and not the key: a gateway that restricts
+// listing but serves chat answers 403 while taking the same key on chat, and
+// one without a listing endpoint answers 404/405; the add says the listing is
+// not allowed and continues unchecked (#835) — a 403 on an actual inference
+// probe would refuse, but the add makes no inference probe. Anything else is
+// no verdict on the key either, so it is said as not-checked and the add
+// continues. A scheme URL is named in its redacted form: it can carry a
+// login password, and a note that echoes it back is a credential in the
+// output (INTENT promise 5); a bare host has none to hide. The key reaches
+// curl through its stdin config, never a command line.
 func (l *launcher) checkKey(url, key string) bool {
 	base, native := nativeBase(url)
 	shown := url
@@ -657,21 +670,32 @@ func (l *launcher) checkKey(url, key string) bool {
 		// endpoint question spells it.
 		shown = "api.anthropic.com"
 	}
+	seen := shown
+	if strings.Contains(shown, "://") {
+		seen = profile.RedactURL(shown)
+	}
 	var headers []string
 	if native {
 		headers = []string{"anthropic-version: 2023-06-01"}
 	}
 	_, code := util.ProbeListing(base, key, headers...)
+	switch code {
+	case "403", "404", "405":
+		// The listing itself was refused, by rule or by absence: no word
+		// here is a verdict on the key, so the save proceeds unchecked.
+		fmt.Println(l.dim + seen + ": listing not allowed (HTTP " + code + ") — the key was not checked" + l.reset)
+		return true
+	}
 	switch probeVerdict(code) {
 	case probeAccepted:
-		fmt.Println(l.dim + shown + " accepted the API key (HTTP " + code + ")" + l.reset)
+		fmt.Println(l.dim + seen + " accepted the API key (HTTP " + code + ")" + l.reset)
 	case probeRejected:
-		l.err(shown + " rejected the API key (HTTP " + code + ") — paste it again")
+		l.err(seen + " rejected the API key (HTTP " + code + ") — paste it again")
 		return false
 	case probeSilent:
-		fmt.Println(l.dim + shown + " did not answer, so the API key was not checked" + l.reset)
+		fmt.Println(l.dim + seen + " did not answer, so the API key was not checked" + l.reset)
 	default:
-		fmt.Println(l.dim + shown + " answered HTTP " + code + ", so the API key was not checked" + l.reset)
+		fmt.Println(l.dim + seen + " answered HTTP " + code + ", so the API key was not checked" + l.reset)
 	}
 	return true
 }
