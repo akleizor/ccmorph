@@ -125,6 +125,25 @@ func portOutsideTheEphemeralPool(t *testing.T) int {
 	return 0
 }
 
+// GH-830: the fixed-port guard in util/shared_identity_guard_test.go trusts
+// this one helper's computed bind, because the guard cannot see a drawn number
+// is drawn. That trust holds only while the helper really draws: a number
+// inside 1024-32767, varying from call to call. Returning a constant here
+// fails this test, and the guard's allowlist would be trusting a fixed port.
+func TestPortOutsideTheEphemeralPoolDrawsInTheWindow(t *testing.T) {
+	seen := map[int]bool{}
+	for range 16 {
+		p := portOutsideTheEphemeralPool(t)
+		if p < 1024 || p > 32767 {
+			t.Fatalf("drew %d, outside the 1024-32767 window no bind-to-zero hands out (#176, #188)", p)
+		}
+		seen[p] = true
+	}
+	if len(seen) < 12 {
+		t.Fatalf("16 draws gave %d distinct ports; the helper is not drawing", len(seen))
+	}
+}
+
 // decoy is a listener standing in for an ambient http_proxy; it counts hits.
 func decoy(t *testing.T) (url string, hits func() int) {
 	t.Helper()
