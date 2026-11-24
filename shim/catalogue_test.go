@@ -3,6 +3,7 @@ package shim
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
@@ -99,6 +100,41 @@ func TestCatalogueSameOriginRedirectReturnsModels(t *testing.T) {
 	defer srv.Close()
 	if got := catalogueAt(srv.URL).served("sk-canary", "same-origin-model"); !got["same-origin-model"] {
 		t.Fatal(got)
+	}
+}
+
+// bodyTransport answers every request with one 200 body, no socket involved.
+type bodyTransport string
+
+func (b bodyTransport) RoundTrip(r *http.Request) (*http.Response, error) {
+	return &http.Response{StatusCode: 200, Status: "200 OK",
+		Body:   io.NopCloser(strings.NewReader(string(b))),
+		Header: http.Header{"Content-Type": []string{"application/json"}}, Request: r}, nil
+}
+
+// #767: a 200 that is not a listing — a proxy's error envelope, data absent or
+// not a list — is no endpoint's empty catalogue. The reader used to swallow it
+// into an empty declaration set with success, so the caller was told the
+// gateway serves nothing. Only a data list, empty or not, is an answer.
+func TestCatalogueRefusesANonListingReplyIssue767(t *testing.T) {
+	for _, body := range []string{
+		`{"error":{"type":"upstream_error"}}`,
+		`{"data":null}`,
+		`{"data":{"id":"m"}}`,
+		`{"data":"nope"}`,
+	} {
+		c := newCatalogue("https://gw.invalid", "", &http.Client{Transport: bodyTransport(body)})
+		decl, ok := c.read("k")
+		if ok || decl != nil {
+			t.Errorf("%s: catalogue %v, ok=%v; want unreadable", body, decl, ok)
+		}
+	}
+	// Positive witness: the endpoint's own empty list is a readable empty
+	// catalogue, so the refusals above are the shape verdict and not a reader
+	// that never looks at its body.
+	decl, ok := newCatalogue("https://gw.invalid", "", &http.Client{Transport: bodyTransport(`{"data":[]}`)}).read("k")
+	if !ok || len(decl) != 0 {
+		t.Fatalf("an empty data list: %v, ok=%v; want a readable empty catalogue", decl, ok)
 	}
 }
 

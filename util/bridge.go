@@ -16,6 +16,8 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"github.com/akleizor/ccmorph/ctxwindow"
 )
 
 // bridgeStart is `util bridge-start <profile> <cliproxyapi> <auth dir> <log>`: run
@@ -98,7 +100,9 @@ func bridgeStart(args []string, _ io.Reader, out, errw io.Writer) int {
 	return fail(fmt.Sprintf("bridge for '%s' on port %d: /v1/models served no model within 30s", profile, port))
 }
 
-// listsModel is whether the bridge on port answers /v1/models with a model.
+// listsModel is whether the bridge on port answers /v1/models with a served
+// listing, by ctxwindow.ListingShape (#767): a 200 that is not a listing — a
+// proxy's error envelope — is not ready, and neither is an empty list.
 func listsModel(port, key string) bool {
 	client := &http.Client{Timeout: 5 * time.Second, Transport: &http.Transport{Proxy: nil}}
 	req, _ := http.NewRequest("GET", "http://127.0.0.1:"+port+"/v1/models", nil)
@@ -108,8 +112,17 @@ func listsModel(port, key string) bool {
 		return false
 	}
 	defer resp.Body.Close()
-	var listing struct{ Data []json.RawMessage }
-	return resp.StatusCode == 200 && json.NewDecoder(resp.Body).Decode(&listing) == nil && len(listing.Data) > 0
+	// UseNumber, so the decoder keeps a number it cannot hold as float64
+	// (1e400 in unrelated metadata) from refusing a listing the bridge does
+	// serve: the shape verdict reads the data list, never the numbers.
+	dec := json.NewDecoder(resp.Body)
+	dec.UseNumber()
+	var top any
+	if resp.StatusCode != 200 || dec.Decode(&top) != nil {
+		return false
+	}
+	_, verdict := ctxwindow.ListingShape(top)
+	return verdict == ctxwindow.ListingServed
 }
 
 // BridgeStop sends the bridge TERM, then KILL after 5s, then re-tightens the OAuth

@@ -260,27 +260,9 @@ func inventoryListing(base, key string, c *http.Client) ([]any, []string, error)
 		// added to util's reader). Cannot tell, never "serves nothing": only
 		// a real data list, empty or not, is an endpoint's own answer — the
 		// one shape verdict the picker reads too (#747).
-		return nil, nil, fmt.Errorf("the /v1/models reply is not a listing: data is %s", listingShape(doc["data"]))
+		return nil, nil, ctxwindow.ErrNotAListing
 	}
 	return data, listedModels(data, true), nil
-}
-
-// listingShape names what a parsed /v1/models reply carries in "data", for the
-// error that refuses to read a non-list as an empty listing (#695).
-func listingShape(v any) string {
-	switch v.(type) {
-	case nil:
-		return "absent"
-	case map[string]any:
-		return "an object"
-	case string:
-		return "a string"
-	case bool:
-		return "a bool"
-	case float64:
-		return "a number"
-	}
-	return "not a list"
 }
 
 // inventory lists the usable chat model ids.
@@ -404,7 +386,12 @@ func dialectAuto(base, key, model string) (string, string, int) {
 	if err != nil {
 		return "unusable", noInference + ": " + err.Error(), status
 	}
-	data, _ := doc["data"].([]any)
+	data, verdict := ctxwindow.ListingShape(doc)
+	if verdict == ctxwindow.ListingNotAListing {
+		// A 200 that is not a listing declares no dialect, and it is not the
+		// endpoint's empty one either: cannot tell, and the note says why (#767).
+		return "unusable", noInference + ": " + ctxwindow.ErrNotAListing.Error(), 0
+	}
 	return declaredVerdict(data, model)
 }
 

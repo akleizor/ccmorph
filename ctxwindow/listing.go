@@ -132,6 +132,10 @@ func ListingShape(top val) (rows []any, verdict ListingVerdict) {
 	return rows, ListingServed
 }
 
+// ErrNotAListing is the refusal every reader returns for a reply that is not a
+// listing, so the message that reaches a person has one spelling (#767).
+var ErrNotAListing = errors.New("the /v1/models reply is not a listing")
+
 // ListingShapeBody is ListingShape over a reply body, parsed the picker's way:
 // a body that does not parse is no listing.
 func ListingShapeBody(body string) (rows []any, verdict ListingVerdict) {
@@ -205,7 +209,15 @@ func ListModels(ctx context.Context, base, key string, timeout time.Duration, op
 	if top == nil {
 		return nil, nil, nil, fmt.Errorf("AttributeError: '%s' object has no attribute 'get'", pyType(doc))
 	}
-	rows := ListingRows(getv(top, "data"))
+	data, verdict := ListingShape(top)
+	if verdict == ListingNotAListing {
+		// A 200 that parses is not a listing when data is absent or not a JSON
+		// list — a proxy's error object, a wrapped reply. Reading it as an
+		// empty one made discovery blame the route for the endpoint's answer
+		// (#767); the verdict sends it down the unreachable path instead.
+		return nil, nil, nil, ErrNotAListing
+	}
+	rows := ListingRows(data)
 	ids := make([]string, len(rows))
 	for i, r := range rows {
 		ids[i], _ = asStr(getv(r, "id"))
