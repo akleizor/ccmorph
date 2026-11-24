@@ -9,6 +9,7 @@ import (
 	"strings"
 	"syscall"
 	"testing"
+	"time"
 )
 
 // Issue #283: every browser-login row names the product or plan it signs in to,
@@ -81,29 +82,54 @@ func TestAddWizardTierColumnsArePinnedByName(t *testing.T) {
 	}
 }
 
+// handoffForwardDeadline bounds the wait for the handoff's async forward
+// (GH-851). Measured with the whole suite loaded, a forward lands within
+// milliseconds of the signal; the one observed loss (2026-11-24) was a
+// scheduling stall of ~13 s. The deadline is the wait's bound, never its
+// pacing: the pass path reads the moment the child dies, and 60 s still
+// sits under the 120 s hang bound the zsh suite shares.
+const handoffForwardDeadline = 60 * time.Second
+
 // GH-649: closing the terminal sends SIGHUP/SIGTERM to the whole foreground
 // process group. The sign-in child must be the one that dies — the parent has
 // to survive long enough to run the caller's rollback. Before the handoff the
 // default disposition killed this process outright, which here took the whole
 // test binary down with it: reaching the assertions is half the assertion.
+//
+// GH-851: the handoff is deliberately async, so the test must not let the
+// child's own life end the wait. The old child left on its own in ~5 s and a
+// machine that stalled the parent's scheduling past that read as a broken
+// handoff. The child here outlives the deadline by minutes: only the
+// forwarded signal can end this wait, and the deadline — the test's own
+// bound, in the zsh suite's hang-bound spirit — names the lost forward.
 func TestHandSignInSignalsReachTheChildNotTheParent(t *testing.T) {
 	for _, sig := range []syscall.Signal{syscall.SIGTERM, syscall.SIGHUP} {
 		t.Run(sig.String(), func(t *testing.T) {
-			// Bounded on its own: if the handoff ever stops delivering, the
-			// child still leaves in a few seconds and the test fails on its
-			// assertions instead of hanging the suite.
-			cmd := exec.Command("sh", "-c",
-				"i=0; while [ $i -lt 50 ]; do sleep 0.1; i=$((i+1)); done")
+			cmd := exec.Command("sleep", "300")
 			if err := cmd.Start(); err != nil {
 				t.Fatal(err)
 			}
+			// Exactly one Wait for this child; its outcome waits on the
+			// channel, so every path below can take it without hanging.
+			gone := make(chan error, 1)
+			go func() { gone <- cmd.Wait() }()
+			// Whatever the outcome below, the child is ours to clear: on the
+			// green path it died of the forward and this finds no process.
+			t.Cleanup(func() { _ = cmd.Process.Kill() })
 			release := handSignInSignals(cmd.Process)
+			defer release()
 			if err := syscall.Kill(os.Getpid(), sig); err != nil {
-				release()
 				t.Fatal(err)
 			}
-			err := cmd.Wait()
-			release()
+			var err error
+			select {
+			case err = <-gone:
+			case <-time.After(handoffForwardDeadline):
+				// The child cannot outlive its sleep within the deadline, so
+				// a timeout here is the lost forward itself.
+				t.Fatalf("the child outlived the forwarded %v: no signal reached it within %v",
+					sig, handoffForwardDeadline)
+			}
 			var ee *exec.ExitError
 			if !errors.As(err, &ee) {
 				t.Fatalf("the child outlived the forwarded %v: %v", sig, err)
