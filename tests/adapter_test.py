@@ -618,15 +618,48 @@ class AdapterTest(unittest.TestCase):
             '  print "ANTHROPIC_API_KEY=stub-key"\n'
             f"  print 'CCMORPH_UPSTREAM_PROXY={proxy}'\n"
             "}\n")
+        base = "http://gateway.invalid"
+        cache = self.cache_file(base)
+
+        # Cold cache first: the shipped GH-592 promise -- a fresh profile with
+        # a dead proxy still prints its redacted config, names the dial and
+        # exits 0. No credential entry exists to carry the route, so no proxy
+        # may appear; a proxy-url here would be the global one the bridge
+        # refused (#585).
+        out = self.run_adapter("--print-config")
+        self.assertEqual(out.returncode, 0, out.stderr)
+        self.assertIn("<redacted>", out.stdout)
+        self.assertNotIn("proxy-url", out.stdout)
+        self.assertIn("compatibility probes failed", out.stderr)
+        self.assertIn("proxyconnect tcp: dial tcp 127.0.0.1:1", out.stderr)
+        self.assertIn("0 cached model(s)", out.stderr)
+        for leak in (password, "user:", "token=qq", "stub-key"):
+            self.assertNotIn(leak, out.stdout)
+            self.assertNotIn(leak, out.stderr)
+
+        # A cached row, as after a real first launch: the config now carries
+        # the credential entry, so the per-entry route (#585) is rendered and
+        # must be redacted here too.
+        cache.parent.mkdir(parents=True, exist_ok=True)
+        cache.write_text(json.dumps({
+            "endpoint": base, "anthropic_path": "/v1/messages",
+            "thinking_probe": 2,
+            "rows": [{"model": "m-anthropic", "dialect": "anthropic",
+                      "note": "", "status": 200, "cap": None,
+                      "nothink": False, "id_recycle": False}]}))
         out = self.run_adapter("--print-config")
         self.assertEqual(out.returncode, 0, out.stderr)
         self.assertIn('proxy-url: "http://127.0.0.1:1/p"', out.stdout)
+        self.assertNotIn("\nproxy-url:", out.stdout)
         self.assertIn("<redacted>", out.stdout)
         self.assertIn("compatibility probes failed", out.stderr)
         self.assertIn("proxyconnect tcp: dial tcp 127.0.0.1:1", out.stderr)
         for leak in (password, "user:", "token=qq", "stub-key"):
             self.assertNotIn(leak, out.stdout)
             self.assertNotIn(leak, out.stderr)
+        # A fresh profile again for the launch half: the print's cache would
+        # otherwise hand it a model to launch instead of the dead dial.
+        cache.unlink()
         launch = self.run_adapter()
         self.assertEqual(launch.returncode, 1, launch.stderr)
         self.assertIn("proxyconnect tcp: dial tcp 127.0.0.1:1", launch.stderr)
