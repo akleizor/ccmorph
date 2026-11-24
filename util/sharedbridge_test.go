@@ -26,7 +26,7 @@ func bridgeProc(t *testing.T, tmp string) *exec.Cmd {
 	}
 	go cmd.Wait()
 	t.Cleanup(func() { cmd.Process.Kill() })
-	if !ours(cmd.Process.Pid, tmp) {
+	if yours, known := owns(cmd.Process.Pid, tmp); !known || !yours {
 		t.Fatalf("the fake bridge (pid %d, tmp %s) must read as ours", cmd.Process.Pid, tmp)
 	}
 	return cmd
@@ -94,7 +94,7 @@ func TestTwoSessionsShareOneBridge(t *testing.T) {
 }
 
 // A launch's probe is a question about one pid, so it must not pay for every
-// process on the machine: answers() asks ours() once per try, and a bridge that
+// process on the machine: answers() asks owns() once per try, and a bridge that
 // never answers must not buy three whole-table walks before it is called dead.
 func TestAnswersDoesNotWalkTheWholeProcessTable(t *testing.T) {
 	root := t.TempDir()
@@ -224,6 +224,92 @@ func TestReleaseNeverSignalsAPidNotRunningTheBridge(t *testing.T) {
 	}
 	if _, err := os.Stat(a.TmpDir); err == nil {
 		t.Fatal("release still removes the bridge's config dir")
+	}
+}
+
+// A process table that cannot answer for the recorded bridge's PID proves
+// nothing: the last session out must not read that as death and remove the
+// record and config of a live bridge, or the next launch starts a second on
+// the same auth dir (#409).
+func TestReleaseKeepsALiveBridgeTheProcessTableCannotAnswerFor(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		read func(pid int) ([]string, bool)
+	}{
+		// An unreadable table and a row without argv both reach the ownership
+		// check as a read that answered nothing.
+		{"unreadable table", func(int) ([]string, bool) { return nil, false }},
+		{"row without argv", func(int) ([]string, bool) { return []string{}, false }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root := t.TempDir()
+			stubProbe(t, func(port, key string) bool { return true })
+			starts := 0
+			start := func() (pid, port, key, tmp string, ok bool) {
+				starts++
+				tmp = filepath.Join(root, "ccmorph-bridge-"+strconv.Itoa(starts))
+				cmd := bridgeProc(t, tmp)
+				return strconv.Itoa(cmd.Process.Pid), "4100", "k", tmp, true
+			}
+			auth := filepath.Join(root, "p")
+			a, ok, err := AcquireBridge(root, "p", start)
+			if !ok || err != nil {
+				t.Fatalf("first launch: ok=%v err=%v", ok, err)
+			}
+			pid, _ := strconv.Atoi(a.PID)
+			// The bridge runs; the table now answers nothing for its PID.
+			orig := argvOfPID
+			argvOfPID = func(int) ([]string, bool) { return tc.read(pid) }
+			t.Cleanup(func() { argvOfPID = orig })
+			a.Release(auth)
+			if syscall.Kill(pid, 0) != nil {
+				return // release stopped it, which also never orphans it
+			}
+			if _, err := os.Stat(a.TmpDir); err != nil {
+				t.Fatal("release removed the config of a live bridge it could not identify")
+			}
+			if _, err := os.Stat(filepath.Join(root, ".p.bridge")); err != nil {
+				t.Fatal("release removed the record of a live bridge it could not identify")
+			}
+			// The next launch must join the recorded bridge, never start a second.
+			b, ok, err := AcquireBridge(root, "p", start)
+			if !ok || err != nil || starts != 1 || b.PID != a.PID {
+				t.Fatalf("the next launch must join the live bridge: ok=%v err=%v starts=%d pid=%s/%s", ok, err, starts, a.PID, b.PID)
+			}
+			b.Release(auth)
+		})
+	}
+}
+
+// A recorded PID that is certainly gone is dead, not doubt: the last session
+// out still removes the record and config, so they do not outlive the bridge
+// they describe (#409).
+func TestReleaseCleansUpAfterABridgeThatIsGone(t *testing.T) {
+	root := t.TempDir()
+	stubProbe(t, func(port, key string) bool { return true })
+	start := func() (pid, port, key, tmp string, ok bool) {
+		tmp = filepath.Join(root, "ccmorph-bridge-1")
+		cmd := bridgeProc(t, tmp)
+		return strconv.Itoa(cmd.Process.Pid), "4100", "k", tmp, true
+	}
+	auth := filepath.Join(root, "p")
+	a, ok, err := AcquireBridge(root, "p", start)
+	if !ok || err != nil {
+		t.Fatalf("first launch: ok=%v err=%v", ok, err)
+	}
+	gone := exec.Command("sleep", "60")
+	if err := gone.Start(); err != nil {
+		t.Fatal(err)
+	}
+	gone.Process.Kill()
+	gone.Wait()
+	a.PID = strconv.Itoa(gone.Process.Pid) // the recorded bridge died
+	a.Release(auth)
+	if _, err := os.Stat(filepath.Join(root, ".p.bridge")); err == nil {
+		t.Fatal("a dead bridge's record must not outlive it")
+	}
+	if _, err := os.Stat(a.TmpDir); err == nil {
+		t.Fatal("a dead bridge's config dir must not outlive it")
 	}
 }
 
