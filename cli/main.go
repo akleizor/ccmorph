@@ -172,6 +172,7 @@ func (l *launcher) dispatch(args []string) int {
 		l.err("cannot secure ccmorph directories")
 		return 1
 	}
+	l.publishCore()
 	switch first {
 	case "_secure": // install.sh: the state dirs secured and migrated, nothing else
 		return 0
