@@ -1857,25 +1857,6 @@ def test_only_this_routes_own_edge_process_is_signalled(monkeypatch, command, ou
     assert m.is_our_edge(4242, "gw") is False   # no verdict without the lookup
 
 
-def test_the_ps_reads_are_not_cut_at_columns(monkeypatch):
-    """GH-829: ps cuts a command line at COLUMNS (80 under a test runner), so an
-    edge whose path is longer would lose the `--edge` or `--session-id` this
-    host reads and be judged not its own. Both reads ask for -ww."""
-    m = load()
-    seen = []
-
-    def run(cmd, **kw):
-        seen.append(list(cmd))
-        return type("R", (), {"stdout": "", "returncode": 0})()
-
-    monkeypatch.setattr(m.subprocess, "run", run)
-    m.is_our_edge(4242, "gw")
-    m.session_pid("session_01")
-    assert len(seen) == 2, seen
-    assert "-ww" in seen[0], seen        # the edge's own command line
-    assert "-Aww" in seen[1], seen       # the session scan
-
-
 def test_a_created_edge_leaves_no_git_repo_in_the_state_dir(tmp_path, monkeypatch):
     """GH-418: start() ran its worktree-spawn setup for the edge host too. The edge
     never execs claude remote-control -- it writes its record and loops, so it

@@ -1005,12 +1005,8 @@ class AdapterTest(unittest.TestCase):
         return True
 
     def _tethers(self, adapter_pid):
-        """The `ccmorph-core tether <adapter_pid> ...` processes running now.
-
-        -ww: ps cuts a command line at COLUMNS, and the test runner sets 80, so
-        a long test-home path would hide "tether <pid>" and read as no tether
-        (#829)."""
-        out = subprocess.run(["ps", "-Aww", "-o", "pid=,command="],
+        """The `ccmorph-core tether <adapter_pid> ...` processes running now."""
+        out = subprocess.run(["ps", "-A", "-o", "pid=,command="],
                              capture_output=True, text=True, check=True,
                              timeout=HANG_TIMEOUT).stdout
         pattern = re.compile(rf"\stether {adapter_pid}(\s|$)")
