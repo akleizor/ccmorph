@@ -25,6 +25,7 @@ import os
 from pathlib import Path
 import re
 import shlex
+import shutil
 import stat
 import tempfile
 import time
@@ -559,36 +560,51 @@ def export(root, output, since=None):
     return stats
 
 
-def report(stats, output):
-    """The end of an export, for the person who ran it: where the files went,
-    every count by a name that adds up, money at cents, and the exact command
-    that reads the result — not a machine's JSON line (#382)."""
+def report(stats, output, source):
+    """The end of an export, for the person who ran it: which folder was read and
+    where the files went, every count by a name that adds up, money at cents, and
+    the exact command that reads the result — not a machine's JSON line (#382).
+    The source is printed beside the destination (GH-843): an export of the wrong
+    folder and an export of an empty one looked identical without it. And when
+    ccusage is not on PATH, the summary says it is missing — no install route
+    provides it (README, Requirements), so printing its command was a printed
+    step that could not run (GH-843)."""
     root = os.path.abspath(output)
+    # The source is resolved by following symlinks, not collapsed lexically: the
+    # exporter walks a `..` through any symlink before it, and the printed folder
+    # must name the very store the run read, not a lexical cousin that may not
+    # exist (GH-843).
+    read = os.path.realpath(source)
 
     def count(n, word):
         return f"{n} {word}" if n == 1 else f"{n} {word}s"
 
     unreadable = stats.get("unreadable") or []
     if unreadable:
-        head = [f"Nothing written to {root}: {count(len(unreadable), 'receipt')} not readable, "
-                "so the export already there stands",
+        head = [f"Nothing written from {read} to {root}: {count(len(unreadable), 'receipt')} "
+                "not readable, so the export already there stands",
                 f"Read {count(stats['rows'], 'turn')} over {count(stats['days'], 'day')}; "
                 "fix the receipts' permissions and run it again"]
     else:
-        head = [f"Exported {count(stats['rows'], 'turn')} over {count(stats['days'], 'day')} to {root}",
+        head = [f"Exported {count(stats['rows'], 'turn')} over {count(stats['days'], 'day')} "
+                f"from {read} to {root}",
                 "one folder per profile under projects/, ccusage.json beside it"]
+    if shutil.which("ccusage") is None:
+        tail = ["ccusage is not installed: no ccmorph install provides it; see the "
+                "README's cost-reporting note, and --help prints the command to run"]
+    else:
+        tail = ["Then, with ccusage installed:",
+                # Both paths shell-quoted, so a folder with spaces in its name does not
+                # tear the command apart at the first space (#382).
+                f"CLAUDE_CONFIG_DIR={shlex.quote(root)} ccusage claude daily --instances "
+                f"--config {shlex.quote(os.path.join(root, 'ccusage.json'))}"]
     return "\n".join(head + [
         f"{count(stats['gateway_rows'], 'turn')} the gateway billed, ${stats['usd']:.2f}",
         f"{count(stats['estimated_rows'], 'turn')} ccmorph estimated, ${stats['estimated_usd']:.2f}",
         f"{count(stats['list_rows'], 'turn')} left for ccusage to price at its list price",
         f"{count(stats['unpriced'], 'turn')} unpriced (a damaged cost, not exported)",
         f"{count(stats['moved'], 'receipt')} moved by the store mid-run, skipped",
-        "Then, with ccusage installed:",
-        # Both paths shell-quoted, so a folder with spaces in its name does not
-        # tear the command apart at the first space (#382).
-        f"CLAUDE_CONFIG_DIR={shlex.quote(root)} ccusage claude daily --instances "
-        f"--config {shlex.quote(os.path.join(root, 'ccusage.json'))}",
-    ])
+    ] + tail)
 
 
 def main():
@@ -610,7 +626,10 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--output", type=Path, required=True, metavar="ROOT",
                         help="directory the export lands in")
-    parser.add_argument("--source", type=Path, metavar="ROOT", default=default_source,
+    # The default is resolved, not argparse's: a --source the person named must
+    # exist (GH-843), while the default folder may be absent — before the first
+    # session there is no store at all, and that is an empty one, not a mistake (#647).
+    parser.add_argument("--source", type=Path, metavar="ROOT", default=None,
                         help="ccmorph receipt store to read; the default folder is named above")
     parser.add_argument("--since", metavar="YYYYMMDD",
                         help="first local date to export; default all history")
@@ -628,13 +647,31 @@ def main():
             # Name the format the person is asked for, not strptime's own.
             parser.exit(1, f"usage-export: --since '{args.since}' must be a date as "
                            "YYYYMMDD, for example 20261110\n")
+    if args.source is None:
+        source = default_source  # a default folder that is absent is the empty store of #647
+    else:
+        try:
+            folder = args.source.is_dir()
+        except OSError as exc:
+            # A parent that cannot be searched makes the probe itself fail: the
+            # refusal names the folder the way every other OSError here is told
+            # (#647), and the probe never becomes the traceback it stands guard
+            # against (GH-843).
+            parser.exit(1, f"usage-export: {plain(exc)}\n")
+        if folder:
+            source = args.source
+        else:
+            # A source named on the command line that is not a folder is a wrong path,
+            # not an empty store: read as one it printed a successful "Exported 0 turns",
+            # byte-identical to a store that genuinely holds nothing (GH-843).
+            parser.exit(1, f"usage-export: no receipts folder at {args.source}\n")
     try:
-        stats = export(args.source, args.output, since)
+        stats = export(source, args.output, since)
     except OSError as exc:
         parser.exit(1, f"usage-export: {plain(exc)}\n")
     except ValueError as exc:
         parser.exit(1, f"usage-export: {exc}\n")
-    print(report(stats, args.output))
+    print(report(stats, args.output, source))
     if stats["unreadable"]:
         # Each receipt by name, the way every other refusal here is told (#647).
         parser.exit(1, "".join(f"usage-export: {name}\n" for name in stats["unreadable"]))
