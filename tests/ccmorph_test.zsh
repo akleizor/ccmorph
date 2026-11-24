@@ -1314,6 +1314,72 @@ test_effort_command_refuses_a_level_claude_code_would_drop() {
   return $rc
 }
 
+# GH-839: one hand-edited conf line must give every reader the same named
+# refusal, and `set effort <valid>` is the repair for a saved level the conf
+# refuses. Before this, list hid the profile and called the home empty, get
+# answered confidently, and set/config died on an unnamed store error.
+test_one_invalid_conf_line_names_the_same_fault_to_every_reader() {
+  local test_home
+  test_home=$(mktemp -d)
+  setup_home "$test_home"
+  export _CCMORPH_PROFILE_DIRS="$HOME/.config/ccmorph/profiles"
+  mkdir -p "$HOME/.config/ccmorph/profiles/vp"
+  write_apikey_conf vp 'bogus_key=1'
+  print -r -- 'api_key=sk_prod_test' >> "$HOME/.config/ccmorph/vp.conf"
+  source "$CCMORPH_SOURCE"
+
+  local rc=0 out reader st
+  for reader in 'list' 'get vp model' 'get vp base_url' 'inspect vp' 'config vp' 'set vp model x'; do
+    out=$(ccmorph ${=reader} 2>&1 </dev/null)
+    st=$?
+    assert_contains "$out" "unknown key 'bogus_key' in 'vp'" \
+      "$reader must name the same unknown key (got: $out)" || rc=1
+    [[ $reader == list || $st -ne 0 ]] || {
+      print -u2 -- "$reader must refuse an invalid profile (exit $st)"
+      rc=1
+    }
+  done
+  out=$(ccmorph list 2>&1)
+  assert_contains "$out" "remove the unknown key 'bogus_key'" \
+    'the skip line must name the edit that repairs the conf' || rc=1
+  assert_contains "$out" 'ccmorph rm vp' \
+    'the skip line must name the removal that always works' || rc=1
+  assert_not_contains "$out" 'No profiles yet' \
+    'a home with a skipped profile must not be called empty' || rc=1
+  assert_not_contains "$(<"$HOME/.config/ccmorph/vp.conf")" 'model=x' \
+    'the set that refused the conf must not have written' || rc=1
+
+  # The same home, one line replaced: an effort the conf refuses.
+  python3 - "$HOME/.config/ccmorph/vp.conf" <<'PY'
+import sys
+p = sys.argv[1]
+lines = [l for l in open(p).read().splitlines() if not l.startswith('bogus_key=')]
+open(p, 'w').write('\n'.join(lines) + '\n')
+PY
+  print -r -- 'effort=ultra' >> "$HOME/.config/ccmorph/vp.conf"
+  for reader in 'list' 'get vp model' 'inspect vp' 'config vp' 'set vp model x'; do
+    out=$(ccmorph ${=reader} 2>&1 </dev/null)
+    assert_contains "$out" "invalid effort 'ultra' in 'vp': effort must be low, medium, high, xhigh or max" \
+      "$reader must name the value and the legal set (got: $out)" || rc=1
+  done
+  ccmorph set vp effort high >/dev/null || {
+    print -u2 -- 'set effort high must repair an invalid saved effort'
+    rc=1
+  }
+  [[ "$(ccmorph get vp effort)" == high ]] || {
+    print -u2 -- 'the repaired effort must be the one saved'
+    rc=1
+  }
+  out=$(ccmorph list 2>&1)
+  assert_contains "$out" 'vp (API key' \
+    'the repaired profile must be listed again' || rc=1
+  assert_not_contains "$out" 'skipping invalid profile' \
+    'a repaired profile must not be skipped' || rc=1
+
+  rm -rf "$test_home"
+  return $rc
+}
+
 # Effort has a closed enum to validate against; a model id has none, so the only
 # guard was "no CR/LF" -- and a flag-shaped value sailed straight through. A user
 # typing `ccmorph set gw model --menu` (the flag form the design REJECTED in favour
@@ -12241,6 +12307,7 @@ run_test test_explicit_model_flag_beats_the_saved_default
 run_test test_effort_command_leaves_native_per_model_state_untouched
 run_test test_effort_command_sets_the_profiles_default_effort
 run_test test_effort_command_refuses_a_level_claude_code_would_drop
+run_test test_one_invalid_conf_line_names_the_same_fault_to_every_reader
 run_test test_set_model_refuses_a_flag_shaped_value
 run_test test_set_model_refuses_an_unserved_id_and_saves_only_on_confirm_issue_267
 run_test test_set_model_says_saved_unchecked_when_the_endpoint_cannot_answer_issue_728
