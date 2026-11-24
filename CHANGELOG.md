@@ -29,7 +29,8 @@
   opened the lock just as `rm` removed it takes the lock at the path again
   instead of holding a file nothing names. A symlink at `.locks/<name>.live`
   is never taken as the lock: a launch refuses it and says so, and `rm`
-  removes it.
+  removes it. Two `rm` runs of one name now take turns at the lock, so one
+  can no longer remove a lock a launch made after the other cleared a link.
 
 - **`ccmorph doctor <profile>` no longer calls a provider profile ready when
   its bridge cannot start.** Doctor now asks the launch's own check: with

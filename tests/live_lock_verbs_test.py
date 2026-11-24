@@ -197,6 +197,12 @@ def test_rm_of_a_leftover_lock_alone_offers_and_takes_it(tmp_path):
     assert result.returncode == 0, result.stderr
     assert str(lock) in result.stderr
     assert not lock.exists()
+    # The guard rm takes its turns under is the state dir's, never a leftover
+    # of the name: a second rm finds nothing to offer (GH-837).
+    again = run(home, state, "rm gw", "y\n")
+    assert again.returncode == 1
+    assert "no profile 'gw'" in again.stderr
+    assert ".live-removal" not in again.stderr
 
 
 def test_rm_of_a_leftover_dangling_live_link_offers_and_takes_it(tmp_path):
