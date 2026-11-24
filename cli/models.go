@@ -105,19 +105,27 @@ func (l *launcher) modelsJSON(name string, preview ...string) (string, bool) {
 		l.err("'" + name + "' has no api_key — model discovery needs one")
 		return "", false
 	}
-	out, status, ok := util.ModelsAnswer(base, f["api_key"])
+	out, status, why, ok := util.ModelsAnswerWhy(base, f["api_key"])
 	out = strings.TrimRight(out, "\n")
 	if !ok {
-		l.err(listingFailure(name, profile.RedactURL(base), status))
+		l.err(listingFailureWhy(name, profile.RedactURL(base), status, why))
 		return "", false
 	}
 	return out, true
 }
 
 // listingFailure is what a person reads when the endpoint gave no model list:
-// the status the endpoint refused with names the fix, and only an endpoint that
-// never answered blames the network.
+// the status the endpoint refused with names the fix.
 func listingFailure(name, endpoint string, status int) string {
+	return listingFailureWhy(name, endpoint, status, "")
+}
+
+// listingFailureWhy is listingFailure with why, util.WhyUnreachable's cause for
+// a request nothing answered (status 0): which of the four causes it was, with
+// the host and port, and the private-network advice only when nothing answered
+// at all. With no cause to name, the sentence says only that no list came back
+// (#260).
+func listingFailureWhy(name, endpoint string, status int, why string) string {
 	switch {
 	case status == 401 || status == 403:
 		return fmt.Sprintf("'%s' rejected the API key for '%s' (HTTP %d) — replace it with: ccmorph config %s", endpoint, name, status, name)
@@ -126,5 +134,8 @@ func listingFailure(name, endpoint string, status int) string {
 	case status != 0:
 		return fmt.Sprintf("'%s' answered the model list request with HTTP %d", endpoint, status)
 	}
-	return "could not reach '" + endpoint + "' — if it is an internal endpoint, connect your private network and try again"
+	if why == "" {
+		why = "no model list came back"
+	}
+	return "could not reach '" + endpoint + "' — " + why
 }
