@@ -268,11 +268,45 @@ func labeler(c Config, profiles []Profile, d *Decider, deadline time.Time) func(
 	return func(_, m string) (Label, bool) { l, ok := labels[m]; return l, ok }
 }
 
-// SessionProfile is this Claude Code session's profile: the name of its config dir.
+// SessionProfile is the profile this Claude Code session's inference runs on.
+// Its config dir names the Claude account profile; inside a Remote Control edge
+// session the edge's switch word decides (ccmorph-rc's inference_target): the
+// account profile, the edge's own route, or a profile switched in beside it.
 func SessionProfile() string {
 	n := filepath.Base(os.Getenv("CLAUDE_CONFIG_DIR"))
+	if os.Getenv("CCMORPH_EDGE_ROUTE_ENV") != "" {
+		if port, ok := util.LoopbackProxyPort(); ok {
+			n = edgeInferenceProfile(n, port)
+		}
+	}
 	if profile.ValidName(n) {
 		return n
+	}
+	return ""
+}
+
+// edgeInferenceProfile is the profile a switch word names: "account" the
+// account profile; "route", no file or a word that is not a name the route whose
+// edge record holds this session's proxy port; any other word that profile. A
+// route no record names answers "".
+func edgeInferenceProfile(account string, port int) string {
+	bridge := filepath.Join(paths.ProfileRoot(), "profiles", ".rc-bridge")
+	word := "route"
+	if b, err := os.ReadFile(filepath.Join(bridge, "inference")); err == nil {
+		word = strings.TrimSpace(string(b))
+	}
+	switch {
+	case word == "account":
+		return account
+	case word != "route" && profile.ValidName(word):
+		return word
+	}
+	records, _ := filepath.Glob(filepath.Join(bridge, "edges", "*.json"))
+	for _, f := range records {
+		var rec struct{ Port int }
+		if b, err := os.ReadFile(f); err == nil && json.Unmarshal(b, &rec) == nil && rec.Port == port {
+			return strings.TrimSuffix(filepath.Base(f), ".json")
+		}
 	}
 	return ""
 }

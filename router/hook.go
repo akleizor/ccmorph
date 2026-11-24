@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/akleizor/ccmorph/ctxwindow"
 	"github.com/akleizor/ccmorph/ordjson"
 	"github.com/akleizor/ccmorph/util"
 )
@@ -40,23 +41,43 @@ func portableAgent(agent string) bool {
 	return false
 }
 
-// aliasFor is the Agent tool's model alias that runs model natively in this session.
-func aliasFor(model string) string {
+// aliasFor is the Agent tool's model alias that runs model natively in this
+// session. A tier the session's env does not pin runs as the profile's own tier
+// default, which is what a Remote Control edge serves when it passes the
+// aliases through as real Claude ids.
+func aliasFor(profile, model string) string {
 	for _, a := range []string{"haiku", "sonnet", "opus"} {
-		if v := os.Getenv(util.TierEnvKey(a)); v != "" && strings.TrimSuffix(v, "[1m]") == model || v == "" && model == a {
+		v := os.Getenv(util.TierEnvKey(a))
+		if v == "" {
+			v = profileTier(profile, a)
+		}
+		if v != "" && strings.TrimSuffix(v, "[1m]") == model || v == "" && model == a {
 			return a
 		}
 	}
 	return ""
 }
 
+func profileTier(profile, tier string) string {
+	path, err := ctxwindow.ProfilePath(profile)
+	if err != nil {
+		return ""
+	}
+	_, f, err := ctxwindow.ReadConf(path)
+	if err != nil {
+		return ""
+	}
+	return f["env."+util.TierEnvKey(tier)]
+}
+
 // hookBudget is PreToolUse's deadline for the route and its ledger write, under
 // the 20 s hooks.json timeout. A variable so a test can shorten it.
 var hookBudget = 16 * time.Second
 
-// PreToolUse routes an Agent call: a same-profile pick runs natively with the
-// model and effort filled in; any other pick, or no pick, leaves the call as
-// written. The hook never denies a call. An explicit model or a fork stays the caller's.
+// PreToolUse routes an Agent call: a pick the session runs natively gets its
+// alias and effort filled in; when the pick is not one, the router picks again
+// among the session's native aliases, and only then, or with no pick, is the
+// call left as written. The hook never denies a call. An explicit model or a fork stays the caller's.
 func PreToolUse(in io.Reader, w io.Writer) {
 	var ev struct {
 		ToolName  string         `json:"tool_name"`
@@ -97,13 +118,17 @@ func PreToolUse(in io.Reader, w io.Writer) {
 	}
 	alias := ""
 	if d.Pick.Profile == session {
-		alias = aliasFor(d.Pick.Model)
+		alias = aliasFor(session, d.Pick.Model)
 	}
-	switch {
-	case alias == "" && only != nil:
-		unrouted("session-only agent has no native alias")
-		return
-	case alias == "": // another profile's pick needs the delegate tool; never deny the call to force it
+	if alias == "" && session != "" { // decide again among what this session runs natively
+		d2, err := Decide(c, Request{Prompt: str("prompt"), Effort: str("effort"), Kind: d.Task.Kind, Tier: d.Task.Tier, Only: []string{session},
+			Keep: func(o Option) bool { return aliasFor(session, o.Model) != "" }, Deadline: time.Now().Add(hookBudget)})
+		if err == nil && d2.Pick != nil {
+			d2.Task = d.Task
+			d, alias = d2, aliasFor(session, d2.Pick.Model)
+		}
+	}
+	if alias == "" { // never deny the call to force a delegate
 		unrouted("pick is on profile " + d.Pick.Profile)
 		return
 	}
