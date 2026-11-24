@@ -84,7 +84,8 @@ typeset -gi _ccm_test_filter_hits=0
 # - the one a broken signal forwarding leaves hanging - so this is its backstop,
 # a hang detector sized far above any healthy duration, never a deadline. Seconds;
 # zselect counts hundredths.
-readonly CCMORPH_TEST_HANG_TIMEOUT="${CCMORPH_TEST_HANG_TIMEOUT:-120}"
+readonly CCMORPH_TEST_HANG_TIMEOUT_DEFAULT=120
+readonly CCMORPH_TEST_HANG_TIMEOUT="${CCMORPH_TEST_HANG_TIMEOUT:-$CCMORPH_TEST_HANG_TIMEOUT_DEFAULT}"
 
 # Every test builds its own scratch home, so the suite runs as N shards at once;
 # CCMORPH_TEST_JOBS=1 runs it serially. Default: every core. The shards mostly wait
@@ -13772,13 +13773,25 @@ test_the_serve_tail_leaves_when_its_own_launcher_is_gone() {
   /bin/sh -c 'sh "$1" gw --parent-pid "$2" &
 echo $! > "$3"' _ "$SCRIPT_DIR/fake_adapter_serve.sh" "$bystander" "$test_home/serve.pid" 2>/dev/null
   serve_pid=$(<"$test_home/serve.pid")
-  local -i i=0
+  # GH-419, GH-858: the count of 0.1s ticks is a share of the suite's shared
+  # bound, CCMORPH_TEST_HANG_TIMEOUT, not a literal. Unlike the suite's other
+  # waits this one is a deadline on purpose -- how soon an orphaned tail leaves
+  # is the contract under test -- so the share is capped at the share of the
+  # bound's own named default: raising the override may relieve every other
+  # wait, but it can never make this Check accept a tail it would reject
+  # (INTENT.md: a promise or its Check is not weakened to make a change pass).
+  # Lowering the bound tightens this wait along with every other one. The loop
+  # is main's own, a PATH sleep and nothing else, so no other work can stretch
+  # it past the wait.
+  local -i i=0 share=CCMORPH_TEST_HANG_TIMEOUT ticks
+  (( share <= CCMORPH_TEST_HANG_TIMEOUT_DEFAULT )) || share=CCMORPH_TEST_HANG_TIMEOUT_DEFAULT
+  ticks=share*3/4
   while kill -0 "$serve_pid" 2>/dev/null; do
-    (( ++i < 100 )) || break
+    (( ++i < ticks )) || break
     sleep 0.1
   done
   if kill -0 "$serve_pid" 2>/dev/null; then
-    print -u2 -- "the serve tail outlived its orphaned launcher for 10s while --parent-pid named a live pid"
+    print -u2 -- "the serve tail outlived its orphaned launcher for ${ticks} ticks of 0.1s (three quarters of ${share}s, CCMORPH_TEST_HANG_TIMEOUT=${CCMORPH_TEST_HANG_TIMEOUT}s capped at its named default) while --parent-pid named a live pid"
     kill -KILL "$serve_pid" 2>/dev/null
     rc=1
   fi
