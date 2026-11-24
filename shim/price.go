@@ -16,6 +16,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/akleizor/ccmorph/netroute"
 	"github.com/akleizor/ccmorph/util/modelsdev"
 	"github.com/akleizor/ccmorph/util/paths"
 )
@@ -109,8 +110,9 @@ func fetchPrices() ([]byte, error) {
 	return modelsdev.Get(context.Background(), 20*time.Second, exchange)
 }
 
-// exchange is the price book's transport for the catalogue: a plain client
-// whose timeout caps the whole exchange, and a 64 MB read cap.
+// exchange is the price book's transport for the catalogue: a client whose
+// timeout caps the whole exchange and whose TLS config trusts the CA a Remote
+// Control session exports (#829), and a 64 MB read cap.
 func exchange(ctx context.Context, url string, header [][2]string, timeout time.Duration) ([]byte, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
@@ -119,7 +121,7 @@ func exchange(ctx context.Context, url string, header [][2]string, timeout time.
 	for _, h := range header {
 		req.Header.Set(h[0], h[1])
 	}
-	resp, err := (&http.Client{Timeout: timeout}).Do(req)
+	resp, err := netroute.NewClient(timeout).Do(req)
 	if err != nil {
 		return nil, err
 	}

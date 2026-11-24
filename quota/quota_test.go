@@ -29,16 +29,36 @@ func (f roundTrip) RoundTrip(r *http.Request) (*http.Response, error) { return f
 
 func useTransport(t *testing.T, f roundTrip) {
 	t.Helper()
-	old := transport
+	old := httpClient
 	// Profiles are read at once; the stand-in upstream serves one request at a
 	// time, so a test's handler may record into plain slices and maps.
 	var mu sync.Mutex
-	transport = roundTrip(func(r *http.Request) (*http.Response, error) {
+	rt := roundTrip(func(r *http.Request) (*http.Response, error) {
 		mu.Lock()
 		defer mu.Unlock()
 		return f(r)
 	})
-	t.Cleanup(func() { transport = old })
+	httpClient = func() *http.Client { return &http.Client{Transport: rt, Timeout: 15 * time.Second} }
+	t.Cleanup(func() { httpClient = old })
+}
+
+// TestTheQuotaClientIsNetroutes: production builds its one fetcher through
+// netroute, so inside a Remote Control session it trusts the CA the edge signs
+// every host with (NODE_EXTRA_CA_CERTS). The seam tests swap the whole builder;
+// nothing after construction may replace the transport (#829).
+func TestTheQuotaClientIsNetroutes(t *testing.T) {
+	t.Setenv("NODE_EXTRA_CA_CERTS", "")
+	c := httpClient()
+	if c.Timeout != 15*time.Second {
+		t.Fatalf("timeout %v, want 15s", c.Timeout)
+	}
+	tr, ok := c.Transport.(*http.Transport)
+	if !ok || tr == nil {
+		t.Fatalf("transport %T, want the netroute transport", c.Transport)
+	}
+	if tr.Proxy == nil {
+		t.Fatal("the transport does not read the ambient proxy")
+	}
 }
 
 func reply(status int, body string) *http.Response {

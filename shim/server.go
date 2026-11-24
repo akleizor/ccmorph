@@ -228,6 +228,11 @@ func (s *Server) setClients() {
 				Proxy:             proxy,
 				DisableKeepAlives: true, // one connection per request, as urllib did
 				DialContext:       (&net.Dialer{Timeout: s.Stall}).DialContext,
+				// A remote target may cross the proxy a Remote Control edge
+				// plants, and that proxy signs every host with the CA the
+				// session exports (#829). Loopback speaks plain http, so the
+				// config is inert there.
+				TLSClientConfig: netroute.ExtraCAs(),
 			},
 		}
 	}
