@@ -423,6 +423,17 @@ func (l *launcher) doctor(name string, verbose bool) int {
 			firstFix = util.ClaudeMissing
 		}
 	}
+	if typ == "provider" {
+		// The launch's own refusal, in its words (providerStartRefusal, which
+		// hop asks too): a bridge that cannot start is a profile that is not
+		// ready (#787).
+		if why := l.providerStartRefusal(name); why != "" {
+			report("FAIL", "provider bridge: "+why, why)
+			failed = 1
+		} else {
+			report("OK", "provider bridge: cliproxyapi installed, auth directory present")
+		}
+	}
 	home := filepath.Join(l.profileDirs, name)
 	// homeBlocker names the path that stops a launch from making the profile
 	// home, with what to do about it; both empty when nothing does. The launch's

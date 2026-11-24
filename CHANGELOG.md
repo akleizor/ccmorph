@@ -18,6 +18,10 @@
 
 ### Fixed
 
+- **`ccmorph doctor <profile>` no longer calls a provider profile ready when
+  its bridge cannot start.** Doctor now asks the launch's own check: with
+  `cliproxyapi` missing it fails and names the install step, and a missing or
+  symlinked auth directory fails with the launch's own words (#787).
 - **Remote Control hosts pin the route profile's tiers.** `ccmorph-rc-hosts` kept
   its own tier map in `tier.<alias>=` lines, which drifted from the profile: an alias
   the profile mapped to a gateway model went out as the native Claude id, which the

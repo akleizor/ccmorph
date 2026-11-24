@@ -15,7 +15,7 @@ from unittest.mock import patch
 
 import pytest
 
-from support import CLAUDE_MISSING, FAKE_SERVER_NO_DNS, HANG_TIMEOUT, needs_loopback, wait_until
+from support import CLAUDE_MISSING, FAKE_SERVER_NO_DNS, HANG_TIMEOUT, needs_loopback, path_without, wait_until
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -55,10 +55,17 @@ def run_doctor(tmp_path, conf, curl=None, args=(), claude=None, home=True, env_e
         c = bindir / "curl"
         c.write_text(curl)
         c.chmod(0o755)
-    env = {**os.environ, "HOME": str(home_dir), "PATH": path,
-           "CCMORPH_STATE_DIR": str(state), "CCMORPH_LIB_DIR": str(ROOT / "lib"),
-           "CURL_ARGS": str(bindir / "curl.args"), "CURL_CALLED": str(bindir / "called"),
-           "DOCTOR_MARKER": str(bindir / "doctor.marker")}
+    # The child is bin/ccmorph, a zsh script: zsh reads its startup files —
+    # $ZDOTDIR/.zshenv, else $HOME/.zshenv — before the CLI runs, and an
+    # operator's file can put a tool back on a PATH a test meant to hide it
+    # from (GH-787: a .zshenv restoring brew changed the install step the
+    # report named). HOME is this test's own empty fixture, so the startup
+    # files are dropped too; a test that wants them names them in env_extra.
+    env = {k: v for k, v in os.environ.items() if k not in ("ZDOTDIR", "FPATH")}
+    env.update({"HOME": str(home_dir), "PATH": path,
+                "CCMORPH_STATE_DIR": str(state), "CCMORPH_LIB_DIR": str(ROOT / "lib"),
+                "CURL_ARGS": str(bindir / "curl.args"), "CURL_CALLED": str(bindir / "called"),
+                "DOCTOR_MARKER": str(bindir / "doctor.marker")})
     if env_extra:
         env.update(env_extra)
     result = subprocess.run([str(ROOT / "bin/ccmorph"), "doctor", *args, profile], env=env,
@@ -1057,6 +1064,14 @@ def test_doctor_warns_when_masking_is_on_for_a_route_that_cannot_mask(tmp_path, 
     does not front, the setting silently masks nothing (GH-293), so doctor must
     say so -- as a warning about the route, not a readiness failure: the profile
     still starts, and the verdict must not claim otherwise."""
+    if "type=provider" in conf:
+        # A provider profile is ready only when its bridge can start (#787):
+        # a cliproxyapi on PATH and the profile's auth directory.
+        bindir = tmp_path / "bin"
+        bindir.mkdir(exist_ok=True)
+        (bindir / "cliproxyapi").write_text("#!/bin/sh\nexit 0\n")
+        (bindir / "cliproxyapi").chmod(0o755)
+        (tmp_path / "state" / "auth" / "demo").mkdir(parents=True)
     result, _, _ = run_doctor(tmp_path, conf, OK_CURL)
     assert result.returncode == 0, result.stdout
     warns = [l for l in result.stdout.splitlines() if l.startswith("WARN")]
@@ -1518,3 +1533,60 @@ def test_doctor_completion_row_lasts_until_a_new_zsh_completes(tmp_path):
                               env_extra={"SHELL": shell, "ZDOTDIR": str(home),
                                          "CCMORPH_LIB_DIR": str(install / "lib")})
     assert "INFO completion:" not in result.stdout
+
+
+@pytest.mark.parametrize("case", ["bridge-missing", "auth-missing", "ready"])
+def test_doctor_asks_whether_a_provider_bridge_can_start_issue_787(tmp_path, case):
+    """GH-787: a provider profile whose launch refuses to start its bridge --
+    no cliproxyapi on PATH, or no auth directory -- ended `OK ready`, and the
+    run then exited 1 with the prerequisite error. Doctor asks the launch's own
+    refusal, prints it as a failing row and names it in the verdict."""
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+    if case != "bridge-missing":
+        (bindir / "cliproxyapi").write_text("#!/bin/sh\nexit 0\n")
+        (bindir / "cliproxyapi").chmod(0o755)
+    if case != "auth-missing":
+        (tmp_path / "state" / "auth" / "demo").mkdir(parents=True)
+    # The stubs' directory first, and no host cliproxyapi or brew behind it:
+    # neither the bridge verdict nor the install step is the machine's own.
+    path = os.pathsep.join([str(bindir), path_without("cliproxyapi", "brew")])
+    result, _, _ = run_doctor(tmp_path, "type=provider\nprovider=antigravity\n",
+                              env_extra={"PATH": path})
+    last = result.stdout.splitlines()[-1]
+    if case == "ready":
+        assert result.returncode == 0, result.stdout
+        assert ("OK provider bridge: cliproxyapi installed, auth directory present"
+                in result.stdout), result.stdout
+        assert last == "OK ready: start it with ccmorph run demo", result.stdout
+        return
+    why = ("cliproxyapi not found — install it: https://github.com/router-for-me/CLIProxyAPI"
+           if case == "bridge-missing" else
+           "no auth directory for 'demo' — run: ccmorph login demo")
+    assert result.returncode == 1, result.stdout
+    assert "FAIL provider bridge: " + why in result.stdout.splitlines(), result.stdout
+    assert last == "FAIL not ready: " + why, result.stdout
+    assert "OK ready" not in result.stdout, result.stdout
+
+
+def test_doctor_ignores_the_operators_zsh_startup_files(tmp_path, monkeypatch):
+    """GH-787's gate finding: bin/ccmorph is a zsh script, so zsh runs
+    $ZDOTDIR/.zshenv before the CLI does. An operator's startup file that puts
+    brew back on PATH changed the install step the report named, so a test that
+    hid the tool from PATH passed on the gate and failed on that machine. The
+    child must see no startup file but the test's own."""
+    hostile = tmp_path / "zdot"
+    (hostile / "bin").mkdir(parents=True)
+    brew = hostile / "bin" / "brew"
+    brew.write_text("#!/bin/sh\nexit 0\n")
+    brew.chmod(0o755)
+    (hostile / ".zshenv").write_text(f'export PATH="{hostile}/bin:$PATH"\n')
+    monkeypatch.setenv("ZDOTDIR", str(hostile))
+    # the claude stub's directory first: a host with no claude of its own fails before the bridge row
+    path = os.pathsep.join([str(tmp_path / "bin"), path_without("cliproxyapi", "brew")])
+    result, _, _ = run_doctor(tmp_path, "type=provider\nprovider=antigravity\n",
+                              env_extra={"PATH": path})
+    assert result.returncode == 1, result.stdout
+    assert ("FAIL not ready: cliproxyapi not found — install it: "
+            "https://github.com/router-for-me/CLIProxyAPI") in result.stdout, result.stdout
+    assert "brew install cliproxyapi" not in result.stdout, result.stdout
