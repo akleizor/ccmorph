@@ -856,3 +856,26 @@ func TestProfileLockPassesThroughALockHeldUnderAnotherSpelling(t *testing.T) {
 		t.Fatalf("writer did not pass through a lock held under another spelling (ran=%v ok=%v)", ran, ok)
 	}
 }
+
+// GH-551: rm is the one verb that takes the pre-#373 range (#449), and its flow
+// re-execs under `model-window --locked <name>`. That key was validated at
+// ValidName, so the normal command refused a legacy name before removal could
+// run and every test that set CCMORPH_CONTEXT_LOCKED missed it. The lock takes
+// every name removal can address, and still refuses one past the storable bound.
+func TestLockedTakesTheLegacyNamesRemovalAddresses(t *testing.T) {
+	e := setup(t)
+	for _, length := range []int{profile.MaxNameLen + 1, 240, 241, 245, profile.LegacyMaxNameLen} {
+		name := strings.Repeat("n", length)
+		code, err := windowRun([]string{"--locked", name, "true"}, io.Discard, io.Discard)
+		if err != nil || code != 0 {
+			t.Fatalf("locked %d-byte name: exit %d, err %v", length, code, err)
+		}
+		if _, err := os.Stat(filepath.Join(e.state, ".locks", name+".lock")); err != nil {
+			t.Fatalf("the %d-byte name's lock was not taken: %v", length, err)
+		}
+	}
+	name := strings.Repeat("n", profile.LegacyMaxNameLen+1)
+	if code, err := windowRun([]string{"--locked", name, "true"}, io.Discard, io.Discard); err == nil || code != 0 {
+		t.Fatalf("a name past the storable bound must still be refused (exit %d, err %v)", code, err)
+	}
+}

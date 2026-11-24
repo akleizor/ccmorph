@@ -145,7 +145,7 @@ func runLocked(args []string, stderr io.Writer) (int, error) {
 	}()
 	var held []string
 	for _, profile := range profiles {
-		path, err := ProfilePath(profile)
+		path, err := lockProfilePath(profile)
 		if err != nil {
 			return 0, err
 		}
