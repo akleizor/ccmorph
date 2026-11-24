@@ -26,6 +26,8 @@ Scope guarantees:
     so tools run inside the session keep normal TLS
   - the route key reaches the proxy through a 0600 file it deletes on read, never argv
     or the Claude process environment
+  - a profile --switch brings up reaches the proxies through a 0600 handoff
+    (switch-<profile>.json) that lives as long as the edge it serves, never argv
   - fail closed: a dead proxy or route is an error in the session, never a silent
     fallback to the account's own quota
   - this process execs into Claude; the proxy and adapter watch its pid and exit with it
@@ -33,6 +35,7 @@ Scope guarantees:
 from __future__ import annotations
 
 import argparse
+import fcntl
 import functools
 import json
 import os
@@ -54,7 +57,8 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 # the routing decision beside this script, however it was loaded (test, install, exec)
 sys.path.insert(0, str(HERE))
-from rc_route import ACCOUNT_METADATA  # noqa: E402
+from rc_route import ACCOUNT_METADATA, edge_serves, forget_handoff, handoff_lock, switch_edge  # noqa: E402  (edge_serves: the one live-edge rule)
+import rc_route  # noqa: E402  (rc_route.proc_started: the one start identity, looked up per call)
 LIB_DIR = Path(os.environ.get("CCMORPH_LIB_DIR") or HERE.parent.parent / "lib")
 CCMORPH = LIB_DIR / "ccmorph.sh"
 ADAPTER = LIB_DIR.parent / "libexec" / "ccmorph-core"
@@ -76,15 +80,9 @@ def edge_port(route: str) -> int:
 
 
 def live_edge(route: str) -> dict | None:
-    """The route's shared edge if its process is alive and its proxy answers."""
-    try:
-        edge = json.loads((EDGES / f"{route}.json").read_text())
-        os.kill(int(edge["pid"]), 0)
-        with socket.create_connection(("127.0.0.1", int(edge["port"])), timeout=1):
-            pass
-        return edge if Path(edge["ca"]).exists() else None
-    except (OSError, ValueError, KeyError, TypeError):
-        return None
+    """The route's shared edge if its process is alive, its proxy answers and its CA
+    exists: rc_route.edge_serves, the one rule the addon's fallback note counts with."""
+    return edge_serves(EDGES / f"{route}.json")
 
 # By default phone sessions keep Claude Code's own aliases (fable, opus, sonnet,
 # haiku -> the real Claude ids, 1:1), which the route serves by name. --route-models carries the
@@ -345,8 +343,8 @@ def keep_host(account_dir: str, folder: str) -> None:
     dst.write_text(json.dumps(data))
 
 
-def start_adapter(route: str, parent: int, env: dict[str, str]) -> str:
-    """Return the loopback URL of the route's gateway edge (see shim)."""
+def start_adapter(route: str, parent: int, env: dict[str, str]) -> tuple[str, int]:
+    """Return (loopback URL, pid) of a fresh gateway adapter for the route (see shim)."""
     ready = tempfile.NamedTemporaryFile(prefix="ccmorph-rc-ready.", delete=False)
     # --model, as a normal ccmorph launch passes it: the adapter then verifies one
     # (cached) model. Without it every launch re-probes the whole gateway inventory,
@@ -365,7 +363,7 @@ def start_adapter(route: str, parent: int, env: dict[str, str]) -> str:
         while time.monotonic() < deadline:
             line = Path(ready.name).read_text().splitlines()[:1]
             if line and line[0].startswith("PORT="):
-                return f"http://127.0.0.1:{int(line[0][5:])}"
+                return f"http://127.0.0.1:{int(line[0][5:])}", proc.pid
             if line and line[0].startswith("EXIT="):
                 die(f"adapter declined: {line[0][5:]}")
             if proc.poll() is not None:
@@ -375,6 +373,107 @@ def start_adapter(route: str, parent: int, env: dict[str, str]) -> str:
         die("adapter did not become ready within 120s")
     finally:
         os.unlink(ready.name)
+
+
+def our_adapter(pid: int, profile: str, edge: int) -> bool:
+    """Whether `pid` is the sidecar start_adapter launched for `profile` beside edge
+    `edge`, per its own argv: `<...>/ccmorph-core adapter <profile> ... --parent-pid
+    <edge>`. A word found anywhere in argv is no proof (issue #595: 'adapter
+    different-profile --model oli --parent-pid 777' passed), and a signal must never
+    reach a stranger."""
+    try:
+        ps = subprocess.run(["ps", "-p", str(pid), "-o", "command="],
+                            capture_output=True, text=True, errors="replace", timeout=10).stdout
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return False
+    argv = ps.split()
+    if len(argv) < 3 or not argv[0].endswith("/ccmorph-core") or argv[1:3] != ["adapter", profile]:
+        return False
+    flags = argv[3:]
+    return "--parent-pid" in flags and flags[flags.index("--parent-pid") + 1:][:1] == [str(edge)]
+
+
+def edge_started(pid: int) -> str | None:
+    """The identity of the edge process at `pid`, beyond its number: the moment it
+    started (rc_route.proc_started). That cannot change while the process lives, and
+    whatever process the OS gives the number next starts at another moment, so a
+    handoff or sidecar naming only a pid does not outlive the edge it was made
+    beside once the number is recycled (issue #595)."""
+    return rc_route.proc_started(pid)
+
+
+def _listening(upstream: str) -> bool:
+    """Whether an upstream URL's port answers: proof the adapter behind it serves."""
+    target = urllib.parse.urlsplit(upstream)
+    try:
+        with socket.create_connection((target.hostname, target.port), timeout=1):
+            return True
+    except (OSError, ValueError, TypeError):
+        return False
+
+
+def _retire(pid: int) -> None:
+    """Stop a replaced sidecar and confirm it is gone -- TERM then KILL, polled --
+    before its replacement starts. An orphaned adapter keeps its port and its old
+    endpoint answerable forever (issue #595); a switch that cannot clear the old
+    one refuses to double rather than leave both serving."""
+    for sig, tries in ((signal.SIGTERM, 50), (signal.SIGKILL, 50)):
+        try:
+            os.kill(pid, sig)
+        except ProcessLookupError:
+            return                        # gone between the look and the signal: it retired itself
+        except OSError:
+            pass                          # cannot signal it: the probe below decides
+        for _ in range(tries):
+            try:
+                os.kill(pid, 0)
+            except ProcessLookupError:
+                return
+            time.sleep(0.1)
+    die(f"sidecar adapter {pid} will not exit; the switch is refused rather than doubled (issue #595)")
+
+
+def sidecar(profile: str, owner: int, started: str) -> tuple[str, int]:
+    """The (upstream, pid) of the ONE adapter serving `profile` beside edge `owner`.
+
+    Every `--switch` used to start another adapter and orphan the last beside the
+    same edge (issue #595). <profile>'s record under the state dir is the ledger:
+    reuse the adapter while it is ours, belongs to this edge, and answers; else
+    retire it -- confirmed gone -- and start exactly one replacement. The read, the
+    start and the record are one step under a per-profile lock, so two overlapping
+    switches cannot both start one; a record that cannot be written stops the new
+    adapter rather than leave it running unrecorded. The ledger names the edge's
+    start as well as its pid, so an adapter made beside an edge that exited is never
+    reused beside the next edge the OS gives that number."""
+    STATE.mkdir(mode=0o700, parents=True, exist_ok=True)
+    hand = STATE / f"sidecar-{profile}.json"
+    with open(STATE / f"sidecar-{profile}.lock", "a") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)          # released when the file closes
+        if edge_started(owner) != started:        # the edge may have been replaced while we waited
+            die(f"edge {owner} was replaced while this switch waited; nothing was changed -- run "
+                f"`ccmorph-rc {profile} --switch` again to hand {profile} to the edge live now (issue #595)")
+        try:
+            rec = json.loads(hand.read_text())
+            old, edge, url = int(rec["pid"]), int(rec["edge"]), str(rec["upstream"])
+            was = rec.get("edge_started")
+        except (OSError, ValueError, KeyError, TypeError):
+            old = edge = -1
+            url, was = "", None
+        if (old >= 0 and edge == owner and was == started
+                and our_adapter(old, profile, edge) and _listening(url)):
+            return url, old
+        if old >= 0 and our_adapter(old, profile, edge):
+            _retire(old)
+        upstream, pid = start_adapter(profile, owner, adapter_env())
+        try:
+            tmp = hand.with_suffix(".tmp")
+            tmp.write_text(json.dumps({"pid": pid, "upstream": upstream, "edge": owner,
+                                        "edge_started": started}))
+            tmp.replace(hand)
+        except OSError as e:
+            _retire(pid)
+            die(f"sidecar record not written ({e}); its new adapter was stopped, not left unrecorded")
+        return upstream, pid
 
 
 # The addon is the only thing standing between Claude and api.anthropic.com. Two
@@ -431,7 +530,7 @@ def own_edge(route: str, me: int, args, fixed_port: int | None):
 
     mitmdump = shutil.which("mitmdump") or die("mitmdump not found: brew install mitmproxy")
 
-    upstream = start_adapter(route, me, adapter_env())
+    upstream, _ = start_adapter(route, me, adapter_env())
 
     STATE.mkdir(parents=True, exist_ok=True)
     STATE.chmod(0o700)
@@ -572,30 +671,62 @@ def write_inference(word: str, path: Path = INFERENCE) -> None:
         raise
 
 
+def read_inference(path: Path | None = None) -> str | None:
+    """The word every proxy is answering now; None when there is none to read.
+    rc-hosts asks before overwriting: a word the person `--switch`ed to is not
+    the supervisor's to erase (issue #595)."""
+    try:
+        return (path or INFERENCE).read_text().strip() or None
+    except OSError:
+        return None
+
+
+def inference_word(profile: str, account: str) -> str:
+    """The one rule for what a profile name becomes in the switch file: "account"
+    for the account profile, "route" ONLY while an edge really answers for that
+    profile (the word tells a proxy to serve from its own upstream), else the
+    profile itself, which has to be brought up beside the live edge. rc-hosts'
+    config path asks this same question: its own answer used to be any
+    config-named route, edge or no edge, so `inference=gateway` with the gateway
+    edge down silently put the phone on whichever route did answer (issue #595)."""
+    if profile == account:
+        return "account"
+    return "route" if live_edge(profile) else profile
+
+
 def switch(profile: str, account: str) -> None:
     """Send every host's inference to `profile` from the next turn, with no restart:
     the account profile (Anthropic on the phone's own login), a profile that has a live
     edge (that edge's route), or any other route or provider profile, which is brought
-    up beside the edge and handed to its proxy."""
-    word = "account" if profile == account else "route" if live_edge(profile) else profile
+    up beside the edge and handed to its proxy. A repeat brings the same thing up as
+    one adapter: the sidecar is reused while it serves, else replaced after its old
+    process is confirmed gone (issue #595). The handoff also names that edge
+    process's start, so the supervisor can tell it from a later edge the OS gave the
+    same pid, and re-hand instead of leaving the old endpoint in place."""
+    word = inference_word(profile, account)
     hand = payload = None
     if word == profile:
         if profile_type(profile) == "sub":
             die(f"'{profile}' is a Claude account profile, but the hosts sign in as '{account}'")
-        live = [e for f in (EDGES.glob("*.json") if EDGES.exists() else ()) if (e := live_edge(f.stem))]
         # shortcut: one shared edge (rc-hosts runs one route); a second edge would need its own handoff.
-        if len(live) != 1:
-            die(f"--switch needs exactly one live shared edge, found {len(live)}")
-        owner = int(live[0]["pid"])          # the profile lives as long as the edge that serves it
+        # switch_edge is also what the fallback note names this command by.
+        n, edge = switch_edge(EDGES, lambda f: live_edge(f.stem))
+        if n != 1:
+            die(f"--switch needs exactly one live shared edge, found {n}")
+        if edge is None:
+            die("the start of the live shared edge cannot be read on this system, so a handoff "
+                "could outlive it; nothing was switched (issue #595)")
+        owner, started = int(edge["pid"]), str(edge["started"])   # the profile lives as long as that edge
         route_env = resolve_route(profile)
         retire_route_with(owner, route_env.get("CCMORPH_ROUTE_HANDLE", ""))
         key = route_env.get("ANTHROPIC_API_KEY") or die(f"profile '{profile}' has no key")
         # a provider's bridge already speaks the Anthropic API; a key profile goes through the adapter
         upstream = (route_env.get("ANTHROPIC_BASE_URL") or die(f"profile '{profile}' has no endpoint")
-                    if profile_type(profile) == "provider" else start_adapter(profile, owner, adapter_env()))
+                    if profile_type(profile) == "provider" else sidecar(profile, owner, started)[0])
         tiers = pinned_tiers(route_env)
         hand = STATE / f"switch-{profile}.json"
-        payload = json.dumps({"upstream": upstream, "key": key, "tiers": tiers}).encode()
+        payload = json.dumps({"upstream": upstream, "key": key, "tiers": tiers,
+                              "edge": owner, "edge_started": started}).encode()
     # From the temp's first byte to the word that makes the next request read it, the
     # handoff is the route key on disk with nothing else to remove it. The cleanup
     # below runs only when Python unwinds: TERM/HUP/QUIT at their default kill without
@@ -606,32 +737,36 @@ def switch(profile: str, account: str) -> None:
     old_mask = signal.pthread_sigmask(
         signal.SIG_BLOCK, (signal.SIGTERM, signal.SIGHUP, signal.SIGQUIT, signal.SIGINT))
     try:
-        if hand is not None:
-            # One temp per switch (mkstemp: unique name, 0600 from creation). A shared
-            # switch-<profile>.tmp let a failed switch's cleanup delete the temp another
-            # switch to the same profile had just staged there; this name is only ours.
-            fd, tmp = tempfile.mkstemp(dir=hand.parent, prefix=hand.name + ".", suffix=".tmp")
-            try:
-                try:
-                    os.write(fd, payload)
-                finally:
-                    os.close(fd)
-                os.replace(tmp, hand)
-            except BaseException:
-                with suppress(OSError):
-                    os.unlink(tmp)    # a temp that never became the handoff still holds the route key
-                raise
-        try:
-            write_inference(word)
-        except BaseException:
+        with (handoff_lock(hand) if hand is not None else suppress()):   # its removers re-read under it
             if hand is not None:
-                # The word never landed, so no request reads this handoff: leaving it would
-                # keep the route key on disk for good (README: no lingering file). Only this
-                # write's own payload goes, never a newer handoff another switch left.
-                with suppress(OSError):
-                    if hand.read_bytes() == payload:
-                        hand.unlink()
-            raise
+                if edge_started(owner) != started:   # the edge may have been replaced since switch_edge looked
+                    die(f"edge {owner} was replaced while this switch ran; nothing was handed over -- run "
+                        f"`ccmorph-rc {profile} --switch` again to hand {profile} to the edge live now (issue #595)")
+                # One temp per switch (mkstemp: unique name, 0600 from creation). A shared
+                # switch-<profile>.tmp let a failed switch's cleanup delete the temp another
+                # switch to the same profile had just staged there; this name is only ours.
+                fd, tmp = tempfile.mkstemp(dir=hand.parent, prefix=hand.name + ".", suffix=".tmp")
+                try:
+                    try:
+                        os.write(fd, payload)
+                    finally:
+                        os.close(fd)
+                    os.replace(tmp, hand)
+                except BaseException:
+                    with suppress(OSError):
+                        os.unlink(tmp)    # a temp that never became the handoff still holds the route key
+                    raise
+            try:
+                write_inference(word, INFERENCE)
+            except BaseException:
+                if hand is not None:
+                    # The word never landed, so no request reads this handoff: leaving it would
+                    # keep the route key on disk for good (README: no lingering file). Only this
+                    # write's own payload goes, never a newer handoff another switch left.
+                    with suppress(OSError):
+                        if hand.read_bytes() == payload:
+                            hand.unlink()
+                raise
     finally:
         signal.pthread_sigmask(signal.SIG_SETMASK, old_mask)
     print(f"ccmorph-rc: inference now goes to '{profile}' from the next turn", file=sys.stderr)
