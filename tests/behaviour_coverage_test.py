@@ -1104,6 +1104,10 @@ def test_a_bad_name_gets_the_one_reply_from_every_command_gh_373(box, argv, name
     before = state_files(box.state)
     result = box.run(*[a.format(n=name) for a in argv])
     assert result.returncode == 1, (result.stdout, result.stderr)
+    # rm takes the pre-#373 range, so its length refusal names rm's own bound,
+    # not MaxNameLen's (#551); every other verb still says 200.
+    if argv[0] == 'rm':
+        reply = reply.replace('at most 200', 'at most 250')
     # The reply names the words that could be the typo, as the no-profile reply
     # does (#228), so a bad name still cannot hide the profiles that exist.
     assert result.stderr == 'ccmorph: ' + reply + '. Profiles: gw tok work\n', result.stderr

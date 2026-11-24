@@ -139,23 +139,45 @@ func TestValidNameCapsTheLength(t *testing.T) {
 	}
 }
 
-// GH-449: rm must still address a profile made before #373's length limit. The
-// legacy range ends where the longest derived file (".<name>.bridge.users",
-// +14) reaches NAME_MAX, and nothing past it was ever addressable.
+// GH-449: rm must still address a profile made before #373's length limit.
+// Every profile makes "<name>.conf" and ".locks/<name>.lock" (+5), so 250 is
+// the last name inside NAME_MAX's 255. The bridge file (".<name>.bridge.users",
+// +14 → 241) bounds only a file a bridge-bearing provider makes: a name between
+// the two simply has no bridge file to remove (#551).
 func TestRemovableNameAcceptsTheLegacyRange(t *testing.T) {
-	if !RemovableName(strings.Repeat("y", MaxNameLen+1)) {
-		t.Fatal("a name inside the legacy range must be removable")
-	}
-	if !RemovableName(strings.Repeat("y", LegacyMaxNameLen)) {
-		t.Fatal("the last name whose bridge file fits NAME_MAX must be removable")
+	// Every length in the legacy range, not one pin: a rule that rejects any
+	// single one of them (240 and 241 are the old test's accepted lengths) must
+	// fail here (#551).
+	for length := MaxNameLen + 1; length <= LegacyMaxNameLen; length++ {
+		if !RemovableName(strings.Repeat("y", length)) {
+			t.Fatalf("a %d-byte name inside the legacy range must be removable", length)
+		}
 	}
 	if RemovableName(strings.Repeat("y", LegacyMaxNameLen+1)) {
-		t.Fatal("a name whose bridge file would exceed NAME_MAX must stay refused")
+		t.Fatal("a name whose conf would exceed NAME_MAX must stay refused")
 	}
 	for _, name := range []string{"Active", "ccmorph", "a-b", "a.b", ""} {
 		if RemovableName(name) {
 			t.Fatalf("%q must stay invalid", name)
 		}
+	}
+}
+
+// RemovableBadNameMsg is the refusal rm gives: the same one line, with the
+// length reason naming the bound rm applies, not ValidName's (#551).
+func TestRemovableBadNameMsgNamesRmsOwnBound(t *testing.T) {
+	long := strings.Repeat("y", 300)
+	got := RemovableBadNameMsg(long)
+	want := "invalid profile name '" + strings.Repeat("y", 32) +
+		"…': too long; at most 250 of A-Z, a-z, 0-9 and _"
+	if got != want {
+		t.Fatalf("RemovableBadNameMsg = %q, want %q", got, want)
+	}
+	if got == BadNameMsg(long) {
+		t.Fatal("the removable refusal must name rm's own bound, not ValidName's 200")
+	}
+	if RemovableBadNameMsg("my-work") != BadNameMsg("my-work") {
+		t.Fatal("a name refused for its shape hears the same reason either way")
 	}
 }
 
