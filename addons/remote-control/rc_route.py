@@ -10,8 +10,14 @@ header is dropped before the route key is set, and OAuth-only beta flags go with
 """
 from __future__ import annotations
 
+import contextlib
+import fcntl
 import json
+import os
 import re
+import socket
+import sys
+from pathlib import Path
 from urllib.parse import urlsplit
 
 FIRST_PARTY_HOST = "api.anthropic.com"
@@ -39,6 +45,124 @@ def inference_target(switch: str | None) -> str:
     except OSError:
         return "route"
     return word if SWITCH_WORD.fullmatch(word) else "route"
+
+
+def proc_started(pid: int) -> str | None:
+    """When the process at `pid` started, exactly enough that no later process the
+    OS gives the same number can share it (issue #595); None when no process runs
+    there or this OS has no exact start. Linux: the boot id and the start tick
+    (/proc/<pid>/stat field 22). macOS: the kernel's p_starttime to the microsecond
+    (sysctl kern.proc.pid). Never `ps`: it prints whole seconds."""
+    try:
+        stat = Path(f"/proc/{pid}/stat").read_bytes()
+        ticks = stat[stat.rindex(b")") + 1:].split()[19].decode()   # field 22: starttime
+        boot = Path("/proc/sys/kernel/random/boot_id").read_text().strip()
+        return f"{boot}:{ticks}"
+    except (OSError, ValueError, IndexError, UnicodeDecodeError):
+        pass
+    if sys.platform != "darwin" or pid <= 0:
+        return None
+    import ctypes
+    import struct
+    try:
+        sysctl = ctypes.CDLL(None, use_errno=True).sysctl
+    except (OSError, AttributeError):
+        return None
+    sysctl.argtypes = [ctypes.POINTER(ctypes.c_int), ctypes.c_uint, ctypes.c_void_p,
+                       ctypes.POINTER(ctypes.c_size_t), ctypes.c_void_p, ctypes.c_size_t]
+    sysctl.restype = ctypes.c_int
+    mib = (ctypes.c_int * 4)(1, 14, 1, pid)         # CTL_KERN, KERN_PROC, KERN_PROC_PID
+    buf = ctypes.create_string_buffer(1024)         # struct kinfo_proc: 648 bytes on 64-bit macOS
+    size = ctypes.c_size_t(len(buf))
+    if sysctl(mib, 4, buf, ctypes.byref(size), None, 0) != 0 or size.value < 16:
+        return None                                  # size 0: no process holds the pid
+    sec, usec = struct.unpack_from("=qi", buf.raw, 0)   # kp_proc.p_starttime (struct timeval)
+    return f"darwin:{sec}.{usec:06d}"
+
+
+def edge_serves(record: Path) -> dict | None:
+    """The shared edge `record` describes if it can serve right now: its process is
+    alive, its proxy answers on loopback and its CA file is still there. The one
+    rule: ccmorph-rc's live_edge (the count --switch refuses on, and rc-hosts'
+    edge_ready) and the fallback note below both call it, so the note can never
+    count an edge --switch would refuse (issue #595: the note skipped the CA)."""
+    try:
+        edge = json.loads(record.read_text())
+        os.kill(int(edge["pid"]), 0)
+        with socket.create_connection(("127.0.0.1", int(edge["port"])), timeout=1):
+            pass
+        return edge if Path(edge["ca"]).exists() else None
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
+
+
+def switch_edge(edges: Path, serves=None) -> tuple[int, dict | None]:
+    """The shared edge `ccmorph-rc <profile> --switch` hands a profile to: (how many
+    edges under `edges` serve by edge_serves, that edge's record with its "started"
+    added -- or None unless exactly one serves and its start can be read). --switch
+    and the fallback note both ask this, so the note names the command only where
+    it lands (issue #595). `serves` stands in for edge_serves (ccmorph-rc passes
+    its live_edge, which is edge_serves)."""
+    serves = serves or edge_serves
+    live = [e for f in (sorted(edges.glob("*.json")) if edges.is_dir() else ()) if (e := serves(f))]
+    if len(live) != 1:
+        return len(live), None
+    started = proc_started(int(live[0]["pid"]))
+    return 1, (dict(live[0], started=started) if started else None)
+
+
+def handoff_lock_path(hand: Path) -> Path:
+    """The lock file beside handoff `hand`: a dotfile, so it is never taken for a
+    handoff (`switch-*`) -- it holds no key and outlives no switch's promise."""
+    return hand.with_name(f".{hand.stem}.lock")
+
+
+@contextlib.contextmanager
+def handoff_lock(hand: Path):
+    """The lock `ccmorph-rc --switch` publishes handoff `hand` under and every
+    remover of it takes, so a remover never unlinks a replacement published after
+    it looked (issue #595). Released when the block ends, or with its process."""
+    with open(handoff_lock_path(hand), "a") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        yield
+
+
+def forget_handoff(hand: Path, stale) -> str | None:
+    """Remove handoff `hand` if `stale(record)` -- a reason, or None -- holds for
+    the record on disk now, read under handoff_lock; the reason when it was
+    removed. A record `stale` cannot judge is kept."""
+    try:
+        with handoff_lock(hand):
+            try:
+                rec = json.loads(hand.read_text())
+                why = stale(rec) if isinstance(rec, dict) else None
+            except (OSError, ValueError, KeyError, TypeError):
+                return None
+            if why:
+                hand.unlink()
+            return why
+    except OSError:
+        return None
+
+
+def lost_endpoint_note(target: str, bridge_dir: Path) -> str:
+    """The per-turn line when the word names <profile> and no handoff for it can be
+    read. It names `ccmorph-rc <profile> --switch` only where that command lands:
+    switch_edge finds the one shared edge, the same rule --switch hands over with
+    (issue #595)."""
+    edges = bridge_dir / "edges"
+    if edge_serves(edges / f"{target}.json"):
+        return (f"switch    {target} has no endpoint in this proxy but its own edge is live: "
+                f"ccmorph-rc {target} --switch sets the route word; the route answers meanwhile")
+    n, edge = switch_edge(edges)
+    if edge:
+        return (f"switch    {target} has no endpoint in this proxy; "
+                f"ccmorph-rc {target} --switch hands it over; the route answers meanwhile")
+    if n == 1:
+        return (f"switch    {target} has no endpoint in this proxy, and the start of the one live "
+                f"shared edge cannot be read here, so nothing can be handed to it; the route answers")
+    return (f"switch    {target} has no endpoint in this proxy and no single live shared edge "
+            f"to hand it to ({n} live); the route answers meanwhile")
 
 
 def is_inference(host: str, path: str) -> bool:

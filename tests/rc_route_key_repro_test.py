@@ -69,7 +69,8 @@ with tempfile.TemporaryDirectory() as state:
     rc.update(live_edge=lambda p: {"pid": 42} if p == "main" else None,
               profile_type=lambda p: "apikey", adapter_env=lambda: {},
               resolve_route=lambda p: {"ANTHROPIC_API_KEY": "test-only-key"},
-              retire_route_with=lambda *a: None, start_adapter=lambda *a: "http://127.0.0.1:1")
+              retire_route_with=lambda *a: None, start_adapter=lambda *a: ("http://127.0.0.1:1", 4321))
+    rc["rc_route"].proc_started = lambda pid: "start-42"   # the edge is known by its start (#595)
     real_replace, real_path_replace = os.replace, Path.replace
     staged, resume = threading.Event(), threading.Event()
     errors = []
