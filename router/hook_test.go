@@ -11,7 +11,7 @@ import (
 	"time"
 
 	"github.com/akleizor/ccmorph/quota"
-	"github.com/akleizor/ccmorph/util"
+	"github.com/akleizor/ccmorph/util/tier"
 )
 
 func TestTheMCPServerListsDelegateAndRefusesAnEmptyPrompt(t *testing.T) {
@@ -91,7 +91,7 @@ func hookEnv(t *testing.T, enabled bool) string {
 	t.Setenv("XDG_STATE_HOME", state)
 	t.Setenv(WorkerEnv, "")
 	for _, a := range []string{"OPUS", "SONNET", "HAIKU"} {
-		t.Setenv(util.TierEnvKey(a), "")
+		t.Setenv(tier.TierEnvKey(a), "")
 	}
 	for _, n := range []string{"here", "there"} {
 		if err := os.WriteFile(filepath.Join(root, n+".conf"), []byte("type=sub\n"), 0o600); err != nil {
@@ -270,5 +270,19 @@ func TestAnUndeclaredArgumentsSpellingNeverReplacesTheArguments(t *testing.T) {
 	ServeMCP(strings.NewReader(in), &out)
 	if row := lastLedgerRow(t); row["profile"] != "sub" {
 		t.Fatalf("the call must route on the pinned profile, ledgered %+v: %s", row, out.String())
+	}
+}
+
+// GH-544: a tier pinned with the window marker in either case is the alias
+// that runs its bare model natively.
+func TestAliasForReadsAPinUnderEitherMarkerSpellingIssue544(t *testing.T) {
+	for _, a := range []string{"opus", "sonnet", "haiku"} {
+		t.Setenv(tier.TierEnvKey(a), "")
+	}
+	for _, pin := range []string{"gw-opus[1m]", "gw-opus[1M]"} {
+		t.Setenv(tier.TierEnvKey("opus"), pin)
+		if got := aliasFor("gw-opus"); got != "opus" {
+			t.Errorf("pin %q: alias %q, want opus", pin, got)
+		}
 	}
 }

@@ -54,6 +54,7 @@ import (
 
 	"github.com/akleizor/ccmorph/netroute"
 	"github.com/akleizor/ccmorph/util"
+	"github.com/akleizor/ccmorph/util/tier"
 )
 
 func parseInbound(raw string) (*inbound, error) {
@@ -854,14 +855,14 @@ func (s *Server) resolve(body []byte, d *doc, key string) ([]byte, *doc, string)
 	if !ok {
 		return body, d, ""
 	}
-	base := strings.TrimSuffix(asked, "[1m]")
+	base := tier.TrimWindowMarker(asked)
 	// One lookup, on the id this request will be routed by: the window marker is
 	// stripped from it, the shell strips it before it hands a map its model and
 	// refuses a key that carries it, so a second lookup on the exact spelling
 	// could only pick a target nothing else resolved.
 	if mapped, ok := s.Routes.mappingTarget(asked); ok {
 		// Explicit maps are final: do not substitute even a newer Claude target.
-		out := withModel(d, strings.TrimSuffix(mapped, "[1m]"))
+		out := withModel(d, tier.TrimWindowMarker(mapped))
 		return out, reparse(out, d), base
 	}
 	if _, _, ok := claudeVersion(base); !ok {

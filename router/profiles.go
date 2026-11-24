@@ -18,6 +18,7 @@ import (
 	"github.com/akleizor/ccmorph/shim"
 	"github.com/akleizor/ccmorph/util"
 	"github.com/akleizor/ccmorph/util/paths"
+	"github.com/akleizor/ccmorph/util/tier"
 )
 
 // QuotaInput is `ccmorph quota`'s stdin for these profiles, built by the cli,
@@ -69,12 +70,12 @@ func readServed(name string) (served, bool) {
 	for m := range ctxwindow.DiscoveredValues(f) {
 		set[m] = true
 	}
-	for _, k := range util.TierWords {
-		set[f["env."+util.TierEnvKey(k)]] = true
+	for _, k := range tier.TierWords {
+		set[f["env."+tier.TierEnvKey(k)]] = true
 	}
 	set[f["model"]] = true
 	for m := range set {
-		m = strings.TrimSuffix(m, "[1m]")
+		m = tier.TrimWindowMarker(m)
 		if m != "" && !ctxwindow.IsExcluded(f, m) && !slices.Contains(s.models, m) {
 			s.models = append(s.models, m)
 		}

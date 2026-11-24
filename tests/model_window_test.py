@@ -209,6 +209,14 @@ class MappedTarget(unittest.TestCase):
         self.assertEqual(result["source"], "default")
         self.assertNotEqual(result["window"], 1000000)
 
+    def test_a_marked_source_row_never_sizes_the_target_issue_544(self):
+        # The source's row in its marked spelling is still the source's: the
+        # marked spelling is probed as written only for an unmapped id, whose
+        # served id is its own.
+        _, result, _ = run("gw", "claude-opus-5[1M]", {"claude-opus-5[1M]": 1000000}, model_map=self.MAP)
+        self.assertTrue(result["unprobed"])
+        self.assertEqual(result["source"], "default")
+
     def test_a_native_route_ignores_the_map(self):
         # The shell drops model_map on a native route (ccmorph-models `_ccm_models_…`
         # gate): no shim runs there, so the map decides nothing and must not be

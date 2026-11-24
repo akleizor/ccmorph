@@ -8,6 +8,8 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"github.com/akleizor/ccmorph/util/tier"
 )
 
 // Refused is the line adapter-start prints on its stdout when the adapter
@@ -45,7 +47,9 @@ func adapterStart(args []string, _ io.Reader, out, errw io.Writer) int {
 	core, profile, model, parent, logPath := args[0], args[1], args[2], args[3], args[4]
 	argv := []string{"adapter", profile, "--auto"}
 	if model != "" {
-		argv = append(argv, "--model", strings.SplitN(model, "[", 2)[0])
+		// The adapter serves the picked id with only its trailing window
+		// marker removed — an id's own brackets are part of the id (#544).
+		argv = append(argv, "--model", tier.TrimWindowMarker(model))
 	}
 	argv = append(argv, "--parent-pid", parent)
 	logf, err := os.OpenFile(logPath, os.O_WRONLY|os.O_APPEND|os.O_CREATE, 0o600)

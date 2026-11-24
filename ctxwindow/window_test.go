@@ -557,6 +557,48 @@ func TestResolverInputsParseTheMapAndDiscoveredDocOnceIssue485(t *testing.T) {
 	}
 }
 
+// GH-544: the marker has been served in both spellings, and a strip that read
+// only the lowercase one left a [1M]-spelled id outside every lookup — it
+// defaulted to the 200k window, and a sized claude- id that did resolve
+// carried the marker twice. Either spelling finds the window the bare id is
+// pinned, discovered, declared or catalogued under, and a pin saved under the
+// marked spelling is found under the spelling it was saved with.
+func TestEitherMarkerSpellingResolvesTheSameWindowIssue544(t *testing.T) {
+	e := setup(t)
+	write(t, e.a, "type=apikey\nbase_url=https://a.invalid\napi_key={{SECRET_mnvzztcsdqnk}}\n"+
+		"context_window.pinned=123000\ncontext_window.marked[1M]=456000\n")
+	_, pre, _ := ReadConf(e.a)
+	write(t, DiscoveredPath(e.a), `{"route":"`+RouteFingerprint(pre)+`","models":{"found":654000,"served[1M]":222000}}`+"\n")
+	write(t, filepath.Join(e.root, "share/model-catalogue.json"),
+		`{"models":{"anthropic/claude-opus-5":{"limit":{"context":1000000}}}}`)
+	t.Setenv("MODEL_WINDOW_ENDPOINT_JSON", `[{"id":"declared","context_length":321000}]`)
+
+	in := LoadInputs(e.a)
+	in.Preload()
+	for _, c := range []struct {
+		model  string
+		want   int64
+		source string
+	}{
+		{"pinned[1M]", 123000, "conf-manual"},
+		{"marked[1M]", 456000, "conf-manual"},
+		{"found[1M]", 654000, "conf-discovered"},
+		{"served[1M]", 222000, "conf-discovered"},
+		{"declared[1M]", 321000, "endpoint"},
+		{"claude-opus-5[1M]", 1000000, "catalogue-bundled"},
+	} {
+		got := in.Resolve(c.model)
+		if got.Window != c.want || got.Source != c.source {
+			t.Errorf("%s: window %d from %s, want %d from %s", c.model, got.Window, got.Source, c.want, c.source)
+		}
+	}
+	// A sized claude- id carries exactly one marker: the strip removed the
+	// uppercase spelling, the append adds the canonical lowercase one.
+	if got := in.Resolve("claude-opus-5[1M]"); got.SendID != "claude-opus-5[1m]" {
+		t.Errorf("the send id carries the marker twice: %q", got.SendID)
+	}
+}
+
 // GH-561: the discovered values and sources tables are built once per Inputs:
 // after a Resolve, replacing the cached doc's models and sources changes no
 // later answer — a picker walk over N models does one build of each table.

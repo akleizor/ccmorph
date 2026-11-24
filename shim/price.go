@@ -18,6 +18,7 @@ import (
 
 	"github.com/akleizor/ccmorph/util/modelsdev"
 	"github.com/akleizor/ccmorph/util/paths"
+	"github.com/akleizor/ccmorph/util/tier"
 )
 
 // --- estimated cost for upstreams that bill outside the response -----------------
@@ -351,7 +352,7 @@ func (b *priceBook) lookup(model string) (price, bool) {
 // gateway names the weights it serves (Qwen3.8-Flash-Next-FP8); the date and the
 // precision are spelling, not another model.
 func lookupIn(table map[string]price, model string) (price, bool) {
-	name := strings.TrimSuffix(model, "[1m]")
+	name := tier.TrimWindowMarker(model)
 	if p, ok := table[name]; ok {
 		return p, true
 	}

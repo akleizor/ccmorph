@@ -13,7 +13,7 @@ import (
 	"time"
 
 	"github.com/akleizor/ccmorph/ordjson"
-	"github.com/akleizor/ccmorph/util"
+	"github.com/akleizor/ccmorph/util/tier"
 )
 
 // The Claude Code hooks. Each reads one event on stdin and never fails the
@@ -43,7 +43,7 @@ func portableAgent(agent string) bool {
 // aliasFor is the Agent tool's model alias that runs model natively in this session.
 func aliasFor(model string) string {
 	for _, a := range []string{"haiku", "sonnet", "opus"} {
-		if v := os.Getenv(util.TierEnvKey(a)); v != "" && strings.TrimSuffix(v, "[1m]") == model || v == "" && model == a {
+		if v := os.Getenv(tier.TierEnvKey(a)); v != "" && tier.TrimWindowMarker(v) == model || v == "" && model == a {
 			return a
 		}
 	}
