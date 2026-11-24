@@ -145,15 +145,22 @@ func TestSetEffortOverwritesAnInvalidSavedEffort(t *testing.T) {
 	}
 }
 
-// Doctor reads the profile through the same validator, so its row names the
-// same offending value and the same legal set (GH-839).
-func TestDoctorNamesAnInvalidSavedEffort(t *testing.T) {
-	l := storeTestLauncher(t, "vp", invalidEffortConf, `{"env":{}}`)
-	out, rc := readerOutput(t, func() int { return l.doctor("vp", false) })
-	if rc == 0 {
-		t.Fatalf("doctor accepted an invalid profile: %q", out)
-	}
-	if !strings.Contains(out, "invalid effort 'ultra' in 'vp'") || !strings.Contains(out, "low, medium, high, xhigh or max") {
-		t.Fatalf("doctor did not name the value and the legal set: %q", out)
+// Doctor reads the profile through the same validator, so it names the same
+// fault, and its verdict gives the repair list's skip line gives (GH-839).
+func TestDoctorNamesTheConfFaultAndTheSameRepair(t *testing.T) {
+	for _, tc := range []struct{ name, conf, fault, repair string }{
+		{"unknown key", unknownKeyConf, "unknown key 'bogus_key' in 'vp'",
+			"not ready: remove the unknown key 'bogus_key' from vp.conf, or delete it: ccmorph rm vp"},
+		{"invalid effort", invalidEffortConf,
+			"invalid effort 'ultra' in 'vp': effort must be low, medium, high, xhigh or max",
+			"not ready: set a valid level with: ccmorph set vp effort <level>, or delete it: ccmorph rm vp"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			l := storeTestLauncher(t, "vp", tc.conf, `{"env":{}}`)
+			out, rc := readerOutput(t, func() int { return l.doctor("vp", false) })
+			if rc == 0 || !strings.Contains(out, tc.fault) || !strings.Contains(out, tc.repair) {
+				t.Fatalf("doctor: rc %d out %q", rc, out)
+			}
+		})
 	}
 }

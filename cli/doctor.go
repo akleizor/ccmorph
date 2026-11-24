@@ -364,6 +364,11 @@ func (l *launcher) doctor(name string, verbose bool) int {
 			// conf's whole story, and `login` is the one repair every other
 			// verb already names for it — doctor may not point elsewhere.
 			l.status("FAIL", "not ready: sign in again: ccmorph login "+name)
+		} else if repair := profile.RepairOf(readErr); repair != "" {
+			// GH-839: the conf refusal already names the one edit that repairs
+			// it (`set … effort`, remove the unknown key), so the verdict
+			// repeats it instead of a re-create that throws the profile away.
+			l.status("FAIL", "not ready: "+repair)
 		} else {
 			l.status("FAIL", "not ready: "+recreate)
 		}
