@@ -745,7 +745,9 @@ func (l *launcher) claudeHelp() string {
 // claudeArity is the option arity table the argv walkers read, from claudeHelp.
 func (l *launcher) claudeArity() map[string]string { return util.ClaudeOptArities(l.claudeHelp()) }
 
-func isTTY(fd int) bool {
+// isTTY is whether fd is a terminal; a package var so a test can run the
+// terminal launch's branch without one.
+var isTTY = func(fd int) bool {
 	_, err := ioctlTermios(fd)
 	return err == nil
 }

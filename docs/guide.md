@@ -139,7 +139,9 @@ checks that profile, including whether its token or API key is accepted. A
 Claude-account sign-in is checked the same way where Claude Code keeps it in
 the profile home; where it does not (macOS keeps it in the login keychain),
 the report says the sign-in was not checked rather than vouching for it. Its
-last line says whether the profile is ready to run or which lines to fix;
+last line says whether the profile is ready to run or which lines to fix,
+and its exit status says the same: 0 ready, 1 a check failed, 3 it may not
+start (a check could not be confirmed);
 `--verbose` adds a running adapter's processes and ports.
 
 Then set up your first profile:
