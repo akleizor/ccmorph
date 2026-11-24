@@ -38,6 +38,7 @@ typeset -gA _unit_cost=(
   uninstall  1   # 4
   residue    4   # 5
   statedir   3   # 5b + 5c: the CCMORPH_STATE_DIR redirect report
+  xdg        2   # 5f: XDG_CONFIG_HOME cannot hide the runtime from the command (#834)
   linkspell  9   # 5d + 5e: equivalent spellings, links and the rm line
   rerun      1   # 6
   optdeps    2   # 7
@@ -599,6 +600,82 @@ grep -qF "\"$d/home/.claude/plugins/marketplaces/example\"" "$d/home/.claude/plu
   && ok "prior-profiles uninstall: the plugin repair walks the pre-override profile homes too" \
   || { fail "prior-profiles uninstall: plugin index still spelled through the pre-override profile"; cat "$d/home/.claude/plugins/known_marketplaces.json" }
 
+fi
+
+# --- 5f. XDG_CONFIG_HOME cannot hide the runtime from the command (#834)
+if _own xdg; then
+# The README names $XDG_CONFIG_HOME/ccmorph as the state root, and the runtime
+# honours it for STATE — but the launcher also followed it for CODE discovery:
+# the installer wrote the runtime under the config dir as it saw it AT INSTALL
+# TIME, so a later run that exports the variable elsewhere searched a root
+# holding nothing and never the one holding everything, and every command —
+# even `ccmorph --version` — died with "cannot find ccmorph.sh". The install
+# records where it put the runtime, beside the command that must find it, and
+# the documented default root stays searched, so the variable moves state
+# (5b–5e) and never breaks discovery.
+
+run_version() {  # $1 = case dir; remaining args: extra env assignments
+  env -i HOME="$1/home" ZDOTDIR="$1/home" PATH="$1/home/.local/bin:$1/bin:/usr/bin:/bin" \
+    "${@:2}" ccmorph --version >"$1/out" 2>"$1/err"
+}
+
+# (a) the issue's case: install with the variable unset, run under an exported root.
+d=$(fresh_env xdg_run_moved)
+run_installer "$d"; rc=$?
+(( rc == 0 )) || { fail "xdg-run: install rc=$rc"; cat "$d/out"; }
+[[ -f "$d/home/.config/ccmorph/lib/ccmorph.sh" ]] \
+  && ok "xdg-run: install placed the runtime under ~/.config" || fail "xdg-run: no runtime under ~/.config"
+run_version "$d" XDG_CONFIG_HOME="$d/home/otherxdg"; rc=$?
+(( rc == 0 )) && grep -qE '^ccmorph [0-9]' "$d/out" \
+  && ok "xdg-run: --version answers under an exported XDG_CONFIG_HOME" \
+  || { fail "xdg-run: --version died under an exported XDG_CONFIG_HOME (rc=$rc)"; cat "$d/err"; }
+# A pre-record install — or any install whose record is gone — must still
+# answer: the documented default root stays searched without any record.
+rm -f "$d/home/.local/bin/.ccmorph-libdir"
+run_version "$d" XDG_CONFIG_HOME="$d/home/otherxdg"; rc=$?
+(( rc == 0 )) && grep -qE '^ccmorph [0-9]' "$d/out" \
+  && ok "xdg-run: --version answers with no record file" \
+  || { fail "xdg-run: --version died with no record file (rc=$rc)"; cat "$d/err"; }
+# A record that is not an absolute path is a mistake or a tamper, not a path
+# to chase: skipped, never fatal, never sourced.
+print -r -- 'not a directory' > "$d/home/.local/bin/.ccmorph-libdir"
+run_version "$d" XDG_CONFIG_HOME="$d/home/otherxdg"; rc=$?
+(( rc == 0 )) && grep -qE '^ccmorph [0-9]' "$d/out" \
+  && ok "xdg-run: a garbage record is skipped, not followed" \
+  || { fail "xdg-run: --version died on a garbage record (rc=$rc)"; cat "$d/err"; }
+
+# (b) the mirrored case: install under an exported root, run without the variable.
+d=$(fresh_env xdg_install_moved)
+env -i HOME="$d/home" ZDOTDIR="$d/home" PATH="$d/bin:/usr/bin:/bin:/opt/homebrew/bin" \
+  XDG_CONFIG_HOME="$d/home/otherxdg" zsh "$REPO/install.sh" >"$d/out" 2>&1 </dev/null; rc=$?
+(( rc == 0 )) || { fail "xdg-install: install rc=$rc"; cat "$d/out"; }
+[[ -f "$d/home/otherxdg/ccmorph/lib/ccmorph.sh" && ! -e "$d/home/.config/ccmorph/lib/ccmorph.sh" ]] \
+  && ok "xdg-install: the runtime lives only under the exported root" \
+  || fail "xdg-install: runtime not where the exported XDG_CONFIG_HOME put it"
+grep -qxF "$d/home/otherxdg/ccmorph/lib" "$d/home/.local/bin/.ccmorph-libdir" 2>/dev/null \
+  && ok "xdg-install: the install recorded where it put the runtime" \
+  || fail "xdg-install: no record of the runtime location beside the command"
+run_version "$d"; rc=$?
+(( rc == 0 )) && grep -qE '^ccmorph [0-9]' "$d/out" \
+  && ok "xdg-install: --version answers with the variable gone" \
+  || { fail "xdg-install: --version died with the variable gone (rc=$rc)"; cat "$d/err"; }
+
+# (c) nothing installed anywhere: the failure names every root searched — the
+# recorded one (the install's promise) and the default (the README's) — and
+# roots spelling ONE directory are named once.
+rm -rf "$d/home/otherxdg"
+run_version "$d"; rc=$?
+(( rc != 0 )) && grep -qF 'cannot find ccmorph.sh' "$d/err" \
+  && ok "xdg-missing: a runtime nowhere fails" || fail "xdg-missing: no failure with no runtime (rc=$rc)"
+grep -qF "$d/home/otherxdg/ccmorph/lib" "$d/err" \
+  && ok "xdg-missing: the looked-in list names the recorded root" \
+  || { fail "xdg-missing: recorded root not named"; cat "$d/err"; }
+grep -qF "$d/home/.config/ccmorph/lib" "$d/err" \
+  && ok "xdg-missing: the looked-in list names the default root" \
+  || { fail "xdg-missing: default root not named"; cat "$d/err"; }
+(( $(grep -cF "$d/home/.config/ccmorph/lib" "$d/err") == 1 )) \
+  && ok "xdg-missing: XDG-unset roots that are one directory are named once" \
+  || { fail "xdg-missing: one directory named twice"; cat "$d/err"; }
 fi
 
 # --- 5d. an EQUIVALENT spelling of the code dir is not a redirect (#187)

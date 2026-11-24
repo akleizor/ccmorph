@@ -231,7 +231,9 @@ if [[ "${1:-}" == "--uninstall" ]]; then
       "$CONFIG_DIR/libexec/ccmorph-core" util normalize-plugin-index "$HOME" "$_un_home" >/dev/null 2>&1 || :
     done
   fi
-  rm -f "$BIN_DIR/ccmorph"
+  # The runtime-location record is the command's own wiring, not user data:
+  # it leaves with the command it belongs to (#834).
+  rm -f "$BIN_DIR/ccmorph" "$BIN_DIR/.ccmorph-libdir"
   print -r -- "Removed $BIN_DIR/ccmorph."
   _un_state="${XDG_STATE_HOME:-$HOME/.local/state}/ccmorph"
   _un_profiles=("$_un_root"/*.conf(N))
@@ -528,6 +530,13 @@ for _name in ccmorph-core; do
   chmod +x "$CONFIG_DIR/libexec/$_name"
 done
 chmod +x "$BIN_DIR/ccmorph"
+# Record where the runtime lives, beside the command that must find it. The
+# launcher searches this root after the one the CURRENT environment names, so
+# exporting XDG_CONFIG_HOME later — or unexporting it after an install made
+# under it — cannot hide the runtime from `ccmorph` itself (#834). A hidden
+# dotfile: the command directory holds commands, and this is the command's own
+# wiring, not a command; the uninstall below removes it with the command.
+print -r -- "$CONFIG_DIR/lib" > "$BIN_DIR/.ccmorph-libdir"
 # Move profile homes through the same guarded owner used by normal launches.
 # The SOURCE tree's lib, for the reason the migrate below states: same bytes,
 # but macOS validates a freshly copied binary's signature on its first exec,

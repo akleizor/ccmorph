@@ -11,8 +11,9 @@
 # Anyone who wants `claude` to mean "launch through ccmorph" can write that
 # alias themselves; it is a personal convention, not this product.
 #
-# The library is found relative to this script (../lib), so it works from
-# ~/.config/ccmorph (install.sh) and from a source checkout, with no wiring.
+# The library is found relative to this script (../lib) — or, for install.sh's
+# layout, in the config roots the search below names — so it works from
+# ~/.config/ccmorph and from a source checkout, with no wiring.
 emulate -L zsh
 set -eu
 
@@ -59,20 +60,50 @@ if [[ -n "${CCMORPH_LIB_DIR:-}" ]]; then
   }
 else
   lib=""
-  # In order: a source checkout or one-directory install (lib/ beside bin/); and
-  # install.sh's layout, which puts the command on PATH and the library in the
-  # config directory. XDG_CONFIG_HOME is honoured exactly as the library honours
-  # it, or the two would disagree about where they live on the same machine.
-  for candidate in \
-    "$here/../lib/ccmorph.sh" \
-    "${XDG_CONFIG_HOME:-$HOME/.config}/ccmorph/lib/ccmorph.sh"
-  do
-    [[ -r "$candidate" ]] && { lib="${candidate:A}"; break }
+  # Where the runtime can live, in order: a source checkout or one-directory
+  # install (lib/ beside bin/); install.sh's layout under the config dir the
+  # CURRENT environment names; the lib dir the installer RECORDED beside this
+  # command (`.ccmorph-libdir`); and the documented default $HOME/.config root.
+  # The environment still goes first — exporting XDG_CONFIG_HOME and moving the
+  # root is a real move — but it cannot be the only config root searched: the
+  # installer wrote the runtime under the config dir as it saw it AT INSTALL
+  # time, so a later run exporting the variable elsewhere searched a root
+  # holding nothing and never the one holding everything, and every command —
+  # even `ccmorph --version` — died before it could say anything (#834). The
+  # record answers the mirrored case (an install made under an exported root,
+  # run without it); the fixed default carries installs that predate the
+  # record. CCMORPH_STATE_DIR names STATE, never code (see the two-directory
+  # header of lib/ccmorph.sh), so it stays out of this search.
+  typeset -a ccm_roots=(
+    "$here/../lib"
+    "${XDG_CONFIG_HOME:-$HOME/.config}/ccmorph/lib"
+  )
+  if [[ -r "$here/.ccmorph-libdir" ]]; then
+    typeset ccm_recorded=""
+    { read -r ccm_recorded < "$here/.ccmorph-libdir" } 2>/dev/null || :
+    # Only an absolute path is a root: the installer writes one, and anything
+    # else in this file is a mistake or a tamper, not a path to chase.
+    [[ "$ccm_recorded" == /* ]] && ccm_roots+=( "$ccm_recorded" )
+  fi
+  ccm_roots+=( "$HOME/.config/ccmorph/lib" )
+  for ccm_root in "${ccm_roots[@]}"; do
+    [[ -r "$ccm_root/ccmorph.sh" ]] && { lib="${ccm_root}/ccmorph.sh"; lib="${lib:A}"; break }
   done
   [[ -n "$lib" ]] || {
+    # Honest by construction: every root the loop above searched, in order,
+    # each named once — roots spelling ONE directory (XDG_CONFIG_HOME unset:
+    # the environment's root and the default root; a record pointing at the
+    # environment's root) are ONE search and get one line, by their first
+    # spelling, which is the environment's view.
     print -u2 -- "ccmorph: cannot find ccmorph.sh near $here"
-    print -u2 -- "  looked in: $here/../lib and"
-    print -u2 -- "             ${XDG_CONFIG_HOME:-$HOME/.config}/ccmorph/lib"
+    print -u2 -- "  looked in:"
+    typeset -A ccm_named=()
+    for ccm_root in "${ccm_roots[@]}"; do
+      if [[ -z "${ccm_named[${ccm_root:A}]:-}" ]]; then
+        ccm_named[${ccm_root:A}]=1
+        print -u2 -- "             $ccm_root"
+      fi
+    done
     print -u2 -- "  Set CCMORPH_LIB_DIR to the directory holding ccmorph.sh."
     exit 1
   }
