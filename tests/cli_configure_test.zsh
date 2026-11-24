@@ -128,4 +128,22 @@ notice=$(ccmorph get demo effort 2>&1 >/dev/null)
 [[ "$notice" == *"Claude Code's own default"* ]] ||
   fail "unset effort must say Claude Code's own default on stderr (got ${(qqq)notice})"
 
+# gh841: run sends a dead endpoint to doctor, and doctor's verdict sent it back to
+# run; the verdict names the edit that repairs it, and exits short of ready.
+mkdir -p "$TMP/bin" "$TMP/state/profiles/dead"
+print -r -- '#!/bin/sh
+exit 0' > "$TMP/bin/claude"
+print -r -- "#!/bin/sh
+printf '%s\n' 'curl: (7) Failed to connect to 127.0.0.1 port 9: Connection refused' >&2
+exit 7" > "$TMP/bin/curl"
+chmod +x "$TMP/bin/claude" "$TMP/bin/curl"
+print -r -- 'type=apikey
+api_key=k
+base_url=http://127.0.0.1:9' > "$TMP/state/dead.conf"
+output=$(PATH="$TMP/bin:$PATH" ccmorph doctor dead 2>&1); rc=$?
+(( rc == 3 )) || fail "doctor on a dead endpoint exited $rc, not 3 (may not start)"
+assert_eq "${${(f)output}[-1]}" \
+  'WARN may not start: check gateway (see above); if the endpoint is wrong, change it: ccmorph config dead' \
+  'doctor verdict names the edit for a dead endpoint'
+
 print 'PASS cli_configure_test'

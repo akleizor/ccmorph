@@ -82,7 +82,11 @@ func TestDoctorProviderAsksTheLaunchRefusal(t *testing.T) {
 		{
 			// No bridge on PATH, and the profile is not failed for it: its
 			// verdict is the sign-in's own question, not the bridge's.
+			// A fresh profile home holds no sign-in to read, so that question
+			// is a warning, and a warning exits RCDoctorWarn (#841).
 			name: "account profile", conf: "type=sub\nemail=a@example.test\n",
+			lastStart: "WARN may not start: ",
+			wantRC:    RCDoctorWarn,
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

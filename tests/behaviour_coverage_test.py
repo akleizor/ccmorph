@@ -187,7 +187,8 @@ def test_a_default_saved_with_the_wrong_case_still_marks_the_real_profile_gh_259
     assert tok.lstrip().startswith('*'), out
     # doctor with no name reads the same default, not the spelling TOK.
     doctor = box.run('doctor')
-    assert doctor.returncode == 0, doctor.stdout
+    # The box is offline, so the endpoint goes unchecked: may not start (#841).
+    assert doctor.returncode == 3, doctor.stdout
     assert 'profile: tok (Claude token)' in doctor.stdout, doctor.stdout
 
 
@@ -250,7 +251,8 @@ def test_doctor_names_the_kind_and_the_endpoint(box):
     seed(box)
     (box.state / 'profiles/tok').mkdir()
     out = box.run('doctor', 'tok')
-    assert out.returncode == 0, out.stderr
+    # The box is offline, so the endpoint goes unchecked: may not start (#841).
+    assert out.returncode == 3, out.stdout
     assert 'profile: tok (Claude token)' in out.stdout
     box.conf('bad', 'type=apikey\napi_key=canary-key\nbase_url=gateway.invalid\n')
     out = box.run('doctor', 'bad')
@@ -888,7 +890,8 @@ def test_the_unsaved_state_reads_the_same_words_on_every_screen_gh_381(box, name
     screens['inspect'] = out.stdout
     # doctor: the effective rows answer what the session runs with.
     out = box.run('doctor', name)
-    assert out.returncode == 0, out.stderr
+    # The box is offline, so the endpoint goes unchecked: may not start (#841).
+    assert out.returncode == 3, out.stdout
     assert f'effective model: {words} (no saved model)' in out.stdout
     assert f'effective effort: {effort_words} (no saved effort)' in out.stdout
     screens['doctor'] = out.stdout

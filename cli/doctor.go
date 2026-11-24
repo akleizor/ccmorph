@@ -26,6 +26,11 @@ import (
 // promise is a verdict, never a hang. A variable so the test can shorten it.
 var authStatusDeadline = 10 * time.Second
 
+// RCDoctorWarn is doctor's exit status when its verdict is "may not start": a
+// check could not be confirmed, so the profile is not known to be ready (0),
+// yet nothing failed outright (1); 2 is every verb's usage error (#841).
+const RCDoctorWarn = 3
+
 // translatorInstalled is adapter.TranslatorInstalled. A variable so a test can
 // pin the not-installed verdict: a machine with cliproxyapi at one of launch's
 // fixed paths would otherwise decide it, and the row this issue is about is
@@ -389,6 +394,9 @@ func (l *launcher) doctor(name string, verbose bool) int {
 	// firstFix is the command or step that repairs the first failed check: the
 	// verdict names it instead of pointing at the rows above (#282).
 	firstFix := ""
+	// warnFix is the step the first warning that names one carries: a WARN
+	// verdict names it instead of the launch that warning would fail (#841).
+	warnFix := ""
 	// report prints one line and remembers its subject (the text before the
 	// first colon) so a warning can be named in the verdict without repeating it.
 	report := func(kind, msg string, fix ...string) {
@@ -405,6 +413,9 @@ func (l *launcher) doctor(name string, verbose bool) int {
 		case "WARN":
 			if !slices.Contains(warns, subject) {
 				warns = append(warns, subject)
+			}
+			if warnFix == "" && len(fix) > 0 {
+				warnFix = fix[0]
 			}
 		}
 		l.status(kind, msg)
@@ -691,7 +702,15 @@ func (l *launcher) doctor(name string, verbose bool) int {
 	case firstFix != "":
 		l.status("FAIL", "not ready: "+firstFix)
 	case len(warns) > 0:
-		l.status("WARN", "may not start: check "+strings.Join(warns, ", ")+" (see above); then: ccmorph run "+name)
+		next := "then: ccmorph run " + name
+		if warnFix != "" {
+			next = warnFix
+		}
+		l.status("WARN", "may not start: check "+strings.Join(warns, ", ")+" (see above); "+next)
+		// Only "ready" exits 0, so the status answers whether the profile can
+		// be relied on; a warning has its own status, apart from a failed
+		// check's 1 and a usage error's 2 (#841).
+		return RCDoctorWarn
 	default:
 		l.status("OK", "ready: start it with ccmorph run "+name)
 	}
