@@ -1394,38 +1394,6 @@ def test_a_profile_tier_reaches_a_host_without_a_tier_line(tmp_path, monkeypatch
     assert envs[str(m.EDGES.parent)]["ANTHROPIC_DEFAULT_HAIKU_MODEL"] == "deepseek-v4.1-flash"
 
 
-def test_a_tier_set_on_the_route_profile_restarts_the_hosts_with_no_config_edit(tmp_path, monkeypatch):
-    """2026-11-24: Stark's phone control sets a tier in the route profile's file, but
-    the supervisor reloaded only when rc-hosts changed, so the phone's pick reached no
-    host until an unrelated edit. The profile's file is watched too."""
-    m = load()
-    monkeypatch.setattr(m, "STATE_ROOT", tmp_path)
-    monkeypatch.delenv("ANTHROPIC_DEFAULT_OPUS_MODEL", raising=False)
-    a = tmp_path / "a"
-    cfg = tmp_path / "rc-hosts"
-    cfg.write_text(f"route=gateway\n{a}\n")
-    conf = tmp_path / "gateway.conf"
-    conf.write_text("")
-    monkeypatch.setattr(m, "cycle", lambda *args: False)
-    monkeypatch.setattr(m.Host, "stop", lambda self: None)
-    tiers = dict(LLMGATE_TIERS)
-    opus = []
-    def start(self):
-        if self.folder == str(a):
-            opus.append(self.child_env().get("ANTHROPIC_DEFAULT_OPUS_MODEL"))
-        self.proc, self.started = FakeProc(), m.time.time()
-    ticks = [0]
-    def sleep(_):
-        ticks[0] += 1
-        if ticks[0] == 2:
-            tiers["opus"] = "gemini-3.5-pro"
-            os.utime(conf, (1, 1))
-        if ticks[0] > 4:
-            raise SystemExit
-    run_main(m, monkeypatch, tmp_path, cfg, start, sleep=sleep, profile_tiers=lambda route: dict(tiers))
-    assert opus == [None, "gemini-3.5-pro"]
-
-
 def test_a_failed_profile_read_keeps_the_last_map_and_logs_once(monkeypatch):
     """A read that fails must not change a host's tiers (that would restart it):
     the last map read stays, the `tier.` lines alone before any read worked, and

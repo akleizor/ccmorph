@@ -26,8 +26,7 @@ are fixed when a host's process starts, so a restart is the only way they take
 effect (the shared edge pins the tier mapping; only folders carry a permission).
 Tier pins come from the route profile (each alias it maps outside its own Claude
 family), read at each reload; a `tier.<alias>=<model>` line overrides one alias.
-A route profile's file is watched too, so a tier set on the profile (`ccmorph set`,
-or Stark's phone control) reaches the hosts within a tick, with no edit here.
+A profile edit alone is picked up at the next reload of this file.
 
 A worktree session (`.claude/worktrees/...`) is never pinned: it shares its repo
 host's environment, and pinning it takes over that host's row in the app.
@@ -352,11 +351,6 @@ def read_profile_tiers(route: str) -> dict[str, str] | None:
     except (OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError):
         return None
     return tiers if isinstance(tiers, dict) else None
-
-
-def profile_stamps(routes) -> tuple:
-    """Each route profile file's mtime: only stat'd, its format stays ccmorph's."""
-    return tuple(mtime_of(STATE_ROOT / f"{r}.conf") for r in sorted(routes))
 
 
 def route_tiers(route: str, text: str) -> dict[str, str]:
@@ -1805,7 +1799,6 @@ def main(argv: list[str]) -> int:
     hosts: dict[str, Host] = {}
     unrecorded: set[str] = set()   # retired here, marker not in the file yet (#355)
     seen = None
-    profiles_seen = None   # the loaded routes' profile mtimes: a tier set there reloads too
     text = ""
     switched = None
     inference_routes: set[str] = set()   # routes the loaded config names: a retried resolution reads them
@@ -1820,8 +1813,7 @@ def main(argv: list[str]) -> int:
     sweep_logs()   # once per supervisor start; the hosts it starts only append
     while not stopping:
         stamp = mtime_of(config)
-        profiles = profile_stamps(inference_routes)
-        if stamp != seen or profiles != profiles_seen:
+        if stamp != seen:
             fresh = read_config(config) if stamp else ""
             if fresh is not None:      # unreadable: keep the loaded folders, retry next tick
                 seen = stamp           # only a load that succeeded commits the mtime
@@ -1832,7 +1824,6 @@ def main(argv: list[str]) -> int:
                 # retired for, so it stays out until the marker lands (#355).
                 want = {f: v for f, v in parse(text).items() if f not in unrecorded}
                 routes = {r for r, _ in want.values()}
-                profiles_seen = profile_stamps(routes)   # stat'd before the read: an edit after it reloads again
                 # Each route pins its profile's tiers, overlaid by `tier.` lines (route_tiers).
                 # Only the aliases Host.start exports reach a session, so an unknown
                 # `tier.<alias>=` line changes what no host runs and must restart nothing.

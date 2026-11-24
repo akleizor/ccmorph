@@ -19,7 +19,12 @@ func ListingHasUnsized(conf, listing string) bool {
 	if json.Unmarshal([]byte(listing), &top) != nil || top == nil {
 		return true
 	}
-	data := top["data"]
+	data, verdict := ctxwindow.ListingShape(top)
+	if verdict == ctxwindow.ListingNotAListing {
+		// A 200 that is not a listing is a listing that cannot be read, not an
+		// endpoint's empty one: the sizer decides (#767).
+		return true
+	}
 	// One parse of the record serves both tables, where the two wrappers would
 	// parse it twice (GH-561).
 	d := ctxwindow.ParseDiscovered(fields)
