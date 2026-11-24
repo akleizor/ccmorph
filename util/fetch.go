@@ -7,6 +7,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/akleizor/ccmorph/ctxwindow"
 )
@@ -41,14 +42,32 @@ func ModelsListing(base, key string, errw io.Writer) (body string, ok bool) {
 // printed, and status is the HTTP status the endpoint refused the request with,
 // 0 when nothing answered.
 func ModelsAnswer(base, key string) (body string, status int, ok bool) {
-	var complaint strings.Builder
-	body, ok = ModelsListing(base, key, &complaint)
-	if !ok {
-		if m := refused.FindStringSubmatch(complaint.String()); m != nil {
-			status, _ = strconv.Atoi(m[1])
-		}
-	}
+	body, status, _, ok = modelsAnswer(base, key, false)
 	return body, status, ok
+}
+
+// ModelsAnswerWhy is ModelsAnswer with why: when nothing answered (status 0
+// and not ok), the cause in plain words, "" when WhyUnreachable cannot name it
+// (#260).
+func ModelsAnswerWhy(base, key string) (body string, status int, why string, ok bool) {
+	return modelsAnswer(base, key, true)
+}
+
+func modelsAnswer(base, key string, name bool) (body string, status int, why string, ok bool) {
+	var complaint strings.Builder
+	start := time.Now()
+	raw, err := curlKeyed(key, listingArgs(base, "--max-time", "20"), &complaint)
+	if err == nil && raw != "" {
+		return undisguise(raw), 0, "", true
+	}
+	if m := refused.FindStringSubmatch(complaint.String()); m != nil {
+		status, _ = strconv.Atoi(m[1])
+		return "", status, "", false
+	}
+	if name {
+		why = WhyUnreachable(base, exitOf(err), complaint.String(), time.Since(start))
+	}
+	return "", 0, why, false
 }
 
 // ListingReply is the one listing request set's model check reads (gh728),
@@ -107,13 +126,30 @@ func fetchModels(key string, errw io.Writer, curlArgs ...string) (string, bool) 
 // nothing answered. Each header is sent as a curl -H argument, so a native
 // Anthropic check can ask for a version the way the launch route does.
 func ProbeListing(base, key string, headers ...string) (body, code string) {
+	body, code, _ = probeListing(base, key, false, headers)
+	return body, code
+}
+
+// ProbeListingWhy is ProbeListing with why: when nothing answered (code "000"
+// or ""), the cause in plain words, "" when WhyUnreachable cannot name it
+// (#260). doctor's gateway row and the launch's route check read it.
+func ProbeListingWhy(base, key string, headers ...string) (body, code, why string) {
+	return probeListing(base, key, true, headers)
+}
+
+func probeListing(base, key string, name bool, headers []string) (body, code, why string) {
 	args := []string{"-sS", "--connect-timeout", "2", "--max-time", "5", "-w", `\n` + statusMarker + `%{http_code}`}
 	for _, h := range headers {
 		args = append(args, "-H", h)
 	}
-	raw, err := curlKeyed(key, append(args, ctxwindow.APIURL(base, "/v1/models?limit=1000")), io.Discard)
+	var complaint strings.Builder
+	start := time.Now()
+	raw, err := curlKeyed(key, append(args, ctxwindow.APIURL(base, "/v1/models?limit=1000")), &complaint)
 	body, code = splitProbeAnswer(raw, err)
-	return undisguise(body), code
+	if name && ProbeVerdict(code) == ProbeSilent {
+		why = WhyUnreachable(base, exitOf(err), complaint.String(), time.Since(start))
+	}
+	return undisguise(body), code, why
 }
 
 // statusMarker is the sentinel the never-failing probes ask curl to append to
@@ -184,8 +220,13 @@ func escCred(s string) string {
 
 // curlKeyed sends both credential headers, because a gateway may take either.
 func curlKeyed(key string, args []string, errw io.Writer) (string, error) {
+	return curlFed(keyedConfig(key), args, errw)
+}
+
+// keyedConfig is the curl stdin config carrying both credential headers.
+func keyedConfig(key string) string {
 	esc := escCred(key)
-	return curlFed("header = \"x-api-key: "+esc+"\"\nheader = \"Authorization: Bearer "+esc+"\"\n", args, errw)
+	return "header = \"x-api-key: " + esc + "\"\nheader = \"Authorization: Bearer " + esc + "\"\n"
 }
 
 // curlBearer sends only the Bearer header an OAuth token travels as.
