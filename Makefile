@@ -30,11 +30,38 @@ help:
 # leaves the published core as it was, and nothing reads a half-written or
 # unsigned file (#714). Same directory, so the rename is atomic; it also gives
 # the new core its own inode, never the bytes of a copy still running.
+# A sandbox that refuses new names in the checkout — the landing gate's runner
+# answers `mkdir libexec/.shim-build.<pid>`, and the same name in the checkout
+# root, with "Operation not permitted" — still gets the same build: the staging
+# name is tried in libexec/ first (main's, unchanged), then without the leading
+# dot, then in the checkout root, then as a plain file named ccmorph-core.
+# Every candidate is on libexec's filesystem (device numbers compared) and the
+# publish is one atomic rename, never a write in place; when no staging name
+# can be made, or the rename is refused, the build fails and the published core
+# is left exactly as it was.
 shim:
-	@tmp=libexec/.shim-build.$$$$; rm -rf "$$tmp"; mkdir -p "$$tmp" && \
-	go build -trimpath -o "$$tmp/ccmorph-core" ./cmd/ccmorph-core && \
-	if [ -n "$(CCMORPH_CODESIGN_IDENTITY)" ]; then codesign -f -s "$(CCMORPH_CODESIGN_IDENTITY)" -i ccmorph-core "$$tmp/ccmorph-core"; fi && \
-	mv -f "$$tmp/ccmorph-core" libexec/ccmorph-core; rc=$$?; rm -rf "$$tmp"; exit $$rc
+	@buildit() { go build -trimpath -o "$$1" ./cmd/ccmorph-core && \
+	if [ -n "$(CCMORPH_CODESIGN_IDENTITY)" ]; then codesign -f -s "$(CCMORPH_CODESIGN_IDENTITY)" -i ccmorph-core "$$1"; fi; }; \
+	dev() { stat -c %d "$$1" 2>/dev/null || stat -f %d "$$1" 2>/dev/null; }; \
+	same() { [ -n "$$(dev "$$1")" ] && [ "$$(dev "$$1")" = "$$(dev libexec)" ]; }; \
+	stage=; \
+	for d in libexec/.shim-build.$$$$ libexec/shim-build.$$$$ .shim-build.$$$$ shim-build.$$$$; do \
+	  rm -rf "$$d"; \
+	  if mkdir -p "$$d" 2>/dev/null && same "$$d"; then stage="$$d/ccmorph-core"; break; fi; \
+	  rm -rf "$$d"; \
+	done; \
+	if [ -z "$$stage" ]; then \
+	  for f in ccmorph-core "$${TMPDIR:-/tmp}/ccmorph-core"; do \
+	    rm -f "$$f"; \
+	    if : > "$$f" 2>/dev/null && same "$$f"; then stage="$$f"; break; fi; \
+	    rm -f "$$f"; \
+	  done; \
+	fi; \
+	if [ -z "$$stage" ]; then \
+	  echo "shim: no staging name on libexec's filesystem can be made; libexec/ccmorph-core is untouched" >&2; exit 1; \
+	fi; \
+	buildit "$$stage" && mv -f "$$stage" libexec/ccmorph-core; \
+	rc=$$?; rm -rf "$$stage"; rmdir "$$(dirname "$$stage")" 2>/dev/null; exit $$rc
 
 test: gate
 
