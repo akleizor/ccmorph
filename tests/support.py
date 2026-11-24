@@ -181,6 +181,38 @@ def anthropic_accepts_the_key(bindir):
     curl.chmod(0o755)
 
 
+_POOL_LOW, _POOL_HIGH = 1024, 32768
+
+
+def _pool_slice() -> tuple:
+    """The slice of the pool this process may draw from, as (low, high).
+
+    The probe releases a number before the test's child binds it, so on one
+    shared draw space a parallel worker can draw the very number and be up
+    with its listener on the route another test expects to be dead (#877 —
+    `rc_bridge_failclosed_test` reroutes answered by a sibling's proxy).
+    xdist tells every worker who it is and how many the run has, so each
+    worker gets one even slice of the pool and no sibling can draw its
+    number at all. Without a usable worker identity — serial (-n0, CI),
+    malformed env, or a worker count that leaves no slice to give — the
+    whole pool comes back, as before."""
+    low, high = _POOL_LOW, _POOL_HIGH
+    worker = os.environ.get("PYTEST_XDIST_WORKER", "")
+    if worker.startswith("gw"):
+        try:
+            index = int(worker[2:])
+            count = int(os.environ.get("PYTEST_XDIST_WORKER_COUNT", "1"))
+        except ValueError:
+            return low, high
+        if count >= 1:
+            span = high - low
+            slice_low = low + span * index // count
+            slice_high = low + span * (index + 1) // count
+            if slice_high > slice_low:     # a count above the span leaves none
+                low, high = slice_low, slice_high
+    return low, high
+
+
 def port_outside_the_ephemeral_pool() -> int:
     """A loopback port number for a test whose subject binds a port the test
     chose — the adapter's --port, a shim's listen port, a route that must stay
@@ -192,9 +224,12 @@ def port_outside_the_ephemeral_pool() -> int:
     can take it and a full gate fails a test that is green alone (#176, #188).
     A number below every range's floor cannot be drawn by a bind-to-zero at
     all; the probe skips the fixed services that do live down there, and a
-    bind that loses its number draws again."""
+    bind that loses its number draws again. Parallel xdist workers draw
+    worker-disjoint slices of this range, so a number a sibling test is about
+    to bind is never on this worker's list either (#877)."""
+    low, high = _pool_slice()
     for _ in range(64):
-        p = random.randrange(1024, 32768)
+        p = random.randrange(low, high)
         s = socket.socket()
         try:
             s.bind(("127.0.0.1", p))

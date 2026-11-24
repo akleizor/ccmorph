@@ -26,7 +26,7 @@ def test_dead_route_fails_closed_and_key_file_is_consumed(tmp_path):
     key_file.chmod(0o600)
     port = port_outside_the_ephemeral_pool()
     dead = port_outside_the_ephemeral_pool()
-    while dead == port:                      # two draws of one 31744-value space
+    while dead == port:                      # two draws of one worker's slice
         dead = port_outside_the_ephemeral_pool()   # can meet; the route must stay dead
     env = dict(os.environ, RC_UPSTREAM=f"http://127.0.0.1:{dead}", RC_KEY_FILE=str(key_file),
                RC_PARENT_PID=str(os.getpid()))

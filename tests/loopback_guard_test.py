@@ -114,3 +114,74 @@ def test_the_marker_carries_the_one_loud_skip_line():
     assert mark.kwargs["reason"] == support.LOOPBACK_SKIP
     assert support.LOOPBACK_SKIP.startswith("SKIP:")
     assert "runs in CI" in support.LOOPBACK_SKIP
+
+
+# GH-877: the pool probe releases the number it hands back, and a test binds
+# it only seconds later in a child. On one shared draw space that gap belongs
+# to every parallel worker: a sibling drew the same number and came up with
+# its proxy on the route another test expects to be dead. xdist names every
+# worker and its count in the environment, so each worker may draw only its
+# own slice of the pool — the gap then holds a number no sibling drew.
+
+
+def _draws_the_bottom_of_the_range(monkeypatch):
+    """Pin every draw to its range's floor: on a shared pool all workers meet
+    on one number (the old red), and the ranges the pool asks for are visible."""
+    asked = []
+
+    def randrange(lo, hi):
+        asked.append((lo, hi))
+        return lo
+
+    monkeypatch.setattr(support.random, "randrange", randrange)
+    return asked
+
+
+def _holder(monkeypatch):
+    """Record the numbers the probe tried to bind, succeeding always."""
+
+    class _Recording(_AllowedSocket):
+        def bind(self, addr):
+            _Recording.held.add(addr[1])
+
+    _Recording.held = set()
+    monkeypatch.setattr(support.socket, "socket", _Recording)
+    return _Recording
+
+
+def test_two_parallel_workers_never_draw_the_same_number(monkeypatch):
+    _draws_the_bottom_of_the_range(monkeypatch)
+    holder = _holder(monkeypatch)
+    drawn = []
+    for wid in range(8):
+        holder.held = set()
+        monkeypatch.setenv("PYTEST_XDIST_WORKER", f"gw{wid}")
+        monkeypatch.setenv("PYTEST_XDIST_WORKER_COUNT", "8")
+        for _ in range(4):
+            p = support.port_outside_the_ephemeral_pool()
+            assert p in holder.held, "the draw never probed the number it returned"
+        drawn.append(set(holder.held))
+    for a in range(len(drawn)):
+        for b in range(a + 1, len(drawn)):
+            assert not drawn[a] & drawn[b], (
+                f"xdist workers {a} and {b} hold the same port: {drawn[a] & drawn[b]}")
+
+
+@pytest.mark.parametrize("worker_env", [
+    {},                                                  # no xdist: CI's serial path
+    {"PYTEST_XDIST_WORKER": "gw-x", "PYTEST_XDIST_WORKER_COUNT": "lots"},  # malformed
+    {"PYTEST_XDIST_WORKER": "gw0", "PYTEST_XDIST_WORKER_COUNT": "99999"},  # more workers than numbers
+])
+def test_the_pool_falls_back_to_the_whole_range(worker_env, monkeypatch):
+    """Without a usable worker identity — no xdist at all (-n0, CI's serial
+    path), or an env the pool cannot slice by — the pool draws its whole
+    range, exactly as before, and never an empty or crashed one."""
+    asked = _draws_the_bottom_of_the_range(monkeypatch)
+    _holder(monkeypatch)
+    for name in ("PYTEST_XDIST_WORKER", "PYTEST_XDIST_WORKER_COUNT"):
+        if name in worker_env:
+            monkeypatch.setenv(name, worker_env[name])
+        else:
+            monkeypatch.delenv(name, raising=False)
+    support.port_outside_the_ephemeral_pool()
+    assert asked == [(1024, 32768)]
