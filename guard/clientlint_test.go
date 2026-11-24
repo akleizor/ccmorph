@@ -341,6 +341,7 @@ func f(x bool) *http.Client {
 		{"a builder's transport overwritten whole", guardSrc("func f(o *http.Transport) *http.Client {\n\ttr := netroute.NewTransport()\n\t*tr = *o\n\treturn &http.Client{Transport: tr}\n}"), "refused"},
 		{"a client overwritten whole through a field", guardSrc("type srv struct{ c *http.Client }\n\nfunc f(s *srv, o *http.Client) { *s.c = *o }"), "refused"},
 		{"the CA config edited through its local", guardSrc("func f() *http.Transport {\n\tcfg := netroute.ExtraCAs()\n\tcfg.RootCAs = nil\n\treturn &http.Transport{Proxy: http.ProxyFromEnvironment, TLSClientConfig: cfg}\n}"), "refused"},
+		{"a server-only TLS config is no client rewire", fileSrc("import (\n\t\"crypto/tls\"\n\t\"net/http\"\n)\n\nfunc serve(saved *http.Client, certs []tls.Certificate) (*http.Client, *http.Server) {\n\tcfg := &tls.Config{}\n\tcfg.Certificates = certs\n\treturn saved, &http.Server{TLSConfig: cfg}\n}\n"), "none"},
 		{"the CA config read back and edited", guardSrc("func f() *http.Transport {\n\ttr := netroute.NewTransport()\n\tcfg := tr.TLSClientConfig\n\tcfg.InsecureSkipVerify = true\n\treturn tr\n}"), "refused"},
 		{"a parameter named nil is no direct route", fileSrc("import (\n\t\"net/http\"\n\t\"net/url\"\n)\n\nfunc f(nil func(*http.Request) (*url.URL, error)) *http.Transport { return &http.Transport{Proxy: nil} }\n"), "refused"},
 		{"a local named like the builder inside netroute", "package netroute\n\nimport \"net/http\"\n\nfunc f() *http.Client {\n\tNewTransport := func() *http.Transport { return &http.Transport{} }\n\treturn &http.Client{Transport: NewTransport()}\n}\n", "refused"},
@@ -805,9 +806,12 @@ func (r *resolved) rewires(as *ast.AssignStmt, add func(ast.Node, bool, string))
 			continue // a package's own variable; DefaultTransport and DefaultClient are refused where named
 		}
 		owner := r.fieldOwner(sel)
-		if r.throughTLS(sel.X) || owner == "crypto/tls" {
+		if r.throughTLS(sel.X) || (owner == "crypto/tls" && !r.freshTLSConfig(sel.X)) {
 			add(sel, false, mutationMessage)
 			continue
+		}
+		if owner == "crypto/tls" {
+			continue // a config this function built itself (a server's): no outbound proof rests on it
 		}
 		if owner != "" && owner != "net/http" {
 			continue // another type's own field
@@ -1230,6 +1234,23 @@ func (r *resolved) throughTLS(expr ast.Expr) bool {
 		return true
 	})
 	return found
+}
+
+// freshTLSConfig is whether expr is a local Go binds only to tls.Config
+// literals written in this file, such as a server's own config: it is not the
+// session's CA config nor one read back from a transport, so writing it
+// rewires no client. Anything else (ExtraCAs's result, a parameter, a
+// transport's TLSClientConfig) stays refused.
+func (r *resolved) freshTLSConfig(expr ast.Expr) bool {
+	v := r.localVar(rootOf(expr))
+	return v != nil && r.onlyBoundBy(v, func(e ast.Expr) bool {
+		lit, ok := compositeOf(e)
+		if !ok {
+			return false
+		}
+		sel, ok := lit.Type.(*ast.SelectorExpr)
+		return ok && r.pkgSel(sel, "crypto/tls", "Config")
+	})
 }
 
 // holdsHTTPOrTLS is whether Go types expr as net/http's Client or Transport or
