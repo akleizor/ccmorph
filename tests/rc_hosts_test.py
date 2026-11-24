@@ -1531,11 +1531,50 @@ def test_a_retired_folder_is_not_hosted(tmp_path):
     assert m.parse(f"route=gw\nretire={tmp_path}\n{other}\n") == {str(other): ("gw", ())}
 
 
+def test_every_settings_reader_applies_parse_s_line_rule(tmp_path):
+    """GH-847: a settings line must mean to its reader what parse() sees, not the
+    raw bytes. Read off the raw line, `retire=<folder>#done` retired a folder
+    spelled with the note while the one the operator named stayed hosted,
+    `inference=oli#x` handed inference() a profile named `oli#x`, and
+    `permission= plan` -- a line parse() skips as a setting -- read as no line at
+    all, in silence. The `#` cut and the whitespace after `=` are the line rule's,
+    and every settings reader applies them alike."""
+    m = load()
+    folder = str(tmp_path / "retired")
+    for line in (f"retire={folder}#done", f"retire={folder}  # done"):
+        assert m.retire_set(f"{line}\n") == {folder}, line
+        assert m.parse(f"route=gw\n{line}\n{folder}\n") == {}, line
+    assert m.inference_name("inference=oli#x\n") == "oli"
+    assert m.inference_name("inference=oli # x\n") == "oli"
+    assert m.inference_name("inference= oli # x\n") == "oli"   # whitespace after `=` is not the value
+    assert m.permission_mode("permission= plan\n") == "plan"
+    assert m.permission_mode("permission=plan  # the phone approves nothing\n") == "plan"
+    assert m.idle_days("idle_days= 3 # note\n") == 3.0
+    assert m.tier_map("route=gw\ntier.opus = m  # note\n") == {"opus": "m"}
+    # What parse() hides, no reader sees: a commented-out settings line.
+    assert m.retire_set(f"# retire={folder}\n") == set()
+    assert m.inference_name("# inference=oli\n") is None
+    assert m.permission_mode("# permission=plan\n") is None
+
+
+def test_a_permission_value_no_mode_names_is_refused_out_loud(capsys):
+    """GH-847: `permission=` is skipped by parse() as a setting, so a reader that
+    hands back None for a value it read leaves the operator believing a mode is
+    in force. A value the CLI does not accept is named on one line."""
+    m = load()
+    assert m.permission_mode("permission=plan extra\n") is None
+    assert "permission=plan extra" in capsys.readouterr().out
+
+
 def settings_samples(m, tmp_path):
-    return {"idle_days=": "3", "purge_days=": "3", "park_hours=": "3",
-            "permission=": "plan", "inference=": "oli",
-            "archived=": str(tmp_path / "archived"),
-            "retire=": str(tmp_path / "retired"), m.TIER_PREFIX: "opus=m"}
+    """The one line each registry prefix reads, written as an operator may: a
+    space after `=` and an inline `#` note are the line rule's, so a reader that
+    matches the raw line answers differently here (#847)."""
+    note = "  # note"
+    return {"idle_days=": f" 3{note}", "purge_days=": f" 3{note}", "park_hours=": f" 3{note}",
+            "permission=": f" plan{note}", "inference=": f" oli{note}",
+            "archived=": f" {tmp_path / 'archived'}{note}",
+            "retire=": f" {tmp_path / 'retired'}{note}", m.TIER_PREFIX: f"opus = m{note}"}
 
 
 def test_every_settings_prefix_has_a_reader_and_is_skipped(tmp_path):
