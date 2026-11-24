@@ -11,6 +11,7 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"testing"
 	"time"
@@ -339,8 +340,9 @@ func TestDurationWords(t *testing.T) {
 // TestRunningAdapterEndsAPsStalledPastItsBound pins: the answer is read through
 // sessionNow, which has no deadline to lose, so a loaded machine slows it but
 // cannot turn it into __UNKNOWN__ (#518). The bounded runningAdapter is checked
-// beside it on a readable table: exactly the session, and exactly nothing for
-// a profile nothing serves.
+// beside it twice: polled through two lost bounds to its first decisive answer
+// (through-lost-bounds), and on a readable table: exactly the session, and
+// exactly nothing for a profile nothing serves.
 func TestRunningAdapterMatchesArgvAcrossSpaces(t *testing.T) {
 	profile := "ra" + strconv.Itoa(os.Getpid())
 	cmd := holdProc(t, os.Args[0], BridgeFiles(t.TempDir(), "p")[2],
@@ -362,6 +364,23 @@ func TestRunningAdapterMatchesArgvAcrossSpaces(t *testing.T) {
 	if tab == nil {
 		t.Fatal("the process table could not be read")
 	}
+	// The shape a loaded machine gives (#518 scout addendum): the read loses
+	// its bound, then has the table. runningAdapter is asked again while it
+	// answers __UNKNOWN__, and its first decisive answer is the one asserted,
+	// so a wrong session fails at once and is never asked past. The two lost
+	// bounds are forced, not hoped for: the reader's first two calls block
+	// until the subtest ends, so only the bound answers them, on a calm or a
+	// loaded machine alike.
+	t.Run("through-lost-bounds", func(t *testing.T) {
+		calls := lostBoundsThenTable(t, 2, tab)
+		got, unknowns := pollRunningAdapter(t, profile)
+		if got != want {
+			t.Fatalf("first decisive answer after %d __UNKNOWN__: got %q, want %q", unknowns, got, want)
+		}
+		if unknowns < 2 {
+			t.Fatalf("each forced lost bound must answer __UNKNOWN__: %d before the decisive answer, reader called %d times", unknowns, calls.Load())
+		}
+	})
 	origTable, origBound := sysctlTable, sessionReadBound
 	sysctlTable = func() (map[int]psRow, bool) { return tab, true }
 	sessionReadBound = 30 * time.Second
@@ -372,6 +391,50 @@ func TestRunningAdapterMatchesArgvAcrossSpaces(t *testing.T) {
 	if got := runningAdapter("no-such-profile"); got != "" {
 		t.Fatalf("runningAdapter on a readable table must report nothing for a profile nothing serves, got %q", got)
 	}
+}
+
+// pollRunningAdapter asks runningAdapter again while it answers __UNKNOWN__,
+// the cannot-tell a lost bound gives, and returns the first decisive answer
+// with the count of __UNKNOWN__ before it. It never asks past a decisive
+// answer, so the caller asserts the first one and a wrong session fails at
+// once (#518). A read that stays unanswered for 30 s fails as that, never as
+// a session.
+func pollRunningAdapter(t *testing.T, profile string) (string, int) {
+	t.Helper()
+	limit := time.Now().Add(30 * time.Second)
+	for unknowns := 0; ; unknowns++ {
+		if got := runningAdapter(profile); got != "__UNKNOWN__" {
+			return got, unknowns
+		}
+		if time.Now().After(limit) {
+			t.Fatalf("runningAdapter answered __UNKNOWN__ %d times in 30s, never decisively", unknowns+1)
+		}
+	}
+}
+
+// lostBoundsThenTable makes sysctlTable a reader whose first lost calls lose
+// runningAdapter's bound, each blocked until the test ends so that only the
+// bound can answer it, and whose later calls answer tab at once: the
+// transient cannot-tell of a loaded machine, forced (#518). The bound is
+// 200 ms for the test; sysctlTable and sessionReadBound are restored when it
+// ends. It returns the count of reader calls.
+func lostBoundsThenTable(t *testing.T, lost int32, tab map[int]psRow) *atomic.Int32 {
+	t.Helper()
+	origTable, origBound := sysctlTable, sessionReadBound
+	release := make(chan struct{})
+	calls := new(atomic.Int32)
+	sysctlTable = func() (map[int]psRow, bool) {
+		if calls.Add(1) <= lost {
+			<-release
+		}
+		return tab, true
+	}
+	sessionReadBound = 200 * time.Millisecond
+	t.Cleanup(func() {
+		sysctlTable, sessionReadBound = origTable, origBound
+		close(release)
+	})
+	return calls
 }
 
 // sessionNow is runningAdapter's answer with no bound: the process table read
