@@ -777,6 +777,7 @@ func maskedJSON(masked map[string]int) string {
 
 type lineSource interface {
 	readline() ([]byte, error)
+	inHand() (lines [][]byte, cut []byte) // takes what is already read, never reading
 }
 
 // unmaskStream is an SSE reply with its placeholders put back in text and tool
@@ -802,6 +803,36 @@ type heldDelta struct {
 	quoted      bool
 }
 
+// inHand takes the lines already restored, the event still gathering, then
+// the lines its source has read and not yet handed on, and the source's cut
+// line start (never relayed as read; see thinkingStream.inHand). It never
+// reads.
+func (u *unmaskStream) inHand() (lines [][]byte, cut []byte) {
+	lines, cut = u.src.inHand()
+	lines = append(append(u.out, u.event...), lines...)
+	u.out, u.event = nil, nil
+	return lines, cut
+}
+
+// terminalData reports a data line that carries a terminal event. The reply
+// ends at it, so its event is restored and handed on at once instead of
+// waiting for the blank line that closes it, which the upstream may never
+// send; the relay takes the rest of the event already read through inHand.
+func terminalData(line []byte) bool {
+	_, payload, _, isData := dataPayload(line)
+	if !isData || !containsAny(payload, terminalNeedles) {
+		return false
+	}
+	d := parseDoc(payload)
+	if d == nil {
+		return false
+	}
+	kind, _ := d.str("type")
+	return terminalEvent(kind)
+}
+
+var terminalNeedles = [][]byte{[]byte(`"message_stop"`), []byte(`"error"`)}
+
 func (u *unmaskStream) readline() ([]byte, error) {
 	for len(u.out) == 0 {
 		if u.err != nil {
@@ -823,7 +854,7 @@ func (u *unmaskStream) readline() ([]byte, error) {
 			continue
 		}
 		u.event = append(u.event, line)
-		if len(bytes.TrimRight(line, "\r\n")) == 0 {
+		if len(bytes.TrimRight(line, "\r\n")) == 0 || terminalData(line) {
 			ev := u.event
 			u.event = nil
 			u.process(ev)

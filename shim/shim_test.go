@@ -1,11 +1,13 @@
 package shim
 
 import (
+	"bufio"
 	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json/jsontext"
 	jsonv2 "encoding/json/v2"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -15,6 +17,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"testing/iotest"
 	"time"
 
 	"github.com/akleizor/ccmorph/ordjson"
@@ -645,6 +648,322 @@ func TestEmptyThinkingStream(t *testing.T) {
 	up = start(0, `{"type":"thinking","thinking":"","signature":"s"}`) + stop(0)
 	if got := streamThrough(t, s, up, nil, ""); got != up {
 		t.Fatalf("signed block changed: %q", got)
+	}
+}
+
+// sseClientEvents reads an SSE byte stream as Claude Code's SDK does: an event
+// ends at a blank line; its data lines, minus "data:" and one optional space
+// (a bare "data" is an empty one), join with "\n". Any event with an event: or
+// data field must carry JSON or [DONE]; comment, id: and retry: lines carry
+// nothing. It returns each event's joined data in order.
+func sseClientEvents(t *testing.T, stream string) []string {
+	t.Helper()
+	var events, data []string
+	named, hasData := false, false
+	flush := func() {
+		if named || hasData {
+			joined := strings.Join(data, "\n")
+			if joined != "[DONE]" && !jsontext.Value(joined).IsValid() {
+				t.Fatalf("client event with unparsable data %q in %q", joined, stream)
+			}
+			events = append(events, joined)
+		}
+		data, named, hasData = nil, false, false
+	}
+	// SSE allows CRLF, LF and a bare CR as line terminators.
+	for _, line := range strings.Split(strings.ReplaceAll(strings.ReplaceAll(stream, "\r\n", "\n"), "\r", "\n"), "\n") {
+		switch {
+		case line == "":
+			flush()
+		case line == "data" || strings.HasPrefix(line, "data:"):
+			v := strings.TrimPrefix(strings.TrimPrefix(line, "data"), ":")
+			data = append(data, strings.TrimPrefix(v, " "))
+			hasData = true
+		case line == "event" || strings.HasPrefix(line, "event:"):
+			named = true
+		}
+	}
+	flush()
+	return events
+}
+
+// A gateway heartbeat arrives as an SSE event with an empty data: field
+// (llmgate, issue #689: "event:content_block_delta" then "data:"). No client can
+// parse "" as JSON, so the relay drops the whole event — header lines, data line
+// and the blank line closing it — and the bytes the CLI reads stay parseable.
+// The terminal event survives untouched. The empty event is the gateway's: the
+// shim's only self-authored event ("event: error") always carries JSON.
+func TestEmptyDataEventNeverReachesTheClient(t *testing.T) {
+	s := NewServer("")
+	empty := "event: content_block_delta\ndata:\n\n" + "event: content_block_delta\ndata:  \n\n"
+	delta := "event: content_block_delta\ndata:{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"hi\"}}\n\n"
+	stop := "event: message_stop\ndata:{\"type\":\"message_stop\"}\n\n"
+	got := streamThrough(t, s, empty+delta+stop, nil, "")
+	if got != delta+stop {
+		t.Fatalf("got %q\nwant %q", got, delta+stop)
+	}
+	// Read it as a client would: every event carries JSON or [DONE].
+	sseClientEvents(t, got)
+	// An empty data: line inside an event that has a real payload belongs to
+	// that event: SSE joins data lines with newlines, so it only adds trailing
+	// whitespace to the JSON. The event must stay byte-exact — dropping the
+	// line or the blank line closing it merges this event into the next one.
+	up := "event: content_block_delta\ndata:{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"hi\"}}\ndata:\n\n" + stop
+	got = streamThrough(t, s, up, nil, "")
+	if got != up {
+		t.Fatalf("multi-line data event mangled: got %q\nwant %q", got, up)
+	}
+	sseClientEvents(t, got)
+	// Same the other way round: empty line first, payload after. The joined
+	// data is valid JSON with a leading newline, so the event survives whole.
+	up = "event: content_block_delta\ndata:\ndata:{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"hi\"}}\n\n" + stop
+	got = streamThrough(t, s, up, nil, "")
+	if got != up {
+		t.Fatalf("empty-first data event mangled: got %q\nwant %q", got, up)
+	}
+	sseClientEvents(t, got)
+	// An empty event between a held empty-thinking start and its stop is not
+	// the "next data event": it neither releases nor rescues the block, so the
+	// malformed pair is still dropped as a unit.
+	up = `event: content_block_start` + "\n" +
+		`data:{"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":""}}` + "\n\n" +
+		empty + "event: content_block_stop\ndata:{\"type\":\"content_block_stop\",\"index\":0}\n\n"
+	if got := streamThrough(t, s, up, nil, ""); got != "" {
+		t.Fatalf("malformed thinking pair survived the heartbeat: %q", got)
+	}
+	// An event with no data payload at all is the same unparsable chunk to the
+	// SDK: it reads "event: X" with no data line as data "". Drop it whole and
+	// leave the rest byte-exact. A comment-only keepalive carries no data
+	// field, and the SDK ignores it, so it is relayed unchanged.
+	deltaCont := strings.TrimSuffix(delta, "\n") + "data:\n\n"
+	thinkingStart := "event: content_block_start\ndata:{\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"thinking\",\"thinking\":\"\"}}\n\n"
+	crDelta := "event: content_block_delta\rdata:{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"hi\"}}\r\r"
+	crStop := "event: message_stop\rdata:{\"type\":\"message_stop\"}\r\r"
+	for _, tc := range []struct{ name, up, want string }{
+		{"llmgate chunk", "event:content_block_delta\ndata:\n\n" + delta + stop, delta + stop},
+		{"no data field", "event: content_block_delta\n\n" + delta + stop, delta + stop},
+		{"bare data field", "event: content_block_delta\ndata\n\n" + delta + stop, delta + stop},
+		{"crlf", "event:content_block_delta\r\ndata:\r\n\r\n" + delta + stop, delta + stop},
+		{"two empty data lines", "event: content_block_delta\ndata:\ndata:\n\n" + delta + stop, delta + stop},
+		{"empty data then comment", "event: content_block_delta\ndata:\n: x\n\n" + delta + stop, delta + stop},
+		{"comment keepalive kept", ": ping\n\n" + delta + stop, ": ping\n\n" + delta + stop},
+		{"continuation then empty event", deltaCont + "event: content_block_delta\ndata:\n\n" + stop, deltaCont + stop},
+		{"dropped thinking stop with empty continuation", thinkingStart + "event: content_block_stop\ndata:{\"type\":\"content_block_stop\",\"index\":0}\ndata:\n\n" + delta + stop, delta + stop},
+		{"terminal with empty continuation", delta + "event: message_stop\ndata:{\"type\":\"message_stop\"}\ndata:\n\n", delta + "event: message_stop\ndata:{\"type\":\"message_stop\"}\ndata:\n\n"},
+		{"bare cr terminal data before its event line", crDelta + "data:{\"type\":\"message_stop\"}\revent: message_stop\r\r", crDelta + "data:{\"type\":\"message_stop\"}\revent: message_stop\r\r"},
+		{"stream cut inside an empty event", delta + "event: content_block_delta\ndata:\n", delta},
+		{"bare cr framing", crDelta + crStop, crDelta + crStop},
+		{"bare cr empty event", "event: content_block_delta\rdata:\r\r" + crDelta + crStop, crDelta + crStop},
+	} {
+		got := streamThrough(t, s, tc.up, nil, "")
+		if got != tc.want {
+			t.Errorf("%s: got %q\nwant %q", tc.name, got, tc.want)
+			continue
+		}
+		sseClientEvents(t, got)
+	}
+	if ev := sseClientEvents(t, deltaCont+stop); len(ev) != 2 {
+		t.Fatalf("delta with continuation and stop must read as 2 events, got %d", len(ev))
+	}
+}
+
+// An upstream that sends a terminal event and then nothing, the socket held
+// open, still has its reply ended at once, in every SSE line framing (CRLF, LF
+// or a bare CR): the relay forwards the part of the terminal event it has
+// already read, fields after the data line included, writes the closing blank
+// line if it has not arrived, and never waits on the upstream for more. A line
+// read without its terminator is never ended as read (a cut "event:
+// message_st" would rename the event): if it is the start of the event's own
+// name, that name is written whole from the data's type, so the name already
+// read reaches the client; any other cut line is dropped.
+func TestTerminalEventEndsTheReplyWithoutWaiting(t *testing.T) {
+	const stop = "data:{\"type\":\"message_stop\"}"
+	for _, tc := range []struct{ name, up, want string }{
+		{"lf", "event: message_stop\n" + stop + "\n", "event: message_stop\n" + stop + "\n\n"},
+		{"crlf", "event: message_stop\r\n" + stop + "\r\n", "event: message_stop\r\n" + stop + "\r\n\r\n"},
+		{"bare cr", "event: message_stop\r" + stop + "\r", "event: message_stop\r" + stop + "\r\r"},
+		{"bare cr with its blank line", "event: message_stop\r" + stop + "\r\r", "event: message_stop\r" + stop + "\r\r"},
+		{"bare cr event line after data", stop + "\revent: message_stop\r", stop + "\revent: message_stop\r\r"},
+		{"crlf event line after data", stop + "\r\nevent: message_stop\r\n", stop + "\r\nevent: message_stop\r\n\r\n"},
+		{"bare cr unterminated event line after data", stop + "\revent: message_stop", stop + "\revent: message_stop\r\r"},
+		{"lf unterminated event line after data", stop + "\nevent: message_stop", stop + "\nevent: message_stop\n\n"},
+		{"crlf unterminated event line after data", stop + "\r\nevent: message_stop", stop + "\r\nevent: message_stop\r\n\r\n"},
+		{"cut name after data", stop + "\revent: message_st", stop + "\revent: message_stop\r\r"},
+		{"cut name without a space", stop + "\nevent:message_st", stop + "\nevent:message_stop\n\n"},
+		{"cut field name after data", stop + "\neve", stop + "\nevent: message_stop\n\n"},
+		{"cut field after both event lines", "event: message_stop\n" + stop + "\nevent: message_st", "event: message_stop\n" + stop + "\nevent: message_stop\n\n"},
+		{"cut error name", "data:{\"type\":\"error\",\"error\":{\"type\":\"overloaded_error\"}}\nevent: err", "data:{\"type\":\"error\",\"error\":{\"type\":\"overloaded_error\"}}\nevent: error\n\n"},
+		{"other unterminated field after data is dropped", stop + "\nid: 7", stop + "\n\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			release := make(chan struct{})
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "text/event-stream")
+				w.Write([]byte(tc.up))
+				w.(http.Flusher).Flush()
+				select {
+				case <-r.Context().Done():
+				case <-release:
+				}
+			}))
+			defer srv.Close()
+			defer close(release)
+			s := NewServer(srv.URL)
+			s.Stall = 5 * time.Second
+			s.setClients()
+			front := httptest.NewServer(s)
+			defer front.Close()
+			start := time.Now()
+			resp, err := http.Post(front.URL+"/v1/messages", "application/json", strings.NewReader("{}"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			var b bytes.Buffer
+			b.ReadFrom(resp.Body)
+			resp.Body.Close()
+			if took := time.Since(start); took > 2*time.Second {
+				t.Fatalf("reply ended after %v, waiting on the upstream past message_stop", took)
+			}
+			if b.String() != tc.want {
+				t.Fatalf("got %q\nwant %q", b.String(), tc.want)
+			}
+		})
+	}
+}
+
+// The client reads the same events however the upstream's bytes are cut into
+// reads. One byte per read, every CR is the last byte of its read: its line
+// goes on at once, and the LF completing a CRLF arrives as the next read's
+// first byte. SSE reads that CR alone as the same line end, so the LF is
+// dropped, never taken for a blank line that would end the event early. The
+// empty event is still dropped and the terminal event still ends the reply.
+func TestSSEReadsOneByteAtATime(t *testing.T) {
+	delta := "event: content_block_delta\ndata:{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"hi\"}}\n\n"
+	stop := "event: message_stop\ndata:{\"type\":\"message_stop\"}\n\n"
+	up := "event: content_block_delta\ndata:\n\n" + delta + stop
+	cr := func(s string) string { return strings.ReplaceAll(s, "\n", "\r") }
+	crlf := func(s string) string { return strings.ReplaceAll(s, "\n", "\r\n") }
+	for _, tc := range []struct{ name, up, want string }{
+		{"lf", up, delta + stop},
+		{"bare cr", cr(up), cr(delta + stop)},
+		{"crlf", crlf(up), cr(delta + stop)},
+	} {
+		w := httptest.NewRecorder()
+		readErr, writeErr := relay(t, w, iotest.OneByteReader(strings.NewReader(tc.up)), nil)
+		if readErr != nil || writeErr != nil {
+			t.Errorf("%s: readErr %v writeErr %v", tc.name, readErr, writeErr)
+		}
+		got := w.Body.String()
+		if got != tc.want {
+			t.Errorf("%s: got %q\nwant %q", tc.name, got, tc.want)
+			continue
+		}
+		if ev := sseClientEvents(t, got); len(ev) != 2 {
+			t.Errorf("%s: client read %d events, want the delta and message_stop", tc.name, len(ev))
+		}
+	}
+}
+
+// heldOpenReader hands over its bytes, then blocks like an upstream that keeps
+// the connection open and sends nothing more, until done is closed.
+type heldOpenReader struct {
+	r    io.Reader
+	done chan struct{}
+}
+
+func (h *heldOpenReader) Read(p []byte) (int, error) {
+	if n, err := h.r.Read(p); n > 0 || err != io.EOF {
+		return n, err
+	}
+	<-h.done
+	return 0, io.EOF
+}
+
+// With masking on, the reply still ends at its terminal event without waiting
+// for the blank line closing it: the restore pass hands the event on at its
+// terminal data line, and the fields already read follow it.
+func TestTerminalEventEndsTheMaskedReplyWithoutWaiting(t *testing.T) {
+	const stop = "data:{\"type\":\"message_stop\"}"
+	for _, tc := range []struct{ name, up, want string }{
+		{"lf", "event: message_stop\n" + stop + "\n", "event: message_stop\n" + stop + "\n\n"},
+		{"bare cr", "event: message_stop\r" + stop + "\r", "event: message_stop\r" + stop + "\r\r"},
+		{"bare cr event line after data", stop + "\revent: message_stop\r", stop + "\revent: message_stop\r\r"},
+		{"bare cr unterminated event line after data", stop + "\revent: message_stop", stop + "\revent: message_stop\r\r"},
+		{"lf unterminated event line after data", stop + "\nevent: message_stop", stop + "\nevent: message_stop\n\n"},
+		{"cut name after data", stop + "\revent: message_st", stop + "\revent: message_stop\r\r"},
+		{"cut field after both event lines", "event: message_stop\n" + stop + "\nevent: message_st", "event: message_stop\n" + stop + "\nevent: message_stop\n\n"},
+		{"other unterminated field after data is dropped", stop + "\nid: 7", stop + "\n\n"},
+		{"crlf with its blank line", "event: message_stop\r\n" + stop + "\r\n\r\n", "event: message_stop\r\n" + stop + "\r\n\r\n"},
+	} {
+		done := make(chan struct{})
+		src := &unmaskStream{src: &thinkingStream{r: bufio.NewReader(&heldOpenReader{r: strings.NewReader(tc.up), done: done})}, m: testMasker(t, "")}
+		w := httptest.NewRecorder()
+		rq := &request{w: w, rc: http.NewResponseController(w)}
+		ended := make(chan error, 1)
+		go func() {
+			readErr, writeErr := NewServer("").relayStream(rq, src, nil, strp("m"), "")
+			ended <- errors.Join(readErr, writeErr)
+		}()
+		select {
+		case err := <-ended:
+			if err != nil || w.Body.String() != tc.want {
+				t.Errorf("%s: err %v, got %q\nwant %q", tc.name, err, w.Body.String(), tc.want)
+			}
+		case <-time.After(2 * time.Second):
+			t.Errorf("%s: the masked reply waits on the upstream past message_stop", tc.name)
+		}
+		close(done)
+	}
+}
+
+// A CRLF cut by the size of one read, its LF already buffered, stays whole:
+// the reader takes the LF while it costs no read, so the bytes relay exact.
+func TestBufferedCRLFAcrossOneReadStaysWhole(t *testing.T) {
+	line := ": " + strings.Repeat("x", 4093) + "\r\n" // its CR is the 4096th byte
+	up := line + "\r\nevent: message_stop\r\ndata:{\"type\":\"message_stop\"}\r\n\r\n"
+	ts := &thinkingStream{r: bufio.NewReaderSize(strings.NewReader(up), 64<<10)}
+	var got strings.Builder
+	for {
+		l, err := ts.readline()
+		if err != nil {
+			break
+		}
+		got.Write(l)
+	}
+	if got.String() != up {
+		t.Fatalf("got %d bytes, want the %d upstream bytes exact; first line ends %q", got.Len(), len(up), got.String()[4090:4100])
+	}
+}
+
+// errOnceReader returns err once where r ends, then r's own io.EOF: a read
+// error the relay must report even when a clean end follows it.
+type errOnceReader struct {
+	r     io.Reader
+	err   error
+	fired bool
+}
+
+func (e *errOnceReader) Read(p []byte) (int, error) {
+	n, err := e.r.Read(p)
+	if err == io.EOF && !e.fired {
+		e.fired = true
+		return n, e.err
+	}
+	return n, err
+}
+
+// A stall right after a bare-CR line is still a stall: the relay returns it, so
+// streamSSE ends the reply with an error event instead of a silent clean end.
+func TestStallAfterBareCRLineIsReported(t *testing.T) {
+	for _, up := range []string{": ping\r\r", "event: ping\rdata: {\"type\":\"ping\"}\r\r", ": ping\r\n\r\n", ": ping\n\n"} {
+		w := httptest.NewRecorder()
+		readErr, writeErr := relay(t, w, &errOnceReader{r: strings.NewReader(up), err: errStall}, nil)
+		if !errors.Is(readErr, errStall) || writeErr != nil {
+			t.Errorf("%q: readErr %v writeErr %v, want errStall", up, readErr, writeErr)
+		}
+		if w.Body.String() != up {
+			t.Errorf("%q: client got %q", up, w.Body.String())
+		}
 	}
 }
 
