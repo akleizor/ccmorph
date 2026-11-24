@@ -32,14 +32,10 @@ func brewOptCore(libexec string) string {
 // configCore is the core's path in install.sh's layout,
 // ${XDG_CONFIG_HOME:-$HOME/.config}/ccmorph/libexec/ccmorph-core: the path
 // tools outside ccmorph resolve it by (a hive landing's settle() records its
-// outcome through it). It is spelled from XDG_CONFIG_HOME, never
+// outcome through it). It is spelled from paths.ConfigRoot, never
 // CCMORPH_STATE_DIR, because install.sh places code there either way.
 func configCore() string {
-	cfg := os.Getenv("XDG_CONFIG_HOME")
-	if cfg == "" {
-		cfg = filepath.Join(paths.Home(), ".config")
-	}
-	return filepath.Join(cfg, "ccmorph", "libexec", "ccmorph-core")
+	return filepath.Join(paths.ConfigRoot(), "libexec", "ccmorph-core")
 }
 
 // publishCore gives a Homebrew install the core path install.sh's layout has
