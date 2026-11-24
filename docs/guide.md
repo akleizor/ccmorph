@@ -326,7 +326,10 @@ levels. `-i` works the same way on `run`, `set`, `get`, `context`, `inspect`,
 `fzf`, dynamic catalogues support type-to-filter; without it they use numbered
 choices that also take a typed id or part of one, cut to the screen with a "more"
 line when the list is long (`q` cancels). Fixed menus always use native arrow keys, regardless of
-whether `fzf` is installed; `TERM=dumb` uses the numbered fallback. Scripts should pass explicit arguments. `rm` and `mv`
+whether `fzf` is installed; `TERM=dumb` uses the numbered fallback. Scripts should pass explicit arguments: a picker that finds no terminal — a pipe, a
+redirected stdin, a CI job — is not opened at all, and the command refuses by name
+(`ccmorph: selection needs a terminal; pass the value directly`) with the choices
+and a non-zero status, never waiting for keys that cannot arrive. `rm` and `mv`
 stay explicit — destructive operations should not be a menu selection.
 
 `set` writes the profile's saved model or effort default. Native `/model` and
