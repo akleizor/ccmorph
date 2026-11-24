@@ -114,7 +114,9 @@ as a `.migrated` backup — your profile gains its own context data, nothing in 
 is removed. There is no shell to re-source: the
 new code is live on the next run. `ccmorph uninstall` removes the command
 and leaves your profiles alone: it lists what stays, wherever one of these
-exists — the state root with its profiles and credentials; when
+exists — the state root with its profiles and credentials (unless
+`CCMORPH_STATE_DIR` moved it, that is also the install directory, so its line
+names ccmorph's own program files beside the profiles); when
 `CCMORPH_STATE_DIR` moved that root, the install directory with the
 installed code (and any profiles that were already in it); the shared
 session history under `~/.claude` (transcripts, prompt history and pasted

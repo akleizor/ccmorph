@@ -705,6 +705,13 @@ if [[ "${1:-}" == "--uninstall" ]]; then
   # target could not be asked has an unknown count: printing 0 as fact is how the
   # profiles were detached and named nowhere before (#219).
   _un_root_label="${#_un_profiles} profiles, their credentials and session history"
+  # Unless CCMORPH_STATE_DIR moved it, the state root IS the install directory:
+  # the runnable program copy sits beside the profiles. Its kept line says so,
+  # or a person told "only your data stays" either deletes the profiles with
+  # the code or keeps a runnable ccmorph they believe is gone (#810).
+  if (( ! _un_redirected )) && [[ -f "$CONFIG_DIR/lib/ccmorph.sh" ]]; then
+    _un_root_label="$_un_root_label, and ccmorph's own program files: bin, lib, libexec, share, install.sh"
+  fi
   (( ${_un_unread[(Ie)$_un_named]:-0} )) && _un_root_label="not read, so its profiles, credentials and session history are not counted"
   print -r -- "Kept, because they are yours:"
   print -r -- "  $_un_named  ($_un_root_label)"
