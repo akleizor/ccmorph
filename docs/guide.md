@@ -8,9 +8,14 @@ reasoning behind each behavior, see [ARCHITECTURE.md](ARCHITECTURE.md).
 
 With Homebrew: `brew install akleizor/tap/ccmorph` (the full name, so Homebrew
 trusts the third-party tap). Homebrew owns the command and runtime under its
-prefix; profiles still live in `~/.config/ccmorph`. Prebuilt bottles cover Apple
-silicon on the newest macOS and Linux x86_64; elsewhere Homebrew builds from
-source with Go. The rest of this section is about the clone and one-liner.
+prefix; profiles still live in `~/.config/ccmorph`. Homebrew cannot write your
+home directory, so the first ccmorph command that reads or writes profiles
+(`ccmorph add`, a launch) links `~/.config/ccmorph/libexec/ccmorph-core` to the
+core behind Homebrew's `opt` path, where tools that run the core expect it on
+a clone or one-line install; every `brew upgrade` keeps that link working
+(#674). Prebuilt bottles cover Apple silicon on the newest macOS and Linux
+x86_64; elsewhere Homebrew builds from source with Go. The rest of this section
+is about the clone and one-liner.
 
 From a clone: `git clone https://github.com/akleizor/ccmorph && cd ccmorph && ./install.sh`.
 

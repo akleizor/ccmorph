@@ -87,6 +87,14 @@ func ProfileRoot() string {
 	if v := os.Getenv("CCMORPH_STATE_DIR"); v != "" {
 		return filepath.Clean(v)
 	}
+	return ConfigRoot()
+}
+
+// ConfigRoot is ccmorph's config directory with no CCMORPH_STATE_DIR redirect:
+// $XDG_CONFIG_HOME/ccmorph, else ~/.config/ccmorph over Home. install.sh puts
+// its code there (lib/, libexec/) whatever the state root, so the paths tools
+// outside ccmorph resolve code by are spelled from it (#674).
+func ConfigRoot() string {
 	if cfg := os.Getenv("XDG_CONFIG_HOME"); cfg != "" {
 		return filepath.Join(cfg, "ccmorph")
 	}

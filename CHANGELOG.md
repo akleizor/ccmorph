@@ -18,6 +18,18 @@
 
 ### Fixed
 
+- **A Homebrew install gives other tools the core at
+  `~/.config/ccmorph/libexec/ccmorph-core`.** Homebrew keeps the core inside its
+  own package, at `libexec/libexec/ccmorph-core`, and cannot write your home
+  directory, so a tool that runs the core where a clone or one-line install keeps
+  it found nothing: a hive landing first crashed with `FileNotFoundError`, then
+  recorded no outcome. Each command that reads or writes profiles now links that
+  path to the core behind Homebrew's `opt` path, so the link keeps working through
+  every `brew upgrade`. `--version`, `--help` and `doctor` write nothing; a file
+  or working link already there is kept, and a link to a removed core is
+  repaired. Until the first such command after `brew install`, the path does not
+  exist (#674).
+
 - **Remote Control hosts pin the route profile's tiers.** `ccmorph-rc-hosts` kept
   its own tier map in `tier.<alias>=` lines, which drifted from the profile: an alias
   the profile mapped to a gateway model went out as the native Claude id, which the
