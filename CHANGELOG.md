@@ -7,6 +7,10 @@
 
 ## Unreleased
 
+## v0.5.32 — 2026-11-24
+
+Cut from main, so it carries every change merged after v0.5.31, among them the router now routing Agent calls inside Remote Control edge sessions (#869).
+
 ### Added
 
 - **`ccmorph router on` routes subagent work across your profiles.** Off by default. With it on, sessions get a `delegate` tool and Agent hooks: free gateways first, then the subscription furthest behind its pace, then paid keys, and inside a profile the cheapest model that fits the task's kind and tier. `ccmorph router status`, `dispatch` (`--dry-run` to see the pick only) and `report` show and check it. `dispatch` also serves scripts and services: `--timeout` bounds the whole run, flags after `--` reach the worker's claude, and the caller's `CCMORPH_TASK` tags its spend. The hooks never deny an Agent call: when no pick fits the session, the call runs as written.
