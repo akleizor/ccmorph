@@ -355,6 +355,16 @@ func (t uiTheme) numbered(prompt string, rows []string, display string) (string,
 			mode = numberFold
 		}
 	}
+	// Where keys can be read one at a time — a terminal on both streams —
+	// the menu answers every key its prompt prints (#840); a pipe or a
+	// stdin it cannot put in raw mode keeps the line loop below.
+	if mode != numberPipe && isTTY(0) {
+		if v, rc, ok := t.numberedKeys(prompt, rows, display, mode == numberDumb); ok {
+			return v, rc
+		}
+		// raw mode refused this terminal before anything was printed: the
+		// line loop answers it exactly as it always did.
+	}
 	lines := t.numberList(prompt, rows, display, mode, "")
 	if mode != numberFold {
 		// A pipe or a dumb terminal keeps the plain loop: no cursor codes, so
@@ -444,6 +454,276 @@ func (t uiTheme) numbered(prompt string, rows []string, display string) (string,
 		// while the next question waits (#387).
 		eraseLines(lines)
 		lines = t.numberList(prompt, rows, display, numberFold, numberMiss)
+	}
+}
+
+// numberKeysHint names every key the numbered menu answers, printed under the
+// question: q, the arrows and j/k are promises the loop now keeps itself (#840).
+const numberKeysHint = "Type to filter · j/k or ↑/↓ Move · Enter Select · q/Esc Cancel"
+
+// numberedKeys is the numbered menu where keys can be read one at a time: the
+// loop drives the same raw terminal the native menu and readKeyLine use, so a
+// lone q or a bare Esc leaves once, arrows and j/k move a pointer down the
+// list, typed letters edit into the same match the line loop matched (#387),
+// and Enter takes what was typed — or what the pointer stands on. The
+// terminal is restored on every exit path. dumb names a terminal barred from
+// cursor codes: nothing erases or refolds there, each round appends as plain
+// text (#387). ok false means raw mode was refused before anything printed;
+// the caller's line loop answers that terminal instead.
+func (t uiTheme) numberedKeys(prompt string, rows []string, display string, dumb bool) (string, int, bool) {
+	sigs := make(chan os.Signal, 4)
+	signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP)
+	defer signal.Stop(sigs)
+	winch := make(chan os.Signal, 4)
+	signal.Notify(winch, syscall.SIGWINCH)
+	defer signal.Stop(winch)
+	restore, err := rawTTY(os.Stdin)
+	if err != nil {
+		return "", 0, false
+	}
+	defer restore()
+	k := readKeys()
+
+	sel, start, note := -1, 0, ""
+	var buf []byte
+	// blockLines and echoLines count what is on screen: the list block (with
+	// its "N more" and hint lines) and the question above the next key. A
+	// fold terminal erases exactly that before every redraw.
+	blockLines, echoLines := 0, 0
+	painted, echoOpen := false, false
+	// recount prices the echoed question in screen rows: its heading and
+	// hint, plus the rows the ❯ line takes as the answer wraps (#361).
+	recount := func() {
+		_, columns := termSize()
+		if dumb {
+			echoLines = cells(numberPrompt(len(rows))+" ("+numberKeysHint+") ")/max(1, columns) + 1
+			return
+		}
+		echoLines = 2 + typedLines(cells(string(buf)), columns)
+	}
+	// closeEcho ends the echoed question line before any fold or new round,
+	// as every answered question did under uiInput.
+	closeEcho := func() {
+		if echoOpen {
+			fmt.Fprintln(os.Stderr)
+			echoOpen = false
+		}
+	}
+	fold := func() {
+		if painted && !dumb {
+			eraseLines(blockLines + echoLines)
+		}
+	}
+	// paint draws the whole round: heading, the windowed rows with the
+	// pointer on the selected one, the one line under the list (a failed
+	// answer's message, else the fzf hint when rows are cut — #387), and the
+	// question with whatever has been typed.
+	paint := func() {
+		closeEcho()
+		fold()
+		painted = true
+		height, columns := termSize()
+		shown, cut := numberWindow(len(rows), height, note != "")
+		if !cut {
+			start = 0
+		} else {
+			// The window keeps the pointer in view by the shortest slide;
+			// numbers stay global, so an answer names the row it always did.
+			if sel >= 0 {
+				if sel < start {
+					start = sel
+				}
+				if sel >= start+shown {
+					start = sel - shown + 1
+				}
+			}
+			start = min(max(start, 0), max(len(rows)-shown, 0))
+		}
+		window := rows
+		if cut {
+			window = rows[start : start+shown]
+		}
+		// The number column is as wide as the largest number shown, exactly
+		// as the whole-list window always padded it.
+		index := len(strconv.Itoa(start + len(window)))
+		rowWidth := columns - len(uiMargin) - index - 2
+		width := min(labelWidth(window, display), rowWidth)
+		fmt.Fprintln(os.Stderr, t.heading(prompt, columns))
+		fmt.Fprintln(os.Stderr)
+		for i, r := range window {
+			n, focused := start+i, start+i == sel
+			ptr := uiMargin
+			if focused {
+				ptr = "❯ "
+			}
+			fmt.Fprintf(os.Stderr, "%s%*d) %s\n", ptr, index, n+1, t.label(visible(r, display), width, focused, rowWidth))
+		}
+		blockLines = len(window) + 2
+		if cut {
+			above, below := start, len(rows)-start-shown
+			more := fmt.Sprintf("↓ %d more", below)
+			switch {
+			case above > 0 && below > 0:
+				more = fmt.Sprintf("↑ %d · ↓ %d more", above, below)
+			case above > 0:
+				more = fmt.Sprintf("↑ %d more", above)
+			}
+			if dumb {
+				fmt.Fprintf(os.Stderr, "%s%s\n", uiMargin, more)
+			} else {
+				fmt.Fprintln(os.Stderr, uiMargin+t.gray+more+t.reset)
+			}
+			blockLines++
+		}
+		below := note
+		if below == "" && cut {
+			below = "fzf adds search: " + util.FzfInstallStep()
+		}
+		if below != "" {
+			fmt.Fprintln(os.Stderr, uiMargin+t.gray+fit(below, columns-len(uiMargin))+t.reset)
+			blockLines++
+		}
+		// The question names the list as numberPrompt always did: the rows a
+		// narrowed round leaves renumber it ("the shorter question the answer
+		// made"). The block above keeps the menu's own title.
+		question := numberPrompt(len(rows))
+		if dumb {
+			fmt.Fprint(os.Stderr, question+" ("+numberKeysHint+") ")
+		} else {
+			fmt.Fprint(os.Stderr, t.heading(question, columns)+"\n"+uiMargin+t.gray+fit(numberKeysHint, columns-len(uiMargin))+t.reset+"\n"+t.focus+"❯"+t.reset+" ")
+			if len(buf) > 0 {
+				fmt.Fprint(os.Stderr, string(buf))
+			}
+		}
+		echoOpen = true
+		recount()
+	}
+	// leave and pick are the loop's only endings, so every terminal — fold
+	// or dumb — answers a leave with exactly one Cancelled line (#840) and
+	// an answer with the one receipt line every picker leaves (#361).
+	leave := func() (string, int, bool) {
+		closeEcho()
+		fold()
+		t.cancelled()
+		return "", 1, true
+	}
+	pick := func(r string) (string, int, bool) {
+		closeEcho()
+		fold()
+		if !dumb {
+			t.receipt(prompt, rowID(visible(r, display)))
+		}
+		return rowID(r), 0, true
+	}
+
+	paint()
+	for {
+		c, s, ok := k.next(0, sigs, winch)
+		if c == keyResize {
+			paint()
+			continue
+		}
+		if s != nil || !ok {
+			// A signal or a closed terminal leaves as Esc does: one Cancelled
+			// line and status 1, the answer the line loop gave.
+			return leave()
+		}
+		switch {
+		case c == '\r' || c == '\n':
+			if len(buf) == 0 {
+				if sel >= 0 {
+					return pick(rows[sel])
+				}
+				note = numberMiss
+				paint()
+				continue
+			}
+			answer := string(buf)
+			buf = nil
+			if n, err := strconv.Atoi(answer); err == nil && n >= 1 && n <= len(rows) && answer == strconv.Itoa(n) {
+				return pick(rows[n-1])
+			}
+			matches := matchRows(rows, answer, display)
+			switch {
+			case len(matches) == 1:
+				return pick(matches[0])
+			case len(matches) > 1:
+				// Several rows carry the name: narrow and renumber (#387).
+				rows, sel, start, note = matches, -1, 0, ""
+				paint()
+			default:
+				note = numberMiss
+				paint()
+			}
+		case c == 3 || c == 4:
+			return leave()
+		case c == 27:
+			// A bare Esc is the leave; an arrow, Home or End moves the
+			// pointer — every terminal's spelling, as the native menu reads
+			// them (#278, #388).
+			n, s, ok := k.next(80*time.Millisecond, sigs, nil)
+			if s != nil || !ok || (n != '[' && n != 'O') {
+				return leave()
+			}
+			tail, done, s := k.seqTail(sigs)
+			if s != nil {
+				return leave()
+			}
+			if !done && tail == "" {
+				return leave()
+			}
+			switch tail {
+			case "A":
+				sel = max(sel-1, 0)
+			case "B":
+				sel = min(sel+1, len(rows)-1)
+			case "H", "1~", "7~":
+				sel = 0
+			case "F", "4~", "8~":
+				sel = len(rows) - 1
+			default:
+				continue
+			}
+			paint()
+		case len(buf) == 0 && (c == 'q' || c == 'Q'):
+			// The leave the prompt prints. Alone it leaves at once (#840);
+			// after other letters it is ordinary input, so a name carrying
+			// one stays typeable.
+			return leave()
+		case len(buf) == 0 && c == 'j':
+			sel = min(sel+1, len(rows)-1)
+			paint()
+		case len(buf) == 0 && c == 'k':
+			sel = max(sel-1, 0)
+			paint()
+		case c == 127 || c == 8:
+			if len(buf) > 0 {
+				_, n := utf8.DecodeLastRune(buf)
+				fmt.Fprint(os.Stderr, strings.Repeat("\b \b", cells(string(buf[len(buf)-n:]))))
+				buf = buf[:len(buf)-n]
+				recount()
+			}
+		case c == 21:
+			fmt.Fprint(os.Stderr, strings.Repeat("\b \b", cells(string(buf))))
+			buf = nil
+			recount()
+		case c == 23:
+			full := string(buf)
+			rest := strings.TrimRight(full, " \t")
+			if i := strings.LastIndexAny(rest, " \t"); i >= 0 {
+				rest = rest[:i+1]
+			} else {
+				rest = ""
+			}
+			fmt.Fprint(os.Stderr, strings.Repeat("\b \b", cells(full)-cells(rest)))
+			buf = []byte(rest)
+			recount()
+		case c < 32:
+		default:
+			buf = append(buf, byte(c))
+			fmt.Fprint(os.Stderr, string(byte(c)))
+			recount()
+		}
 	}
 }
 

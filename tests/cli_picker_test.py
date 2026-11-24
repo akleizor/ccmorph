@@ -938,6 +938,62 @@ class PickerTTYTest(unittest.TestCase):
         self.assertEqual(self.field('many', 'model'), 'openai/model-1-instruct')
         self.assertIn('Saved many model = openai/model-1-instruct (new sessions)', out)
 
+    def test_numbered_fallback_answers_its_own_keys_issue_840(self):
+        """GH-840: the numbered prompt prints `(q to cancel)`, but the loop
+        read whole lines, so a lone q hung until killed, arrows did nothing,
+        and Esc answered with two Cancelled lines. The loop now reads one key
+        at a time: q and Esc leave at once with one Cancelled, arrows and
+        j/k move a visible selection, and Enter takes what is highlighted."""
+        env = self.env()
+        env['ROWS'] = ('alpha\tfirst choice\nbeta\tsecond choice\n'
+                       'beta-quark\tq after letters\ngamma\tthird choice')
+        command = 'source "$1"\nccm_ui_select search "pick one" "$ROWS" all'
+
+        # A lone q, no Enter: the leave the hint promises, answered at once.
+        rc, out, missed = run_pty(command, env, [(b'(q to cancel):', b'q')])
+        self.assertIsNone(missed, out)  # main hung here until killed
+        self.assertEqual(rc, 1, out)
+        self.assertEqual(out.count('Cancelled'), 1, out)
+        self.assertEqual(screen(out), ['  Cancelled'], out)
+
+        # Arrows move the selection — the pointer paints on the moved row —
+        # and Enter takes it: down twice lands on beta.
+        rc, out, missed = run_pty(command, env, [
+            (b'(q to cancel):', b'\x1b[B\x1b[B'),
+            (b'\xe2\x9d\xaf 2) ', b'\r'),  # ❯ moved to row 2
+        ])
+        self.assertIsNone(missed, out)
+        self.assertEqual(rc, 0, out)
+        self.assertEqual(screen(out), ['  pick one › beta', 'beta'], out)
+
+        # j/k move too: down, down, up lands back on the first row.
+        rc, out, missed = run_pty(command, env, [(b'(q to cancel):', b'jjk\r')])
+        self.assertIsNone(missed, out)
+        self.assertEqual(rc, 0, out)
+        self.assertEqual(screen(out), ['  pick one › alpha', 'alpha'], out)
+
+        # A bare Esc leaves: exactly one Cancelled, status 1, the list folded
+        # away under it — main printed the line twice.
+        rc, out, missed = run_pty(command, env, [(b'(q to cancel):', b'\x1b')])
+        self.assertIsNone(missed, out)
+        self.assertEqual(rc, 1, out)
+        self.assertEqual(out.count('Cancelled'), 1, out)
+        self.assertEqual(screen(out), ['  Cancelled'], out)
+
+        # q is a leave only alone: after other letters it is ordinary input,
+        # so a name carrying one is still typeable.
+        rc, out, missed = run_pty(command, env, [(b'(q to cancel):', b'ark\r')])
+        self.assertIsNone(missed, out)
+        self.assertEqual(rc, 0, out)
+        self.assertEqual(screen(out), ['  pick one › beta-quark', 'beta-quark'], out)
+
+        # A dumb terminal leaves on a lone q too — same keys, plain paint.
+        rc, out, missed = run_pty(command, {**env, 'TERM': 'dumb'}, [(b'(q to cancel):', b'q')])
+        self.assertIsNone(missed, out)
+        self.assertEqual(rc, 1, out)
+        self.assertEqual(out.count('Cancelled'), 1, out)
+        self.assertNotIn('\x1b[', out)
+
     def test_set_without_slot_picks_slot_then_value(self):
         env = self.env()
         self.profile()
@@ -1212,13 +1268,13 @@ class PickerTTYTest(unittest.TestCase):
         self.assertEqual(rc, 0, out)
         self.assertIn('Action    Description', out)
         self.assertIn('Launch the default profile', out)
-        # The answered list folds (#361): NO_COLOR governs color, not cursor
-        # movement. The only escapes are the two folds: the Select question's
-        # (heading, hint, typed line: 3) and the list's (heading, blank, one
-        # row, the Select receipt: 4). After the list's fold — its receipt
-        # and the whole --help output — no escape at all, as on main.
+        # The answered list folds (#361, #840): NO_COLOR governs color, not
+        # cursor movement. The only escape is the one fold of the whole round
+        # — the list (heading, blank, one row) and the per-key question
+        # (heading, hint, typed line: 6) — after which the receipt and the
+        # whole --help output carry no escape at all, as on main.
         folds = list(re.finditer(r'\x1b\[(\d+)A\r\x1b\[J', out))
-        self.assertEqual([m.group(1) for m in folds], ['3', '4'], out)
+        self.assertEqual([m.group(1) for m in folds], ['6'], out)
         self.assertNotIn('\x1b[', re.sub(r'\x1b\[\d+A\r\x1b\[J', '', out))
         self.assertNotIn('\x1b[', out[folds[-1].end():])
 
@@ -1542,11 +1598,11 @@ class PickerTTYTest(unittest.TestCase):
             self.assertNotEqual(rc, 0, out)
             self.assertIn('Cancelled', out)  # q answers like Esc: one short line
             if 'NO_COLOR' in settings:
-                # NO_COLOR keeps folding (#361): color is off, cursor movement
-                # is not. The only escapes are the two folds: the Select
-                # question's (heading, hint, typed line: 3) and the list's
-                # (heading, blank, two rows, the Select receipt: 5).
-                self.assertEqual(re.findall(r'\x1b\[(\d+)A\r\x1b\[J', out), ['3', '5'], out)
+                # NO_COLOR keeps folding (#361, #840): color is off, cursor
+                # movement is not. The only escape is the one fold of the
+                # whole round — the list (heading, blank, two rows) and the
+                # per-key question (heading, hint, q that left at once: 7).
+                self.assertEqual(re.findall(r'\x1b\[(\d+)A\r\x1b\[J', out), ['7'], out)
                 self.assertNotIn('\x1b[', re.sub(r'\x1b\[\d+A\r\x1b\[J', '', out))
             else:
                 # TERM=dumb keeps the plain path: no escape at all, as on main.
