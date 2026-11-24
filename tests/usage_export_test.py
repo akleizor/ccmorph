@@ -5,8 +5,10 @@ import errno
 import json
 import os
 import pathlib
+import shutil
 import subprocess
 import sys
+import tempfile
 import time
 
 import pytest
@@ -83,6 +85,19 @@ def read_day_in(output, folder, day):
 def read_day(output, day):
     path = output / "projects" / "ledger" / f"{day}.jsonl"
     return [json.loads(l) for l in path.read_text().splitlines() if l]
+
+
+def ccusage_stub(tmp_path):
+    """A bin directory holding one executable named ccusage: the report asks PATH
+    whether ccusage is installed (GH-843), so a test that pins the whole report
+    pins this too — never the host's PATH, which decides the tail's spelling."""
+    bin_dir = tmp_path / "ccusage-bin"
+    bin_dir.mkdir(exist_ok=True)
+    stub = bin_dir / "ccusage"
+    if not stub.exists():
+        stub.write_text("#!/bin/sh\nexit 0\n")
+        os.chmod(stub, 0o755)
+    return bin_dir
 
 
 @pytest.mark.parametrize("damage", [
@@ -355,7 +370,7 @@ def test_a_listed_receipt_the_move_took_mid_read_is_skipped_issue_583(tmp_path, 
     assert raced == ["a.json"], "the move must land between the listing and the read of b.json"
     assert stats["rows"] == 1 and stats["moved"] == 1 and stats["usd"] == 1
     assert [r["costUSD"] for r in read_day(output, "2026-10-16")] == [1]
-    assert "1 receipt moved by the store mid-run, skipped" in ue.report(stats, output).splitlines()
+    assert "1 receipt moved by the store mid-run, skipped" in ue.report(stats, output, rows).splitlines()
 
 
 def test_a_day_folder_receipt_gone_between_listing_and_read_is_skipped_issue_583(tmp_path, monkeypatch):
@@ -791,11 +806,12 @@ def test_the_checkout_launcher_runs_the_shipped_exporter(tmp_path, via):
         launcher.symlink_to(script)
     ran = subprocess.run(
         [str(launcher), "--output", str(output), "--source", str(tmp_path / "rows")],
-        capture_output=True, text=True, timeout=HANG_TIMEOUT)
+        capture_output=True, text=True, timeout=HANG_TIMEOUT,
+        env=dict(os.environ, PATH=f"{ccusage_stub(tmp_path)}{os.pathsep}{os.environ['PATH']}"))
     assert ran.returncode == 0, ran.stderr
     root = os.path.abspath(output)
     assert ran.stdout == "\n".join([
-        f"Exported 0 turns over 0 days to {root}",
+        f"Exported 0 turns over 0 days from {os.path.realpath(tmp_path / 'rows')} to {root}",
         "one folder per profile under projects/, ccusage.json beside it",
         "0 turns the gateway billed, $0.00",
         "0 turns ccmorph estimated, $0.00",
@@ -830,11 +846,161 @@ def test_a_fresh_install_exports_zeroes_before_the_first_session_issue_647(tmp_p
                          capture_output=True, text=True, timeout=HANG_TIMEOUT, env=env)
 
     assert ran.returncode == 0, ran.stderr
-    assert ran.stdout.splitlines()[0] == f"Exported 0 turns over 0 days to {os.path.abspath(output)}"
+    assert ran.stdout.splitlines()[0] == (
+        f"Exported 0 turns over 0 days from "
+        f"{os.path.realpath(state_root / 'ccmorph' / 'usage')} to {os.path.abspath(output)}")
     assert "[Errno" not in ran.stdout + ran.stderr
     assert ".move.lock" not in ran.stdout + ran.stderr
     assert not (state_root / "ccmorph").exists()
     assert (output / "projects").is_dir() and (output / "ccusage.json").is_file()
+
+
+@pytest.mark.parametrize("kind", ["missing", "file"],
+                         ids=["source-folder-missing-issue-843", "source-is-a-file-issue-843"])
+def test_a_named_source_that_is_not_a_folder_refuses_naming_the_path_issue_843(tmp_path, kind):
+    """GH-843: a wrong --source — a typo, or receipts under the other state root the
+    README describes — printed the confident "Exported 0 turns over 0 days",
+    byte-identical to a genuinely empty store: silence that reads as zero. A source
+    named on the command line that is not a folder refuses, names the path the way
+    every other refusal here names one (#647), and writes nothing."""
+    rows, output = tmp_path / "no-such-receipts", tmp_path / "out"
+    if kind == "file":
+        rows.write_text("not a folder\n")
+
+    ran = subprocess.run(
+        [sys.executable, str(EXPORTER), "--output", str(output), "--source", str(rows)],
+        capture_output=True, text=True, timeout=HANG_TIMEOUT)
+
+    assert ran.returncode == 1
+    assert str(rows) in ran.stderr, ran.stderr
+    assert "[Errno" not in ran.stderr and "Traceback" not in ran.stderr
+    assert not output.exists(), "the refusal wrote an output tree beside the error"
+
+
+def test_an_unreadable_named_source_exits_nonzero_naming_the_folder_issue_843(tmp_path):
+    """GH-843's other half: the folder is there but this run cannot read it. The run
+    still refuses with the folder's own name, never Python's errno spelling."""
+    rows, output = tmp_path / "rows", tmp_path / "out"
+    if os.geteuid() == 0:
+        pytest.skip("root reads a mode-000 folder")
+    rows.mkdir()
+    rows.chmod(0o000)
+    try:
+        ran = subprocess.run(
+            [sys.executable, str(EXPORTER), "--output", str(output), "--source", str(rows)],
+            capture_output=True, text=True, timeout=HANG_TIMEOUT)
+    finally:
+        rows.chmod(0o700)  # let tmp_path clean up
+
+    assert ran.returncode == 1
+    assert str(rows) in ran.stderr, ran.stderr
+    assert "[Errno" not in ran.stderr and "Traceback" not in ran.stderr
+
+
+def test_a_source_behind_an_unsearchable_parent_refuses_naming_the_folder_issue_843():
+    """GH-843 review: the existence probe must not raise the errno it stands guard
+    against. When a parent of the named --source cannot be searched, stat'ing the
+    source itself fails, and the run still answers with a plain refusal naming the
+    folder — never the Python traceback with the [Errno 13] inside it."""
+    with tempfile.TemporaryDirectory() as d:
+        root = pathlib.Path(d)
+        parent, source = root / "private", root / "private" / "receipts"
+        source.mkdir(parents=True)
+        script = root / "exporter"
+        shutil.copyfile(EXPORTER, script)
+        who = {}
+        if os.geteuid() == 0:
+            root.chmod(0o755)  # let an unprivileged reader reach its own paths
+            script.chmod(0o644)
+            who["user"] = 65534
+        source.chmod(0o000)  # the leaf first: once the parent is sealed, nothing inside reaches it
+        parent.chmod(0o000)
+        try:
+            ran = subprocess.run(
+                [sys.executable, str(script), "--output", str(root / "out"), "--source", str(source)],
+                capture_output=True, text=True, timeout=HANG_TIMEOUT, **who)
+        finally:
+            parent.chmod(0o700)
+            source.chmod(0o700)
+
+    assert ran.returncode == 1
+    assert str(source) in ran.stderr, ran.stderr
+    assert "[Errno" not in ran.stderr and "Traceback" not in ran.stderr
+
+
+def test_an_existing_empty_source_still_exits_zero_and_prints_the_folder_issue_843(tmp_path):
+    """#647's zero report must survive this: a store folder that exists and holds no
+    receipt is genuinely empty, exports nothing and exits 0. What tells it apart from
+    the refused typo is the head line, which now names the folder the run read — a
+    reader who sees a folder they did not name knows where the zeros came from."""
+    rows, output = tmp_path / "rows", tmp_path / "out"
+    rows.mkdir()
+
+    ran = subprocess.run(
+        [sys.executable, str(EXPORTER), "--output", str(output), "--source", str(rows)],
+        capture_output=True, text=True, timeout=HANG_TIMEOUT)
+
+    assert ran.returncode == 0, ran.stderr
+    assert ran.stdout.splitlines()[0] == (
+        f"Exported 0 turns over 0 days from {os.path.realpath(rows)} "
+        f"to {os.path.abspath(output)}")
+
+
+@pytest.mark.parametrize("installed", [True, False],
+                         ids=["ccusage-on-path", "ccusage-missing-issue-843"])
+def test_the_summary_names_a_missing_ccusage_instead_of_printing_a_dead_command_issue_843(
+        tmp_path, installed):
+    """GH-843: every run ended on a ccusage command, but no ccmorph install route
+    provides ccusage (README, Requirements), so that final step dead-ended in
+    "ccusage: command not found" with nothing saying it was missing. Absent from
+    PATH, the summary says so and points at the README's note; present, the exact
+    command prints exactly as before."""
+    rows, output, bin_dir = tmp_path / "rows", tmp_path / "out", tmp_path / "bin"
+    rows.mkdir()
+    bin_dir.mkdir()
+    env = dict(os.environ, PATH=str(tmp_path / "emptybin"))  # a PATH nothing can be found on
+    (tmp_path / "emptybin").mkdir()
+    if installed:
+        (bin_dir / "ccusage").write_text("#!/bin/sh\nexit 0\n")
+        os.chmod(bin_dir / "ccusage", 0o755)
+        env["PATH"] = f"{bin_dir}{os.pathsep}{env['PATH']}"
+
+    ran = subprocess.run(
+        [sys.executable, str(EXPORTER), "--output", str(output), "--source", str(rows)],
+        capture_output=True, text=True, timeout=HANG_TIMEOUT, env=env)
+
+    assert ran.returncode == 0, ran.stderr
+    if installed:
+        assert "Then, with ccusage installed:" in ran.stdout
+        assert any(l.startswith("CLAUDE_CONFIG_DIR=") for l in ran.stdout.splitlines())
+    else:
+        assert "ccusage is not installed" in ran.stdout
+        assert "README" in ran.stdout
+        assert "CLAUDE_CONFIG_DIR=" not in ran.stdout, "the summary still prints a dead command"
+
+
+def test_the_printed_source_reaches_the_folder_the_run_read_issue_843(tmp_path):
+    """GH-843 review: a spelling of the source is only a name for the folder the
+    run read if following it goes where the run went. The exporter walks a
+    `..` through the symlink before it, while a lexical collapse of the same `..`
+    names a folder that is not there — so the printed path must be traversable
+    to the very store the export read."""
+    (tmp_path / "physical/child").mkdir(parents=True)
+    actual = tmp_path / "physical" / "ccmorph" / "usage"
+    actual.mkdir(parents=True)
+    link = tmp_path / "link"
+    link.symlink_to(tmp_path / "physical" / "child", target_is_directory=True)
+    env = {k: v for k, v in os.environ.items() if k != "XDG_STATE_HOME"}
+    env["XDG_STATE_HOME"] = str(link / "..")  # walked: link -> physical/child, .. -> physical
+
+    ran = subprocess.run([sys.executable, str(EXPORTER), "--output", str(tmp_path / "out")],
+                         env=env, capture_output=True, text=True, timeout=HANG_TIMEOUT)
+
+    assert ran.returncode == 0, ran.stderr
+    assert (actual / ".move.lock").exists(), "the exporter read some other store"
+    reported = pathlib.Path(ran.stdout.splitlines()[0].split(" from ", 1)[1].split(" to ", 1)[0])
+    assert reported.exists() and reported.samefile(actual), (
+        f"the summary names a folder the run did not read: {ran.stdout.splitlines()[0]}")
 
 
 @pytest.mark.parametrize("missing", [".jsonl", ".jsonl.idx"],
@@ -902,13 +1068,18 @@ def test_a_blocked_destination_is_named_not_the_temporary_file_issue_647(tmp_pat
     assert "[Errno" not in ran.stderr and "Traceback" not in ran.stderr
 
 
-def test_the_summary_names_where_the_files_went_and_the_command_to_run_next_issue_382(tmp_path):
+@pytest.mark.parametrize("installed", [True, False],
+                         ids=["ccusage-installed", "ccusage-missing-issue-843"])
+def test_the_summary_names_where_the_files_went_and_the_command_to_run_next_issue_382(tmp_path,
+                                                                                       installed):
     """#382: the export used to end on one raw JSON line — long floating-point
     money, no output folder, no next command — and its counts (13 gateway rows
     plus 5 estimated rows is not 33 rows) left the third kind, the turns ccusage
     prices itself, unnamed. The end of an export is for the person who ran it:
     the folder the files went to, every count by a name that adds up, money at
-    cents, and the exact ccusage command for that folder on its own line."""
+    cents, and the exact ccusage command for that folder on its own line. GH-843
+    made the last lines depend on whether ccusage is on PATH; the counts must be
+    pinned exactly under both spellings, so this one store reports under each."""
     rows, output = tmp_path / "rows", tmp_path / "out"
     rows.mkdir()
     write(rows, "a.json", receipt("a", "claude-opus-5-5", "2026-10-16T01:00:00+00:00", cost=0.1))
@@ -918,17 +1089,28 @@ def test_the_summary_names_where_the_files_went_and_the_command_to_run_next_issu
     write(rows, "d.json", receipt("d", "claude-opus-5-5", "2026-10-16T04:00:00+00:00"))
     write(rows, "e.json", receipt("e", "claude-opus-5-5", "2026-10-16T05:00:00+00:00", cost=1e14))
 
+    if installed:
+        env = dict(os.environ, PATH=f"{ccusage_stub(tmp_path)}{os.pathsep}{os.environ['PATH']}")
+        tail = ["Then, with ccusage installed:",
+                f"CLAUDE_CONFIG_DIR={os.path.abspath(output)} ccusage claude daily --instances "
+                f"--config {os.path.abspath(output)}/ccusage.json"]
+    else:
+        emptybin = tmp_path / "emptybin"  # a PATH nothing, least of all ccusage, is found on
+        emptybin.mkdir()
+        env = dict(os.environ, PATH=str(emptybin))
+        tail = ["ccusage is not installed: no ccmorph install provides it; see the "
+                "README's cost-reporting note, and --help prints the command to run"]
     ran = subprocess.run(
         [sys.executable, str(EXPORTER), "--output", str(output), "--source", str(rows),
          "--since", "20261016"],
-        capture_output=True, text=True, timeout=HANG_TIMEOUT)
+        capture_output=True, text=True, timeout=HANG_TIMEOUT, env=env)
 
     assert ran.returncode == 0, ran.stderr
     # The whole report, exactly — nothing extra, nothing conflicting — because a
     # substring check would pass beside output that disagrees with it.
     root = os.path.abspath(output)
     assert ran.stdout == "\n".join([
-        f"Exported 4 turns over 1 day to {root}",  # where the files went
+        f"Exported 4 turns over 1 day from {os.path.realpath(rows)} to {root}",  # both ends named
         "one folder per profile under projects/, ccusage.json beside it",
         # 0.1 + 0.0599 is 0.15990000000000001 and the estimate 0.05333333333333333:
         # both print at cents, never as the float's own spelling. The three priced
@@ -938,10 +1120,7 @@ def test_the_summary_names_where_the_files_went_and_the_command_to_run_next_issu
         "1 turn left for ccusage to price at its list price",
         "1 turn unpriced (a damaged cost, not exported)",
         "0 receipts moved by the store mid-run, skipped",
-        "Then, with ccusage installed:",
-        f"CLAUDE_CONFIG_DIR={root} ccusage claude daily --instances "
-        f"--config {root}/ccusage.json",
-    ]) + "\n"
+    ] + tail) + "\n"
 
 
 def test_the_printed_command_runs_as_printed_for_a_folder_with_spaces_issue_382(tmp_path):
@@ -954,23 +1133,26 @@ def test_the_printed_command_runs_as_printed_for_a_folder_with_spaces_issue_382(
     rows.mkdir()
     write(rows, "a.json", receipt("a", "claude-opus-5-5", "2026-10-16T01:00:00+00:00", cost=0.1))
 
-    ran = subprocess.run(
-        [sys.executable, str(EXPORTER), "--output", str(output), "--source", str(rows)],
-        capture_output=True, text=True, timeout=HANG_TIMEOUT)
-    assert ran.returncode == 0, ran.stderr
-    command = next(l for l in ran.stdout.splitlines() if l.startswith("CLAUDE_CONFIG_DIR="))
-
     # A ccusage stub on PATH records the config dir it ran under and every
-    # argument it was called with, so the assertion reads the command's effect.
+    # argument it was called with, so the assertion reads the command's effect —
+    # and the export, asked whether ccusage is installed (GH-843), finds it and
+    # prints the command at all.
     stub_dir, seen = tmp_path / "bin", tmp_path / "seen"
     stub_dir.mkdir()
     (stub_dir / "ccusage").write_text(
         '#!/bin/sh\nprintf \'%s\\n\' "$CLAUDE_CONFIG_DIR" "$@" > "$CCUSAGE_STUB_SEEN"\n')
     os.chmod(stub_dir / "ccusage", 0o755)
+    stub_env = dict(os.environ, PATH=f"{stub_dir}{os.pathsep}{os.environ['PATH']}")
+
+    ran = subprocess.run(
+        [sys.executable, str(EXPORTER), "--output", str(output), "--source", str(rows)],
+        capture_output=True, text=True, timeout=HANG_TIMEOUT, env=stub_env)
+    assert ran.returncode == 0, ran.stderr
+    command = next(l for l in ran.stdout.splitlines() if l.startswith("CLAUDE_CONFIG_DIR="))
+
     ran_command = subprocess.run(
         ["/bin/sh", "-c", command],
-        env=dict(os.environ, PATH=f"{stub_dir}{os.pathsep}{os.environ['PATH']}",
-                 CCUSAGE_STUB_SEEN=str(seen)),
+        env=dict(stub_env, CCUSAGE_STUB_SEEN=str(seen)),
         capture_output=True, text=True, timeout=HANG_TIMEOUT)
 
     assert ran_command.returncode == 0, ran_command.stderr
