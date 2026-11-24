@@ -938,6 +938,169 @@ class PickerTTYTest(unittest.TestCase):
         self.assertEqual(self.field('many', 'model'), 'openai/model-1-instruct')
         self.assertIn('Saved many model = openai/model-1-instruct (new sessions)', out)
 
+    def test_numbered_fallback_answers_its_own_keys_issue_840(self):
+        """GH-840: the numbered prompt prints `(q to cancel)`, but the loop
+        read whole lines, so a lone q hung until killed, arrows did nothing,
+        and Esc answered with two Cancelled lines. The loop now reads one key
+        at a time: q and Esc leave at once with one Cancelled, arrows and
+        j/k move a visible selection, and Enter takes what is highlighted."""
+        env = self.env()
+        env['ROWS'] = ('alpha\tfirst choice\nbeta\tsecond choice\n'
+                       'beta-quark\tdash before the q\ngamma\tthird choice\n'
+                       'pi\ttwo letters\npiq\tq inside the name')
+        command = 'source "$1"\nccm_ui_select search "pick one" "$ROWS" all'
+
+        # A lone q, no Enter: the leave the hint promises, answered at once.
+        rc, out, missed = run_pty(command, env, [(b'(q to cancel):', b'q')])
+        self.assertIsNone(missed, out)  # main hung here until killed
+        self.assertEqual(rc, 1, out)
+        self.assertEqual(out.count('Cancelled'), 1, out)
+        self.assertEqual(screen(out), ['  Cancelled'], out)
+
+        # Arrows move the selection — the pointer paints on the moved row —
+        # and Enter takes it: down twice then up lands back on alpha, so
+        # the answer is one the run could only make by honoring Up.
+        rc, out, missed = run_pty(command, env, [
+            (b'(q to cancel):', b'\x1b[B\x1b[B\x1b[A'),
+            (b'\xe2\x9d\xaf 1) ', b'\r'),  # ❯ stands on row 1 again
+        ])
+        self.assertIsNone(missed, out)
+        self.assertEqual(rc, 0, out)
+        self.assertEqual(screen(out), ['  pick one › alpha', 'alpha'], out)
+
+        # j/k move too: down, down, up lands back on the first row.
+        rc, out, missed = run_pty(command, env, [(b'(q to cancel):', b'jjk\r')])
+        self.assertIsNone(missed, out)
+        self.assertEqual(rc, 0, out)
+        self.assertEqual(screen(out), ['  pick one › alpha', 'alpha'], out)
+
+        # A bare Esc leaves: exactly one Cancelled, status 1, the list folded
+        # away under it — main printed the line twice.
+        rc, out, missed = run_pty(command, env, [(b'(q to cancel):', b'\x1b')])
+        self.assertIsNone(missed, out)
+        self.assertEqual(rc, 1, out)
+        self.assertEqual(out.count('Cancelled'), 1, out)
+        self.assertEqual(screen(out), ['  Cancelled'], out)
+
+        # q is a leave only alone: after other letters it is ordinary input.
+        # 'piq' pins this at the seam a dropped q actually changes: without
+        # the letter the fragment reads 'pi', another row's own name.
+        rc, out, missed = run_pty(command, env, [(b'(q to cancel):', b'piq\r')])
+        self.assertIsNone(missed, out)
+        self.assertEqual(rc, 0, out)
+        self.assertEqual(screen(out), ['  pick one › piq', 'piq'], out)
+
+        # A q carried anywhere in a name — here right after a dash — is
+        # input too, found by a fragment that skips it.
+        rc, out, missed = run_pty(command, env, [(b'(q to cancel):', b'ark\r')])
+        self.assertIsNone(missed, out)
+        self.assertEqual(rc, 0, out)
+        self.assertEqual(screen(out), ['  pick one › beta-quark', 'beta-quark'], out)
+
+        # A dumb terminal leaves on a lone q too — same keys, plain paint.
+        rc, out, missed = run_pty(command, {**env, 'TERM': 'dumb'}, [(b'(q to cancel):', b'q')])
+        self.assertIsNone(missed, out)
+        self.assertEqual(rc, 1, out)
+        self.assertEqual(out.count('Cancelled'), 1, out)
+        self.assertNotIn('\x1b[', out)
+
+    def test_numbered_fallback_types_names_starting_with_j_or_k_issue_840(self):
+        """GH-840 gate: j/k move only when they stand alone. A model literally
+        named j2 typed as j2 saved whatever row number 2 happened to name:
+        the leading j was eaten as movement. A key typed right after a j or
+        k opens the name instead — the menu may not drop the first letter of
+        what was typed — and only an alone j or k moves."""
+        self.profile()
+        env = {**self.env(),
+               'MODELS': json.dumps({'data': [{'id': m} for m in ('j2', 'beta', 'kappa')]})}
+        for typed, want in ((b'j2\r', 'j2'), (b'kappa\r', 'kappa')):
+            rc, out, missed = run_pty('ccmorph set demo model -i', env,
+                                      [(b'(q to cancel):', typed)])
+            self.assertIsNone(missed, out)
+            self.assertEqual(rc, 0, out)
+            self.assertEqual(self.field('demo', 'model'), want, out)
+
+    def test_numbered_fallback_shows_only_what_enter_takes_issue_840(self):
+        """GH-840 gate: while typed letters decide the answer, ❯ must not
+        stand on a different row than Enter submits. With `beta` typed, Down
+        paints no second selection at all; and a pointer a move had painted
+        leaves the screen the moment typing starts, before Enter answers."""
+        env = self.env()
+        env['NO_COLOR'] = '1'
+        env['ROWS'] = 'alpha\tFirst\nbeta\tSecond'
+        command = 'source "$1"\nccm_ui_select search Pick "$ROWS" all'
+
+        # Typed name plus Down: beta is submitted, and no pointer line ever
+        # appeared that named a different row.
+        rc, out, missed = run_pty(command, env, [(b'(q to cancel):', b'beta\x1b[B\r')])
+        self.assertIsNone(missed, out)
+        self.assertEqual(rc, 0, out)
+        self.assertFalse(re.findall(r'(?m)^❯\s*\d+\)\s+(alpha|beta)\b', out), out)
+        self.assertEqual(screen(out)[-1], 'beta', out)
+
+        # A move first paints the pointer; the first typed letter folds it
+        # away, so the screen Enter answers shows only what it submits.
+        rc, out, missed = run_pty(command, env, [
+            (b'(q to cancel):', b'\x1b[B'),
+            (b'\xe2\x9d\xaf 1) ', b'beta\r'),
+        ])
+        self.assertIsNone(missed, out)
+        self.assertEqual(rc, 0, out)
+        self.assertEqual(screen(out)[-1], 'beta', out)
+        at = out.rfind('❯ beta')  # the submit line as the repaint echoed it
+        self.assertGreater(at, 0, out)
+        view = screen(out[:at])
+        self.assertFalse([row for row in view if re.match(r'❯\s*\d+\)', row)], view)
+
+    def test_numbered_fallback_slides_a_cut_list_with_the_pointer_issue_840(self):
+        """GH-840: on a list longer than the screen the pointer must stay in
+        view — the window slides, both edges name what they cut, and the
+        numbered answer still means the row it always did."""
+        env = self.env()
+        env['ROWS'] = '\n'.join(f'r{n:02d}\trow {n}' for n in range(1, 31))
+        # A 12-row screen shows rows plus heading, question and edges; the
+        # window is 5 rows, so six moves reach row 6 — two past the window.
+        rc, out, missed = run_pty(
+            'source "$1"\nccm_ui_select search "long" "$ROWS" all', env,
+            [(b'(q to cancel):', b'j' * 6), (b'\xe2\x9d\xaf 6) ', b'\r')], size=(12, 80))
+        self.assertIsNone(missed, out)
+        self.assertEqual(rc, 0, out)
+        self.assertEqual(screen(out), ['  long › r06', 'r06'], out)
+        view = screen(out[:out.rfind('❯')])
+        self.assertTrue(any('↑ 1 · ↓ 24 more' in row for row in view), view)
+        self.assertFalse(any('r01' in row for row in view), view)  # the slid-off row is gone
+        self.assertTrue(any(row.startswith('❯ 6) r06') for row in view), view)
+
+    def test_headless_refusal_carries_no_internal_records_issue_840(self):
+        """GH-840: `set <profile> model </dev/null` refused by name and then
+        dumped the menu's @keep/@custom records on stderr after the refusal.
+        A no-terminal refusal is a refusal, not a menu listing: the named
+        help line ends it, and the picker's internal records never print —
+        whether or not the catalogue behind them was read."""
+        for curl in ('fail', 'ok'):  # a refused menu prints with and without rows
+            with self.subTest(curl=curl):
+                env = self.env(fzf=False, curl=curl)
+                self.profile()
+                result = subprocess.run(
+                    ['zsh', '-fc', 'source "$1"\nccmorph set demo model', 'test', str(CCMORPH)],
+                    env=env, stdin=subprocess.DEVNULL, capture_output=True, text=True,
+                    timeout=HANG_TIMEOUT, start_new_session=True)
+                self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertNotIn('picker-alpha', result.stdout)  # no answer was taken
+                self.assertIn('selection needs a terminal or fzf; pass the value directly',
+                              result.stderr, result.stderr)
+                self.assertNotIn('@keep', result.stderr, result.stderr)
+                self.assertNotIn('@custom', result.stderr, result.stderr)
+                # The refusal ends at its help line; nothing follows it.
+                self.assertEqual(result.stderr.rstrip().splitlines()[-1],
+                                 'ccmorph: selection needs a terminal or fzf; pass the value directly',
+                                 result.stderr)
+                if curl == 'ok':
+                    # #725 kept the real values readable for the direct command
+                    # the help line names — they precede the refusal, never trail
+                    # it (#840).
+                    self.assertIn('picker-alpha', result.stderr, result.stderr)
+
     def test_set_without_slot_picks_slot_then_value(self):
         env = self.env()
         self.profile()
@@ -1212,13 +1375,13 @@ class PickerTTYTest(unittest.TestCase):
         self.assertEqual(rc, 0, out)
         self.assertIn('Action    Description', out)
         self.assertIn('Launch the default profile', out)
-        # The answered list folds (#361): NO_COLOR governs color, not cursor
-        # movement. The only escapes are the two folds: the Select question's
-        # (heading, hint, typed line: 3) and the list's (heading, blank, one
-        # row, the Select receipt: 4). After the list's fold — its receipt
-        # and the whole --help output — no escape at all, as on main.
+        # The answered list folds (#361, #840): NO_COLOR governs color, not
+        # cursor movement. The only escape is the one fold of the whole round
+        # — the list (heading, blank, one row) and the per-key question
+        # (heading, hint, typed line: 6) — after which the receipt and the
+        # whole --help output carry no escape at all, as on main.
         folds = list(re.finditer(r'\x1b\[(\d+)A\r\x1b\[J', out))
-        self.assertEqual([m.group(1) for m in folds], ['3', '4'], out)
+        self.assertEqual([m.group(1) for m in folds], ['6'], out)
         self.assertNotIn('\x1b[', re.sub(r'\x1b\[\d+A\r\x1b\[J', '', out))
         self.assertNotIn('\x1b[', out[folds[-1].end():])
 
@@ -1542,11 +1705,11 @@ class PickerTTYTest(unittest.TestCase):
             self.assertNotEqual(rc, 0, out)
             self.assertIn('Cancelled', out)  # q answers like Esc: one short line
             if 'NO_COLOR' in settings:
-                # NO_COLOR keeps folding (#361): color is off, cursor movement
-                # is not. The only escapes are the two folds: the Select
-                # question's (heading, hint, typed line: 3) and the list's
-                # (heading, blank, two rows, the Select receipt: 5).
-                self.assertEqual(re.findall(r'\x1b\[(\d+)A\r\x1b\[J', out), ['3', '5'], out)
+                # NO_COLOR keeps folding (#361, #840): color is off, cursor
+                # movement is not. The only escape is the one fold of the
+                # whole round — the list (heading, blank, two rows) and the
+                # per-key question (heading, hint, q that left at once: 7).
+                self.assertEqual(re.findall(r'\x1b\[(\d+)A\r\x1b\[J', out), ['7'], out)
                 self.assertNotIn('\x1b[', re.sub(r'\x1b\[\d+A\r\x1b\[J', '', out))
             else:
                 # TERM=dumb keeps the plain path: no escape at all, as on main.
