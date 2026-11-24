@@ -356,14 +356,10 @@ def tier_map(text: str, profile: dict[str, str] | None = None) -> dict[str, str]
     """
     out = {a: m for a, m in (profile or {}).items()
            if isinstance(m, str) and m and not m.lower().startswith(f"claude-{a}")}
-    prefix = settings_key(tier_map)
-    if prefix is not None:
-        for raw in text.splitlines():
-            line = raw.split("#", 1)[0].strip()
-            if line.startswith(prefix) and "=" in line:
-                alias, _, model = line[len(prefix):].partition("=")
-                if alias.strip() and model.strip():
-                    out[alias.strip()] = model.strip()
+    for pin in setting_values(text, tier_map):
+        alias, _, model = pin.partition("=")
+        if alias.strip() and model.strip():
+            out[alias.strip()] = model.strip()
     return out
 
 
