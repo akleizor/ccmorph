@@ -163,10 +163,10 @@ the Mac is never touched.
 |---|---|
 | The claude.ai credential never reaches the route | `rc_route.reroute`; `tests/rc_bridge_test.py` |
 | A dead route is an error, never a fallback to the subscription | `tests/rc_bridge_failclosed_test.py` |
-| The route key is in no argv, environment, or lingering file | 0600 file deleted on read; same test |
+| The route key is in no argv, environment, or lingering file | 0600 file deleted on read; `mitmdump` is resolved before it is written, and every later exit including TERM/HUP/QUIT/INT unlinks it (a signal the caller ignores stays ignored); a `--switch` handoff holding the key is staged in a 0600 temp only that switch owns and written with TERM/HUP/QUIT/INT deferred until it is live or gone; `tests/rc_bridge_test.py` (`-k 'no_failed_start or termination_during_proxy_startup or as_the_route_key_file or termination_during_a_switch or switch_whose'`) and `tests/rc_route_key_repro_test.py` |
 | Routed responses are verified, not assumed | `served-by=` in the debug log flags any response carrying Anthropic's organization header |
 | No system trust change | CA lives in `profiles/.rc-bridge/mitm` (0700); only `NODE_EXTRA_CA_CERTS` of this process |
-| No orphans | proxy and adapter follow the Claude pid and exit with it |
+| No orphans | proxy and adapter follow the Claude pid and exit with it; a start that fails stops the proxy it spawned (`tests/rc_bridge_test.py -k failed_start_stops`) |
 | A network outage never restarts the edge or a running host; Claude Code's own backoff reconnects, the supervisor relaunches a bridge that quit and hands back processless sessions | `edge_down` probes loopback only; `tests/rc_bridge_test.py`, `tests/rc_hosts_test.py` (`-k outage`) |
 
 ## Boundary
