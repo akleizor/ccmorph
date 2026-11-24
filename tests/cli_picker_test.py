@@ -431,6 +431,49 @@ class PickerTTYTest(unittest.TestCase):
                 self.assertNotIn(gone, out)
                 self.assertFalse((self.tmp / 'fzf.log').exists())
 
+    def test_run_ends_an_unreachable_gateway_the_same_with_and_without_a_terminal_issue_260(self):
+        # GH-260: on a gateway it could not reach, a terminal launch with no saved
+        # model opened the model picker on that gateway and ended on one sentence,
+        # while the launch with no terminal ended on another. Both now end on the
+        # same words: a refused port is named and the launch goes on to its
+        # adapter without a picker; silence is named after a progress line and
+        # ends the launch in the gateway class.
+        def last_lines(text, n):
+            plain = re.sub(r'\x1b\[[0-9;?]*[A-Za-z]', '', text).replace('\r', '')
+            return [line.rstrip() for line in plain.split('\n') if line.strip()][-n:]
+
+        refused = ("printf '%s\\n' 'curl: (7) Failed to connect to old.example port 443: "
+                   "Connection refused' >&2; exit 7")
+        for case, curl, want, rc_want in (
+                ('refused', refused, 'connection refused: old.example port 443', None),
+                ('silent', 'exec sleep 30', 'no answer from old.example port 443 after 1 second', 75)):
+            with self.subTest(case=case):
+                env = self.env(fzf=True)
+                env.update(CCMORPH_REACH_PROGRESS='0.2', CCMORPH_REACH_BOUND='0.8')
+                (self.tmp / 'bin/curl').write_text('#!/bin/sh\n' + curl + '\n')
+                self.profile()
+                (self.state / 'profiles/demo/settings.json').write_text('{}')
+                (self.tmp / 'fzf.log').unlink(missing_ok=True)
+                command = ADAPTER_BOUNDARY + 'ccmorph run demo'
+                rc, out, missed = run_pty(command, env)
+                self.assertIsNone(missed, out)
+                headless = subprocess.run(
+                    ['zsh', '-fc', 'source "$1"\n' + command, 'test', str(CCMORPH)],
+                    env=env, stdin=subprocess.DEVNULL, capture_output=True, text=True,
+                    timeout=HANG_TIMEOUT)
+                self.assertIn(want, out)
+                self.assertFalse((self.tmp / 'fzf.log').exists(), out)  # no picker opened
+                self.assertNotIn('network' if case == 'refused' else 'did not answer', out)
+                if rc_want is None:
+                    self.assertIn('SELECTED=<>', out)  # the launch went on to its adapter
+                    self.assertIn('SELECTED=<>', headless.stderr)
+                else:
+                    self.assertEqual(rc, rc_want, out)
+                    self.assertIn("Checking 'demo' gateway", out)
+                    self.assertNotIn('SELECTED=', out)
+                self.assertEqual(rc, headless.returncode, out + headless.stderr)
+                self.assertEqual(last_lines(out, 2), last_lines(headless.stderr, 2), out + headless.stderr)
+
     def test_cold_launch_selects_a_model_before_starting_the_adapter(self):
         env = self.env(fzf=True)
         self.profile()

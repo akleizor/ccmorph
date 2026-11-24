@@ -6020,6 +6020,37 @@ test_an_unreachable_endpoint_names_the_network_not_an_exception() {
   return $fail
 }
 
+test_models_names_each_cause_of_an_unreachable_gateway_issue_260() {
+  # GH-260: models told every unreachable gateway to connect a private network.
+  # Each cause is named with its host and port; only silence gets that advice;
+  # curl's own words never reach the person.
+  local test_home
+  test_home=$(mktemp -d)
+  setup_home "$test_home"
+  source "$CCMORPH_SOURCE"
+  local row base code complaint want advice err fail=0
+  for row in \
+    'https://gw.example.internal|6|curl: (6) Could not resolve host: gw.example.internal|name not found: gw.example.internal port 443|no' \
+    'http://127.0.0.1:9443|7|curl: (7) Failed to connect to 127.0.0.1 port 9443: Connection refused|connection refused: 127.0.0.1 port 9443|no' \
+    'https://127.0.0.1:18080|35|curl: (35) OpenSSL/3.0.13: error:0A00010B:SSL routines::wrong version number|secure connection failed: 127.0.0.1 port 18080|no' \
+    'http://10.255.255.1:8080|28|curl: (28) Operation timed out after 20002 milliseconds with 0 bytes received|no answer from 10.255.255.1 port 8080 after 20 seconds|yes'
+  do
+    IFS='|' read -r base code complaint want advice <<< "$row"
+    printf '%s\n' 'type=apikey' "base_url=$base" 'api_key=k' 'model=m' > "$HOME/.config/ccmorph/gw260.conf"
+    write_curl_mock "print -u2 -r -- ${(q)complaint}; return $code"
+    err=$(ccmorph models gw260 2>&1 >/dev/null) && { print -u2 -- "[$code] models must fail"; fail=1; }
+    assert_contains "$err" "could not reach '$base' — $want" "[$code] the cause must be named with its host and port" || fail=1
+    if [[ $advice == yes ]]; then
+      assert_contains "$err" 'private network' "[$code] silence keeps the private-network advice" || fail=1
+    else
+      assert_not_contains "$err" 'network' "[$code] an answered failure is not a network problem" || fail=1
+    fi
+    assert_not_contains "$err" 'curl:' "[$code] curl's own words must not reach the person" || fail=1
+  done
+  rm -rf "$test_home"
+  return $fail
+}
+
 test_env_reports_the_real_endpoint_not_the_adapter() {
   local test_home
   test_home=$(mktemp -d)
@@ -12314,6 +12345,7 @@ run_test test_one_models_listing_per_launch_is_shared
 run_test test_code_and_state_are_separate_directories
 run_test test_source_carries_no_host_specific_defaults
 run_test test_an_unreachable_endpoint_names_the_network_not_an_exception
+run_test test_models_names_each_cause_of_an_unreachable_gateway_issue_260
 run_test test_profile_may_pin_one_model_picker_row
 run_test test_a_route_scoped_probe_beats_the_endpoint_declaration
 run_test test_conf_window_beats_the_published_one
