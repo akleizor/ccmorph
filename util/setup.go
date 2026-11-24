@@ -411,9 +411,19 @@ func ReleaseLive(profiles, name string) {
 // gone (removed now, or never there); ErrLiveHeld when another process holds
 // it; the open error otherwise. A symlink at the path is removed without being
 // followed: HoldLive never takes a lock through one, so it covers no launch.
+// Removals take turns under one guard (liveRemovalGuardPath), so what one saw
+// at the path is still there when it unlinks it (GH-837).
 func RemoveLive(profiles, name string) error {
 	ReleaseLive(profiles, name)
 	lock := LiveLockPath(profiles, name)
+	if !paths.Lexists(lock) {
+		return nil // never there: nothing to remove, and nothing made to learn it
+	}
+	unguard, err := guardLiveRemoval(profiles)
+	if err != nil {
+		return err
+	}
+	defer unguard()
 	for attempt := 0; attempt < liveLockTries; attempt++ {
 		f, err := os.OpenFile(lock, os.O_WRONLY|os.O_APPEND|syscall.O_NOFOLLOW, 0)
 		if os.IsNotExist(err) {
@@ -451,6 +461,34 @@ func RemoveLive(profiles, name string) error {
 		return err
 	}
 	return errLiveReplaced
+}
+
+// liveRemovalGuardPath names the one lock every RemoveLive holds from its first
+// look at a live lock path to its unlink (GH-837). Only RemoveLive removes what
+// sits at a live lock path, and a launch makes a lock only where nothing sits,
+// so with removals taken one at a time what a removal saw is still there when
+// it unlinks: two rm runs that both saw a link can no longer let the second
+// clear it, a launch make a lock there, and the first unlink that lock. It is
+// one file for the whole state dir and is never removed, since unlinking a
+// held lock file is the race it closes. The leading dot keeps it apart from
+// every <name>.live and <name>.lock: a profile name never starts with one.
+func liveRemovalGuardPath(profiles string) string {
+	return filepath.Join(filepath.Dir(profiles), ".locks", ".live-removal")
+}
+
+// guardLiveRemoval takes the removal guard, waiting for a removal under way to
+// finish, and returns its release. A removal holds it only for an open, a
+// non-blocking flock and an unlink, so the wait is that long.
+func guardLiveRemoval(profiles string) (func(), error) {
+	f, err := os.OpenFile(liveRemovalGuardPath(profiles), os.O_APPEND|os.O_CREATE|os.O_WRONLY|syscall.O_NOFOLLOW, 0o600)
+	if err != nil {
+		return nil, err
+	}
+	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX); err != nil {
+		f.Close()
+		return nil, err
+	}
+	return func() { f.Close() }, nil
 }
 
 // ErrLiveHeld is why HoldLive returned no lock: another launch holds the

@@ -841,15 +841,122 @@ func TestALinkAtTheLiveLockPathIsNeverALiveLock(t *testing.T) {
 	}
 }
 
-// TestRemoveLiveHelperProcess is the rm of the test below, run as its own
-// process the way `ccmorph rm` is. It does nothing unless that test starts it.
+// TestRemoveLiveHelperProcess is the rm of the GH-837 tests below, run as its
+// own process the way `ccmorph rm` is. It does nothing unless one starts it.
 func TestRemoveLiveHelperProcess(t *testing.T) {
 	profiles := os.Getenv("GH837_REMOVE_LIVE_PROFILES")
 	if profiles == "" {
-		t.Skip("started only by TestALaunchHoldsThePathsLockWhenAnRmRemovesItMidTake")
+		t.Skip("started only by the GH-837 tests that run an rm in its own process")
+	}
+	if ready := os.Getenv("GH837_REMOVE_LIVE_READY"); ready != "" {
+		// Tells the test that started it this rm is about to call RemoveLive.
+		if err := os.WriteFile(ready, nil, 0o600); err != nil {
+			t.Fatal(err)
+		}
 	}
 	if err := RemoveLive(profiles, "p"); err != nil {
 		t.Fatalf("rm's RemoveLive: %v", err)
+	}
+}
+
+// GH-837 (merge gate, 572edcd): two rm runs and a launch against a link at the
+// live lock path. The first rm has seen the link and not yet unlinked it; a
+// second rm in its own process clears the link; a launch then makes and holds
+// a regular lock there; the first rm unlinks that lock, so the launch holds a
+// file the path no longer names and the next launch can make a second one.
+// Removals now take turns: the second rm waits for the first, the link is
+// still there when the launch runs, and every lock a launch takes is the
+// path's file.
+func TestASecondRmWaitsForAFirstThatHasSeenALink(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	profiles := filepath.Join(home, ".config/ccmorph/profiles")
+	lock := LiveLockPath(profiles, "p")
+	if err := os.MkdirAll(filepath.Dir(lock), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	target := filepath.Join(home, "target")
+	if err := os.WriteFile(target, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(target, lock); err != nil {
+		t.Fatal(err)
+	}
+	ready := filepath.Join(home, "second-rm-ready")
+	var second *exec.Cmd
+	var secondOut strings.Builder
+	var during *os.File
+	var whyDuring error
+	ran := false
+	liveBeforeLinkRemove = func() {
+		liveBeforeLinkRemove = nil
+		ran = true
+		second = exec.Command(os.Args[0], "-test.run=^TestRemoveLiveHelperProcess$", "-test.count=1")
+		second.Env = append(os.Environ(), "GH837_REMOVE_LIVE_PROFILES="+profiles, "GH837_REMOVE_LIVE_READY="+ready)
+		second.Stdout, second.Stderr = &secondOut, &secondOut
+		if err := second.Start(); err != nil {
+			t.Fatal(err)
+		}
+		// Wait for the second rm to reach RemoveLive, then give it a second
+		// to clear the link if nothing makes it wait.
+		for deadline := time.Now().Add(10 * time.Second); time.Now().Before(deadline); time.Sleep(10 * time.Millisecond) {
+			if _, err := os.Lstat(ready); err == nil {
+				break
+			}
+		}
+		if _, err := os.Lstat(ready); err != nil {
+			t.Fatalf("the second rm never reached RemoveLive: %v", err)
+		}
+		for deadline := time.Now().Add(time.Second); time.Now().Before(deadline); time.Sleep(10 * time.Millisecond) {
+			if _, err := os.Lstat(lock); os.IsNotExist(err) {
+				break
+			}
+		}
+		during, whyDuring = HoldLive(profiles, "p", nil) // the launch
+	}
+	t.Cleanup(func() {
+		liveBeforeLinkRemove = nil
+		ReleaseLive(profiles, "p")
+		if second != nil && second.ProcessState == nil {
+			second.Process.Kill()
+			second.Wait()
+		}
+	})
+	if err := RemoveLive(profiles, "p"); err != nil {
+		t.Fatalf("the first rm: %v", err)
+	}
+	if !ran {
+		t.Fatal("the second rm and the launch must run between the first rm seeing the link and unlinking it")
+	}
+	if err := second.Wait(); err != nil {
+		t.Fatalf("the second rm failed: %v\n%s", err, secondOut.String())
+	}
+	if during != nil && !sameLockInode(during, lock) {
+		t.Fatal("the first rm unlinked the lock a launch made after the second rm cleared the link")
+	}
+	if during != nil || !errors.Is(whyDuring, errLiveIsLink) {
+		t.Fatalf("the second rm must wait for the first, so the launch still finds the link: held=%v why=%v", during != nil, whyDuring)
+	}
+	if _, err := os.Lstat(lock); !os.IsNotExist(err) {
+		t.Fatalf("the link must be gone once both rm runs end: %v", err)
+	}
+	if _, err := os.Lstat(target); err != nil {
+		t.Fatalf("the link's target must be left as it was: %v", err)
+	}
+	f, why := HoldLive(profiles, "p", nil)
+	if f == nil {
+		t.Fatalf("a launch after both removals makes the lock: %v", why)
+	}
+	if fi, err := os.Lstat(lock); err != nil || !fi.Mode().IsRegular() || !sameLockInode(f, lock) {
+		t.Fatalf("the launch must hold a regular file at the path: %v", err)
+	}
+	other, err := os.OpenFile(lock, os.O_APPEND|os.O_WRONLY, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer other.Close()
+	if syscall.Flock(int(other.Fd()), syscall.LOCK_EX|syscall.LOCK_NB) == nil {
+		t.Fatal("a second taker locked the live lock exclusively while the launch holds it")
 	}
 }
 
