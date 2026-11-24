@@ -1447,6 +1447,39 @@ else
 fi
 rg_native_kept "$c"
 
+# The guard's tree search stays bounded: it never searches a tree that is the
+# home or holds it, and never the history stores. ~/.claude linked to /, a link
+# to / inside ~/.claude, and a ~/.claude of a few thousand entries and a hundred
+# links each report well inside a minute (one report takes about a second).
+c=$(rg_case claudetoroot); mv "$c/home/.claude" "$c/native"; ln -s / "$c/home/.claude"
+mkdir -p "$c/home/.config/ccmorph/profiles/work"
+SECONDS=0; rg_run "$c"; rg_t=$SECONDS
+if (( rg_t < 60 )) && [[ ! -s "$c/rm" ]] && grep -qF "$c/home/.config/ccmorph is left off the rm" "$c/out" \
+   && [[ -f "$c/native/settings.json" && -L "$c/home/.claude" ]]; then
+  ok "rmguard: claudetoroot: ~/.claude linked to / reports at once and the rm names nothing (${rg_t}s)"
+else
+  fail "rmguard: claudetoroot: ~/.claude linked to / walked / or reached the rm (${rg_t}s)"; cat "$c/out"
+fi
+c=$(rg_case rootinside); mkdir -p "$c/home/.config/ccmorph/profiles/work"; ln -s / "$c/home/.claude/sysroot"
+SECONDS=0; rg_run "$c"; rg_t=$SECONDS
+if (( rg_t < 60 )) && [[ "$(<"$c/rm")" == "  rm -rf $c/home/.config/ccmorph" ]] && ! grep -qF 'is left off the rm' "$c/out"; then
+  ok "rmguard: rootinside: a link to / inside ~/.claude is not searched and leaves the state root on the rm (${rg_t}s)"
+else
+  fail "rmguard: rootinside: a link to / inside ~/.claude was searched or took the root off the rm (${rg_t}s)"; cat "$c/out"
+fi
+rg_native_kept "$c"
+c=$(rg_case bigclaude); mkdir -p "$c/home/.config/ccmorph/profiles/work" "$c/home/.claude/debug/d"{1..20} "$c/ext/t"{1..10}
+touch "$c/home/.claude/debug/d"{1..20}"/f"{1..100} "$c/ext/t"{1..10}"/g"{1..20}
+for rg_i in {1..90}; do ln -s f1 "$c/home/.claude/debug/d$(( rg_i % 20 + 1 ))/l$rg_i"; done
+for rg_i in {1..10}; do ln -s "$c/ext/t$rg_i" "$c/home/.claude/debug/x$rg_i"; done
+SECONDS=0; rg_run "$c"; rg_t=$SECONDS
+if (( rg_t < 60 )) && [[ "$(<"$c/rm")" == "  rm -rf $c/home/.config/ccmorph" ]] && ! grep -qF 'is left off the rm' "$c/out"; then
+  ok "rmguard: bigclaude: a ~/.claude of 2000 files and 100 links reports at once (${rg_t}s)"
+else
+  fail "rmguard: bigclaude: a large ~/.claude slowed the report or took the root off the rm (${rg_t}s)"; cat "$c/out"
+fi
+rg_native_kept "$c"
+
 # Control: a plain home keeps every operand — state root, receipts and the
 # real history stores — and following the rm removes exactly those.
 c=$(rg_case plain); mkdir -p "$c/home/.config/ccmorph/profiles/work" "$c/home/.local/state/ccmorph/usage" "$c/home/.claude/projects/-x"
