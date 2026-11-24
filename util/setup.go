@@ -378,7 +378,12 @@ var (
 )
 
 // LiveLockPath names a profile's live lock: a launch holds it shared while its
-// session runs, and a setup takes it exclusive to merge (#185, #205).
+// session runs, and a setup takes it exclusive to merge (#185, #205). Every
+// taker goes through HoldLive or RemoveLive, which check after their flock
+// that the descriptor still names the file at the path: an rm may unlink the
+// file (GH-837), and a raw open-then-flock that skipped the check could lock
+// an inode the path no longer names. A symlink at the path is never the lock:
+// both open it with O_NOFOLLOW, so the link rm removes is one no launch holds.
 func LiveLockPath(profiles, name string) string {
 	return filepath.Join(filepath.Dir(profiles), ".locks", name+".live")
 }
@@ -396,11 +401,113 @@ func ReleaseLive(profiles, name string) {
 	}
 }
 
+// RemoveLive takes a profile's live lock file away with the profile (GH-837).
+// It drops this process's own hold first, then removes the file only when no
+// other process holds it: a running launch's lock is its cover (#185), and
+// unlinking it would let the next launch make a second lock beside the one
+// still held. Locking a file the path no longer names is not a hold on the
+// path, so the descriptor is checked against the path before the unlink and
+// the take starts again on whatever the path names now. nil when the file is
+// gone (removed now, or never there); ErrLiveHeld when another process holds
+// it; the open error otherwise. A symlink at the path is removed without being
+// followed: HoldLive never takes a lock through one, so it covers no launch.
+func RemoveLive(profiles, name string) error {
+	ReleaseLive(profiles, name)
+	lock := LiveLockPath(profiles, name)
+	for attempt := 0; attempt < liveLockTries; attempt++ {
+		f, err := os.OpenFile(lock, os.O_WRONLY|os.O_APPEND|syscall.O_NOFOLLOW, 0)
+		if os.IsNotExist(err) {
+			return nil // removed, or never there
+		}
+		if isLinkErr(err) {
+			// A link, dangling or not, is never a live lock (GH-837): it goes
+			// with the profile, or rm would offer it again on every run.
+			if liveBeforeLinkRemove != nil {
+				liveBeforeLinkRemove()
+			}
+			if rerr := os.Remove(lock); rerr != nil && !os.IsNotExist(rerr) {
+				return rerr
+			}
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		if liveAfterOpen != nil {
+			liveAfterOpen()
+		}
+		if syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB) != nil {
+			f.Close()
+			return ErrLiveHeld
+		}
+		if !sameLockInode(f, lock) {
+			// What this descriptor locks is no longer what the path names:
+			// unlinking the path would take away someone else's lock (#837).
+			f.Close()
+			continue
+		}
+		err = os.Remove(lock)
+		f.Close()
+		return err
+	}
+	return errLiveReplaced
+}
+
 // ErrLiveHeld is why HoldLive returned no lock: another launch holds the
 // profile's live lock exclusively and outlasted the wait (#205). Any other
 // error means the lock file itself could not be made or opened (#217), so a
 // caller's message can tell a stuck holder from that.
 var ErrLiveHeld = errors.New("another launch is holding the live lock")
+
+// liveLockTries bounds the open-lock-check loop that keeps a take and a
+// removal off an inode the path no longer names (#837). Each round only meets
+// a removal that ran inside its own open-and-lock window, so five is slack.
+const liveLockTries = 5
+
+// errLiveReplaced means the file at the live lock path was removed or
+// replaced on every attempt to take it: the path never settled long enough to
+// name one inode, and a lock on an inode the path no longer names covers
+// nothing (#837).
+var errLiveReplaced = errors.New("the live lock file was replaced while it was being taken")
+
+// liveAfterOpen is called between the open of the live lock and the flock that
+// locks it. Tests set it to land the unlink a concurrent rm performs in that
+// window; it is nil everywhere else (#837).
+var liveAfterOpen func()
+
+// liveBeforeLinkRemove is called between RemoveLive finding a link at the lock
+// path and unlinking it. Tests set it to run a launch in that window; it is nil
+// everywhere else (GH-837).
+var liveBeforeLinkRemove func()
+
+// errLiveIsLink is why HoldLive takes no lock when a symlink sits at the live
+// lock path: a lock taken through a link is one an rm can unlink from under
+// the launch, leaving the path free for a second lock (GH-837).
+var errLiveIsLink = errors.New("a symlink is there, and a live lock is never taken through one")
+
+// isLinkErr reports whether an O_NOFOLLOW open failed because the path is a
+// symlink: ELOOP on Linux and macOS.
+func isLinkErr(err error) bool {
+	return errors.Is(err, syscall.ELOOP)
+}
+
+// sameLockInode reports whether f still names what path names. A lock is only
+// a lock on the profile while the path and the descriptor are one file: an rm
+// that unlinks between a launch's open and its flock would otherwise leave the
+// launch holding an inode no other process can see, and the next Holder would
+// make and lock a second file at the same path (#837). The path is not
+// followed: a link put there since the open is not the file the lock is on.
+func sameLockInode(f *os.File, path string) bool {
+	fi, err := f.Stat()
+	if err != nil {
+		return false
+	}
+	pi, err := os.Lstat(path)
+	if err != nil {
+		return false
+	}
+	return os.SameFile(fi, pi)
+}
 
 // HoldLive takes the profile's live lock shared and keeps it for the life of
 // the process. The launcher calls it before a session starts, so the lock covers
@@ -425,21 +532,37 @@ func HoldLive(profiles, name string, log func(string)) (*os.File, error) {
 	if err := os.MkdirAll(filepath.Dir(lock), 0o700); err != nil {
 		return nil, err
 	}
-	f, err := os.OpenFile(lock, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
-	if err != nil {
-		return nil, err
-	}
-	if syscall.Flock(int(f.Fd()), syscall.LOCK_SH|syscall.LOCK_NB) != nil {
-		if log != nil {
-			log("waiting for another launch of '" + name + "' to finish linking its shared history")
+	for attempt := 0; attempt < liveLockTries; attempt++ {
+		f, err := os.OpenFile(lock, os.O_APPEND|os.O_CREATE|os.O_WRONLY|syscall.O_NOFOLLOW, 0o600)
+		if isLinkErr(err) {
+			return nil, errLiveIsLink // never lock through a link rm may unlink (GH-837)
 		}
-		if !flockWithin(f, syscall.LOCK_SH) {
+		if err != nil {
+			return nil, err
+		}
+		if liveAfterOpen != nil {
+			liveAfterOpen()
+		}
+		if syscall.Flock(int(f.Fd()), syscall.LOCK_SH|syscall.LOCK_NB) != nil {
+			if log != nil {
+				log("waiting for another launch of '" + name + "' to finish linking its shared history")
+			}
+			if !flockWithin(f, syscall.LOCK_SH) {
+				f.Close()
+				return nil, ErrLiveHeld // a stuck holder: the caller must not start a session (#205)
+			}
+		}
+		if !sameLockInode(f, lock) {
+			// A removal ran inside this open-and-lock window: the file this
+			// descriptor locks is not the one the path names any more, so the
+			// lock covers nothing and the take starts again (#837).
 			f.Close()
-			return nil, ErrLiveHeld // a stuck holder: the caller must not start a session (#205)
+			continue
 		}
+		liveFDs[lock] = f
+		return f, nil
 	}
-	liveFDs[lock] = f
-	return f, nil
+	return nil, errLiveReplaced
 }
 
 // setupSerialize takes the profile's setup lock — the same flock rm, set and

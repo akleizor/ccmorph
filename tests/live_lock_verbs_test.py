@@ -121,3 +121,127 @@ def test_a_launch_refusal_names_a_lock_file_that_cannot_be_made(tmp_path):
     assert "could not be created" in result.stderr
     assert "nothing started" in result.stderr
     assert "another launch" not in result.stderr
+
+
+def test_a_launch_refuses_a_live_lock_that_is_a_symlink(tmp_path):
+    # GH-837: a link at the lock path is never a live lock, since an rm may
+    # unlink it under a launch that locked through it. The launch takes no
+    # lock through it, leaves its target alone and says what is in the way.
+    home, state = fresh_state(tmp_path, conf=True)
+    lock = state / ".locks" / "gw.live"
+    lock.parent.mkdir(parents=True)
+    lock.symlink_to(state / "nowhere")
+    result = run(home, state, "_env gw")
+    assert result.returncode == 1
+    assert f"could not be created at {lock}" in result.stderr
+    assert "symlink" in result.stderr
+    assert "nothing started" in result.stderr
+    assert not (state / "nowhere").exists()
+
+
+def test_rm_of_a_leftover_names_only_paths_that_exist_and_takes_the_live_lock(tmp_path):
+    """GH-837: Ctrl-C at a sign-in left profiles/<name> and .locks/<name>.live.
+    rm offered auth/<name> too, which the Claude-account sign-in never makes,
+    and left the lock behind; the next add then still found the name held.
+    What rm offers is what it removes, and the lock is one of those pieces."""
+    home, state = fresh_state(tmp_path)
+    leftover = state / "profiles" / "gw"
+    leftover.mkdir(parents=True)
+    lock = state / ".locks" / "gw.live"
+    lock.parent.mkdir(parents=True)
+    lock.write_text("")
+    result = run(home, state, "rm gw", "y\n")
+    assert result.returncode == 0, result.stderr
+    assert "Removed gw" in result.stdout
+    assert str(leftover) in result.stderr
+    assert str(lock) in result.stderr
+    assert not leftover.exists()
+    assert not lock.exists()
+    assert str(state / "auth" / "gw") not in result.stderr
+
+
+def test_rm_of_a_complete_profile_takes_its_live_lock_too(tmp_path):
+    # The lock is the profile's, so the removal the help caps with "This cannot
+    # be undone" leaves none of it behind (GH-837).
+    home, state = fresh_state(tmp_path, conf=True)
+    lock = state / ".locks" / "gw.live"
+    lock.parent.mkdir(parents=True)
+    lock.write_text("")
+    result = run(home, state, "rm gw", "y\n")
+    assert result.returncode == 0, result.stderr
+    assert not (state / "gw.conf").exists()
+    assert not lock.exists()
+
+
+def test_rm_of_a_leftover_auth_dir_names_it_and_not_a_missing_home(tmp_path):
+    # A provider sign-in leaves auth/<name> and no profile home; the offer
+    # follows the disk in this direction too (GH-837).
+    home, state = fresh_state(tmp_path)
+    auth = state / "auth" / "gw"
+    auth.mkdir(parents=True)
+    result = run(home, state, "rm gw", "y\n")
+    assert result.returncode == 0, result.stderr
+    assert str(auth) in result.stderr
+    assert str(state / "profiles" / "gw") not in result.stderr
+    assert not auth.exists()
+
+
+def test_rm_of_a_leftover_lock_alone_offers_and_takes_it(tmp_path):
+    # The probe counts the live lock as leftover state, so rm can clean up
+    # what an older build left behind (GH-837).
+    home, state = fresh_state(tmp_path)
+    lock = state / ".locks" / "gw.live"
+    lock.parent.mkdir(parents=True)
+    lock.write_text("")
+    result = run(home, state, "rm gw", "y\n")
+    assert result.returncode == 0, result.stderr
+    assert str(lock) in result.stderr
+    assert not lock.exists()
+
+
+def test_rm_of_a_leftover_dangling_live_link_offers_and_takes_it(tmp_path):
+    # A link naming nothing lexists, so the offer names it; rm must then
+    # take it, or the same leftover is offered on every run (GH-837).
+    home, state = fresh_state(tmp_path)
+    lock = state / ".locks" / "gw.live"
+    lock.parent.mkdir(parents=True)
+    lock.symlink_to(state / "nowhere")
+    result = run(home, state, "rm gw", "y\n")
+    assert result.returncode == 0, result.stderr
+    assert str(lock) in result.stderr
+    assert not os.path.lexists(lock)
+    assert not (state / "nowhere").exists()
+
+
+def test_rm_answered_no_keeps_the_leftover_and_its_lock(tmp_path):
+    home, state = fresh_state(tmp_path)
+    leftover = state / "profiles" / "gw"
+    leftover.mkdir(parents=True)
+    lock = state / ".locks" / "gw.live"
+    lock.parent.mkdir(parents=True)
+    lock.write_text("")
+    result = run(home, state, "rm gw", "n\n")
+    assert result.returncode == 1
+    assert "cancelled; nothing removed" in result.stderr
+    assert leftover.exists()
+    assert lock.exists()
+
+
+def test_rm_keeps_a_live_lock_a_running_launch_holds(tmp_path):
+    # GH-837's removal must not undercut #185: a lock another launch holds is
+    # that session's cover, so rm leaves the file and says why.
+    home, state = fresh_state(tmp_path, conf=True)
+    lock = state / ".locks" / "gw.live"
+    lock.parent.mkdir(parents=True)
+    lock.write_text("")
+    holder = open(lock, "a+")
+    fcntl.flock(holder, fcntl.LOCK_SH)
+    try:
+        result = run(home, state, "rm gw", "y\n")
+    finally:
+        holder.close()
+    assert result.returncode == 0, result.stderr
+    assert not (state / "gw.conf").exists()
+    assert lock.exists()
+    assert f"kept {lock}" in result.stderr
+    assert "still holds it" in result.stderr
