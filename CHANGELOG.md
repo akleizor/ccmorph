@@ -18,6 +18,13 @@
 
 ### Fixed
 
+- **One hand-edited conf line no longer splits the commands.** An unknown key or
+  an effort level outside low…max used to hide the profile from `list` (which
+  then said "No profiles yet"), let `get` answer confidently, and stop
+  `set`/`config` on "invalid saved effort default". Every reader now prints the
+  same refusal naming the key or value and the legal levels; `list`'s skip line
+  and `ccmorph doctor` end with the same repair, and `ccmorph set <profile>
+  effort <level>` overwrites a bad saved level (#839).
 - **`ccmorph doctor <profile>` no longer calls a provider profile ready when
   its bridge cannot start.** Doctor now asks the launch's own check: with
   `cliproxyapi` missing it fails and names the install step, and a missing or

@@ -4,6 +4,7 @@
 package profile
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -24,12 +25,41 @@ type Lists struct {
 	ProfileEnv, MappingEnv map[string]bool
 }
 
-// Error is a refusal the caller prints as-is.
-type Error struct{ Msg string }
+// Error is a refusal the caller prints as-is. Repair, when set, is the one line
+// that makes the conf load again: the skip message a listing appends to the
+// profile it could not read (GH-839).
+type Error struct {
+	Msg    string
+	Repair string
+}
 
 func (e *Error) Error() string { return e.Msg }
 
-func fail(format string, a ...any) error { return &Error{fmt.Sprintf(format, a...)} }
+func fail(format string, a ...any) error { return &Error{Msg: fmt.Sprintf(format, a...)} }
+
+// failRepair is fail for a refusal whose fault has a known edit: repair is the
+// line a listing appends to the profile it could not read (GH-839).
+func failRepair(repair, format string, a ...any) error {
+	return &Error{Msg: fmt.Sprintf(format, a...), Repair: repair}
+}
+
+// Repair is the one line that fixes a conf Read refused: the edit the refusal
+// names when it names one, then the removal that always works (GH-839).
+func Repair(err error, name string) string {
+	if r := RepairOf(err); r != "" {
+		return r
+	}
+	return "fix " + name + ".conf, or delete it: ccmorph rm " + name
+}
+
+// RepairOf is the repair a refusal carries, or "" when it names none (GH-839).
+func RepairOf(err error) string {
+	var e *Error
+	if errors.As(err, &e) {
+		return e.Repair
+	}
+	return ""
+}
 
 // Removed keys still launch: each says once what replaced it and is dropped.
 var removed = map[string]string{
@@ -44,6 +74,24 @@ var removed = map[string]string{
 // validator, the store's set, the pickers and the help all name it, so a level
 // here is a level everywhere (#264).
 var Efforts = []string{"low", "medium", "high", "xhigh", "max"}
+
+// EffortList names the accepted levels as prose — "low, medium, high, xhigh or
+// max" — for every refusal that names them.
+func EffortList() string {
+	ls := Efforts
+	return strings.Join(ls[:len(ls)-1], ", ") + " or " + ls[len(ls)-1]
+}
+
+// effortMsg is the one sentence for an effort level the conf and the store do
+// not accept: the value, the profile and every level that is accepted, so the
+// reader knows what to type instead.
+func effortMsg(name, value string) string {
+	return fmt.Sprintf("invalid effort '%s' in '%s': effort must be %s", value, name, EffortList())
+}
+
+// EffortError is effortMsg as the store's error: a saved default the store
+// refuses names the same value and levels as the conf reader (GH-839).
+func EffortError(name, value string) error { return fail("%s", effortMsg(name, value)) }
 
 var (
 	nameRE   = regexp.MustCompile(`^[A-Za-z0-9_]+$`)
@@ -140,6 +188,18 @@ func shownName(s string) string {
 // Read loads state/<name>.conf. warn receives one line per removed key. With
 // secure, the file is chmod 600 first, as every writing caller wants.
 func Read(state, name string, secure bool, lists Lists, warn func(string)) (map[string]string, error) {
+	return readConf(state, name, secure, lists, warn, nil)
+}
+
+// ReadForSave is Read with one save's changes applied to the fields before they
+// are checked: the conf that save will leave behind. A save that replaces a
+// value the file refuses is its own repair, so it must be judged on what it
+// writes, never on the value it overwrites (GH-839).
+func ReadForSave(state, name string, secure bool, lists Lists, warn func(string), changes map[string]string) (map[string]string, error) {
+	return readConf(state, name, secure, lists, warn, changes)
+}
+
+func readConf(state, name string, secure bool, lists Lists, warn func(string), changes map[string]string) (map[string]string, error) {
 	if !ValidName(name) {
 		return nil, fail("invalid profile name")
 	}
@@ -176,7 +236,11 @@ func Read(state, name string, secure bool, lists Lists, warn func(string)) (map[
 			warn("ccmorph: " + msg)
 			continue
 		}
-		if err := checkKey(name, k, v, lists); err != nil {
+		checkV := v
+		if ov, ok := changes[k]; ok {
+			checkV = ov
+		}
+		if err := checkKey(name, k, checkV, lists); err != nil {
 			return nil, err
 		}
 		fields[k] = v
@@ -185,7 +249,8 @@ func Read(state, name string, secure bool, lists Lists, warn func(string)) (map[
 		if ref := fields[k]; strings.HasPrefix(ref, "keychain:") {
 			secret, err := KeychainGet(ref)
 			if err != nil {
-				return nil, fail("'%s': %s is not in the login keychain; set it again with: ccmorph config %s", name, ref, name)
+				return nil, failRepair("set it again with: ccmorph config "+name,
+					"'%s': %s is not in the login keychain; set it again with: ccmorph config %s", name, ref, name)
 			}
 			fields[k] = secret
 		}
@@ -219,9 +284,22 @@ func checkKey(name, k, v string, lists Lists) error {
 			return fail("private must be 1")
 		}
 	case k == "effort" || strings.HasPrefix(k, "effort."):
-		if !slices.Contains(Efforts, v) || k == "effort." {
-			return fail("invalid effort setting '%s'", k)
+		// A per-model level lives in the settings layer; a conf may carry one
+		// too (the seed writes "effort.<model>"), and the empty "effort." names
+		// no model at all.
+		if slices.Contains(Efforts, v) && k != "effort." {
+			break
 		}
+		if k == "effort" {
+			return failRepair("set a valid level with: ccmorph set "+name+" effort <level>, or delete it: ccmorph rm "+name,
+				"%s", effortMsg(name, v))
+		}
+		if k == "effort." {
+			return failRepair("remove the key 'effort.' from "+name+".conf, or delete it: ccmorph rm "+name,
+				"invalid effort key 'effort.' in '%s': effort must be %s", name, EffortList())
+		}
+		return failRepair("remove the key '"+k+"' from "+name+".conf, or delete it: ccmorph rm "+name,
+			"%s", effortMsg(name, v))
 	case strings.HasPrefix(k, "env."):
 		if !lists.ProfileEnv[strings.TrimPrefix(k, "env.")] {
 			return fail("disallowed environment key '%s' in '%s'", k, name)
@@ -232,7 +310,8 @@ func checkKey(name, k, v string, lists Lists) error {
 			return fail("invalid context pin '%s' in '%s'", k, name)
 		}
 	default:
-		return fail("unknown key '%s' in '%s'", k, name)
+		return failRepair("remove the unknown key '"+k+"' from "+name+".conf, or delete it: ccmorph rm "+name,
+			"unknown key '%s' in '%s'", k, name)
 	}
 	return nil
 }
@@ -251,7 +330,8 @@ func checkType(name string, f map[string]string, lists Lists) error {
 			// The same repair `add` gives for a taken name and `doctor` gives
 			// for a signed-out account (GH-649): the sign-in completes the
 			// conf, so nothing else has to be thrown away first.
-			return fail("Claude account profile '%s' has no email — sign in again: ccmorph login %s", name, name)
+			return failRepair("sign in again: ccmorph login "+name,
+				"Claude account profile '%s' has no email — sign in again: ccmorph login %s", name, name)
 		}
 	case "token":
 		if f["token"] == "" {
@@ -270,7 +350,8 @@ func checkType(name string, f map[string]string, lists Lists) error {
 		if allowedKey(k, allowed) || (strings.HasPrefix(k, "env.") && lists.MappingEnv[strings.TrimPrefix(k, "env.")]) {
 			continue
 		}
-		return fail("key '%s' is invalid for %s profile '%s'", k, f["type"], name)
+		return failRepair("remove the key '"+k+"' from "+name+".conf, or delete it: ccmorph rm "+name,
+			"key '%s' is invalid for %s profile '%s'", k, f["type"], name)
 	}
 	return nil
 }
