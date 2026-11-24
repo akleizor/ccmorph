@@ -251,3 +251,70 @@ def test_rm_keeps_a_live_lock_a_running_launch_holds(tmp_path):
     assert lock.exists()
     assert f"kept {lock}" in result.stderr
     assert "still holds it" in result.stderr
+
+
+HOLDER_GO = '''package main
+import ("fmt"; "os"; "github.com/akleizor/ccmorph/util")
+func main() {
+ p := os.Args[1]
+ f, err := util.HoldLive(p,"p",nil)
+ if err != nil { panic(err) }
+ fmt.Println("held")
+ _, _ = os.Stdin.Read(make([]byte,1))
+ a, ea := f.Stat(); b, eb := os.Lstat(util.LiveLockPath(p,"p"))
+ if ea != nil || eb != nil || !os.SameFile(a,b) { fmt.Fprintln(os.Stderr,"first rm detached the replacement live lock"); os.Exit(1) }
+}'''
+
+
+def test_two_rm_runs_and_a_launch_never_detach_the_live_lock(tmp_path):
+    """GH-837 merge gate (d7c78c0), kept as its test. A first `rm` is stopped
+    by strace after its O_NOFOLLOW open saw the link at .locks/p.live and before
+    its unlink; a second `rm` runs to the end; a launch then takes the live
+    lock; the first `rm` finishes. The launch must still hold the file the path
+    names. strace pins the interleaving, so the test needs it (Linux)."""
+    import shutil
+    import pytest
+    if not shutil.which("strace") or not shutil.which("go"):
+        pytest.skip("needs strace and go to force the interleaving")
+    core = ROOT / "libexec" / "ccmorph-core"
+    if not core.exists():
+        pytest.skip("needs the built core: make shim")
+    holder = tmp_path / "hold"
+    (tmp_path / "hold.go").write_text(HOLDER_GO)
+    subprocess.run(["go", "build", "-o", str(holder), str(tmp_path / "hold.go")],
+                   check=True, cwd=ROOT, timeout=HANG_TIMEOUT)
+    state = tmp_path / "state"
+    profiles = state / "profiles"
+    profiles.mkdir(parents=True)
+    lock = state / ".locks" / "p.live"
+    lock.parent.mkdir()
+    target = tmp_path / "target"
+    target.touch()
+    lock.symlink_to(target)
+    env = {k: v for k, v in os.environ.items()
+           if not k.startswith(("CCMORPH_", "_CCMORPH_", "CLAUDE_", "ANTHROPIC_"))}
+    env.update(HOME=str(tmp_path), CCMORPH_STATE_DIR=str(state),
+               _CCMORPH_LIBEXEC_DIR=str(core.parent))
+    rm = [str(core), "cli", "rm", "p"]
+    trace = ["strace", "-f", "-qq", "-P", str(lock), "-e", "trace=%file",
+             "-e", "inject=unlinkat:delay_enter=4s"]
+    with subprocess.Popen(trace + rm, env=env, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                          stderr=subprocess.PIPE, text=True) as first:
+        first.stdin.write("y\n")
+        first.stdin.flush()
+        for line in first.stderr:
+            if "openat(" in line and "ELOOP" in line:
+                break
+        else:
+            assert first.wait(timeout=10) == 0 and not os.path.lexists(lock)
+            return
+        second = subprocess.run(rm, env=env, input="y\n", capture_output=True, text=True, timeout=15)
+        assert second.returncode == 0 or ("no profile" in second.stderr and not os.path.lexists(lock)), second.stderr
+        with subprocess.Popen([str(holder), str(profiles)], stdin=subprocess.PIPE,
+                              stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True) as launch:
+            assert launch.stdout.readline().strip() == "held"
+            first.communicate(timeout=15)
+            assert first.returncode == 0
+            _, err = launch.communicate(input="\n", timeout=10)
+            assert launch.returncode == 0, err
+    assert target.exists()
