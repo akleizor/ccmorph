@@ -271,6 +271,19 @@ whole list when the terminal allows, and otherwise its header begins *More rows 
 fit here*. Claude Code's own in-session menus are
 owned by Claude Code, not rendered or replaced by ccmorph.
 
+Colours come in two palettes: the dark one (Claude Code's own roles, used
+unchanged) and a light one with the same roles darkened to at least 4.5:1
+contrast against white, so every mark and word stays readable on either
+background. `CCMORPH_THEME=light` or `CCMORPH_THEME=dark` forces one outright.
+Otherwise ccmorph asks the terminal for its background colour (the OSC 11
+query) and picks by luminance; a terminal that does not answer falls back to
+`COLORFGBG`, and one that says nothing gets the dark palette. ccmorph asks
+only from the foreground, only when no keys are already waiting, and only
+where it can put back any key typed while the question is out, in the order
+typed; Linux with `dev.tty.legacy_tiocsti=0` forbids putting keys back, so
+there it never asks and `CCMORPH_THEME` or `COLORFGBG` picks. `NO_COLOR`
+still removes colour entirely.
+
 Profile pickers offer only usable profiles: `models` lists API-key profiles,
 `cred` lists stored keys/tokens, and `login` lists account, provider and
 API-key profiles.

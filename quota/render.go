@@ -28,8 +28,9 @@ var groups = []struct{ kind, title string }{
 }
 
 // renderText prints the whole view: one group per kind, one entry per profile,
-// header line then one bar line per window.
-func renderText(w io.Writer, entries []Entry, color bool) {
+// header line then one bar line per window. light is the #274 light palette:
+// the same styles, with dim a fixed grey instead of SGR 2.
+func renderText(w io.Writer, entries []Entry, color, light bool) {
 	first := true
 	for _, g := range groups {
 		rows := []Entry{}
@@ -45,12 +46,12 @@ func renderText(w io.Writer, entries []Entry, color bool) {
 			fmt.Fprintln(w)
 		}
 		first = false
-		emit(w, g.title, color, "bold")
+		emit(w, g.title, color, light, "bold")
 		for _, e := range rows {
-			renderEntry(w, e, color)
+			renderEntry(w, e, color, light)
 		}
 	}
-	receiptsFooter(w, entries, color)
+	receiptsFooter(w, entries, color, light)
 }
 
 // receiptsFooter is the view's last line once any row was read from the
@@ -65,7 +66,7 @@ func renderText(w io.Writer, entries []Entry, color bool) {
 // "receipts: <folder>" would pass the width, the folder takes its own line.
 // The folder is never cut — a cut name leads to no folder — so only a folder
 // whose own path is wider than 60 columns can wrap.
-func receiptsFooter(w io.Writer, entries []Entry, color bool) {
+func receiptsFooter(w io.Writer, entries []Entry, color, light bool) {
 	read := false
 	for _, e := range entries {
 		if e.Kind == "gateway" || e.Kind == "budget" {
@@ -83,13 +84,13 @@ func receiptsFooter(w io.Writer, entries []Entry, color bool) {
 	}
 	for _, line := range lines {
 		if color {
-			line = "\033[2m" + line + "\033[0m"
+			line = dimEscape(light) + line + "\033[0m"
 		}
 		fmt.Fprintln(w, line)
 	}
 }
 
-func renderEntry(w io.Writer, e Entry, color bool) {
+func renderEntry(w io.Writer, e Entry, color, light bool) {
 	style := ""
 	if e.Stale {
 		style = "dim"
@@ -105,29 +106,29 @@ func renderEntry(w io.Writer, e Entry, color bool) {
 			reason = ""
 		}
 	}
-	emit(w, head, color, style)
+	emit(w, head, color, light, style)
 	for _, win := range e.Windows {
-		emit(w, windowLine(win, e.Spend), color, style)
+		emit(w, windowLine(win, e.Spend), color, light, style)
 	}
 	if e.Spend != nil {
-		emit(w, spendLine(e.Spend), color, style)
+		emit(w, spendLine(e.Spend), color, light, style)
 		if l := unpricedLine(e.Spend); l != "" {
-			emit(w, l, color, style)
+			emit(w, l, color, light, style)
 		}
 	}
 	if e.Balance != "" {
-		emit(w, "  balance "+e.Balance, color, style)
+		emit(w, "  balance "+e.Balance, color, light, style)
 	}
 	// A gateway whose endpoint answered nothing says what its numbers are made
 	// of before the reason line: the zero above is local receipts, not a
 	// reading that found no spend, and doctor is the command that checks the
 	// endpoint (#726). Two lines so neither is cut at the width.
 	if e.Checked != nil && !*e.Checked {
-		emit(w, "  gateway not reachable — spend from local receipts only", color, style)
-		emit(w, "  check it: ccmorph doctor "+e.Profile, color, style)
+		emit(w, "  gateway not reachable — spend from local receipts only", color, light, style)
+		emit(w, "  check it: ccmorph doctor "+e.Profile, color, light, style)
 	}
 	if reason != "" {
-		emit(w, "  "+reason, color, style)
+		emit(w, "  "+reason, color, light, style)
 	}
 }
 
@@ -235,8 +236,10 @@ func resetText(at *int64) string {
 }
 
 // emit writes one line: truncated to maxWidth runes so it never wraps, then
-// styled only when the terminal supports colour.
-func emit(w io.Writer, s string, color bool, style string) {
+// styled only when the terminal supports colour. On a light background dim is
+// a fixed grey, the same #6b6b6b the cli package paints with (#274), because a
+// terminal may render SGR 2 below any readable contrast there.
+func emit(w io.Writer, s string, color, light bool, style string) {
 	r := []rune(s)
 	if len(r) > maxWidth {
 		s = string(r[:maxWidth-1]) + "…"
@@ -246,7 +249,16 @@ func emit(w io.Writer, s string, color bool, style string) {
 	case style == "bold":
 		s = "\033[1m" + s + "\033[0m"
 	case style == "dim":
-		s = "\033[2m" + s + "\033[0m"
+		s = dimEscape(light) + s + "\033[0m"
 	}
 	fmt.Fprintln(w, s)
+}
+
+// dimEscape opens the dim style: SGR 2 on a dark background, the fixed grey on
+// a light one (#274).
+func dimEscape(light bool) string {
+	if light {
+		return "\033[38;2;107;107;107m"
+	}
+	return "\033[2m"
 }

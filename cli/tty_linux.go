@@ -33,3 +33,36 @@ func winsize(fd int) (int, int) {
 	}
 	return int(ws.Row), int(ws.Col)
 }
+
+// pushInput puts b on the terminal's input queue, in order, as if it had just
+// been typed (TIOCSTI). It stops at the first byte the kernel refuses and
+// reports why: Linux with dev.tty.legacy_tiocsti=0 refuses every byte, and
+// macOS and BSD refuse a terminal that is not the caller's controlling one.
+func pushInput(fd int, b []byte) error {
+	for i := range b {
+		if _, _, e := syscall.Syscall(syscall.SYS_IOCTL, uintptr(fd), syscall.TIOCSTI, uintptr(unsafe.Pointer(&b[i]))); e != 0 {
+			return e
+		}
+	}
+	return nil
+}
+
+// inputPending is how many bytes wait on fd's input queue, -1 when unknown.
+func inputPending(fd int) int {
+	var n int32
+	if _, _, e := syscall.Syscall(syscall.SYS_IOCTL, uintptr(fd), syscall.TIOCINQ, uintptr(unsafe.Pointer(&n))); e != 0 {
+		return -1
+	}
+	return int(n)
+}
+
+// foregroundTTY is whether fd is this process's controlling terminal and this
+// process's group owns it: only then may the probe change its mode or read it
+// without the kernel stopping the process (SIGTTOU, SIGTTIN).
+func foregroundTTY(fd int) bool {
+	var pgrp int32
+	if _, _, e := syscall.Syscall(syscall.SYS_IOCTL, uintptr(fd), syscall.TIOCGPGRP, uintptr(unsafe.Pointer(&pgrp))); e != 0 {
+		return false
+	}
+	return int(pgrp) == syscall.Getpgrp()
+}
