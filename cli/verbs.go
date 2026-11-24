@@ -308,7 +308,7 @@ func (l *launcher) list(args []string) int {
 	// reads the same here as it does in the picker — a provider profile with
 	// no saved model says Browser login, and a private one carries the mark.
 	// What stays list's own is the paint, via kindColour below.
-	descs := l.describeProfiles(l.active(), nil, nil)
+	descs, skipped := l.describeProfiles(l.active(), nil, nil)
 	for _, d := range descs {
 		marker, nameFmt := " ", d.name
 		if d.active {
@@ -325,7 +325,10 @@ func (l *launcher) list(args []string) int {
 		}
 		fmt.Printf(" %s %s (%s)\n", marker, nameFmt, label)
 	}
-	if len(descs) == 0 {
+	// A home whose only profile was skipped is not empty: the skip line already
+	// named the fault and its repair, so the empty-home summary would be a
+	// second, false answer (GH-839).
+	if len(descs) == 0 && skipped == 0 {
 		fmt.Println(l.dim + noProfilesMsg + l.reset)
 	}
 	return 0

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"github.com/akleizor/ccmorph/util"
 	"os"
+	"slices"
 	"strings"
 
 	"github.com/akleizor/ccmorph/profile"
@@ -197,6 +198,11 @@ func (l *launcher) getSet(verb string, args []string) int {
 			l.err("usage: " + usageLine("get"))
 			return 2
 		}
+		// The one conf validator every reader shares: a profile `list` would
+		// skip must not answer confidently here (GH-839).
+		if _, ok := l.readRaw(name); !ok {
+			return 1
+		}
 		out, rc := l.configStore("get", name, key)
 		if rc != 0 {
 			return rc
@@ -228,6 +234,19 @@ func (l *launcher) getSet(verb string, args []string) int {
 		return rc
 	}
 	value := args[2]
+	// A set is judged on the conf it will leave behind: overwriting the one
+	// value the file refuses is the repair, and every other refusal still
+	// stands (GH-839).
+	if _, err := l.readProfile(name, func(line string) { fmt.Fprintln(os.Stderr, line) }); err != nil {
+		if key != "effort" || !slices.Contains(profile.Efforts, value) {
+			l.err(err.Error())
+			return 1
+		}
+		if _, rerr := profile.ReadForSave(l.dir, name, true, profile.Defaults(), func(string) {}, map[string]string{key: value}); rerr != nil {
+			l.err(rerr.Error())
+			return 1
+		}
+	}
 	// unchecked is a save no listing vouched for, in the sentence that says so
 	// after the save stands; empty when the save was checked or none was asked
 	// for (the saved model kept, a native route, no key to ask with).
@@ -315,12 +334,14 @@ func (l *launcher) config(args []string) int {
 	if rc, done := l.locked(name, []string{"config", name}); done {
 		return rc
 	}
-	snapshot, rc := l.configStore("snapshot", name, "")
-	if rc != 0 {
-		return 1
-	}
+	// The conf's one validator runs before any store read: a profile `list`
+	// would skip must not answer from the store with a different fault (GH-839).
 	f, ok := l.readRaw(name)
 	if !ok {
+		return 1
+	}
+	snapshot, rc := l.configStore("snapshot", name, "")
+	if rc != 0 {
 		return 1
 	}
 	typ, endpoint := f["type"], f["base_url"]
