@@ -1485,24 +1485,14 @@ func usagePricing(typ, usageRoute string) string {
 // variable so a test can prove the hook builder starts no fetch.
 var refreshOwnedPrices = func(pricing string) { go shim.RefreshOwnedPrices(pricing) }
 
-var loopbackProxy = regexp.MustCompile(`^http://127\.0\.0\.1:([0-9]+)/?$`)
-
 // edgeEnv is what ccmorph-rc's session_env sets for the edge's route: its proxy and
 // CA, the route's thread setting and the record a nested launch reads.
 var edgeEnv = []string{"HTTPS_PROXY", "https_proxy", "NODE_EXTRA_CA_CERTS", "CLAUDE_CODE_TETHER_LIVE", "CCMORPH_EDGE_ROUTE_ENV"}
 
 // loopbackHTTPSProxy: HTTPS_PROXY (or https_proxy) is http://127.0.0.1:<port>.
 func loopbackHTTPSProxy() bool {
-	proxy := os.Getenv("HTTPS_PROXY")
-	if proxy == "" {
-		proxy = os.Getenv("https_proxy")
-	}
-	m := loopbackProxy.FindStringSubmatch(proxy)
-	if m == nil {
-		return false
-	}
-	p, ok := posInt(m[1])
-	return ok && p <= 65535
+	_, ok := util.LoopbackProxyPort()
+	return ok
 }
 
 // inEdge: this process runs inside a Remote Control bridge session, whose add-on

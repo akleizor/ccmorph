@@ -28,10 +28,11 @@ type Request struct {
 	Profile, Model, Effort string
 	Family                 string
 	NoDecider, Refresh     bool
-	Timeout                float64   // seconds for the whole dispatch, retry included; 0 keeps router.json's
-	ClaudeArgs             []string  // passed to the worker's claude before -p
-	Only                   []string  // profiles this route may use; nil for any
-	Deadline               time.Time // the hook's budget: cached quota, no decider past it
+	Timeout                float64           // seconds for the whole dispatch, retry included; 0 keeps router.json's
+	ClaudeArgs             []string          // passed to the worker's claude before -p
+	Only                   []string          // profiles this route may use; nil for any
+	Keep                   func(Option) bool // when set, only options it accepts may be picked
+	Deadline               time.Time         // the hook's budget: cached quota, no decider past it
 }
 
 type Decision struct {
@@ -109,6 +110,9 @@ func Decide(c Config, r Request) (Decision, error) {
 	}
 	if r.Family != "" {
 		opts = slices.DeleteFunc(opts, func(o Option) bool { return o.Family != r.Family })
+	}
+	if r.Keep != nil {
+		opts = slices.DeleteFunc(opts, func(o Option) bool { return !r.Keep(o) })
 	}
 	d.Dropped = dropped
 	d.Shortlist = Choose(opts, c.Order)

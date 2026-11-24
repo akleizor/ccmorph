@@ -3,6 +3,7 @@ package router
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -90,6 +91,9 @@ func hookEnv(t *testing.T, enabled bool) string {
 	t.Setenv("CCMORPH_STATE_DIR", root)
 	t.Setenv("XDG_STATE_HOME", state)
 	t.Setenv(WorkerEnv, "")
+	t.Setenv("CCMORPH_EDGE_ROUTE_ENV", "") // the suite may itself run inside an edge session
+	t.Setenv("HTTPS_PROXY", "")
+	t.Setenv("https_proxy", "")
 	for _, a := range []string{"OPUS", "SONNET", "HAIKU"} {
 		t.Setenv(util.TierEnvKey(a), "")
 	}
@@ -122,7 +126,7 @@ func quotaSnapshot(t *testing.T, used map[string]float64) {
 
 const agentCall = `{"tool_name":"Agent","tool_use_id":"tu1","tool_input":{"prompt":"Fix the bug in parse()","description":"fix"}}`
 
-func TestPreToolUseRunsASameProfilePickNativelyAndSendsAnotherToDelegate(t *testing.T) {
+func TestPreToolUseRunsASameProfilePickNativelyAndAnotherProfilesPickFallsBackToTheSessionsOwn(t *testing.T) {
 	hookEnv(t, true)
 	quotaSnapshot(t, map[string]float64{"here": 0.1, "there": 0.9})
 	var out bytes.Buffer
@@ -136,8 +140,8 @@ func TestPreToolUseRunsASameProfilePickNativelyAndSendsAnotherToDelegate(t *test
 	quotaSnapshot(t, map[string]float64{"here": 0.9, "there": 0.1})
 	out.Reset()
 	PreToolUse(strings.NewReader(agentCall), &out)
-	if out.Len() != 0 {
-		t.Fatalf("another profile's pick never denies the call: %s", out.String())
+	if strings.Contains(out.String(), `"deny"`) || !strings.Contains(out.String(), "→ here · sonnet") {
+		t.Fatalf("another profile's pick never denies the call; the session's own sonnet runs it: %s", out.String())
 	}
 }
 
@@ -270,5 +274,104 @@ func TestAnUndeclaredArgumentsSpellingNeverReplacesTheArguments(t *testing.T) {
 	ServeMCP(strings.NewReader(in), &out)
 	if row := lastLedgerRow(t); row["profile"] != "sub" {
 		t.Fatalf("the call must route on the pinned profile, ledgered %+v: %s", row, out.String())
+	}
+}
+
+// gateProfile adds an API profile serving kimi-k3 (the user's first choice, with
+// no native alias) beside a Claude sonnet and a small haiku-tier model.
+func gateProfile(t *testing.T, root string) {
+	t.Helper()
+	conf := "model=kimi-k3\nenv.ANTHROPIC_DEFAULT_SONNET_MODEL=claude-sonnet-5-5\nenv.ANTHROPIC_DEFAULT_HAIKU_MODEL=deepseek-v4.1-flash\n"
+	if err := os.WriteFile(filepath.Join(root, "gate.conf"), []byte(conf), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(ConfigPath(), []byte(`{"enabled":true,"order":["kimi-k3"]}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// edgeSession makes this process a Remote Control edge session whose switch word is word.
+func edgeSession(t *testing.T, root, word string, ports map[string]int) {
+	t.Helper()
+	bridge := filepath.Join(root, "profiles", ".rc-bridge")
+	if err := os.MkdirAll(filepath.Join(bridge, "edges"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if word != "" {
+		if err := os.WriteFile(filepath.Join(bridge, "inference"), []byte(word+"\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for route, port := range ports {
+		if err := os.WriteFile(filepath.Join(bridge, "edges", route+".json"), []byte(fmt.Sprintf(`{"pid":1,"port":%d}`, port)), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Setenv("CCMORPH_EDGE_ROUTE_ENV", "CLAUDE_CODE_DISABLE_ADVISOR_TOOL=1")
+	t.Setenv("HTTPS_PROXY", "http://127.0.0.1:47670")
+}
+
+// A Remote Control edge session keeps the account profile as its config dir
+// while inference goes where the edge's switch word says; the router must
+// route for the latter (2026-11-24: 160 Agent calls ran on the parent's Opus).
+func TestSessionProfileInAnEdgeSessionIsWhereInferenceRuns(t *testing.T) {
+	root := hookEnv(t, true)
+	t.Setenv("HTTPS_PROXY", "http://127.0.0.1:47670") // a user's own loopback proxy is not an edge
+	if got := SessionProfile(); got != "here" {
+		t.Fatalf("no edge record: want the config dir's profile, got %q", got)
+	}
+	for _, c := range []struct {
+		word  string
+		ports map[string]int
+		want  string
+	}{
+		{"route", map[string]int{"llmgate": 47670, "other": 47100}, "llmgate"},
+		{"", map[string]int{"llmgate": 47670}, "llmgate"}, // a missing switch file is "route"
+		{"account", map[string]int{"llmgate": 47670}, "here"},
+		{"there", map[string]int{"llmgate": 47670}, "there"},
+		{"route", map[string]int{"other": 47100}, ""},
+	} {
+		os.RemoveAll(filepath.Join(root, "profiles", ".rc-bridge"))
+		edgeSession(t, root, c.word, c.ports)
+		if got := SessionProfile(); got != c.want {
+			t.Errorf("word %q, edges %v: want %q, got %q", c.word, c.ports, c.want, got)
+		}
+	}
+}
+
+// A pick with no native alias is not the end of the call: the router decides
+// again among the aliases the session runs, so the call never inherits the parent's model.
+func TestPreToolUseDecidesAgainAmongNativeAliasesWhenThePickHasNone(t *testing.T) {
+	root := hookEnv(t, true)
+	gateProfile(t, root)
+	t.Setenv("CLAUDE_CONFIG_DIR", filepath.Join(root, "profiles", "gate"))
+	t.Setenv(util.TierEnvKey("sonnet"), "claude-sonnet-5-5")
+	var out bytes.Buffer
+	PreToolUse(strings.NewReader(agentCall), &out)
+	if !strings.Contains(out.String(), `"model":"sonnet"`) {
+		t.Fatalf("the native sonnet runs the call: %q", out.String())
+	}
+	// With no native alias at all, the call is still left as written.
+	t.Setenv(util.TierEnvKey("sonnet"), "gpt-x")
+	t.Setenv(util.TierEnvKey("haiku"), "gpt-y")
+	t.Setenv(util.TierEnvKey("opus"), "gpt-z")
+	out.Reset()
+	PreToolUse(strings.NewReader(agentCall), &out)
+	if out.Len() != 0 {
+		t.Fatalf("no native alias leaves the call as written: %s", out.String())
+	}
+}
+
+// In an edge session the tier env is unset (the edge passes real Claude ids),
+// so a pick of the route's sonnet id runs natively as the sonnet alias.
+func TestPreToolUseInAnEdgeSessionRunsTheRoutesClaudeIdAsItsAlias(t *testing.T) {
+	root := hookEnv(t, true)
+	gateProfile(t, root)
+	t.Setenv("CLAUDE_CONFIG_DIR", filepath.Join(root, "profiles", "here"))
+	edgeSession(t, root, "route", map[string]int{"gate": 47670})
+	var out bytes.Buffer
+	PreToolUse(strings.NewReader(agentCall), &out)
+	if !strings.Contains(out.String(), `"model":"sonnet"`) {
+		t.Fatalf("the edge route's sonnet runs the call: %q", out.String())
 	}
 }
