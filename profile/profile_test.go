@@ -54,6 +54,68 @@ func TestReadAcceptsEveryEffortLevel(t *testing.T) {
 	}
 }
 
+// GH-839: a saved effort the conf refuses is named by value, and the refusal
+// lists every level the conf does accept, so the reader knows what to type.
+func TestReadNamesAnInvalidEffortValueAndTheLevels(t *testing.T) {
+	conf := `type=apikey
+api_key=k
+effort=ultra
+`
+	_, _, err := read(t, conf)
+	if err == nil {
+		t.Fatal("effort=ultra loaded")
+	}
+	for _, want := range []string{"invalid effort 'ultra'", "in 'p'", "low, medium, high, xhigh or max"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("refusal %q does not name %q", err, want)
+		}
+	}
+	if got := Repair(err, "p"); !strings.Contains(got, "ccmorph set p effort") || !strings.Contains(got, "ccmorph rm p") {
+		t.Fatalf("repair %q names neither the set nor the removal", got)
+	}
+}
+
+// The skip line a listing appends is the repair, and an unknown key (the fault
+// a hand edit most often leaves) names the line to remove before the removal
+// that always works (GH-839).
+func TestRepairNamesTheUnknownKeyAndTheRemoval(t *testing.T) {
+	_, _, err := read(t, "type=apikey\nbogus_key=1\n")
+	if err == nil {
+		t.Fatal("bogus_key loaded")
+	}
+	for _, want := range []string{"remove the unknown key 'bogus_key'", "ccmorph rm p"} {
+		if got := Repair(err, "p"); !strings.Contains(got, want) {
+			t.Fatalf("repair %q does not name %q", got, want)
+		}
+	}
+}
+
+// A refusal that already names its own repair keeps it: a half-made sign-in
+// sends a person to `login`, never to the removal that throws the profile
+// away (GH-649), and the same holds for a credential the keychain lost
+// (GH-839).
+func TestRepairKeepsTheRepairTheRefusalAlreadyNames(t *testing.T) {
+	_, _, err := read(t, "type=sub\n")
+	if got := Repair(err, "p"); got != "sign in again: ccmorph login p" {
+		t.Fatalf("half-made sign-in repair %q", got)
+	}
+	// No `security` on PATH, so the keychain lookup fails on every host.
+	t.Setenv("PATH", t.TempDir())
+	ref := "keychain" + ":" + "absent-839"
+	conf := "type=apikey\n" + "api_key" + "=" + ref + "\n"
+	_, _, err = read(t, conf)
+	if got := Repair(err, "p"); got != "set it again with: ccmorph config p" {
+		t.Fatalf("keychain repair %q (err %v)", got, err)
+	}
+	if got := RepairOf(err); got != "set it again with: ccmorph config p" {
+		t.Fatalf("RepairOf %q", got)
+	}
+	_, _, err = read(t, "type=token\n")
+	if got := RepairOf(err); got != "" {
+		t.Fatalf("RepairOf on a refusal with no repair %q", got)
+	}
+}
+
 // usage_route is a key every launch of that type may carry, and only "direct"
 // is a route: Read accepts the key, Validate refuses any other value.
 func TestValidateRefusesAnUnknownUsageRoute(t *testing.T) {
@@ -77,7 +139,7 @@ func TestReadRefusesWithTheMessageZshPrinted(t *testing.T) {
 		"type=apikey\nenv.PATH=x\n":                                 "disallowed environment key 'env.PATH'",
 		"type=sub\nemail=a\nenv.CCMORPH_MASK=1\n":                   "key 'env.CCMORPH_MASK' is invalid for sub",
 		"type=sub\nemail=a\napi_key=k\n":                            "key 'api_key' is invalid for sub",
-		"type=apikey\neffort=huge\n":                                "invalid effort setting 'effort'",
+		"type=apikey\neffort=huge\n":                                "invalid effort 'huge' in 'p'",
 		"type=apikey\ncontext_window.m=0\n":                         "invalid context pin",
 		"type=apikey\nexcluded_models=a,,b\n":                       "excluded_models must be",
 		"type=apikey\nmodel_map={\"a[1m]\":\"b\"}\n":                "model_map must be",
