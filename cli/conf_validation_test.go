@@ -51,6 +51,9 @@ func TestEveryReaderNamesTheSameConfFault(t *testing.T) {
 		{"unknown key", unknownKeyConf, "unknown key 'bogus_key' in 'vp'"},
 		{"invalid effort", invalidEffortConf,
 			"invalid effort 'ultra' in 'vp': effort must be low, medium, high, xhigh or max"},
+		{"both faults, key first", "type=apikey\nbogus_key=1\neffort=ultra\n", "unknown key 'bogus_key' in 'vp'"},
+		{"both faults, effort first", "type=apikey\neffort=ultra\nbogus_key=1\n",
+			"invalid effort 'ultra' in 'vp': effort must be low, medium, high, xhigh or max"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Setenv("CCMORPH_CONTEXT_LOCKED", "vp")
@@ -66,10 +69,20 @@ func TestEveryReaderNamesTheSameConfFault(t *testing.T) {
 				{"get api_key", func() int { return l.getSet("get", []string{"vp", "api_key"}) }},
 				{"config", func() int { return l.config([]string{"vp"}) }},
 				{"inspect", func() int { return l.inspect([]string{"vp"}) }},
+				{"get effort", func() int { return l.getSet("get", []string{"vp", "effort"}) }},
+				{"set model", func() int { return l.getSet("set", []string{"vp", "model", "new"}) }},
+				{"doctor", func() int { return l.doctor("vp", false) }},
 			} {
 				out, rc := readerOutput(t, reader.run)
 				if !strings.Contains(out, tc.want) {
 					t.Errorf("%s did not name the conf's fault %q: rc %d out %q", reader.name, tc.want, rc, out)
+				}
+				if strings.Contains(out, "invalid saved effort default") {
+					t.Errorf("%s still prints the old unnamed store error: %q", reader.name, out)
+				}
+				if strings.HasPrefix(reader.name, "get") &&
+					(strings.Contains(out, "no model saved") || strings.Contains(out, "no effort saved")) {
+					t.Errorf("%s answered confidently about an invalid profile: %q", reader.name, out)
 				}
 				if reader.name != "list" && rc == 0 {
 					t.Errorf("%s accepted an invalid profile", reader.name)
@@ -137,11 +150,21 @@ func TestSetEffortOverwritesAnInvalidSavedEffort(t *testing.T) {
 	// A model save does not repair the effort: the same refusal, and no write.
 	l = storeTestLauncher(t, "vp", invalidEffortConf, `{"env":{}}`)
 	out, rc = readerOutput(t, func() int { return l.getSet("set", []string{"vp", "model", "new"}) })
-	if rc == 0 || !strings.Contains(out, "invalid effort 'ultra' in 'vp'") {
+	if rc == 0 || !strings.Contains(out, "invalid effort 'ultra' in 'vp'") || !strings.Contains(out, "low, medium, high, xhigh or max") {
 		t.Fatalf("set model with a bad saved effort: rc %d out %q", rc, out)
 	}
 	if b, _ := os.ReadFile(filepath.Join(l.dir, "vp.conf")); strings.Contains(string(b), "model=new") {
 		t.Fatalf("the refused save wrote a model: %q", b)
+	}
+	// Nor does naming the refused level again repair it, so that set refuses
+	// with the conf's own sentence and writes nothing.
+	l = storeTestLauncher(t, "vp", invalidEffortConf, `{"env":{}}`)
+	out, rc = readerOutput(t, func() int { return l.getSet("set", []string{"vp", "effort", "ultra"}) })
+	if rc == 0 || !strings.Contains(out, "invalid effort 'ultra' in 'vp'") || !strings.Contains(out, "low, medium, high, xhigh or max") {
+		t.Fatalf("set effort ultra over a bad saved effort: rc %d out %q", rc, out)
+	}
+	if b, _ := os.ReadFile(filepath.Join(l.dir, "vp.conf")); string(b) != invalidEffortConf {
+		t.Fatalf("the refused set wrote: %q", b)
 	}
 }
 
@@ -162,5 +185,33 @@ func TestDoctorNamesTheConfFaultAndTheSameRepair(t *testing.T) {
 				t.Fatalf("doctor: rc %d out %q", rc, out)
 			}
 		})
+	}
+}
+
+// GH-839: a set is judged on the conf it leaves behind. Overwriting the bad
+// effort does not repair an unknown key beside it: the set names that key and
+// writes nothing.
+func TestSetEffortNamesTheFaultItLeavesBehind(t *testing.T) {
+	t.Setenv("CCMORPH_CONTEXT_LOCKED", "vp")
+	conf := "type=apikey\neffort=ultra\nbogus_key=1\n"
+	l := storeTestLauncher(t, "vp", conf, `{"env":{}}`)
+	out, rc := readerOutput(t, func() int { return l.getSet("set", []string{"vp", "effort", "high"}) })
+	if rc == 0 || !strings.Contains(out, "unknown key 'bogus_key' in 'vp'") {
+		t.Fatalf("set effort high beside an unknown key: rc %d out %q", rc, out)
+	}
+	if b, _ := os.ReadFile(filepath.Join(l.dir, "vp.conf")); string(b) != conf {
+		t.Fatalf("the refused set wrote: %q", b)
+	}
+}
+
+// The skip count changes nothing for a home with no conf: it is still empty.
+func TestListStillCallsAHomeWithNoConfEmpty(t *testing.T) {
+	l := storeTestLauncher(t, "vp", "type=apikey\n", `{"env":{}}`)
+	if err := os.Remove(filepath.Join(l.dir, "vp.conf")); err != nil {
+		t.Fatal(err)
+	}
+	out, rc := readerOutput(t, func() int { return l.list(nil) })
+	if rc != 0 || !strings.Contains(out, "No profiles yet") || strings.Contains(out, "skipping") {
+		t.Fatalf("list on an empty home: rc %d out %q", rc, out)
 	}
 }
