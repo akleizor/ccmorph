@@ -74,6 +74,7 @@ var dataKeyOwners = map[string]string{
 	"util/paths/usagestore.go UsageArchiveRow": "a usage receipt's bytes, never decoded from JSON",
 	"util/paths/usagestore.go ArchiveStamp":    "the content file's stat stamp of a usage archive, built from os.Stat, never decoded from JSON",
 	"shim/usagearchive.go storedUsageRow":      "embeds paths.UsageArchiveRow (a receipt's bytes); an in-memory row, never decoded from JSON",
+	"shim/sse.go bareDataField":                "the one compare of an SSE line against the bare \"data\" field name (no colon, #689): raw bytes of a streamed reply, never a /v1/models body and never decoded from JSON",
 }
 
 // dataKeyRead is one read of the data key: where, in which declaration, and
