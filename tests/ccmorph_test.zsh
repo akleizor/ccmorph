@@ -9669,8 +9669,9 @@ test_add_reports_a_rejected_key_in_the_same_step_issue_254() {
   # The issue's first leg: a made-up key was saved as Added, and the refusal
   # surfaced only at launch (401) or a later doctor. The add now asks the
   # endpoint the same listing question doctor asks, in its own step: 2xx accepts,
-  # 401/403 is refused and the key is asked for again, and anything else is not a
-  # verdict on the key, so the profile saves and says it was not checked.
+  # 401 is refused and the key is asked for again, and anything else — a 403
+  # that restricts the listing rather than refusing the key included (#835) — is
+  # not a verdict on the key, so the profile saves and says it was not checked.
   local test_home rc=0 out rc_die
   test_home=$(mktemp -d)
   setup_home "$test_home"
@@ -9729,6 +9730,21 @@ esac'
   assert_contains "$out" 'http://private.invalid did not answer, so the API key was not checked' \
     'a silent endpoint must be reported as not-checked' || rc=1
   assert_contains "$out" 'Added quiet' 'an unanswered check must not block the add' || rc=1
+  # A gateway that answers the listing question with 403 restricts the listing,
+  # it does not refuse the key — it serves chat (the stub answers /v1/models
+  # with 403 and the chat endpoint with 200). The key is not a verdict here:
+  # the line says the listing is not allowed, and the profile saves (#835).
+  write_curl_mock 'conf=$(cat)
+for a do
+  case "$a" in */v1/models*) print -- "__CCMORPH_STATUS__403"; exit 0 ;; esac
+done
+print -- "{\"object\":\"list\",\"data\":[]}"; print -- "__CCMORPH_STATUS__200"'
+  out=$(print -l apikey custom http://gw403.invalid sk-listed-not-real | ccmorph add forbid 2>&1)
+  assert_contains "$out" 'http://gw403.invalid: listing not allowed (HTTP 403) — the key was not checked' \
+    'a 403 on the listing must say the listing is not allowed, not name the key' || rc=1
+  assert_contains "$out" 'Added forbid' 'a listing 403 must not block the add' || rc=1
+  [[ "$(<"$HOME/.config/ccmorph/forbid.conf")" == *'api_key=sk-listed-not-real'* ]] \
+    || { print -u2 -- 'a listing 403 must still save the entered key'; rc=1 }
   rm -rf "$test_home"
   return $rc
 }

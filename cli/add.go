@@ -645,10 +645,15 @@ func (l *launcher) addAPIKey(name string) int {
 
 // checkKey asks the endpoint the listing question doctor asks — the only
 // request that can vouch for a key before a session spends it — and reports
-// the answer in the add's own step. A 2xx accepts; 401/403 refuses and returns
-// false so the key is asked for again; anything else is not a verdict on the
-// key, so it is said as not-checked and the add continues. The key reaches curl
-// through its stdin config, never a command line.
+// the answer in the add's own step. A 2xx accepts; 401 refuses and returns
+// false so the key is asked for again. A 403 here is no verdict on the key:
+// the question asked is the listing, and a gateway that restricts listing but
+// serves chat answers it with 403 while taking the same key on chat, so the
+// add says the listing is not allowed and continues (#835) — a 403 on an
+// actual inference probe would refuse, but the add makes no inference probe.
+// Anything else is not a verdict on the key either, so it is said as
+// not-checked and the add continues. The key reaches curl through its stdin
+// config, never a command line.
 func (l *launcher) checkKey(url, key string) bool {
 	base, native := nativeBase(url)
 	shown := url
@@ -666,6 +671,13 @@ func (l *launcher) checkKey(url, key string) bool {
 	case probeAccepted:
 		fmt.Println(l.dim + shown + " accepted the API key (HTTP " + code + ")" + l.reset)
 	case probeRejected:
+		if code == "403" {
+			// The listing question, not the key, is what a 403 refuses: a
+			// gateway that hides its models still serves chat. Say which of
+			// the two answers this is, and let the save proceed unchecked.
+			fmt.Println(l.dim + shown + ": listing not allowed (HTTP 403) — the key was not checked" + l.reset)
+			return true
+		}
 		l.err(shown + " rejected the API key (HTTP " + code + ") — paste it again")
 		return false
 	case probeSilent:
