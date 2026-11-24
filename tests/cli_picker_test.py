@@ -946,7 +946,8 @@ class PickerTTYTest(unittest.TestCase):
         j/k move a visible selection, and Enter takes what is highlighted."""
         env = self.env()
         env['ROWS'] = ('alpha\tfirst choice\nbeta\tsecond choice\n'
-                       'beta-quark\tq after letters\ngamma\tthird choice')
+                       'beta-quark\tdash before the q\ngamma\tthird choice\n'
+                       'pi\ttwo letters\npiq\tq inside the name')
         command = 'source "$1"\nccm_ui_select search "pick one" "$ROWS" all'
 
         # A lone q, no Enter: the leave the hint promises, answered at once.
@@ -957,14 +958,15 @@ class PickerTTYTest(unittest.TestCase):
         self.assertEqual(screen(out), ['  Cancelled'], out)
 
         # Arrows move the selection — the pointer paints on the moved row —
-        # and Enter takes it: down twice lands on beta.
+        # and Enter takes it: down twice then up lands back on alpha, so
+        # the answer is one the run could only make by honoring Up.
         rc, out, missed = run_pty(command, env, [
-            (b'(q to cancel):', b'\x1b[B\x1b[B'),
-            (b'\xe2\x9d\xaf 2) ', b'\r'),  # ❯ moved to row 2
+            (b'(q to cancel):', b'\x1b[B\x1b[B\x1b[A'),
+            (b'\xe2\x9d\xaf 1) ', b'\r'),  # ❯ stands on row 1 again
         ])
         self.assertIsNone(missed, out)
         self.assertEqual(rc, 0, out)
-        self.assertEqual(screen(out), ['  pick one › beta', 'beta'], out)
+        self.assertEqual(screen(out), ['  pick one › alpha', 'alpha'], out)
 
         # j/k move too: down, down, up lands back on the first row.
         rc, out, missed = run_pty(command, env, [(b'(q to cancel):', b'jjk\r')])
@@ -980,8 +982,16 @@ class PickerTTYTest(unittest.TestCase):
         self.assertEqual(out.count('Cancelled'), 1, out)
         self.assertEqual(screen(out), ['  Cancelled'], out)
 
-        # q is a leave only alone: after other letters it is ordinary input,
-        # so a name carrying one is still typeable.
+        # q is a leave only alone: after other letters it is ordinary input.
+        # 'piq' pins this at the seam a dropped q actually changes: without
+        # the letter the fragment reads 'pi', another row's own name.
+        rc, out, missed = run_pty(command, env, [(b'(q to cancel):', b'piq\r')])
+        self.assertIsNone(missed, out)
+        self.assertEqual(rc, 0, out)
+        self.assertEqual(screen(out), ['  pick one › piq', 'piq'], out)
+
+        # A q carried anywhere in a name — here right after a dash — is
+        # input too, found by a fragment that skips it.
         rc, out, missed = run_pty(command, env, [(b'(q to cancel):', b'ark\r')])
         self.assertIsNone(missed, out)
         self.assertEqual(rc, 0, out)
@@ -993,6 +1003,54 @@ class PickerTTYTest(unittest.TestCase):
         self.assertEqual(rc, 1, out)
         self.assertEqual(out.count('Cancelled'), 1, out)
         self.assertNotIn('\x1b[', out)
+
+    def test_numbered_fallback_types_names_starting_with_j_or_k_issue_840(self):
+        """GH-840 gate: j/k move only when they stand alone. A model literally
+        named j2 typed as j2 saved whatever row number 2 happened to name:
+        the leading j was eaten as movement. A key typed right after a j or
+        k opens the name instead — the menu may not drop the first letter of
+        what was typed — and only an alone j or k moves."""
+        self.profile()
+        env = {**self.env(),
+               'MODELS': json.dumps({'data': [{'id': m} for m in ('j2', 'beta', 'kappa')]})}
+        for typed, want in ((b'j2\r', 'j2'), (b'kappa\r', 'kappa')):
+            rc, out, missed = run_pty('ccmorph set demo model -i', env,
+                                      [(b'(q to cancel):', typed)])
+            self.assertIsNone(missed, out)
+            self.assertEqual(rc, 0, out)
+            self.assertEqual(self.field('demo', 'model'), want, out)
+
+    def test_numbered_fallback_shows_only_what_enter_takes_issue_840(self):
+        """GH-840 gate: while typed letters decide the answer, ❯ must not
+        stand on a different row than Enter submits. With `beta` typed, Down
+        paints no second selection at all; and a pointer a move had painted
+        leaves the screen the moment typing starts, before Enter answers."""
+        env = self.env()
+        env['NO_COLOR'] = '1'
+        env['ROWS'] = 'alpha\tFirst\nbeta\tSecond'
+        command = 'source "$1"\nccm_ui_select search Pick "$ROWS" all'
+
+        # Typed name plus Down: beta is submitted, and no pointer line ever
+        # appeared that named a different row.
+        rc, out, missed = run_pty(command, env, [(b'(q to cancel):', b'beta\x1b[B\r')])
+        self.assertIsNone(missed, out)
+        self.assertEqual(rc, 0, out)
+        self.assertFalse(re.findall(r'(?m)^❯\s*\d+\)\s+(alpha|beta)\b', out), out)
+        self.assertEqual(screen(out)[-1], 'beta', out)
+
+        # A move first paints the pointer; the first typed letter folds it
+        # away, so the screen Enter answers shows only what it submits.
+        rc, out, missed = run_pty(command, env, [
+            (b'(q to cancel):', b'\x1b[B'),
+            (b'\xe2\x9d\xaf 1) ', b'beta\r'),
+        ])
+        self.assertIsNone(missed, out)
+        self.assertEqual(rc, 0, out)
+        self.assertEqual(screen(out)[-1], 'beta', out)
+        at = out.rfind('❯ beta')  # the submit line as the repaint echoed it
+        self.assertGreater(at, 0, out)
+        view = screen(out[:at])
+        self.assertFalse([row for row in view if re.match(r'❯\s*\d+\)', row)], view)
 
     def test_numbered_fallback_slides_a_cut_list_with_the_pointer_issue_840(self):
         """GH-840: on a list longer than the screen the pointer must stay in

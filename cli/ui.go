@@ -465,7 +465,11 @@ const numberKeysHint = "Type to filter · j/k or ↑/↓ Move · Enter Select ·
 // loop drives the same raw terminal the native menu and readKeyLine use, so a
 // lone q or a bare Esc leaves once, arrows and j/k move a pointer down the
 // list, typed letters edit into the same match the line loop matched (#387),
-// and Enter takes what was typed — or what the pointer stands on. The
+// and Enter takes what was typed — or what the pointer stands on. j/k move
+// only alone: a printable key following one within a keystroke opens a name,
+// so a row whose own name starts with j or k stays typeable (#840). And the
+// pointer shows only while nothing is typed — while letters decide the answer,
+// ❯ never stands on a row other than the one Enter submits (#840). The
 // terminal is restored on every exit path. dumb names a terminal barred from
 // cursor codes: nothing erases or refolds there, each round appends as plain
 // text (#387). ok false means raw mode was refused before anything printed;
@@ -483,6 +487,18 @@ func (t uiTheme) numberedKeys(prompt string, rows []string, display string, dumb
 	}
 	defer restore()
 	k := readKeys()
+	// nextKey answers with the peeked key first: the j/k case looks ahead to
+	// tell a move from the start of a name, and when the answer was a move
+	// the looked-ahead key still belongs to the next round (#840).
+	var held []byte
+	nextKey := func() (int, os.Signal, bool) {
+		if len(held) > 0 {
+			c := held[0]
+			held = nil
+			return int(c), nil, true
+		}
+		return k.next(0, sigs, winch)
+	}
 
 	sel, start, note := -1, 0, ""
 	var buf []byte
@@ -551,7 +567,11 @@ func (t uiTheme) numberedKeys(prompt string, rows []string, display string, dumb
 		fmt.Fprintln(os.Stderr, t.heading(prompt, columns))
 		fmt.Fprintln(os.Stderr)
 		for i, r := range window {
-			n, focused := start+i, start+i == sel
+			n := start + i
+			// The pointer shows only while nothing is typed: from the first
+			// letter on, Enter submits the name, and a ❯ standing elsewhere
+			// would promise an answer the key would not give (#840).
+			focused := sel >= 0 && len(buf) == 0 && start+i == sel
 			ptr := uiMargin
 			if focused {
 				ptr = "❯ "
@@ -598,6 +618,16 @@ func (t uiTheme) numberedKeys(prompt string, rows []string, display string, dumb
 		echoOpen = true
 		recount()
 	}
+	// priced re-prices the echoed question after an edit: back to an empty
+	// buffer, a pointer a move left over is the selection again, and only a
+	// repaint brings it back (#840).
+	priced := func() {
+		if sel >= 0 && len(buf) == 0 {
+			paint()
+		} else {
+			recount()
+		}
+	}
 	// leave and pick are the loop's only endings, so every terminal — fold
 	// or dumb — answers a leave with exactly one Cancelled line (#840) and
 	// an answer with the one receipt line every picker leaves (#361).
@@ -618,7 +648,7 @@ func (t uiTheme) numberedKeys(prompt string, rows []string, display string, dumb
 
 	paint()
 	for {
-		c, s, ok := k.next(0, sigs, winch)
+		c, s, ok := nextKey()
 		if c == keyResize {
 			paint()
 			continue
@@ -672,6 +702,11 @@ func (t uiTheme) numberedKeys(prompt string, rows []string, display string, dumb
 			if !done && tail == "" {
 				return leave()
 			}
+			if len(buf) > 0 {
+				// The typed name decides what Enter submits; moving now would
+				// only paint a second selection the key will not take (#840).
+				continue
+			}
 			switch tail {
 			case "A":
 				sel = max(sel-1, 0)
@@ -690,23 +725,47 @@ func (t uiTheme) numberedKeys(prompt string, rows []string, display string, dumb
 			// after other letters it is ordinary input, so a name carrying
 			// one stays typeable.
 			return leave()
-		case len(buf) == 0 && c == 'j':
-			sel = min(sel+1, len(rows)-1)
-			paint()
-		case len(buf) == 0 && c == 'k':
-			sel = max(sel-1, 0)
+		case len(buf) == 0 && (c == 'j' || c == 'k'):
+			// j/k move when they stand alone. A printable key that follows
+			// one within a keystroke — the same clock the arrow tails read —
+			// says the hand was typing a name, and the menu must not eat its
+			// first letter: j2 is a model, not a move and a row number (#840).
+			// Another j/k is still navigation, so held-down arrows and quick
+			// jk runs keep moving.
+			n, s, got := k.next(80*time.Millisecond, sigs, nil)
+			if s != nil {
+				return leave()
+			}
+			if got && n >= 33 && n != 127 && n != 'j' && n != 'k' {
+				buf = append(buf, byte(c), byte(n))
+				if sel >= 0 {
+					paint() // hide the pointer the letters now replace
+				} else {
+					fmt.Fprint(os.Stderr, string([]byte{byte(c), byte(n)}))
+					recount()
+				}
+				break
+			}
+			if got {
+				held = append(held, byte(n))
+			}
+			if c == 'j' {
+				sel = min(sel+1, len(rows)-1)
+			} else {
+				sel = max(sel-1, 0)
+			}
 			paint()
 		case c == 127 || c == 8:
 			if len(buf) > 0 {
 				_, n := utf8.DecodeLastRune(buf)
 				fmt.Fprint(os.Stderr, strings.Repeat("\b \b", cells(string(buf[len(buf)-n:]))))
 				buf = buf[:len(buf)-n]
-				recount()
+				priced()
 			}
 		case c == 21:
 			fmt.Fprint(os.Stderr, strings.Repeat("\b \b", cells(string(buf))))
 			buf = nil
-			recount()
+			priced()
 		case c == 23:
 			full := string(buf)
 			rest := strings.TrimRight(full, " \t")
@@ -717,12 +776,20 @@ func (t uiTheme) numberedKeys(prompt string, rows []string, display string, dumb
 			}
 			fmt.Fprint(os.Stderr, strings.Repeat("\b \b", cells(full)-cells(rest)))
 			buf = []byte(rest)
-			recount()
+			priced()
 		case c < 32:
 		default:
+			typing := len(buf) == 0
 			buf = append(buf, byte(c))
-			fmt.Fprint(os.Stderr, string(byte(c)))
-			recount()
+			if typing && sel >= 0 {
+				// The first letter after a move: repaint folds the pointer
+				// away, so the screen Enter answers shows only the name
+				// it will submit (#840).
+				paint()
+			} else {
+				fmt.Fprint(os.Stderr, string(byte(c)))
+				recount()
+			}
 		}
 	}
 }
