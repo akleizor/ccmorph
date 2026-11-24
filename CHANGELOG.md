@@ -30,7 +30,10 @@
   instead of holding a file nothing names. A symlink at `.locks/<name>.live`
   is never taken as the lock: a launch refuses it and says so, and `rm`
   removes it. Two `rm` runs of one name now take turns at the lock, so one
-  can no longer remove a lock a launch made after the other cleared a link.
+  can no longer remove a lock a launch made after the other cleared a link,
+  and every lock `rm` unlinks (the profile's context lock and its bridge
+  mutex too) is taken again by a waiter that locked the removed file, so one
+  name's `rm`, setup and bridge start stay one at a time.
 
 - **`ccmorph doctor <profile>` no longer calls a provider profile ready when
   its bridge cannot start.** Doctor now asks the launch's own check: with

@@ -1121,3 +1121,43 @@ func TestSetupKeepsHistoryWhoseStoreLinksAtIt(t *testing.T) {
 		t.Error("a profile sharing its prompt history must pass the fast path")
 	}
 }
+
+// GH-837: rm unlinks .locks/<name>.lock as its last step. A launch's setup
+// that opened it before the unlink and locked it after serialized nothing:
+// another setup made and locked a new file at the path and merged alongside.
+// setupSerialize now takes the lock again on the file the path names.
+func TestSetupSerializeRetakesALockAnRmUnlinkedBeforeTheFlock(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("CCMORPH_PROFILE_LOCK_HELD", "")
+	profiles := filepath.Join(home, ".config/ccmorph/profiles")
+	lock := filepath.Join(filepath.Dir(profiles), ".locks", "p.lock")
+	if err := os.MkdirAll(filepath.Dir(lock), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(lock, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	removed := false
+	liveAfterOpen = func() {
+		liveAfterOpen = nil // one unlink, as one rm does
+		removed = os.Remove(lock) == nil
+	}
+	t.Cleanup(func() { liveAfterOpen = nil })
+	unlock, ok := setupSerialize(profiles, "p")
+	defer unlock()
+	if !ok {
+		t.Fatal("the setup lock must be taken on the file the path names")
+	}
+	if !removed {
+		t.Fatal("the rm's unlink must land inside the open-to-flock window")
+	}
+	other, err := os.OpenFile(lock, os.O_APPEND|os.O_WRONLY, 0)
+	if err != nil {
+		t.Fatalf("the path must name the lock the setup holds: %v", err)
+	}
+	defer other.Close()
+	if syscall.Flock(int(other.Fd()), syscall.LOCK_EX|syscall.LOCK_NB) == nil {
+		t.Fatal("a second setup took the lock while the first holds it")
+	}
+}

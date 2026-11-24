@@ -607,3 +607,45 @@ func TestAnUnreadableRecordWhileHeldIsRefusedLoudly(t *testing.T) {
 	}
 	a.Release(auth)
 }
+
+// GH-837: rm takes a profile's bridge files with it. A launch that opened the
+// bridge mutex before that unlink and locked it after held an inode nothing
+// names, while the next launch made and locked a second mutex at the path:
+// two launches could each start a bridge on one auth directory (#250).
+// lockFile now takes the lock again on the file the path names.
+func TestLockFileRetakesAMutexAnRmUnlinkedBeforeTheFlock(t *testing.T) {
+	path := filepath.Join(t.TempDir(), ".p.bridge.lock")
+	if err := os.WriteFile(path, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	removed := false
+	lockFileAfterOpen = func() {
+		lockFileAfterOpen = nil // one unlink, as one rm does
+		removed = os.Remove(path) == nil
+	}
+	t.Cleanup(func() { lockFileAfterOpen = nil })
+	f, err := lockFile(path, syscall.LOCK_EX)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	if !removed {
+		t.Fatal("the rm's unlink must land inside the open-to-flock window")
+	}
+	fi, err := f.Stat()
+	if err != nil {
+		t.Fatal(err)
+	}
+	pi, err := os.Stat(path)
+	if err != nil || !os.SameFile(fi, pi) {
+		t.Fatalf("the mutex must be the file the path names: %v", err)
+	}
+	other, err := os.OpenFile(path, os.O_RDWR, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer other.Close()
+	if syscall.Flock(int(other.Fd()), syscall.LOCK_EX|syscall.LOCK_NB) == nil {
+		t.Fatal("a second taker locked the bridge mutex while the first holds it")
+	}
+}

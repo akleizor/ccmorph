@@ -621,18 +621,31 @@ func setupSerialize(profiles, name string) (func(), bool) {
 	if os.MkdirAll(filepath.Dir(lock), 0o700) != nil {
 		return func() {}, false
 	}
-	f, err := os.OpenFile(lock, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
-	if err != nil {
-		return func() {}, false
+	// rm unlinks this file as its last step while it still holds it (GH-837):
+	// a lock on a file the path no longer names serializes nothing, so the
+	// take starts again on the file the path names.
+	for attempt := 0; attempt < paths.LockRetakes; attempt++ {
+		f, err := os.OpenFile(lock, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
+		if err != nil {
+			return func() {}, false
+		}
+		if liveAfterOpen != nil {
+			liveAfterOpen()
+		}
+		if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+			f.Close()
+			return func() {}, false
+		}
+		if !paths.NamesPath(f, lock) {
+			f.Close()
+			continue
+		}
+		return func() {
+			syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
+			f.Close()
+		}, true
 	}
-	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
-		f.Close()
-		return func() {}, false
-	}
-	return func() {
-		syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
-		f.Close()
-	}, true
+	return func() {}, false
 }
 
 // liveSessions lists the pids of the sessions recorded under the profile's

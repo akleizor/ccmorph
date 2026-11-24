@@ -11,6 +11,8 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"github.com/akleizor/ccmorph/util/paths"
 )
 
 // ErrBridgeNotStarted is AcquireBridge's answer when start failed; it has
@@ -28,17 +30,34 @@ type SharedBridge struct {
 	users                  *os.File // held shared while this session uses the bridge
 }
 
+// lockFile takes how on the file at path, making it if missing. rm takes a
+// profile's bridge files with it, so a lock that landed on a file the path no
+// longer names — opened before that unlink, locked after — guards nothing and
+// is taken again on the file the path names (GH-837).
 func lockFile(path string, how int) (*os.File, error) {
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0o600)
-	if err != nil {
-		return nil, err
-	}
-	if err := syscall.Flock(int(f.Fd()), how); err != nil {
+	for attempt := 0; attempt < paths.LockRetakes; attempt++ {
+		f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0o600)
+		if err != nil {
+			return nil, err
+		}
+		if lockFileAfterOpen != nil {
+			lockFileAfterOpen()
+		}
+		if err := syscall.Flock(int(f.Fd()), how); err != nil {
+			f.Close()
+			return nil, err
+		}
+		if paths.NamesPath(f, path) {
+			return f, nil
+		}
 		f.Close()
-		return nil, err
 	}
-	return f, nil
+	return nil, paths.ErrLockReplaced
 }
+
+// lockFileAfterOpen is called between lockFile's open and its flock. Tests set
+// it to land an rm's unlink in that window; it is nil everywhere else (GH-837).
+var lockFileAfterOpen func()
 
 // probeBridge is whether a bridge answers its listing; a test swaps in a probe
 // that never answers to model a slow bridge.
@@ -251,9 +270,19 @@ func (b *SharedBridge) Release(authDir string) {
 	}
 	// No O_CREATE: rm takes these files with the profile, and a session that
 	// outlives it must not put them back.
-	if f, err := os.OpenFile(b.mutex, os.O_RDWR, 0); err == nil {
+	// A mutex an rm unlinked between this open and the flock is not the one
+	// the path names, so it is taken again on the file there, if any (GH-837).
+	for attempt := 0; attempt < paths.LockRetakes; attempt++ {
+		f, err := os.OpenFile(b.mutex, os.O_RDWR, 0)
+		if err != nil {
+			break
+		}
 		syscall.Flock(int(f.Fd()), syscall.LOCK_EX)
-		defer f.Close()
+		if paths.NamesPath(f, b.mutex) {
+			defer f.Close()
+			break
+		}
+		f.Close()
 	}
 	fd := int(b.users.Fd())
 	syscall.Flock(fd, syscall.LOCK_UN)

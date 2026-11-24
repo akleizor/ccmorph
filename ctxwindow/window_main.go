@@ -12,6 +12,8 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"github.com/akleizor/ccmorph/util/paths"
 )
 
 const windowUsage = "usage: model-window <profile> <model> | --context <profile> <model> [tokens|auto] | --migrate"
@@ -157,27 +159,13 @@ func runLocked(args []string, stderr io.Writer) (int, error) {
 		if err != nil {
 			return 0, err
 		}
-		f, err := os.OpenFile(lock, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
+		f, fi, already, err := takeContextLock(lock, taken)
 		if err != nil {
 			return 0, err
 		}
 		locks = append(locks, f)
-		fi, err := f.Stat()
-		if err != nil {
-			return 0, err
-		}
-		again := false
-		for _, prev := range taken {
-			if os.SameFile(fi, prev) {
-				again = true
-				break
-			}
-		}
-		if again { // one lock file reached under two names: already held
+		if already { // one lock file reached under two names: already held
 			continue
-		}
-		if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX); err != nil {
-			return 0, err
 		}
 		taken = append(taken, fi)
 	}
@@ -217,4 +205,43 @@ func runLocked(args []string, stderr io.Writer) (int, error) {
 		fmt.Fprintln(stderr, "Cancelled.")
 		return 130, nil
 	}
+}
+
+// takeContextLock takes one profile's context lock exclusively for runLocked.
+// already reports a file this run already holds under another name (macOS
+// ignores letter case). rm unlinks the lock file as its last step while it
+// still holds it, so a waiter that opened the file before that unlink would
+// lock an inode nothing names, beside the next taker's new file: two rm runs
+// of one name would then run at once (GH-837). A lock on a file the path no
+// longer names is dropped and taken again on the file the path names.
+func takeContextLock(lock string, taken []os.FileInfo) (f *os.File, fi os.FileInfo, already bool, err error) {
+	for attempt := 0; attempt < paths.LockRetakes; attempt++ {
+		f, err := os.OpenFile(lock, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
+		if err != nil {
+			return nil, nil, false, err
+		}
+		fi, err := f.Stat()
+		if err != nil {
+			f.Close()
+			return nil, nil, false, err
+		}
+		for _, prev := range taken {
+			if os.SameFile(fi, prev) {
+				return f, fi, true, nil
+			}
+		}
+		if lockAfterOpen != nil {
+			lockAfterOpen()
+		}
+		if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX); err != nil {
+			f.Close()
+			return nil, nil, false, err
+		}
+		if !paths.NamesPath(f, lock) {
+			f.Close()
+			continue
+		}
+		return f, fi, false, nil
+	}
+	return nil, nil, false, paths.ErrLockReplaced
 }

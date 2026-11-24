@@ -894,3 +894,117 @@ func TestLockedTakesTheLegacyNamesRemovalAddresses(t *testing.T) {
 		t.Fatalf("a name past the storable bound must still be refused (exit %d, err %v)", code, err)
 	}
 }
+
+// GH-837 (merge gate): `rm` runs under `model-window --locked <name>` and
+// unlinks .locks/<name>.lock as its last step while it still holds it. A
+// second rm already waiting on that file then got the lock on an inode nothing
+// names, and a third made and locked a new file at the path, so two rm runs of
+// one name ran at once. Every waiter now takes the lock again on the file the
+// path names: while one holds it, no other taker can.
+func TestContextLockIsRetakenWhenItsHolderUnlinksIt(t *testing.T) {
+	e := setup(t)
+	lock := filepath.Join(e.state, ".locks", "a.lock")
+	if err := os.MkdirAll(filepath.Dir(lock), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(lock, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	first, err := os.OpenFile(lock, os.O_APPEND|os.O_WRONLY, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := syscall.Flock(int(first.Fd()), syscall.LOCK_EX); err != nil {
+		t.Fatal(err)
+	}
+	// The second rm opens the file while the first holds it, then waits.
+	opened := make(chan struct{})
+	lockAfterOpen = func() {
+		lockAfterOpen = nil
+		close(opened)
+	}
+	t.Cleanup(func() { lockAfterOpen = nil })
+	type result struct {
+		f   *os.File
+		err error
+	}
+	done := make(chan result, 1)
+	go func() {
+		f, _, _, err := takeContextLock(lock, nil)
+		done <- result{f, err}
+	}()
+	select {
+	case <-opened:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the second taker never opened the lock")
+	}
+	// The first rm ends: it unlinks the lock it holds, then lets go.
+	if err := os.Remove(lock); err != nil {
+		t.Fatal(err)
+	}
+	first.Close()
+	var r result
+	select {
+	case r = <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the second taker never took the lock")
+	}
+	if r.err != nil {
+		t.Fatal(r.err)
+	}
+	defer r.f.Close()
+	fi, err := r.f.Stat()
+	if err != nil {
+		t.Fatal(err)
+	}
+	pi, err := os.Stat(lock)
+	if err != nil || !os.SameFile(fi, pi) {
+		t.Fatalf("the waiter must hold the file the path names, not the one the first rm unlinked: %v", err)
+	}
+	third, err := os.OpenFile(lock, os.O_APPEND|os.O_WRONLY, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer third.Close()
+	if syscall.Flock(int(third.Fd()), syscall.LOCK_EX|syscall.LOCK_NB) == nil {
+		t.Fatal("a third rm took the context lock while the second holds it")
+	}
+}
+
+// The same for a writer under ProfileLockCtx: a lock on a file rm unlinked
+// while the writer waited is taken again on the file the path names (GH-837).
+func TestProfileLockIsRetakenWhenItsHolderUnlinksIt(t *testing.T) {
+	e := setup(t)
+	lock := filepath.Join(e.state, ".locks", "a.lock")
+	if err := os.MkdirAll(filepath.Dir(lock), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(lock, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	removed := false
+	lockAfterOpen = func() {
+		lockAfterOpen = nil // one rm ends in the window: it unlinks its lock
+		removed = os.Remove(lock) == nil
+	}
+	t.Cleanup(func() { lockAfterOpen = nil })
+	held := false
+	ok, err := ProfileLockCtx(context.Background(), "a", func() error {
+		other, err := os.OpenFile(lock, os.O_APPEND|os.O_WRONLY, 0)
+		if err != nil {
+			return err
+		}
+		defer other.Close()
+		held = syscall.Flock(int(other.Fd()), syscall.LOCK_EX|syscall.LOCK_NB) != nil
+		return nil
+	})
+	if err != nil || !ok {
+		t.Fatalf("the writer must run: ok=%v err=%v", ok, err)
+	}
+	if !removed {
+		t.Fatal("the unlink must land inside the writer's open-to-flock window")
+	}
+	if !held {
+		t.Fatal("while the writer runs, the lock the path names must be held")
+	}
+}

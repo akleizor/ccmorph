@@ -663,24 +663,41 @@ func ProfileLockCtx(ctx context.Context, profile string, fn func() error) (bool,
 	if heldLock(path) {
 		return ran()
 	}
-	// The lock holds no configuration data; its inode stays stable across remove/recreate.
+	// The lock holds no configuration data. rm unlinks it as its last step, so
+	// a lock taken on a file the path no longer names is taken again (GH-837).
 	lock, err := lockPath(path)
 	if err != nil {
 		return false, err
 	}
-	f, err := os.OpenFile(lock, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
-	if err != nil {
-		return false, err
-	}
-	defer f.Close()
-	if err := flockCtx(ctx, f); err != nil {
-		if ctx.Err() != nil {
-			return false, nil
+	for attempt := 0; attempt < paths.LockRetakes; attempt++ {
+		f, err := os.OpenFile(lock, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
+		if err != nil {
+			return false, err
 		}
-		return false, err
+		if lockAfterOpen != nil {
+			lockAfterOpen()
+		}
+		if err := flockCtx(ctx, f); err != nil {
+			f.Close()
+			if ctx.Err() != nil {
+				return false, nil
+			}
+			return false, err
+		}
+		if !paths.NamesPath(f, lock) {
+			f.Close()
+			continue
+		}
+		defer f.Close()
+		return ran()
 	}
-	return ran()
+	return false, paths.ErrLockReplaced
 }
+
+// lockAfterOpen is called between the open of a profile's context lock and
+// the flock that takes it. Tests set it to land the unlink an rm performs in
+// that window; it is nil everywhere else (GH-837).
+var lockAfterOpen func()
 
 // flockCtx takes an exclusive flock, polling only when the caller has a
 // deadline to honour: without one it blocks exactly as before.
