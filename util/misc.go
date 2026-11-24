@@ -228,6 +228,12 @@ func execIndex(args []string) int {
 	return 0
 }
 
+// sessionReadBound is how long runningAdapter waits for the process table
+// (GH-467): an answer past it is __UNKNOWN__, which doctor names as a check it
+// could not make (#518). A variable so a test can shorten it to force that
+// answer, or lengthen it so a loaded machine cannot.
+var sessionReadBound = time.Second
+
 // runningAdapter is "<pid>\t<holder>:<name>,..." for the profile's running adapter,
 // "" when there is none, and __UNKNOWN__ when the process table cannot be read.
 // The holders are the spawned children worth checking (cliproxyapi; a
@@ -235,12 +241,13 @@ func execIndex(args []string) int {
 // the adapter process itself as "shim": the stock shim is served in-process, so
 // its listener is the adapter's own.
 func runningAdapter(profile string) string {
-	// Bounded at a second (GH-467): the sysctl read is the kernel's own cost,
-	// but the ps it falls back to makes three passes — an answer past the bound
-	// is SKIP, never a hang and never a half report. The goroutine cannot be
-	// joined, so the same deadline bounds the work itself (GH-515): the ps it is
-	// in is killed with the context, not left running behind the answer.
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	// Bounded at sessionReadBound, a second (GH-467): the sysctl read is the
+	// kernel's own cost, but the ps it falls back to makes three passes — an
+	// answer past the bound is SKIP, never a hang and never a half report. The
+	// goroutine cannot be joined, so the same deadline bounds the work itself
+	// (GH-515): the ps it is in is killed with the context, not left running
+	// behind the answer.
+	ctx, cancel := context.WithTimeout(context.Background(), sessionReadBound)
 	defer cancel()
 	done := make(chan map[int]psRow, 1)
 	go func() { done <- processTableWithin(ctx) }()

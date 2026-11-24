@@ -171,8 +171,9 @@ func shellWord(s string) string {
 
 // completionProbeDeadline bounds the zsh the completion row starts; a shell
 // that cannot answer in time is read as "cannot tell": the row then says what
-// the startup files still miss — never a guess, and never silence, which would
-// read as a working completion. A variable so the test can shorten it.
+// the startup files still miss — or, when they miss nothing, that the check
+// was not made (#518) — never a guess, and never silence, which would read as
+// a working completion. A variable so the test can shorten it.
 var completionProbeDeadline = 5 * time.Second
 
 // completionBound asks a new zsh the only question that matters: does that
@@ -182,16 +183,17 @@ var completionProbeDeadline = 5 * time.Second
 // dropped so the shell rebuilds fpath from those files exactly as a fresh
 // terminal does — a leaked FPATH would replace the whole array and hide even
 // compinit. answered is false when no marker came back (no shell, a broken
-// rc, a timeout); bound is true only when the shell named a completion. The
+// rc, a timeout); bound is true only when the shell named a completion.
+// timedOut is true when the deadline ended the shell before it answered. The
 // shell may write a zcompdump or touch nothing else a terminal's shells do
 // not; nothing of the person's is edited.
-func (l *launcher) completionBound(zdot string) (bound, answered bool) {
+func (l *launcher) completionBound(zdot string) (bound, answered, timedOut bool) {
 	shell := os.Getenv("SHELL")
 	if shell == "" {
 		if p, err := exec.LookPath("zsh"); err == nil {
 			shell = p
 		} else {
-			return false, false
+			return false, false, false
 		}
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), completionProbeDeadline)
@@ -211,14 +213,14 @@ func (l *launcher) completionBound(zdot string) (bound, answered bool) {
 	cmd.Env = append(env, "ZDOTDIR="+zdot)
 	out, _ := cmd.Output()
 	if ctx.Err() != nil {
-		return false, false
+		return false, false, true
 	}
 	for _, line := range strings.Split(string(out), "\n") {
 		if v, ok := strings.CutPrefix(line, "__ccmorph_completion_"); ok {
-			return v != "", true
+			return v != "", true, false
 		}
 	}
-	return false, false
+	return false, false, false
 }
 
 // zshCompletion is what doctor read about Tab completion in a new zsh (#363):
@@ -271,13 +273,19 @@ func (l *launcher) doctorCompletion() zshCompletion {
 	rc, _ := os.ReadFile(rcFile)
 	c.onFpath = util.FpathBound(rc, c.dir, os.Getenv("FPATH"))
 	c.compinit = util.CompinitRuns(rc)
-	bound, answered := l.completionBound(zdot)
+	bound, answered, timedOut := l.completionBound(zdot)
 	c.bound = answered && bound
 	if c.bound {
 		return c
 	}
 	// Every line is its own row: doctor's report keeps one status word a line.
 	switch {
+	case c.onFpath && c.compinit && timedOut:
+		// Both halves are in the startup files and the new zsh ran out of
+		// time before it said whether Tab completes: name the check that was
+		// not made, never a line to move that may already be right (#518).
+		l.status("INFO", "completion: not checked (a new zsh did not answer within "+
+			util.DurationWords(completionProbeDeadline)+")")
 	case c.onFpath && c.compinit:
 		l.status("INFO", "completion: put the fpath line above compinit in "+c.rcName+":")
 		l.status("INFO", "  fpath=("+shellWord(c.dir)+" $fpath)")
