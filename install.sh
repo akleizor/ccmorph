@@ -187,9 +187,10 @@ COMPONENTS=($LIBS $EXECUTABLES $DATA_FILES)
 #
 # Only the command goes; nothing else in ~/.local/bin is ours to touch. Everything
 # else ccmorph wrote is the user's — the state root (profiles, credentials and
-# each profile's session history), the usage receipts, and on macOS the keychain
-# items the confs point at — so it is NAMED, with the command that removes it,
-# rather than deleted here or left for them to discover later.
+# each profile's session history), the shared session history under ~/.claude,
+# the usage receipts, and on macOS the keychain items the confs point at — so it
+# is NAMED, with the command that removes it, rather than deleted here or left
+# for them to discover later (#810).
 if [[ "${1:-}" == "--uninstall" ]]; then
   # The state root the RUNTIME uses, derived exactly as lib/ccmorph.sh derives
   # it: CCMORPH_STATE_DIR, else XDG_CONFIG_HOME/ccmorph, else ~/.config/ccmorph.
@@ -280,13 +281,83 @@ if [[ "${1:-}" == "--uninstall" ]]; then
   # `$ERRNO`/`$errnos` name the stat failure; without the module they stay empty,
   # which counts as "could not be asked", never as proof of a dangling link.
   zmodload zsh/system 2>/dev/null || :
+  # The native claude layer, resolved: the one directory this report must never
+  # hand to rm. A root, code dir or receipts link that resolves to it, contains
+  # it (the home, /) or sits inside it would delete native settings and the
+  # plugin store the report promises keep working (#810 gate). Two assignments
+  # each: inside ${...} zsh reads `/.claude:A` as a ${name/pattern/repl}
+  # substitution and yields the home.
+  _un_home="${HOME:A}"
+  _un_claude="$_un_home/.claude"
+  _un_claude="${_un_claude:A}"
+  # $1 = a resolved or lexically normalized link target. True when naming it for
+  # deletion would reach the native layer. Both the path as given and its
+  # resolution are compared: the unreadable branch can only normalize
+  # lexically, and `~/.claude` is compared resolved (`/tmp` and `/private/tmp`
+  # are one directory).
+  _un_in_layer() {
+    local r
+    for r in "$1" "${1:A}"; do
+      [[ "$r" == / || "$r" == "$_un_claude" ||
+         "$_un_claude" == "$r"/* || "$r" == "$_un_claude"/* ]] && return 0
+    done
+    return 1
+  }
+  # The entry a spelling names, read the way the kernel reads it: the head
+  # resolved PHYSICALLY, so a `..` after a symlink goes where the kernel goes,
+  # and the last component kept unfollowed, so a link is still a link. A
+  # trailing `/`, `//` or `/.` names that same entry. `${1:a}` cannot be used:
+  # it collapses `..` lexically, so `alias/../state` (with `alias` a symlink)
+  # names an unrelated entry instead of the root the override selects — an
+  # override one reader honours and another forgets (`.github/REVIEW.md`).
+  # $1 = a spelling. REPLY = the entry it names; _un_spell = the same entry
+  # without a trailing `/`, `//` or `/.` — what the report prints for it, since
+  # `rm -rf path/.` is refused outright by BSD rm.
+  _un_leaf() {
+    local s="$1" head part hasdd=0
+    # What the report prints when the entry is not a link: the caller's own
+    # spelling, with any trailing `/.` removed (a trailing `/` alone is fine).
+    _un_spell="$1"
+    while [[ "$_un_spell" == */. ]]; do _un_spell="${_un_spell%/.}"; done
+    while :; do
+      s="${s%%/}"
+      if [[ "$s" == */. ]]; then s="${s%/.}"; else break; fi
+    done
+    if [[ -z "$s" || "$s" == / ]]; then REPLY=/; return 0; fi
+    if [[ "${s:t}" == .. ]]; then REPLY="${s:P}"; return 0; fi
+    # A `..` in the head is resolved PHYSICALLY, or the entry named is not the
+    # one the kernel reaches (`alias/../state` with `alias` a link). Without
+    # one the caller's own spelling names the same entry and reads better: a
+    # `/tmp/...` path stays `/tmp/...` rather than `/private/tmp/...`.
+    head="${s:h}"
+    for part in ${(s:/:)head}; do
+      [[ "$part" == .. ]] && { hasdd=1; break; }
+    done
+    if (( hasdd )); then
+      [[ "$head" == / ]] || head="${head:P}"
+    else
+      head="${head:a}"
+    fi
+    if [[ "$head" == / ]]; then REPLY="/${s:t}"; else REPLY="$head/${s:t}"; fi
+    return 0
+  }
   _un_unlinked() {
-    local p="${1:a}" t n first="" e=""
-    REPLY="$1"
+    local p t n first="" e=""
+    _un_leaf "$1"; p="$REPLY"; REPLY="$_un_spell"
     [[ -L "$p" ]] || return 0
     ERRNO=0
     if [[ -e "$p" ]]; then
-      REPLY="${p:A}"
+      t="${p:A}"
+      if _un_in_layer "$t"; then
+        # The link under its normalized spelling, not the resolved one: the rm
+        # removes only the link, and the target is named beside it (#810 gate).
+        # $p, never $1: a CCMORPH_STATE_DIR spelled `link/`, `link//` or `link/.`
+        # hands rm a path it follows into the target, deleting ~/.claude's files.
+        REPLY="$p"
+        _un_links+=("$p is a symlink to $t, which sits inside ~/.claude or contains it: naming it would remove native claude's own files, so the rm removes only the link; $t stays: it is yours to resolve.")
+        return 0
+      fi
+      REPLY="$t"
       _un_links+=("$p is a symlink to $REPLY and stays: it is yours to remove.")
       return 0
     fi
@@ -309,6 +380,14 @@ if [[ "${1:-}" == "--uninstall" ]]; then
       _un_links+=("$p is a symlink to ${first:-an unreadable target}, which does not exist now: nothing there is counted above, and the rm removes only the link.")
     else
       REPLY="${t:a}"
+      if _un_in_layer "$REPLY"; then
+        # An unreadable target that would reach the native layer is never named:
+        # the rm carries only the link, and the count stays unknown (#810 gate).
+        REPLY="$p"
+        _un_unread+=("$p")
+        _un_links+=("$p is a symlink to ${first:-an unreadable target}, which could not be reached (${e:-unknown error}) and may be or contain ~/.claude: nothing in it is named, and the rm removes only the link; it is yours to resolve.")
+        return 0
+      fi
       _un_unread+=("$REPLY")
       _un_links+=("$p is a symlink to ${first:-an unreadable target}, which could not be reached (${e:-unknown error}): nothing in it could be read or counted above, and the rm names it unread; the link stays: it is yours to remove.")
     fi
@@ -335,6 +414,310 @@ if [[ "${1:-}" == "--uninstall" ]]; then
     _un_unlinked "$_un_state"; _un_state_named="$REPLY"
     _un_rm+=("$_un_state_named")
   fi
+  # The shared session history (#177): transcripts, prompt history and pasted
+  # text — the three stores every profile links into ~/.claude, which native
+  # claude reads and writes too. It outlives the rm above, so it is named with
+  # it (#810); only what exists is named. A store that is a real file or
+  # directory is named as spelled: rm reaches through a symlinked ~/.claude to
+  # the real store. A store that is itself a symlink is named by where it leads
+  # only when _un_hist_ok proves that target is the store moved elsewhere;
+  # every other target, and a link that cannot be followed, never reaches the
+  # rm: the rm removes only the link, and the target is named beside it.
+  # _un_home and _un_claude were resolved above, before the root resolver.
+  _un_plugins="$HOME/.claude/plugins"; _un_plugins="${_un_plugins:A}"
+  # $1 = a fully resolved link target, $2 = the store's name. True only when
+  # the target carries the store's own name and kind (history.jsonl a file,
+  # projects and paste-cache directories), lies outside ~/.claude, and is
+  # neither /, the home, ~/.claude nor the plugin store, nor a directory above
+  # any of them — so following the printed rm never deletes native claude's
+  # files, the plugins this report promises keep working, or the home.
+  _un_hist_ok() {
+    local t="$1" x
+    [[ "$t" != / && "${t:t}" == "$2" ]] || return 1
+    if [[ "$2" == history.jsonl ]]; then
+      [[ -f "$t" ]] || return 1
+    else
+      [[ -d "$t" ]] || return 1
+    fi
+    [[ "$t" == "$_un_claude"/* ]] && return 1
+    for x in "$_un_home" "$_un_claude" "$_un_plugins"; do
+      [[ "$t" == "$x" || "$x" == "$t"/* ]] && return 1
+    done
+    return 0
+  }
+  # $1 = the store's name under ~/.claude. REPLY = the path the kept line and
+  # the rm name for it.
+  _un_hist_named() {
+    local s="$HOME/.claude/$1" t
+    REPLY="$s"
+    [[ -L "$s" ]] || return 0
+    if [[ -e "$s" ]]; then
+      t="${s:A}"
+      if _un_hist_ok "$t" "$1"; then
+        REPLY="$t"
+        _un_links+=("$s is a symlink to $t and stays: it is yours to remove.")
+      else
+        _un_links+=("$s is a symlink to $t, which this report cannot vouch for as session history: the rm removes only the link; $t stays: it is yours to check.")
+      fi
+      return 0
+    fi
+    t="$(command readlink "$s" 2>/dev/null || :)"
+    _un_links+=("$s is a symlink to ${t:-an unreadable target}, which could not be followed (it does not exist now, or could not be read): nothing there is counted, and the rm removes only the link.")
+    return 0
+  }
+  _un_hist=()
+  for _un_h in history.jsonl projects paste-cache; do
+    [[ -e "$HOME/.claude/$_un_h" || -L "$HOME/.claude/$_un_h" ]] || continue
+    _un_hist_named "$_un_h"
+    _un_hist+=("$REPLY")
+  done
+  (( ${#_un_hist} )) && _un_rm+=("${_un_hist[@]}")
+  # The last word on the printed rm (#810 gate). Whatever produced an operand,
+  # following the printed `rm -rf` must never delete or unlink what native
+  # claude reads through ~/.claude. Two sets hold that, both built before any
+  # operand is judged:
+  #  - _un_trees: ~/.claude and the target of every symlink in it, link after
+  #    link (a link in a target is followed too). An operand inside one deletes
+  #    native claude's files — except the three history stores directly under
+  #    ~/.claude, the rm's own operands, which are never searched for links (a
+  #    link that leads into one makes what it leads to a tree of its own). A
+  #    tree that is the home or holds it cannot be searched: when ~/.claude is
+  #    one, or a link in a tree leads to one, nothing bounds what native claude
+  #    reads, and no operand reaches the rm at all (_un_unbounded).
+  #  - _un_dep: every directory entry the kernel visits resolving the home,
+  #    ~/.claude, ~/.claude/plugins, ~/.claude.json and each of those symlinks
+  #    — every component of the path and of every link target on the way, not
+  #    only the last (#810 gate: a mid-path link is still a link claude is
+  #    reached through). An operand that is one of them, or holds one, cuts
+  #    native claude off from it.
+  # Judged by file identity, never by spelling alone: a case-folded,
+  # firmlinked or bind-mounted spelling of ~/.claude is still ~/.claude. An
+  # operand that fails is left off the rm and named on its own line; its kept
+  # line stays, and a line that said the rm removes it is withdrawn.
+  # Two assignments each, never ${${x}/y:P}: see _un_claude above.
+  _un_p_home="${HOME:P}"
+  _un_p_claude="$HOME/.claude"; _un_p_claude="${_un_p_claude:P}"
+  # A link's target is read with zsh's own zstat where the module loads, so a
+  # home with many links costs no process per link; readlink(1) otherwise.
+  _un_zstat=0
+  zmodload -F zsh/stat b:zstat 2>/dev/null && _un_zstat=1
+  # $1 = a symlink. REPLY = its target as spelled; empty when it cannot be read.
+  _un_readlink() {
+    local -a l
+    REPLY=""
+    if (( _un_zstat )); then
+      if zstat -A l -L +link -- "$1" 2>/dev/null; then REPLY="${l[1]-}"; fi
+    else
+      REPLY="$(command readlink "$1" 2>/dev/null || :)"
+    fi
+    return 0
+  }
+  typeset -U _un_trees
+  _un_trees=("$_un_p_claude")
+  # $1 = an entry. True when it lies inside a tree, outside the history stores:
+  # an operand above it is inside that tree, or is it, and is refused for that
+  # already, so the entry needs no record. A history-store entry is recorded:
+  # the rm may name a store, never one native claude is reached through.
+  _un_quiet() {
+    local t rel
+    for t in "${_un_trees[@]}"; do
+      [[ "$1" == "$t"/* ]] || continue
+      if [[ "$t" == "$_un_p_claude" ]]; then
+        rel="${1#"$t"/}"; rel="${(L)rel%%/*}"
+        if [[ "$rel" == (history.jsonl|projects|paste-cache) ]]; then continue; fi
+      fi
+      return 0
+    done
+    return 1
+  }
+  # _un_dep is a set (its keys), so a home with many links stays linear.
+  typeset -A _un_dep
+  _un_dep=()
+  # $1 = a physical directory, $2 = a path read from it (an absolute one from
+  # /). Records in _un_dep every entry the kernel visits resolving $2, each as
+  # its physical parent plus its own name — the form _un_rm_reach gives a link
+  # operand. A `..` steps to the physical parent, as the kernel's does; a
+  # relative target is read from the link's own directory. At most 40 links
+  # (the kernel's own limit); a link that cannot be read ends the walk.
+  _un_walk() {
+    local cur="$1" c n hops=0
+    local -a rest
+    if [[ "$2" == /* ]]; then cur=/; fi
+    rest=(${(s:/:)2})
+    while (( ${#rest} )); do
+      c="${rest[1]}"; shift rest
+      if [[ "$c" == . ]]; then continue; fi
+      if [[ "$c" == .. ]]; then cur="${cur:h}"; continue; fi
+      if [[ "$cur" == / ]]; then n="/$c"; else n="$cur/$c"; fi
+      if ! _un_quiet "$n"; then _un_dep[$n]=1; fi
+      if [[ -L "$n" ]]; then
+        (( ++hops <= 40 )) || return 0
+        _un_readlink "$n"
+        [[ -n "$REPLY" ]] || return 0
+        if [[ "$REPLY" == /* ]]; then cur=/; fi
+        rest=(${(s:/:)REPLY} "${rest[@]}")
+      else
+        cur="$n"
+      fi
+    done
+    return 0
+  }
+  # $1 = a physical path. True when it is, or lies inside, a tree the search
+  # below lists in full: by spelling first (cheap, and the common case), then
+  # by identity. A history store directly under ~/.claude, and anything inside
+  # one, does not count as inside ~/.claude: the search never lists them, so a
+  # link that leads there is listed as a tree of its own (#810 gate).
+  _un_in_tree() {
+    local a="$1" b="" t rel
+    for t in "${_un_trees[@]}"; do
+      if [[ "$a" == "$t" ]]; then return 0; fi
+      [[ "$a" == "$t"/* ]] || continue
+      if [[ "$t" == "$_un_p_claude" ]]; then
+        rel="${a#"$t"/}"; rel="${(L)rel%%/*}"
+        if [[ "$rel" == (history.jsonl|projects|paste-cache) ]]; then continue; fi
+      fi
+      return 0
+    done
+    while :; do
+      for t in "${_un_trees[@]}"; do
+        [[ "$a" -ef "$t" ]] || continue
+        if [[ "$t" == "$_un_p_claude" && "${(L)b:t}" == (history.jsonl|projects|paste-cache) ]]; then continue; fi
+        return 0
+      done
+      if [[ "$a" == / ]]; then return 1; fi
+      b="$a"; a="${a:h}"
+    done
+  }
+  # $1 = a physical path. True when it is the home or a directory above it.
+  _un_holds_home() {
+    local a="$_un_p_home"
+    while :; do
+      if [[ "$a" -ef "$1" ]]; then return 0; fi
+      if [[ "$a" == / ]]; then return 1; fi
+      a="${a:h}"
+    done
+  }
+  for _un_x in "$HOME" "$HOME/.claude" "$HOME/.claude/plugins" "$HOME/.claude.json"; do
+    _un_walk "${PWD:P}" "$_un_x"
+  done
+  # Every tree is searched once for symlinks, and each one's target joins the
+  # trees. A tree that is the home or holds it is never searched — that would
+  # list every file in the home, or on the disk — so nothing bounds what native
+  # claude reads through it: when ~/.claude is one, or a link found in a tree
+  # leads to one (the plugin store linked to `..` included), the search stops
+  # and no operand reaches the rm below (#810 gate). _un_unbounded is that
+  # directory, _un_unbounded_via the path native claude reaches it by.
+  _un_unbounded=""; _un_unbounded_via=""
+  if _un_holds_home "$_un_p_claude"; then
+    _un_unbounded="$_un_p_claude"; _un_unbounded_via="$HOME/.claude"
+  fi
+  _un_i=1
+  while [[ -z "$_un_unbounded" ]] && (( _un_i <= ${#_un_trees} )); do
+    _un_t="${_un_trees[_un_i]}"; (( ++_un_i ))
+    _un_ls=()
+    for _un_e in "$_un_t"/*(DN); do
+      # The history stores are the rm's own operands: a store that is a link,
+      # and the links inside one, are judged by _un_hist_named, not here.
+      if [[ "$_un_t" == "$_un_p_claude" && "${_un_e:t}" == (history.jsonl|projects|paste-cache) ]]; then
+        continue
+      fi
+      if [[ -L "$_un_e" ]]; then
+        _un_ls+=("$_un_e")
+      elif [[ -d "$_un_e" ]]; then
+        _un_ls+=("$_un_e"/**/*(@DN))
+      fi
+    done
+    for _un_l in "${_un_ls[@]}"; do
+      # The glob never follows a link, so the link's directory is physical:
+      # the walk starts there, at the link itself.
+      _un_walk "${_un_l:h}" "${_un_l:t}"
+      _un_lt="${_un_l:P}"
+      [[ -e "$_un_lt" ]] || continue
+      if _un_holds_home "$_un_lt"; then
+        _un_unbounded="$_un_lt"; _un_unbounded_via="$_un_l"
+        break
+      fi
+      if _un_in_tree "$_un_lt"; then continue; fi
+      _un_trees+=("$_un_lt")
+    done
+  done
+  # Every recorded entry and every directory above one, once.
+  typeset -A _un_seen
+  _un_seen=()
+  for _un_x in "${(k)_un_dep[@]}"; do
+    while [[ "$_un_x" != / && -z "${_un_seen[$_un_x]-}" ]]; do
+      _un_seen[$_un_x]=1
+      _un_x="${_un_x:h}"
+    done
+  done
+  _un_anc=("${(k)_un_seen[@]}")
+  # $1 = an rm operand. REPLY = the physical path `rm -rf` on it deletes: the
+  # link entry alone for a symlink spelled without a trailing slash, else the
+  # tree the spelling resolves to (:P, never :A, whose lexical `..` can name
+  # another directory than the one rm reaches).
+  _un_rm_reach() {
+    local h
+    if [[ "$1" != */ && -L "$1" ]]; then
+      h="${1:h}"; h="${h:P}"
+      if [[ "$h" == / ]]; then REPLY="/${1:t}"; else REPLY="$h/${1:t}"; fi
+    else
+      REPLY="${1:P}"
+    fi
+    return 0
+  }
+  # $1, $2 = entries as _un_walk records them. True when they are one entry:
+  # the same spelling; the same name, in any case, in one directory (a
+  # case-folding volume reads them as one); or, when neither is a link, one
+  # file by identity (a firmlink or a bind mount).
+  _un_same() {
+    if [[ "$1" == "$2" ]]; then return 0; fi
+    if [[ "${(L)1:t}" == "${(L)2:t}" && "${1:h}" -ef "${2:h}" ]]; then return 0; fi
+    if [[ ! -L "$1" && ! -L "$2" && "$1" -ef "$2" ]]; then return 0; fi
+    return 1
+  }
+  # $1 = a path from _un_rm_reach. True when `rm -rf` on it deletes or unlinks
+  # an entry in _un_dep, a directory above one, or anything inside _un_trees
+  # but the three history stores directly under ~/.claude. Only ever called
+  # inside `if`.
+  _un_reaches_native() {
+    local r="$1" a e t
+    if [[ "$r" == / ]]; then return 0; fi
+    for a in "${_un_anc[@]}"; do
+      if _un_same "$a" "$r"; then return 0; fi
+    done
+    a="$r"
+    while [[ "$a" != / ]]; do
+      e="${a:h}"
+      for t in "${_un_trees[@]}"; do
+        [[ "$e" -ef "$t" ]] || continue
+        if [[ "$a" == "$r" && "$t" == "$_un_p_claude" && "${(L)a:t}" == (history.jsonl|projects|paste-cache) ]]; then
+          continue
+        fi
+        return 0
+      done
+      a="$e"
+    done
+    return 1
+  }
+  _un_rm_ok=()
+  for _un_o in "${_un_rm[@]}"; do
+    if [[ -n "$_un_unbounded" ]]; then
+      _un_links=(${_un_links:#"$_un_o is a symlink to "*})
+      _un_links+=("$_un_o is left off the rm: $_un_unbounded_via leads to $_un_unbounded, the home or a directory above it, and what native claude reads through it cannot be searched, so nothing is put on the rm; what ccmorph wrote there stays: remove it by hand.")
+      continue
+    fi
+    _un_rm_reach "$_un_o"
+    if _un_reaches_native "$REPLY"; then
+      # A line that said the rm removes this link no longer holds.
+      _un_links=(${_un_links:#"$_un_o is a symlink to "*})
+      _un_why="$REPLY"
+      if [[ "$_un_o" != */ && -L "$_un_o" ]]; then _un_why="$REPLY (a symlink to ${_un_o:P})"; fi
+      _un_links+=("$_un_o is left off the rm: rm -rf on it would delete $_un_why, which native claude reads: it is the home, ~/.claude or ~/.claude.json, holds one of them, lies inside ~/.claude or what a link in it leads to, or is a link or directory on the way to one of them; what ccmorph wrote there stays: remove it by hand.")
+    else
+      _un_rm_ok+=("$_un_o")
+    fi
+  done
+  _un_rm=("${_un_rm_ok[@]}")
   # The keychain items are read off the confs, never by scanning the keychain
   # (which prompts): a conf is the only thing that names them, so every conf
   # counted above is read — a redirect that came later must not hide the items
@@ -351,6 +734,13 @@ if [[ "${1:-}" == "--uninstall" ]]; then
   # target could not be asked has an unknown count: printing 0 as fact is how the
   # profiles were detached and named nowhere before (#219).
   _un_root_label="${#_un_profiles} profiles, their credentials and session history"
+  # Unless CCMORPH_STATE_DIR moved it, the state root IS the install directory:
+  # the runnable program copy sits beside the profiles. Its kept line says so,
+  # or a person told "only your data stays" either deletes the profiles with
+  # the code or keeps a runnable ccmorph they believe is gone (#810).
+  if (( ! _un_redirected )) && [[ -f "$CONFIG_DIR/lib/ccmorph.sh" ]]; then
+    _un_root_label="$_un_root_label, and ccmorph's own program files: bin, lib, libexec, share, install.sh"
+  fi
   (( ${_un_unread[(Ie)$_un_named]:-0} )) && _un_root_label="not read, so its profiles, credentials and session history are not counted"
   print -r -- "Kept, because they are yours:"
   print -r -- "  $_un_named  ($_un_root_label)"
@@ -360,10 +750,15 @@ if [[ "${1:-}" == "--uninstall" ]]; then
   _un_code="the installed code"
   (( ${#_un_prior} )) && _un_code="the installed code, and ${#_un_prior} profile(s), their credentials and session history, from before the state root was redirected"
   [[ -d "$CONFIG_DIR" ]] && (( _un_redirected )) && print -r -- "  $_un_code_dir  ($_un_code)"
+  (( ${#_un_hist} )) && print -r -- "  ${(j:, :)_un_hist}  (shared session history, shared with claude)"
   (( _un_has_state )) && print -r -- "  $_un_state_named  (usage receipts)"
   (( ${#_un_keychain} )) && print -r -- "  login keychain  (${#_un_keychain} ccmorph item(s))"
-  print -r -- "To remove those too:"
-  print -r -- "  rm -rf" "${(q-)_un_rm[@]}"
+  if (( ${#_un_rm} + ${#_un_keychain} )); then
+    print -r -- "To remove those too:"
+  fi
+  if (( ${#_un_rm} )); then
+    print -r -- "  rm -rf" "${(q-)_un_rm[@]}"
+  fi
   for _un_ref in "${_un_keychain[@]}"; do
     print -r -- "  security delete-generic-password -s ccmorph -a ${(q-)_un_ref}"
   done
