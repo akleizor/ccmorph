@@ -123,12 +123,13 @@ reference — with the commands that remove them. Where one of these is a
 symlink, the list says where it leads and whether the printed `rm -rf`
 removes that target or only the link. A session-history link is followed
 only to a file or directory of its own name outside `~/.claude`; any other
-target is named and left alone. An entry whose removal would reach the home,
-`~/.claude` or its plugins (a state root set to one of them, inside
-`~/.claude`, or a link native `claude` is reached through) stays on the list
-but off the command, with a line that says so:
-the command never reaches native `claude`'s settings or plugins. It first
-repairs the plugin
+target is named and left alone. An entry whose removal would reach what
+native `claude` reads stays on the list but off the command, with a line that
+says so: the home, `~/.claude`, `~/.claude.json`, anything inside `~/.claude`
+but the session history, what a symlink there leads to (link after link; for
+a link to the home or above it, only the way there), or any link or directory
+on the way to one of them. The command never reaches native `claude`'s
+settings or plugins. It first repairs the plugin
 index paths a profile session left in `~/.claude/plugins`, so a plugin installed
 from a profile keeps loading in native `claude` after the state root is gone.
 
