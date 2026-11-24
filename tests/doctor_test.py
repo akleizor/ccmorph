@@ -521,6 +521,26 @@ def _until_a_model(profile):
         + profile + " model <model-id>")
 
 
+def _session_unchecked(profile):
+    """The row for a session read that lost runningAdapter's one-second bound
+    (sessionReadBound, util/misc.go): the check named, never dropped (#518)."""
+    return ("SKIP adapter: could not tell whether a translator is running "
+            "(running programs could not be listed within 1 second); "
+            "check again: ccmorph doctor " + profile)
+
+
+def assert_adapter_lines(stdout, *answers):
+    """The default report's adapter rows are exactly one of answers: each a list
+    whose items are compared whole (str) or must fullmatch (re.Pattern). A
+    missing row or a third answer fails (#518)."""
+    got = [l for l in stdout.splitlines() if "adapter:" in l]
+    def same(want):
+        return len(got) == len(want) and all(
+            w.fullmatch(g) if isinstance(w, re.Pattern) else g == w
+            for g, w in zip(got, want))
+    assert any(same(a) for a in answers), stdout
+
+
 @pytest.mark.parametrize("slow", ["", "ps", "lsof"],
                          ids=["prompt", "ps-over-deadline-issue-467",
                               "lsof-over-deadline-issue-467"])
@@ -541,23 +561,23 @@ printf '%s\n' '__CCMORPH_STATUS__200'
     try:
         result, _, bindir = run_doctor(tmp_path, conf, curl, profile=profile)
         assert result.returncode == 0, result.stderr
-        # One adapter line by default, in every case (also when the table read
-        # blew its bound): whether this profile needs a translator now, never
-        # a pid or a process-inspection detail a first-time reader cannot act
-        # on. Nothing is classified and no model is set, so the answer is what
-        # the open session shows; with no session readable, that none starts
-        # until a model is chosen. A running adapter alone is not a
-        # translator: only a cliproxyapi child is.
-        adapters = [l for l in result.stdout.splitlines() if "adapter:" in l]
-        assert len(adapters) == 1, result.stdout
+        # The default report's adapter rows, never a pid or a
+        # process-inspection detail a first-time reader cannot act on. Nothing
+        # is classified and no model is set, so the answer is what the open
+        # session shows; a table read that loses its one-second bound
+        # (sessionReadBound, util/misc.go) gives the no-session row plus the
+        # row naming the check, never a silent absence (#518). A running
+        # adapter alone is not a translator: only a cliproxyapi child is.
+        unread = [_until_a_model(profile), _session_unchecked(profile)]
         if slow == "ps" and sys.platform != "darwin":
-            # Off darwin the table's read is a ps, so this run can lose it to
-            # the bound; darwin's sysctl answers first, so the session shows.
-            assert _until_a_model(profile).fullmatch(adapters[0]), result.stdout
+            # Off darwin the table's read is a ps, so this run loses it to the
+            # bound: the named not-checked row is the whole answer, and the
+            # live-session row must not appear.
+            assert_adapter_lines(result.stdout, unread)
         elif shape == "native-route":
-            assert adapters == [NO_TRANSLATOR_NOW], result.stdout
+            assert_adapter_lines(result.stdout, [NO_TRANSLATOR_NOW], unread)
         else:
-            assert adapters == [TRANSLATOR_NOW], result.stdout
+            assert_adapter_lines(result.stdout, [TRANSLATOR_NOW], unread)
         # Read-only: the profile's own hook never ran, so nothing was started.
         assert not (bindir / "doctor.marker").exists()
         verbose, _, _ = run_doctor(tmp_path, conf, curl, args=("--verbose",),
@@ -588,8 +608,11 @@ def test_doctor_adapter_line_names_a_running_translator_issue_272(tmp_path, shap
         stub.chmod(0o755)
         result, _, _ = run_doctor(tmp_path, conf, OK_CURL, profile=profile)
         assert result.returncode == 0, result.stdout + result.stderr
-        adapters = [l for l in result.stdout.splitlines() if "adapter:" in l]
-        assert adapters == ["OK adapter: this endpoint needs a translator; cliproxyapi is installed" + suffix], result.stdout
+        base = "OK adapter: this endpoint needs a translator; cliproxyapi is installed"
+        # The suffix is read from the live session through the process table,
+        # bounded at one second (sessionReadBound, util/misc.go): a read past
+        # it takes the suffix with it and names the check instead (#518).
+        assert_adapter_lines(result.stdout, [base + suffix], [base, _session_unchecked(profile)])
     finally:
         stop()
 
@@ -684,7 +707,12 @@ def test_doctor_lines_stay_plain_words_issue_272(tmp_path):
             assert banned not in result.stdout, (banned, result.stdout)
         assert "profile settings: valid JSON (" in result.stdout, result.stdout
         if sys.platform != "darwin":
+            # The table's read is a ps this run loses to its one-second bound
+            # (sessionReadBound, util/misc.go): doctor names the check once,
+            # in the default report, and --verbose adds nothing (#518).
             assert "SKIP adapter: could not tell whether a translator is running" in result.stdout
+            assert result.stdout.count("could not tell whether a translator is running") == 1, result.stdout
+            assert _session_unchecked(session) in result.stdout.splitlines(), result.stdout
         else:
             assert_adapter_report(result.stdout, decoy, listeners)
         # A broken settings file is told how to be dealt with, not just that it is broken.
@@ -750,12 +778,11 @@ def test_doctor_adapter_line_states_the_need_issue_272(tmp_path, cache_rows, stu
         s.chmod(0o755)
     result, _, _ = run_doctor(tmp_path, conf, OK_CURL)
     assert result.returncode == 0, result.stdout + result.stderr
-    adapters = [l for l in result.stdout.splitlines() if "adapter:" in l]
-    assert len(adapters) == 1, result.stdout
-    if cache_rows is None:
-        assert _until_a_model("demo").fullmatch(adapters[0]), result.stdout
-    else:
-        assert adapters == [expected], result.stdout
+    # No session runs on this profile, so the healthy answer is one row; a
+    # read that loses its one-second bound (sessionReadBound, util/misc.go)
+    # adds the row naming the check and must not remove the answer (#518).
+    want = [_until_a_model("demo")] if cache_rows is None else [expected]
+    assert_adapter_lines(result.stdout, want, want + [_session_unchecked("demo")])
 
 
 @pytest.mark.parametrize("path,stub,expected", [
@@ -778,8 +805,9 @@ def test_doctor_adapter_line_reads_declared_protocols_issue_272(tmp_path, path, 
     result, _, _ = run_doctor(
         tmp_path, "type=apikey\nbase_url=https://example.test\napi_key=k\n", curl)
     assert result.returncode == 0, result.stdout + result.stderr
-    adapters = [l for l in result.stdout.splitlines() if "adapter:" in l]
-    assert adapters == [expected], result.stdout
+    # The one-second read (sessionReadBound, util/misc.go) can lose its bound
+    # under load; the declaration's answer stays and the check is named (#518).
+    assert_adapter_lines(result.stdout, [expected], [expected, _session_unchecked("demo")])
 
 
 @pytest.mark.parametrize("with_session,expected", [
@@ -800,12 +828,14 @@ def test_doctor_omits_the_adapter_line_for_an_unclassified_saved_model_issue_272
     try:
         result, _, _ = run_doctor(tmp_path, conf, GW_LISTING, profile=session)
         assert result.returncode == 0, result.stdout + result.stderr
-        adapters = [l for l in result.stdout.splitlines() if "adapter:" in l]
         if expected is None:
-            assert adapters == [], result.stdout
+            # A saved model nothing classified gets no line while the session
+            # read answers; a read past its one-second bound (sessionReadBound,
+            # util/misc.go) is named, never silently dropped (#518).
+            assert_adapter_lines(result.stdout, [], [_session_unchecked(session)])
             assert f"ready: start it with ccmorph run {session}" in result.stdout, result.stdout
         else:
-            assert adapters == [expected], result.stdout
+            assert_adapter_lines(result.stdout, [expected], [_session_unchecked(session)])
     finally:
         if stop is not None:
             stop()
@@ -1244,10 +1274,17 @@ def test_doctor_healthy_profile_has_no_skip_lines(tmp_path, case):
     result, _, _ = run_doctor(tmp_path, conf, curl)
     assert result.returncode == 0, result.stdout
     assert "generated state" not in result.stdout
-    assert len([l for l in result.stdout.splitlines() if "adapter:" in l]) <= 1
+    if case == "gateway":
+        # No session and nothing classified: the one healthy adapter row is
+        # the until-a-model answer; a read that loses its bound names the
+        # check beside it, and is the only SKIP this test allows (#518).
+        want = [_until_a_model("demo")]
+        assert_adapter_lines(result.stdout, want, want + [_session_unchecked("demo")])
+    else:
+        assert len([l for l in result.stdout.splitlines() if "adapter:" in l]) <= 1
     for line in result.stdout.splitlines():
         assert line.split(" ", 1)[0] in {"OK", "FAIL", "WARN", "INFO", "SKIP"}, repr(line)
-        assert not line.startswith("SKIP"), result.stdout
+        assert not line.startswith("SKIP") or line == _session_unchecked("demo"), result.stdout
 
 
 @needs_loopback  # the provider stub binds a port: #611
@@ -1494,6 +1531,9 @@ def zsh_fpath_fails_compaudit(shell):
     return probe.returncode != 0
 
 
+COMPLETION_UNCHECKED = "INFO completion: not checked (a new zsh did not answer within 5 seconds)"
+
+
 def test_doctor_completion_row_lasts_until_a_new_zsh_completes(tmp_path):
     # Issue #363: the row used to vanish once the .zshrc carried the fpath
     # line, though zsh runs no completion system by itself — Tab completed
@@ -1532,7 +1572,42 @@ def test_doctor_completion_row_lasts_until_a_new_zsh_completes(tmp_path):
     result, _, _ = run_doctor(tmp_path, conf, claude=False,
                               env_extra={"SHELL": shell, "ZDOTDIR": str(home),
                                          "CCMORPH_LIB_DIR": str(install / "lib")})
-    assert "INFO completion:" not in result.stdout
+    # A new zsh is asked through completionBound, bounded at five seconds
+    # (completionProbeDeadline, cli/doctor.go); a cold compinit on a loaded
+    # machine can lose it. Doctor then names the check it could not make,
+    # never a line to move that is already right (#518). Only these two.
+    hints = [l for l in result.stdout.splitlines()
+             if "completion:" in l or "fpath=(" in l or "compinit" in l]
+    assert hints in ([], [COMPLETION_UNCHECKED]), result.stdout
+
+
+def test_doctor_names_a_completion_check_a_new_zsh_did_not_answer_issue_518(tmp_path):
+    # Both halves are in the .zshrc, and the new zsh doctor starts cannot
+    # answer inside completionProbeDeadline (five seconds, cli/doctor.go): its
+    # .zshrc sleeps past it. The row names the check it could not make — not a
+    # line to move, which nothing here justifies, and not silence, which reads
+    # as working completion (#518).
+    conf = "type=apikey\napi_key=k\n"
+    home = tmp_path / "home"
+    home.mkdir()
+    install = tmp_path / "install"
+    install.mkdir(mode=0o755)
+    (install / "lib").symlink_to(ROOT / "lib")
+    (install / "libexec").symlink_to(ROOT / "libexec")
+    site = install / "share/zsh/site-functions"
+    shutil.copytree(ROOT / "share/zsh/site-functions", site)
+    shell = shutil.which("zsh") or "/bin/zsh"
+    (home / ".zshrc").write_text(
+        f"fpath=({site} $fpath)\nautoload -Uz compinit && compinit\nsleep 30\n")
+    started = time.monotonic()
+    result, _, _ = run_doctor(tmp_path, conf, claude=False,
+                              env_extra={"SHELL": shell, "ZDOTDIR": str(home),
+                                         "CCMORPH_LIB_DIR": str(install / "lib")})
+    hints = [l for l in result.stdout.splitlines()
+             if "completion:" in l or "fpath=(" in l or "compinit" in l]
+    assert hints == [COMPLETION_UNCHECKED], result.stdout
+    # The five-second bound ended the probe, not the sleep.
+    assert time.monotonic() - started < 30, result.stdout
 
 
 @pytest.mark.parametrize("case", ["bridge-missing", "auth-missing", "ready"])
