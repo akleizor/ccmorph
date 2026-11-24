@@ -65,11 +65,14 @@ var (
 const MaxNameLen = 200
 
 // LegacyMaxNameLen is the longest name the rule before #373 could have stored:
-// that rule had no length bound, and the longest file a profile makes is
-// ".<name>.bridge.users" (+14), so 241 bytes is the last one inside NAME_MAX's
-// 255. RemovableName accepts this range so rm can remove a profile made before
-// the limit (#449); every other verb still requires ValidName.
-const LegacyMaxNameLen = 241
+// that rule had no length bound, and every profile makes "<name>.conf" and
+// ".locks/<name>.lock" (+5), so 250 bytes is the last one inside NAME_MAX's
+// 255. The bridge files (".<name>.bridge.users", +14) reach only 241, but they
+// bound just the files a bridge-bearing provider makes: a name between the two
+// has no bridge file to remove. RemovableName accepts this range so rm can
+// remove a profile made before the limit (#449); every other verb still
+// requires ValidName.
+const LegacyMaxNameLen = 250
 
 // nameShape is the part of a name that never depended on its length.
 func nameShape(s string) bool {
@@ -89,8 +92,8 @@ func ValidProfileName(s string) bool {
 func ValidName(s string) bool { return ValidProfileName(s) }
 
 // RemovableName reports whether name is one rm can still address: a name
-// ValidName accepts, or one the pre-#373 rule accepted whose longest derived
-// file still fits NAME_MAX. Only removal takes the wider range (#449).
+// ValidName accepts, or one the pre-#373 rule accepted whose conf and lock
+// still fit NAME_MAX. Only removal takes the wider range (#449).
 func RemovableName(s string) bool {
 	return len(s) <= LegacyMaxNameLen && nameShape(s)
 }
@@ -98,13 +101,21 @@ func RemovableName(s string) bool {
 // BadNameMsg is the one refusal every command gives a word that can never be a
 // profile name (#373): one line, the reason, and the name shown short and
 // printable.
-func BadNameMsg(name string) string {
+func BadNameMsg(name string) string { return badNameMsg(name, MaxNameLen) }
+
+// RemovableBadNameMsg is BadNameMsg in rm's voice: rm accepts the legacy range
+// (#449), so the length reason names the bound rm applies, not the MaxNameLen
+// every other verb enforces (#551).
+func RemovableBadNameMsg(name string) string { return badNameMsg(name, LegacyMaxNameLen) }
+
+// badNameMsg builds the refusal for a word under one length bound.
+func badNameMsg(name string, max int) string {
 	head := "invalid profile name '" + shownName(name) + "': "
 	switch {
 	case !nameRE.MatchString(name):
 		return head + "a name may hold only A-Z, a-z, 0-9 and _ (no hyphen, dot, slash or space)"
-	case len(name) > MaxNameLen:
-		return head + "too long; at most " + strconv.Itoa(MaxNameLen) + " of A-Z, a-z, 0-9 and _"
+	case len(name) > max:
+		return head + "too long; at most " + strconv.Itoa(max) + " of A-Z, a-z, 0-9 and _"
 	}
 	return head + "that word is reserved; choose another"
 }

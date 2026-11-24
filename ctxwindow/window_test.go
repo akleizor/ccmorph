@@ -806,15 +806,29 @@ func oneLockFile(t *testing.T, state, a, b string) {
 	}
 }
 
+// lockChild is a command the lock tests run under --locked, named by its own
+// absolute path. A host carrying another `true` (one that exits 7) must not
+// answer for the test: the lock only needs a child that exits, so the test
+// writes that child itself instead of resolving one on PATH (#414).
+func lockChild(t *testing.T) string {
+	t.Helper()
+	exe := filepath.Join(t.TempDir(), "lock-child")
+	if err := os.WriteFile(exe, []byte("#!/bin/sh\nexit 0\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	return exe
+}
+
 // GH-259: mv tok Tok named both profiles, and on a volume that ignores letter
 // case both names reached one lock file. --locked flocked it twice and waited
 // on itself forever.
 func TestLockedNamesSharingOneLockFileTakeItOnce(t *testing.T) {
 	e := setup(t)
 	oneLockFile(t, e.state, "work2", "Work2")
+	child := lockChild(t)
 	done := make(chan int, 1)
 	go func() {
-		code, err := windowRun([]string{"--locked", "work2,Work2", "true"}, io.Discard, io.Discard)
+		code, err := windowRun([]string{"--locked", "work2,Work2", child}, io.Discard, io.Discard)
 		if err != nil {
 			t.Error(err)
 		}
@@ -854,5 +868,29 @@ func TestProfileLockPassesThroughALockHeldUnderAnotherSpelling(t *testing.T) {
 	}
 	if !ok || !ran {
 		t.Fatalf("writer did not pass through a lock held under another spelling (ran=%v ok=%v)", ran, ok)
+	}
+}
+
+// GH-551: rm is the one verb that takes the pre-#373 range (#449), and its flow
+// re-execs under `model-window --locked <name>`. That key was validated at
+// ValidName, so the normal command refused a legacy name before removal could
+// run and every test that set CCMORPH_CONTEXT_LOCKED missed it. The lock takes
+// every name removal can address, and still refuses one past the storable bound.
+func TestLockedTakesTheLegacyNamesRemovalAddresses(t *testing.T) {
+	e := setup(t)
+	child := lockChild(t)
+	for _, length := range []int{profile.MaxNameLen + 1, 240, 241, 245, profile.LegacyMaxNameLen} {
+		name := strings.Repeat("n", length)
+		code, err := windowRun([]string{"--locked", name, child}, io.Discard, io.Discard)
+		if err != nil || code != 0 {
+			t.Fatalf("locked %d-byte name: exit %d, err %v", length, code, err)
+		}
+		if _, err := os.Stat(filepath.Join(e.state, ".locks", name+".lock")); err != nil {
+			t.Fatalf("the %d-byte name's lock was not taken: %v", length, err)
+		}
+	}
+	name := strings.Repeat("n", profile.LegacyMaxNameLen+1)
+	if code, err := windowRun([]string{"--locked", name, child}, io.Discard, io.Discard); err == nil || code != 0 {
+		t.Fatalf("a name past the storable bound must still be refused (exit %d, err %v)", code, err)
 	}
 }

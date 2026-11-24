@@ -68,10 +68,27 @@ func ProfilePath(profile string) (string, error) {
 	if !ValidProfileName(profile) {
 		return "", errors.New("invalid profile name")
 	}
-	if v := os.Getenv("MODEL_WINDOW_PROFILE_CONF"); v != "" {
-		return filepath.Clean(v), nil
+	return profilePath(profile), nil
+}
+
+// lockProfilePath is ProfilePath for the key `model-window --locked` names. rm
+// is the one verb that takes the pre-#373 range (#449), and its flow re-execs
+// under that lock, so the lock must take the name removal can address; a name
+// past the storable bound is still refused. Every other command keeps
+// ValidProfileName (#551).
+func lockProfilePath(name string) (string, error) {
+	if !profile.RemovableName(name) {
+		return "", errors.New("invalid profile name")
 	}
-	return filepath.Join(StateDir(), profile+".conf"), nil
+	return profilePath(name), nil
+}
+
+// profilePath is the conf path both name gates share.
+func profilePath(name string) string {
+	if v := os.Getenv("MODEL_WINDOW_PROFILE_CONF"); v != "" {
+		return filepath.Clean(v)
+	}
+	return filepath.Join(StateDir(), name+".conf")
 }
 
 // ReadConf returns the conf text and its key=value fields.
