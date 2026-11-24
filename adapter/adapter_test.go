@@ -20,11 +20,13 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/akleizor/ccmorph/ctxwindow"
 	"github.com/akleizor/ccmorph/ordjson"
+	"github.com/akleizor/ccmorph/shim"
 	"github.com/akleizor/ccmorph/util"
 	"github.com/akleizor/ccmorph/util/paths"
 )
@@ -724,7 +726,7 @@ func TestSelectedModelMapIsClassifiedAndForwarded(t *testing.T) { // test_select
 		var required string
 		swap(t, &classifyFn, func(_, _, _, req string, _ bool) ([]Row, error) { required = req; return []Row{row("anthropic")}, nil })
 		var gotMap map[string]any
-		swap(t, &frontDirectlyFn, func(_ *cliArgs, _, _, _ string, _ []Row, _ map[string]string, _ []string, m map[string]any) int {
+		swap(t, &frontDirectlyFn, func(_ *cliArgs, _, _, _ string, _ []Row, _ map[string]string, _ bool, m map[string]any) int {
 			gotMap = m
 			return 0
 		})
@@ -861,7 +863,7 @@ func TestCachedNativeMainNeedsNoTranslator(t *testing.T) { // test_cached_native
 	swap(t, &dialectAutoFn, func(_, _, _ string) (string, string, int) { panic("probe") })
 	swap(t, &freePortFn, func() (int, error) { panic("translator state") })
 	upstream := ""
-	swap(t, &frontDirectlyFn, func(_ *cliArgs, up, _, _ string, _ []Row, _ map[string]string, _ []string, _ map[string]any) int {
+	swap(t, &frontDirectlyFn, func(_ *cliArgs, up, _, _ string, _ []Row, _ map[string]string, _ bool, _ map[string]any) int {
 		upstream = up
 		return 0
 	})
@@ -882,7 +884,7 @@ func TestAModelMustBeNamedWhenTheGatewayOffersNoList(t *testing.T) { // issue #3
 		return nil, nil, refusingStatus{404}
 	})
 	swap(t, &dialectAutoFn, func(_, _, _ string) (string, string, int) { panic("no probe can name a model") })
-	swap(t, &frontDirectlyFn, func(_ *cliArgs, _, _, _ string, _ []Row, _ map[string]string, _ []string, _ map[string]any) int {
+	swap(t, &frontDirectlyFn, func(_ *cliArgs, _, _, _ string, _ []Row, _ map[string]string, _ bool, _ map[string]any) int {
 		panic("nothing is served")
 	})
 	stdio := captureStdio(t)
@@ -934,7 +936,7 @@ func TestARefusedListingNamesItsTrueCause(t *testing.T) { // issues #357, #374
 			swap(t, &profileDirs, dir)
 			stubProfile(t, map[string]string{"ANTHROPIC_API_KEY": "k", "ANTHROPIC_BASE_URL": "https://gateway"})
 			inferences := tc.setup(t)
-			swap(t, &frontDirectlyFn, func(_ *cliArgs, _, _, _ string, _ []Row, _ map[string]string, _ []string, _ map[string]any) int {
+			swap(t, &frontDirectlyFn, func(_ *cliArgs, _, _, _ string, _ []Row, _ map[string]string, _ bool, _ map[string]any) int {
 				panic("nothing is served")
 			})
 			stdio := captureStdio(t)
@@ -977,7 +979,7 @@ func TestAWarmCacheIsNotAModelChoice(t *testing.T) { // issue #357
 		return nil, nil, refusingStatus{404}
 	})
 	served := false
-	swap(t, &frontDirectlyFn, func(_ *cliArgs, _, _, _ string, _ []Row, _ map[string]string, _ []string, _ map[string]any) int {
+	swap(t, &frontDirectlyFn, func(_ *cliArgs, _, _, _ string, _ []Row, _ map[string]string, _ bool, _ map[string]any) int {
 		served = true
 		return 0
 	})
@@ -1031,7 +1033,7 @@ func refuseMessages(t *testing.T, status int, body string) *refusingTransport {
 	t.Helper()
 	gw := &refusingTransport{status: status, body: body}
 	swap(t, &probeClient, func() *http.Client { return &http.Client{Transport: gw} })
-	swap(t, &frontDirectlyFn, func(_ *cliArgs, _, _, _ string, _ []Row, _ map[string]string, _ []string, _ map[string]any) int {
+	swap(t, &frontDirectlyFn, func(_ *cliArgs, _, _, _ string, _ []Row, _ map[string]string, _ bool, _ map[string]any) int {
 		panic("a refused message must not front a session")
 	})
 	return gw
@@ -1208,27 +1210,38 @@ func TestAnUnimplementedPathIsNotARefusalOfEveryDialect(t *testing.T) { // issue
 
 func TestOnlyTheDirectRouteRetriesInTheShim(t *testing.T) { // test_only_the_direct_route_retries_in_the_shim
 	// The in-process shim takes the same Options; the spawned hooks build shows the argv.
-	cmd := spawnedDirect(t, map[string]string{"CCMORPH_SHIM_HOOKS": "/stable/hooks.py"})
+	cmd := spawnedDirect(t, map[string]string{"CCMORPH_SHIM_HOOKS": "/stable/hooks.py"}, false)
 	if !slices.Contains(cmd.Args, "--retry-transport") {
 		t.Fatalf("argv %v", cmd.Args)
 	}
 }
 
 func TestDirectRouteHandsProfileKeysToTheShimEnv(t *testing.T) { // test_the_direct_route_hands_profile_keys_to_the_shim_env
-	cmd := spawnedDirect(t, map[string]string{"CCMORPH_SHIM_HOOKS": "/stable/hooks.py", "CCMORPH_USER_AGENT": "ua/{version}"})
-	env := strings.Join(cmd.Env, "\n")
-	for _, want := range []string{"CCMORPH_SHIM_HOOKS=/stable/hooks.py", "CCMORPH_USER_AGENT=ua/{version}"} {
-		if !strings.Contains(env, want) {
-			t.Errorf("shim env lacks %s", want)
+	extras := map[string]string{"CCMORPH_SHIM_HOOKS": "/stable/hooks.py", "CCMORPH_USER_AGENT": "ua/{version}"}
+	// The identifier opt-in is a plain bool on the direct route (#480): on,
+	// the shim re-identifies the device; off, it forwards the client's
+	// metadata as sent. Every assertion runs for both values: a regression
+	// that dropped the extras or the hooks binary only while the opt-in is
+	// off must fail here too, not just for the last invocation.
+	for _, randomDeviceID := range []bool{false, true} {
+		cmd := spawnedDirect(t, extras, randomDeviceID)
+		if slices.Contains(cmd.Args, "--random-device-id") != randomDeviceID {
+			t.Errorf("opt-in %v: --random-device-id in argv = %v", randomDeviceID, !randomDeviceID)
 		}
-	}
-	for _, flag := range []string{"--repair-tool-references", "--affinity-header"} {
-		if slices.Contains(cmd.Args, flag) {
-			t.Errorf("new shim flag %s", flag)
+		env := strings.Join(cmd.Env, "\n")
+		for _, want := range []string{"CCMORPH_SHIM_HOOKS=/stable/hooks.py", "CCMORPH_USER_AGENT=ua/{version}"} {
+			if !strings.Contains(env, want) {
+				t.Errorf("opt-in %v: shim env lacks %s", randomDeviceID, want)
+			}
 		}
-	}
-	if cmd.Path != "/stable/hooks.py" {
-		t.Errorf("ran %s, not the profile's hooks build", cmd.Path)
+		for _, flag := range []string{"--repair-tool-references", "--affinity-header"} {
+			if slices.Contains(cmd.Args, flag) {
+				t.Errorf("opt-in %v: new shim flag %s", randomDeviceID, flag)
+			}
+		}
+		if cmd.Path != "/stable/hooks.py" {
+			t.Errorf("opt-in %v: ran %s, not the profile's hooks build", randomDeviceID, cmd.Path)
+		}
 	}
 }
 
@@ -1253,7 +1266,7 @@ func TestDirectRouteReadinessNeedsNoModelList(t *testing.T) { // issue #357
 	stdio := captureStdio(t)
 	code, did := exits(t, func() {
 		frontDirectly(&cliArgs{profile: "demo", reserved: -1}, "https://gateway", "k", "id",
-			[]Row{row("anthropic")}, map[string]string{"CCMORPH_SHIM_HOOKS": "/stable/hooks.py"}, nil, nil)
+			[]Row{row("anthropic")}, map[string]string{"CCMORPH_SHIM_HOOKS": "/stable/hooks.py"}, false, nil)
 	})
 	if !did || code != 1 { // the fake shim's exit must be what stops the loop
 		t.Fatalf("frontDirectly = (%d, exited=%v); the fake shim's exit must end it", code, did)
@@ -1267,18 +1280,173 @@ func TestDirectRouteReadinessNeedsNoModelList(t *testing.T) { // issue #357
 }
 
 // spawnedDirect records the command frontDirectly would run, then abandons it.
-func spawnedDirect(t *testing.T, extras map[string]string) *exec.Cmd {
+func spawnedDirect(t *testing.T, extras map[string]string, randomDeviceID bool) *exec.Cmd {
 	t.Helper()
 	var got *exec.Cmd
 	swap(t, &spawnShim, func(c *exec.Cmd) (*proc, error) { got = c; return nil, fmt.Errorf("abandoned") })
 	swap(t, &freePortFn, func() (int, error) { return 45999, nil })
 	exits(t, func() {
-		frontDirectly(&cliArgs{profile: "demo", reserved: -1}, "https://gateway", "k", "id", []Row{row("anthropic")}, extras, nil, nil)
+		frontDirectly(&cliArgs{profile: "demo", reserved: -1}, "https://gateway", "k", "id", []Row{row("anthropic")}, extras, randomDeviceID, nil)
 	})
 	if got == nil {
 		t.Fatal("the shim was never spawned")
 	}
 	return got
+}
+
+// --- #480: the shim launch ritual, spelled once for both paths -------------------
+
+// The ritual frontDirectly and serve duplicated block for block is one
+// definition each now (#480); pinned at the helpers' own seams so the two
+// paths cannot drift apart again.
+func TestShimEnvAssemblesRouteQuirksAndInbound(t *testing.T) {
+	route := map[string]any{"profile": "demo", "models": []string{"m"}}
+	env := shimEnv(route, map[string]string{"CCMORPH_USER_AGENT": "ua/{version}"},
+		&cliArgs{token: "tok"}, "k")
+	if got := env["CCMORPH_MODEL_ROUTE"]; !strings.Contains(got, `"profile":"demo"`) || !strings.Contains(got, `"models":["m"]`) {
+		t.Errorf("the route did not reach the env as JSON: %s", got)
+	}
+	if env["CCMORPH_USER_AGENT"] != "ua/{version}" {
+		t.Error("the profile's quirks were not folded over the route")
+	}
+	if inbound := env["CCMORPH_INBOUND"]; !strings.Contains(inbound, hashHex("tok")) || !strings.Contains(inbound, `"key":"k"`) {
+		t.Errorf("a minted token must swap in the endpoint key: %s", inbound)
+	}
+	if _, ok := shimEnv(route, nil, &cliArgs{}, "k")["CCMORPH_INBOUND"]; ok {
+		t.Error("no token minted, yet CCMORPH_INBOUND appeared")
+	}
+}
+
+func TestWaitReadyEndsOnTheProbeTheChildOrTheDeadline(t *testing.T) {
+	// An answer on the first probe ends the wait: no failure, no shutdown.
+	probes := 0
+	waitReady(&cliArgs{}, func(int) { t.Error("an answered endpoint must not shut the launch down") },
+		&proc{}, func() bool { probes++; return true },
+		func(bool) { t.Error("an answered endpoint is not a failure") })
+	if probes != 1 {
+		t.Fatalf("the probe ran %d time(s); the first answer must end the wait", probes)
+	}
+
+	// A dead child is reported as such and ends the launch non-zero, before
+	// the probe can vouch for a listener that may not be our own.
+	dead := make(chan struct{})
+	close(dead)
+	var reported = true
+	code, did := exits(t, func() {
+		waitReady(&cliArgs{}, exit, &proc{done: dead},
+			func() bool { t.Error("the probe ran after the child had exited"); return true },
+			func(exited bool) { reported = exited })
+	})
+	if !did || code != 1 || !reported {
+		t.Fatalf("a dead child must be reported and exit 1: exit %d, exited %v, reported %v", code, did, reported)
+	}
+
+	// A deadline that passes without an answer is a failure too: never a
+	// launch that pretends to be healthy.
+	swap(t, &readyTimeout, time.Duration(0)) // the deadline is born passed; no clock is waited on
+	reported = true
+	code, did = exits(t, func() {
+		waitReady(&cliArgs{}, exit, &proc{},
+			func() bool { return false },
+			func(exited bool) { reported = exited })
+	})
+	if !did || code != 1 || reported {
+		t.Fatalf("a passed deadline must be reported as a timeout and exit 1: exit %d, exited %v, reported %v", code, did, reported)
+	}
+}
+
+func TestPrintContractPrintsOnlyAMintedTokenThenThePort(t *testing.T) {
+	minted := "tok"
+	for _, tc := range []struct {
+		name string
+		a    *cliArgs
+		want string
+	}{
+		{"a minted token", &cliArgs{inboundToken: true, token: minted}, "TOKEN=" + minted + "\nPORT=45999\n"},
+		{"a file token", &cliArgs{token: minted}, "PORT=45999\n"},
+		{"no token", &cliArgs{}, "PORT=45999\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			stdio := captureStdio(t)
+			printContract(tc.a, 45999)
+			if got := stdio(); got != tc.want {
+				t.Fatalf("contract = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+// One function owns the ritual's order (#480): arm the shutdown, run the
+// route's earlier wait, start the shim with the env this route builds, wait
+// for it, print the contract, then supervise it. The two paths pass different
+// shimLaunch values and nothing else; this pin runs one and reads the order,
+// the env that reached the process, and the contract that followed readiness.
+func TestLaunchShimOwnsTheOrderAndTheEnv(t *testing.T) {
+	var steps []string
+	port := 45999
+	a := &cliArgs{profile: "demo", reserved: -1, port: &port, token: "tok", inboundToken: true}
+	done := make(chan struct{})
+	shimProc := &proc{done: done}
+	var spawned *exec.Cmd
+	swap(t, &spawnShim, func(c *exec.Cmd) (*proc, error) {
+		steps = append(steps, "start")
+		spawned = c
+		return shimProc, nil
+	})
+	stdio := captureStdio(t)
+	var shimSlot atomic.Pointer[proc]
+	code, did := exits(t, func() {
+		launchShim(a, shimLaunch{
+			bin:    "/stable/hooks.py",
+			opts:   shim.Options{Port: port},
+			route:  map[string]any{"profile": "demo"},
+			extras: map[string]string{"CCMORPH_USER_AGENT": "ua"},
+			routeEnv: map[string]string{
+				"CCMORPH_TRANSLATOR_CHAT_MODELS_FILE": "/conf.chat-models"},
+			key: "k",
+			shutdown: func(status int) {
+				steps = append(steps, "shutdown")
+				exit(status)
+			},
+			shim:   &shimSlot,
+			before: func() { steps = append(steps, "before") },
+			probe: func() bool {
+				steps = append(steps, "probe")
+				close(done) // a shim that dies the moment it is pronounced ready
+				return true
+			},
+			fail:       func(*proc, bool) { t.Error("an answered endpoint is not a failure") },
+			interposed: "shim interposed (test)",
+			serving:    "serving test",
+		})
+	})
+	if !did || code != 1 {
+		t.Fatalf("launchShim = (%d, exited=%v); a dead shim must end the launch non-zero", code, did)
+	}
+	if want := []string{"before", "start", "probe", "shutdown"}; !slices.Equal(steps, want) {
+		t.Fatalf("ritual order = %v, want %v", steps, want)
+	}
+	if spawned == nil {
+		t.Fatal("the shim was never spawned")
+	}
+	env := strings.Join(spawned.Env, "\n")
+	for _, want := range []string{
+		`CCMORPH_MODEL_ROUTE={"profile":"demo"}`,
+		"CCMORPH_USER_AGENT=ua",
+		"CCMORPH_TRANSLATOR_CHAT_MODELS_FILE=/conf.chat-models",
+		"CCMORPH_INBOUND=",
+	} {
+		if !strings.Contains(env, want) {
+			t.Errorf("the shim env lacks %q", want)
+		}
+	}
+	if shimSlot.Load() != shimProc {
+		t.Error("the started shim was not handed to the caller's shutdown")
+	}
+	wantContract := "TOKEN=" + a.token + "\nPORT=" + strconv.Itoa(port) + "\n"
+	if out := stdio(); !strings.Contains(out, wantContract) {
+		t.Errorf("the contract did not follow readiness in the one ritual: %q", out)
+	}
 }
 
 // --- ports of the white-box tests in tests/adapter_test.py -----------------------
