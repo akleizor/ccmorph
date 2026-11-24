@@ -182,7 +182,7 @@ def log(msg: str) -> None:
     print(time.strftime("%F %T"), msg, flush=True)
 
 
-def sweep_logs(now: float | None = None) -> None:
+def sweep_logs(now: float | None = None, keep: "frozenset | set" = frozenset()) -> None:
     """Delete this bridge's session records older than LOG_KEEP_DAYS.
 
     Every Remote Control session leaves a transcript and, through --debug-file, a
@@ -190,18 +190,43 @@ def sweep_logs(now: float | None = None) -> None:
     one: a session that resumes has its own record unlinked when its host starts.
     Without a retention rule the directory only grows -- on 2026-11-21 it held 239
     files and 2.8 GB, the largest written on 11-20, and the internal disk was under
-    its swap floor."""
+    its swap floor.
+
+    `keep` names the files the periodic sweep must leave (held_logs): a quiet
+    file is not a dead one, and unlinking one a process still writes leaves its
+    writer appending to an orphaned inode that bound_logs() can no longer reach
+    by path."""
     cutoff = (time.time() if now is None else now) - LOG_KEEP_DAYS * 86400
     try:
         files = [f for f in LOGS.glob("*") if f.is_file()]
     except OSError:
         return
     for f in files:
+        if f in keep:
+            continue
         try:
             if f.stat().st_mtime < cutoff:
                 f.unlink()
         except OSError:
             pass
+
+
+def record_session(name: str) -> str | None:
+    """The id body of the session a file in LOGS records -- its transcript
+    `bridge-transcript-<id>.jsonl`, a session child's `<name>.debug-<id>.log` or
+    the `.log.1` copy bound_logs() keeps of one -- or None for a file no single
+    session writes (a host's own log and its .log.1, an edge's or adapter's log).
+    The body follows the id's prefix, as in same_session(): one conversation is
+    session_... in a pin and cse_... on the server."""
+    if name.startswith("bridge-transcript-") and name.endswith(".jsonl"):
+        sid = name[len("bridge-transcript-"):-len(".jsonl")]
+    elif ".debug-" in name and name.endswith(".log"):
+        sid = name.rsplit(".debug-", 1)[1][:-len(".log")]
+    elif ".debug-" in name and name.endswith(".log.1"):
+        sid = name.rsplit(".debug-", 1)[1][:-len(".log.1")]
+    else:
+        return None
+    return sid.split("_", 1)[-1] or None
 
 
 def resolve(path: str) -> str | None:
@@ -1116,10 +1141,12 @@ def gone_within(pid: int, seconds: float) -> bool:
     return False
 
 
-def ps_argv(pid: int) -> "list[str] | None":
-    """ps's words for `pid`, or None when ps could not answer at all.
+def ps_row(pid: int) -> "str | None":
+    """ps's command line for `pid`, kept whole, or None when ps could not answer
+    at all. Not split into words: joined again, a run of spaces in a path
+    became one and the path no longer matched (#758).
 
-    An empty list means ps ran and named no process. None means its answer
+    An empty string means ps ran and named no process. None means its answer
     cannot be trusted -- a timeout, a failed or unreadable process table -- so
     the caller falls back to a liveness probe rather than reading silence as
     an exit (#297)."""
@@ -1130,7 +1157,7 @@ def ps_argv(pid: int) -> "list[str] | None":
         return None
     if seen.returncode:
         return None
-    return seen.stdout.split()
+    return seen.stdout.strip()
 
 
 def host_at(pid: int) -> str:
@@ -1140,9 +1167,10 @@ def host_at(pid: int) -> str:
     dead, or ps answered with another command because the pid was reused.
     "unknown" is ps silent while something is alive there; a caller may retry
     on it, but never signals and never records a stop on it (#297)."""
-    argv = ps_argv(pid)
-    if argv:
-        if "remote-control" in argv[1:2] and Path(argv[0]).name == "claude":
+    row = ps_row(pid)
+    if row:
+        rest = claude_rest(row, claude_paths(), node_paths())
+        if rest is not None and rest.split()[:1] == ["remote-control"]:
             return "host"
         return "gone"               # ps answered with another command: reused
     try:
@@ -1250,20 +1278,188 @@ def restart_logged_out(hosts: "dict[str, Host]", now: float) -> list[str]:
     return restarted
 
 
+def claude_paths() -> "tuple[str, ...]":
+    """The claude this supervisor's hosts run: its PATH name (ccmorph-rc execs
+    shutil.which("claude")) and the file that resolves to -- a host spawns its
+    session children by its own executable's path. () when no claude is on PATH."""
+    found = shutil.which("claude")
+    if not found:
+        return ()
+    return tuple(dict.fromkeys((found, os.path.realpath(found))))
+
+
+def node_paths() -> "tuple[str, ...]":
+    """The node on PATH, by name and resolved file: the interpreter an npm
+    install's `claude` (a link to its cli.js, `#!/usr/bin/env node`) runs under.
+    () when no node is on PATH."""
+    found = shutil.which("node")
+    if not found:
+        return ()
+    return tuple(dict.fromkeys((found, os.path.realpath(found))))
+
+
+def claude_rest(row: str, claude: "tuple[str, ...]", node: "tuple[str, ...]" = ()) -> "str | None":
+    """What follows the claude command at the start of one ps row, or None when
+    the row's command is not claude (claude_paths() for `claude`, node_paths()
+    for `node`).
+
+    The command is claude when the row starts with it: argv[0] named claude; the
+    claude the hosts run, by its PATH name or resolved file, matched on the whole
+    row so a path with spaces still matches; when that name is a link into a
+    store of versions, any file straight in that store (a process an update left
+    on the previous version); or, for an npm install, node running that claude
+    as its script -- `<node> <claude> ...`, where node is the row's own first
+    word named node or nodejs, or the node on PATH (a path that may hold spaces),
+    and node's script -- the first space-bounded prefix that exists as a file --
+    is the same file as that claude, whatever path to it ps shows. Only the
+    start of the row counts: claude's path or flags among another
+    command's arguments (`/bin/sh /usr/bin/node <cli.js> ...`, `/bin/echo
+    /x/claude ...`) prove nothing (#758)."""
+    words = row.split()
+    if not words:
+        return None
+    if Path(words[0]).name == "claude":
+        return row[len(words[0]):]
+    for p in claude:
+        if row.startswith(f"{p} "):
+            return row[len(p):]
+    if len(claude) == 2:                          # PATH name is a link: its versions store
+        store = os.path.dirname(claude[1]) + "/"
+        if row.startswith(store):
+            name, _, rest = row[len(store):].partition(" ")
+            if name and "/" not in name:
+                return " " + rest
+    runners = [*node, *([words[0]] if Path(words[0]).name in ("node", "nodejs") else [])]
+    targets = set()
+    for p in claude:
+        try:
+            st = os.stat(p)
+        except OSError:
+            continue
+        targets.add((st.st_dev, st.st_ino))
+    for n in runners:
+        if not row.startswith(f"{n} "):
+            continue
+        script = row[len(n) + 1:]
+        # The script word may hold spaces, any number of them (a cap of 32 missed
+        # a cli.js under a path with more), and may name cli.js by another path to
+        # the same file (macOS's /var -> /private/var, an npm prefix behind a
+        # link). Node's script is the first space-bounded prefix that exists as a
+        # file -- os.stat() resolves it component by component, where realpath()
+        # collapsed `<missing>/..` lexically, so `node other.js <args> sub/../cli.js`
+        # read as claude -- and the row is claude's only when that file is (#758).
+        for end in (i for i, ch in enumerate(script) if ch == " "):
+            try:
+                st = os.stat(script[:end])
+            except OSError:
+                continue                  # no such path: the word goes on past this space
+            if os.path.isdir(script[:end]):
+                continue
+            return script[end:] if (st.st_dev, st.st_ino) in targets else None
+    return None
+
+
+def session_child_id(row: str, claude: "tuple[str, ...]", node: "tuple[str, ...]" = ()) -> "str | None":
+    """The --session-id a repo host's session child serves, read from its whole
+    ps row, or None when the row is no session child: claude itself
+    (claude_rest()) carrying `--session-id <id>` and `--sdk-url`. The flags
+    alone prove nothing: they can sit in any other command's arguments
+    (`/bin/sh -c sleep --session-id x --sdk-url y`) (#758)."""
+    words = row.split()
+    if "--sdk-url" not in words or "--session-id" not in words:
+        return None                     # before claude_rest(), which resolves paths
+    rest = claude_rest(row, claude, node)
+    words = rest.split() if rest is not None else []
+    if "--sdk-url" not in words or "--session-id" not in words:
+        return None
+    i = words.index("--session-id") + 1
+    return words[i] if i < len(words) else None
+
+
 def session_pid(sid: str) -> int | None:
-    """The pid of the host child serving session `sid` (`--session-id <sid>` in its argv)."""
+    """The pid of the host child serving session `sid` (session_child_id())."""
     try:
         out = subprocess.run(["ps", "-Ao", "pid=,command="], capture_output=True, text=True,
                              errors="replace", timeout=10).stdout
     except (OSError, ValueError, subprocess.SubprocessError):
         return None
+    claude, node = claude_paths(), node_paths()
     for line in out.splitlines():
         pid, _, cmd = line.strip().partition(" ")
-        words = cmd.split()
-        if "--session-id" in words and words[words.index("--session-id") + 1:][:1] == [sid] \
-                and "--sdk-url" in words:
+        if session_child_id(cmd.strip(), claude, node) == sid:
             return int(pid)
     return None
+
+
+def process_table() -> "list[str] | None":
+    """ps's row for every process, each kept whole as one command line -- or
+    None when the table cannot be read. A row is not split into words here: ps
+    joins argv with spaces, so an install path with spaces splits into several
+    words and a reader that looked for a path at a word position missed the
+    process (#758). A reader that knows the exact command it looks for matches
+    the row's start instead (served_session(), held_logs()). A nonzero exit is
+    unread even when rows were printed, and ps lists at least itself, so an
+    empty table is an unread one."""
+    try:
+        done = subprocess.run(["ps", "-Ao", "command="], capture_output=True, text=True,
+                              errors="replace", timeout=10)
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return None
+    if getattr(done, "returncode", 0) != 0:     # partial output is not a table
+        return None
+    out = done.stdout or ""
+    if not out.strip():
+        return None
+    return [line.strip() for line in out.splitlines() if line.strip()]
+
+
+def served_session(row: str, wrapper: str, claude: "tuple[str, ...]",
+                   node: "tuple[str, ...]" = ()) -> "str | None":
+    """The id body of the session one ps row serves (as record_session() names
+    it), or None when the row proves no session.
+
+    Three rows do. The pty start() runs every host in, recognised by the exact
+    start of the command start() builds (`wrapper`: /usr/bin/script -q /dev/null
+    <this add-on>/ccmorph-rc ), then `<route> -- ... --session-id <id>`: a pin,
+    whichever supervisor started it. A pinned host's own process, `claude
+    remote-control ... --session-id <id>`, with claude read as claude_rest()
+    reads it (as host_at() does too: argv[0], the claude the hosts run, its
+    versions store, or node running it from an npm install). And a repo host's
+    session child, session_child_id(): claude itself with `--session-id`
+    beside `--sdk-url`.
+    The prefixes are matched on the whole row, so a path with spaces still
+    matches. Any other row proves nothing: a bare --session-id (`printf %s
+    --session-id cse_01OLD`), the child's flags in another command's arguments
+    (`/bin/sh -c sleep --session-id x --sdk-url y`), and a `script` row whose
+    launched command is not this add-on's ccmorph-rc
+    (`/usr/bin/script -q /dev/null /bin/sh /x/ccmorph-rc --session-id x`)."""
+    words = row.split()
+    if "--session-id" not in words:
+        return None
+    if Path(words[0]).name == "script":
+        if not row.startswith(wrapper):
+            return None
+        words = row[len(wrapper):].split()        # <route> -- <claude args>
+        if not words or words[0].startswith("-") or words[1:2] != ["--"] \
+                or "--session-id" not in words[2:]:
+            return None
+    else:
+        rest = claude_rest(row, claude, node)
+        words = rest.split() if rest is not None else []
+        if "--session-id" not in words or not ("--sdk-url" in words
+                                               or words[:1] == ["remote-control"]):
+            return None
+    i = words.index("--session-id") + 1
+    if i >= len(words):
+        return None
+    return words[i].split("_", 1)[-1] or None
+
+
+def live_sessions(table: "list[str]") -> "set[str]":
+    """The id body of every session a row of `table` (process_table()) serves."""
+    wrapper = f"/usr/bin/script -q /dev/null {HERE / 'ccmorph-rc'} "
+    claude, node = claude_paths(), node_paths()
+    return {sid for sid in (served_session(row, wrapper, claude, node) for row in table) if sid}
 
 
 def woke(s: dict, mark: tuple) -> bool:
@@ -1746,6 +1942,73 @@ def edit_config(config: Path, folder: str, sid: str | None = None, *,
         log(f"config not edited: {e}")
 
 
+def held_logs(hosts: "dict[str, Host]") -> "set[Path] | None":
+    """The files in LOGS the periodic sweep must leave however old (#758).
+
+    A session record is held while its session is live: a configured pin's own
+    session (the config names it, so no ps row is needed -- a pin an earlier
+    supervisor started runs with no Popen here), or a session a ps row serves
+    (live_sessions()). A dead session's records go, whichever host they belong
+    to: a host outlives its sessions. Every other file is one per folder or
+    route, held while its writer may run: each configured host's own stdout log
+    and --debug-file and their .log.1 (start() hands the child those
+    descriptors, and bound_logs() must still reach them by path); the
+    adapter-<route>.log of every configured route and of every adapter ps shows
+    running (its row starts with the adapter ccmorph-rc launches, a --switch
+    profile's included). switch.log is never held: no ps row is read for its
+    writer, because a `--switch` child's interpreter path is not knowable from
+    ps's flattened text (python3, Apple's .../Python.app/Contents/MacOS/Python,
+    or the same words in another command's arguments). Instead start_switch()
+    stamps it once main() has handed it to a running child, so it is a week
+    young while that short-lived child runs and ages out a week after the last
+    bring-up. A
+    folder or route removed from the config takes its files off this list, so
+    a retired one's logs age out like any other record. Every path
+    here comes from the config or from a whole-row match, never from a split
+    word, so an install path with spaces hides nothing. None when the process
+    table cannot be read: the sweep then waits for the next check rather than
+    guess -- a week's cap loses nothing to ten minutes."""
+    table = process_table()
+    if table is None:
+        return None
+    live = live_sessions(table)
+    live |= {h.session_id.split("_", 1)[-1] for h in hosts.values() if h.session_id}
+    held: set = set()
+    routes = {h.route for h in hosts.values()}
+    for h in hosts.values():
+        held |= {h.logfile, h.debugfile, h.logfile.with_suffix(".log.1"),
+                 h.debugfile.with_suffix(".log.1")}
+    adapter = f"{rc_module().ADAPTER} adapter "
+    for row in table:
+        if row.startswith(adapter) and row[len(adapter):].split():
+            routes.add(row[len(adapter):].split()[0])
+    held |= {LOGS / f"adapter-{r}.log" for r in routes}
+    try:
+        files = list(LOGS.glob("*"))
+    except OSError:
+        return None
+    held |= {f for f in files if record_session(f.name) in live}
+    return held
+
+
+def start_switch(target: str) -> None:
+    """Start `ccmorph-rc <target> --switch` with LOGS/switch.log as its stderr,
+    then set the log's mtime to now. The periodic sweep removes switch.log by age
+    alone (held_logs() reads no ps row for it), so the stamp is what keeps a
+    file aged past LOG_KEEP_DAYS from being unlinked under the child just handed
+    it: that child brings a profile up and exits -- start_adapter() waits 120 s
+    at most -- long before the stamp is a week old. The stamp follows a launch
+    that succeeded and nothing else: a launch that raises (the launcher missing,
+    retried every tick) leaves no writer, so an aged log still ages out (#758).
+    LOGS is made first: a fresh state dir reaches here before any Host.start (#596)."""
+    LOGS.mkdir(parents=True, exist_ok=True)
+    with open(LOGS / "switch.log", "a") as err:
+        subprocess.Popen([str(HERE / "ccmorph-rc"), target, "--switch"],
+                         stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                         stderr=err, start_new_session=True)
+    os.utime(LOGS / "switch.log")
+
+
 class Clock:
     """What main() carries between cycles for the recovery and log-cap steps."""
 
@@ -1777,6 +2040,12 @@ def cycle(hosts: "dict[str, Host]", repos: list[str], now: float, clock: Clock) 
     for h in hosts.values():
         if h.proc:
             h.bound_logs()     # archived and unused: drop its line
+    # #755's age cap rides this same tick: KeepAlive never restarts a healthy
+    # supervisor, so start-only let the dir refill (#758). Only the records of
+    # sessions no process serves go: held_logs() holds everything else.
+    held = held_logs(hosts)
+    if held is not None:      # the process table unread: the next check sweeps
+        sweep_logs(keep=held)
     clock.last_idle_check = now
     return True
 
@@ -1817,7 +2086,7 @@ def main(argv: list[str]) -> int:
     signal.signal(signal.SIGTERM, lambda *_: stopping.append(1))
     signal.signal(signal.SIGINT, lambda *_: stopping.append(1))
     log(f"watching {config}")
-    sweep_logs()   # once per supervisor start; the hosts it starts only append
+    sweep_logs()   # boot sweep; cycle() repeats it every idle check (#758)
     while not stopping:
         stamp = mtime_of(config)
         profiles = profile_stamps(inference_routes)
@@ -1903,11 +2172,9 @@ def main(argv: list[str]) -> int:
                         # a fresh state dir whose first config carries inference=<profile>
                         # died FileNotFoundError on this open, before any edge had started
                         # -- the same past-the-early-returns hole the #419 comment names (#596).
-                        LOGS.mkdir(parents=True, exist_ok=True)
-                        with open(LOGS / "switch.log", "a") as err:
-                            subprocess.Popen([str(HERE / "ccmorph-rc"), target, "--switch"],
-                                             stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
-                                             stderr=err, start_new_session=True)
+                        # start_switch() makes it, mkdir first, and stamps it for the sweep
+                        # once the child runs (#758).
+                        start_switch(target)
                         log(f"inference: bringing up {target}")
                 except OSError as e:
                     failure = (target, type(e).__name__, e.errno)
