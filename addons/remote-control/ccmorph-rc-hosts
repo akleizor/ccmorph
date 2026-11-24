@@ -182,7 +182,7 @@ def log(msg: str) -> None:
     print(time.strftime("%F %T"), msg, flush=True)
 
 
-def sweep_logs(now: float | None = None) -> None:
+def sweep_logs(now: float | None = None, keep: "frozenset | set" = frozenset()) -> None:
     """Delete this bridge's session records older than LOG_KEEP_DAYS.
 
     Every Remote Control session leaves a transcript and, through --debug-file, a
@@ -190,18 +190,43 @@ def sweep_logs(now: float | None = None) -> None:
     one: a session that resumes has its own record unlinked when its host starts.
     Without a retention rule the directory only grows -- on 2026-11-21 it held 239
     files and 2.8 GB, the largest written on 11-20, and the internal disk was under
-    its swap floor."""
+    its swap floor.
+
+    `keep` names the files the periodic sweep must leave (held_logs): a quiet
+    file is not a dead one, and unlinking one a process still writes leaves its
+    writer appending to an orphaned inode that bound_logs() can no longer reach
+    by path."""
     cutoff = (time.time() if now is None else now) - LOG_KEEP_DAYS * 86400
     try:
         files = [f for f in LOGS.glob("*") if f.is_file()]
     except OSError:
         return
     for f in files:
+        if f in keep:
+            continue
         try:
             if f.stat().st_mtime < cutoff:
                 f.unlink()
         except OSError:
             pass
+
+
+def record_session(name: str) -> str | None:
+    """The id body of the session a file in LOGS records -- its transcript
+    `bridge-transcript-<id>.jsonl`, a session child's `<name>.debug-<id>.log` or
+    the `.log.1` copy bound_logs() keeps of one -- or None for a file no single
+    session writes (a host's own log and its .log.1, an edge's or adapter's log).
+    The body follows the id's prefix, as in same_session(): one conversation is
+    session_... in a pin and cse_... on the server."""
+    if name.startswith("bridge-transcript-") and name.endswith(".jsonl"):
+        sid = name[len("bridge-transcript-"):-len(".jsonl")]
+    elif ".debug-" in name and name.endswith(".log"):
+        sid = name.rsplit(".debug-", 1)[1][:-len(".log")]
+    elif ".debug-" in name and name.endswith(".log.1"):
+        sid = name.rsplit(".debug-", 1)[1][:-len(".log.1")]
+    else:
+        return None
+    return sid.split("_", 1)[-1] or None
 
 
 def resolve(path: str) -> str | None:
@@ -1250,20 +1275,122 @@ def restart_logged_out(hosts: "dict[str, Host]", now: float) -> list[str]:
     return restarted
 
 
+def claude_paths() -> "tuple[str, ...]":
+    """The claude this supervisor's hosts run: its PATH name (ccmorph-rc execs
+    shutil.which("claude")) and the file that resolves to -- a host spawns its
+    session children by its own executable's path. () when no claude is on PATH."""
+    found = shutil.which("claude")
+    if not found:
+        return ()
+    return tuple(dict.fromkeys((found, os.path.realpath(found))))
+
+
+def session_child_id(row: str, claude: "tuple[str, ...]") -> "str | None":
+    """The --session-id a repo host's session child serves, read from its whole
+    ps row (claude_paths() for `claude`), or None when the row is no session child.
+
+    A session child is claude itself carrying `--session-id <id>` and
+    `--sdk-url`. Its command must be claude -- argv[0] named claude, as host_at()
+    reads a host; or the row starting with the claude the hosts run, by its PATH
+    name or its resolved file, matched on the whole row so a path with spaces
+    still matches; or, when that name is a link into a store of versions, any file
+    straight in that store, so a child an update left on the previous version is
+    still read. The flags alone prove nothing: they can sit in any other
+    command's arguments (`/bin/sh -c sleep --session-id x --sdk-url y`) (#758)."""
+    words = row.split()
+    if "--sdk-url" not in words or "--session-id" not in words:
+        return None
+    command = Path(words[0]).name == "claude" or any(row.startswith(f"{p} ") for p in claude)
+    if not command and len(claude) == 2:          # PATH name is a link: its versions store
+        store = os.path.dirname(claude[1]) + "/"
+        rest = row[len(store):].split(" ", 1)[0] if row.startswith(store) else ""
+        command = bool(rest) and "/" not in rest
+    if not command:
+        return None
+    i = words.index("--session-id") + 1
+    return words[i] if i < len(words) else None
+
+
 def session_pid(sid: str) -> int | None:
-    """The pid of the host child serving session `sid` (`--session-id <sid>` in its argv)."""
+    """The pid of the host child serving session `sid` (session_child_id())."""
     try:
         out = subprocess.run(["ps", "-Ao", "pid=,command="], capture_output=True, text=True,
                              errors="replace", timeout=10).stdout
     except (OSError, ValueError, subprocess.SubprocessError):
         return None
+    claude = claude_paths()
     for line in out.splitlines():
         pid, _, cmd = line.strip().partition(" ")
-        words = cmd.split()
-        if "--session-id" in words and words[words.index("--session-id") + 1:][:1] == [sid] \
-                and "--sdk-url" in words:
+        if session_child_id(cmd.strip(), claude) == sid:
             return int(pid)
     return None
+
+
+def process_table() -> "list[str] | None":
+    """ps's row for every process, each kept whole as one command line -- or
+    None when the table cannot be read. A row is not split into words here: ps
+    joins argv with spaces, so an install path with spaces splits into several
+    words and a reader that looked for a path at a word position missed the
+    process (#758). A reader that knows the exact command it looks for matches
+    the row's start instead (served_session(), held_logs()). A nonzero exit is
+    unread even when rows were printed, and ps lists at least itself, so an
+    empty table is an unread one."""
+    try:
+        done = subprocess.run(["ps", "-Ao", "command="], capture_output=True, text=True,
+                              errors="replace", timeout=10)
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return None
+    if getattr(done, "returncode", 0) != 0:     # partial output is not a table
+        return None
+    out = done.stdout or ""
+    if not out.strip():
+        return None
+    return [line.strip() for line in out.splitlines() if line.strip()]
+
+
+def served_session(row: str, wrapper: str, claude: "tuple[str, ...]") -> "str | None":
+    """The id body of the session one ps row serves (as record_session() names
+    it), or None when the row proves no session.
+
+    Three rows do. The pty start() runs every host in, recognised by the exact
+    start of the command start() builds (`wrapper`: /usr/bin/script -q /dev/null
+    <this add-on>/ccmorph-rc ), then `<route> -- ... --session-id <id>`: a pin,
+    whichever supervisor started it. A pinned host's own process, `claude
+    remote-control ... --session-id <id>`: argv[0] named claude, as host_at()
+    reads a host, or the row starting with the very claude this supervisor's
+    hosts run (`claude`, claude_paths()). And a repo host's session child,
+    session_child_id(): claude itself with `--session-id` beside `--sdk-url`.
+    The prefixes are matched on the whole row, so a path with spaces still
+    matches. Any other row proves nothing: a bare --session-id (`printf %s
+    --session-id cse_01OLD`), the child's flags in another command's arguments
+    (`/bin/sh -c sleep --session-id x --sdk-url y`), and a `script` row whose
+    launched command is not this add-on's ccmorph-rc
+    (`/usr/bin/script -q /dev/null /bin/sh /x/ccmorph-rc --session-id x`)."""
+    words = row.split()
+    if "--session-id" not in words:
+        return None
+    if Path(words[0]).name == "script":
+        if not row.startswith(wrapper):
+            return None
+        words = row[len(wrapper):].split()        # <route> -- <claude args>
+        if not words or words[0].startswith("-") or words[1:2] != ["--"] \
+                or "--session-id" not in words[2:]:
+            return None
+    elif session_child_id(row, claude) is None and not (
+            (Path(words[0]).name == "claude" and words[1:2] == ["remote-control"])
+            or any(row.startswith(f"{p} remote-control ") for p in claude)):
+        return None
+    i = words.index("--session-id") + 1
+    if i >= len(words):
+        return None
+    return words[i].split("_", 1)[-1] or None
+
+
+def live_sessions(table: "list[str]") -> "set[str]":
+    """The id body of every session a row of `table` (process_table()) serves."""
+    wrapper = f"/usr/bin/script -q /dev/null {HERE / 'ccmorph-rc'} "
+    claude = claude_paths()
+    return {sid for sid in (served_session(row, wrapper, claude) for row in table) if sid}
 
 
 def woke(s: dict, mark: tuple) -> bool:
@@ -1746,6 +1873,67 @@ def edit_config(config: Path, folder: str, sid: str | None = None, *,
         log(f"config not edited: {e}")
 
 
+def held_logs(hosts: "dict[str, Host]") -> "set[Path] | None":
+    """The files in LOGS the periodic sweep must leave however old (#758).
+
+    A session record is held while its session is live: a configured pin's own
+    session (the config names it, so no ps row is needed -- a pin an earlier
+    supervisor started runs with no Popen here), or a session a ps row serves
+    (live_sessions()). A dead session's records go, whichever host they belong
+    to: a host outlives its sessions. Every other file is one per folder or
+    route, held while its writer may run: each configured host's own stdout log
+    and --debug-file and their .log.1 (start() hands the child those
+    descriptors, and bound_logs() must still reach them by path); the
+    adapter-<route>.log of every configured route and of every adapter ps shows
+    running (its row starts with the adapter ccmorph-rc launches, a --switch
+    profile's included). switch.log is never held: no ps row is read for its
+    writer, because a `--switch` child's interpreter path is not knowable from
+    ps's flattened text (python3, Apple's .../Python.app/Contents/MacOS/Python,
+    or the same words in another command's arguments). Instead switch_log()
+    stamps it when main() hands it to a child, so it is a week young while that
+    short-lived child runs and ages out a week after the last bring-up. A
+    folder or route removed from the config takes its files off this list, so
+    a retired one's logs age out like any other record. Every path
+    here comes from the config or from a whole-row match, never from a split
+    word, so an install path with spaces hides nothing. None when the process
+    table cannot be read: the sweep then waits for the next check rather than
+    guess -- a week's cap loses nothing to ten minutes."""
+    table = process_table()
+    if table is None:
+        return None
+    live = live_sessions(table)
+    live |= {h.session_id.split("_", 1)[-1] for h in hosts.values() if h.session_id}
+    held: set = set()
+    routes = {h.route for h in hosts.values()}
+    for h in hosts.values():
+        held |= {h.logfile, h.debugfile, h.logfile.with_suffix(".log.1"),
+                 h.debugfile.with_suffix(".log.1")}
+    adapter = f"{rc_module().ADAPTER} adapter "
+    for row in table:
+        if row.startswith(adapter) and row[len(adapter):].split():
+            routes.add(row[len(adapter):].split()[0])
+    held |= {LOGS / f"adapter-{r}.log" for r in routes}
+    try:
+        files = list(LOGS.glob("*"))
+    except OSError:
+        return None
+    held |= {f for f in files if record_session(f.name) in live}
+    return held
+
+
+def switch_log():
+    """LOGS/switch.log opened for a `ccmorph-rc <profile> --switch` child's
+    stderr, its mtime set to now. The periodic sweep removes switch.log by age
+    alone (held_logs() reads no ps row for it), so the stamp is what keeps a
+    file aged past LOG_KEEP_DAYS from being unlinked under the child main() is
+    handing it to: that child brings a profile up and exits -- start_adapter()
+    waits 120 s at most -- long before the stamp is a week old (#758)."""
+    LOGS.mkdir(parents=True, exist_ok=True)
+    f = open(LOGS / "switch.log", "a")
+    os.utime(LOGS / "switch.log")
+    return f
+
+
 class Clock:
     """What main() carries between cycles for the recovery and log-cap steps."""
 
@@ -1777,6 +1965,12 @@ def cycle(hosts: "dict[str, Host]", repos: list[str], now: float, clock: Clock) 
     for h in hosts.values():
         if h.proc:
             h.bound_logs()     # archived and unused: drop its line
+    # #755's age cap rides this same tick: KeepAlive never restarts a healthy
+    # supervisor, so start-only let the dir refill (#758). Only the records of
+    # sessions no process serves go: held_logs() holds everything else.
+    held = held_logs(hosts)
+    if held is not None:      # the process table unread: the next check sweeps
+        sweep_logs(keep=held)
     clock.last_idle_check = now
     return True
 
@@ -1817,7 +2011,7 @@ def main(argv: list[str]) -> int:
     signal.signal(signal.SIGTERM, lambda *_: stopping.append(1))
     signal.signal(signal.SIGINT, lambda *_: stopping.append(1))
     log(f"watching {config}")
-    sweep_logs()   # once per supervisor start; the hosts it starts only append
+    sweep_logs()   # boot sweep; cycle() repeats it every idle check (#758)
     while not stopping:
         stamp = mtime_of(config)
         profiles = profile_stamps(inference_routes)
@@ -1903,8 +2097,8 @@ def main(argv: list[str]) -> int:
                         # a fresh state dir whose first config carries inference=<profile>
                         # died FileNotFoundError on this open, before any edge had started
                         # -- the same past-the-early-returns hole the #419 comment names (#596).
-                        LOGS.mkdir(parents=True, exist_ok=True)
-                        with open(LOGS / "switch.log", "a") as err:
+                        # switch_log() makes it, mkdir first, and stamps it for the sweep (#758).
+                        with switch_log() as err:
                             subprocess.Popen([str(HERE / "ccmorph-rc"), target, "--switch"],
                                              stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
                                              stderr=err, start_new_session=True)

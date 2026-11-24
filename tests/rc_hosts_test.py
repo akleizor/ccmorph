@@ -725,6 +725,26 @@ class FakeProc:
         return self.rc
 
 
+class _ScriptedTime:
+    """`time` as main() sees it: time() from the test's clock and sleep() the
+    scripted tick, while every other module keeps the real `time`. Patching the
+    real module's sleep made a subprocess.run(timeout=...) poll -- one short
+    internal time.sleep -- advance the script's ticks, so a ps call inside
+    cycle() ran the script to its SystemExit."""
+
+    def __init__(self, real, clock, sleep):
+        self._real, self._clock, self._sleep = real, clock, sleep
+
+    def time(self):
+        return self._clock[0] if self._clock is not None else self._real.time()
+
+    def sleep(self, seconds):
+        self._sleep(seconds)
+
+    def __getattr__(self, name):
+        return getattr(self._real, name)
+
+
 def run_main(m, monkeypatch, tmp_path, cfg, start, sleep=None,
              edge_ready=lambda route: True, clock=None, args=None, logs=True,
              profile_tiers=lambda route: {}):
@@ -741,15 +761,13 @@ def run_main(m, monkeypatch, tmp_path, cfg, start, sleep=None,
         (tmp_path / "logs").mkdir(exist_ok=True)
     monkeypatch.setattr(m, "edge_ready", edge_ready)
     monkeypatch.setattr(m.Host, "start", start)
-    if clock is not None:
-        monkeypatch.setattr(m.time, "time", lambda: clock[0])
     if sleep is None:
         ticks = [0]
         def sleep(_):
             ticks[0] += 1
             if ticks[0] > 4:
                 raise SystemExit
-    monkeypatch.setattr(m.time, "sleep", sleep)
+    monkeypatch.setattr(m, "time", _ScriptedTime(m.time, clock, sleep))
     with pytest.raises(SystemExit):
         m.main(args if args is not None else ["--config", str(cfg)])
 
@@ -2575,6 +2593,503 @@ def test_a_start_removes_session_records_past_retention(tmp_path, monkeypatch):
     m.sweep_logs()
     assert not old.exists()
     assert kept.exists()
+
+
+def _ps_table(monkeypatch, m, table, code=0):
+    """ps -Ao command= answers `table` with exit `code`, for every subprocess.run in m."""
+    import subprocess
+    monkeypatch.setattr(m.subprocess, "run", lambda cmd, **kw: subprocess.CompletedProcess(
+        cmd, code, stdout=table, stderr=""))
+
+
+def test_live_sessions_reads_session_children_and_pins(monkeypatch):
+    m = load()
+    claude = "/Users/a b/.local/bin/claude"          # the claude the hosts run, under a home with a space
+    monkeypatch.setattr(m.shutil, "which", lambda name, *a, **kw: claude if name == "claude" else None)
+    rc = m.HERE / "ccmorph-rc"
+    table = ["/x/claude --print --session-id cse_01KID --sdk-url wss://x",
+             "/Users/me/.local/bin/claude remote-control --session-id session_01PIN --debug-file=/x/p.debug.log",
+             f"{claude} remote-control --session-id session_01SPACED --debug-file=/x/s.debug.log",
+             f"/usr/bin/script -q /dev/null {rc} gw -- --session-id session_01WRAP --debug-file=/x/w.debug.log",
+             f"/usr/bin/script -q /dev/null /bin/sh {rc} gw -- --session-id cse_01SPOOF",
+             "/usr/bin/script -q /dev/null /bin/sh /x/ccmorph-rc --session-id cse_01SPOOF2",
+             f"/bin/echo {claude} remote-control --session-id cse_01ECHO1",
+             "/bin/printf %s --session-id cse_01OLD",
+             "/bin/echo remote-control --session-id cse_01ECHO",
+             "/usr/bin/vim notes.txt"]
+    # a session child (--sdk-url, as session_pid reads it), a pinned host (as
+    # host_at reads one, or by the exact claude the hosts run) and the pty
+    # start() runs a host in (by the exact command start() builds) prove a
+    # session; a bare --session-id in any other command does not, nor does a
+    # script row running /bin/sh that merely carries the wrapper's path
+    assert m.live_sessions(table) == {"01KID", "01PIN", "01SPACED", "01WRAP"}
+
+
+def test_process_table_keeps_rows_whole_and_refuses_a_failed_ps(monkeypatch):
+    m = load()
+    _ps_table(monkeypatch, m, "  /usr/bin/script -q /dev/null /a b/ccmorph-rc gw\n\n/usr/bin/vim x\n")
+    assert m.process_table() == ["/usr/bin/script -q /dev/null /a b/ccmorph-rc gw", "/usr/bin/vim x"]
+    _ps_table(monkeypatch, m, "/x/claude --session-id cse_01KID --sdk-url wss://x\n", code=1)
+    assert m.process_table() is None          # a nonzero exit is unread, partial rows or not
+    _ps_table(monkeypatch, m, "")
+    assert m.process_table() is None
+    monkeypatch.setattr(m.subprocess, "run", lambda cmd, **kw: (_ for _ in ()).throw(OSError("no ps")))
+    assert m.process_table() is None
+
+
+def test_record_session_names_the_session_a_log_file_records():
+    m = load()
+    assert m.record_session("bridge-transcript-cse_01A.jsonl") == "01A"
+    assert m.record_session("bridge-transcript-session_01A.jsonl") == "01A"
+    assert m.record_session("Users-me-repo.debug-cse_01A.log") == "01A"
+    assert m.record_session("Users-me-repo.debug-cse_01A.log.1") == "01A"   # bound_logs()'s copy
+    for name in ("Users-me-repo.log", "Users-me-repo.debug.log", "Users-me-repo.log.1",
+                 "Users-me-repo.debug.log.1", "edge-gw.log", "adapter-gw.log", "switch.log"):
+        assert m.record_session(name) is None
+
+
+def _idle_check_due(m):
+    """A Clock whose idle check is due now and whose recovery step is not."""
+    state = m.Clock()
+    now = state.last_idle_check + m.IDLE_CHECK + 1
+    state.last_recover = now
+    return state, now
+
+
+def _age_past_retention(m, *files):
+    stale = time.time() - (m.LOG_KEEP_DAYS + 1) * 86400
+    for f in files:
+        os.utime(f, (stale, stale))
+
+
+def test_a_running_supervisor_removes_session_records_past_retention(tmp_path, monkeypatch):
+    """#758: a sweep only at supervisor start let the log dir refill between
+    restarts -- launchd KeepAlive never restarts a healthy supervisor. The age
+    cap must ride the same idle-check path as the size cap (bound_logs), so the
+    test drives cycle(), not sweep_logs()."""
+    m = load()
+    logs = tmp_path / "logs"
+    logs.mkdir()
+    monkeypatch.setattr(m, "LOGS", logs)
+    old = logs / "bridge-transcript-cse_01OLD.jsonl"
+    kept = logs / "bridge-transcript-cse_01NEW.jsonl"
+    old.write_text("x")
+    kept.write_text("x")
+    _age_past_retention(m, old)
+    _ps_table(monkeypatch, m, "/usr/bin/vim notes.txt\n")   # ps answers; no session runs
+    state, now = _idle_check_due(m)
+    assert m.cycle({}, [], now, state) is True
+    assert not old.exists()
+    assert kept.exists()
+
+
+def test_on_a_running_host_the_periodic_sweep_removes_only_dead_sessions_records(tmp_path, monkeypatch):
+    """#758: a running host's own stdout log and --debug-file, and the records of
+    a session some process still serves, survive the sweep however quiet: the
+    writer holds them open and bound_logs() must still cap them by path. A dead
+    session's records go, its .log.1 copy too, even on a host that is still up
+    -- a host outlives its sessions, and holding them by host let a healthy host
+    refill the dir."""
+    m = load()
+    logs = tmp_path / "logs"
+    logs.mkdir()
+    monkeypatch.setattr(m, "LOGS", logs)
+    _ps_table(monkeypatch, m, "/x/claude --print --session-id cse_01LIVE --sdk-url wss://x\n")
+    hosts = _running_host(m, tmp_path / "repo", [time.time()])
+    h = next(iter(hosts.values()))
+    pin = m.Host(str(tmp_path / "pin"), "gw", ("--session-id", "session_01PIN"))
+    pin.proc = FakeProc()
+    hosts[pin.folder] = pin
+    stem = h.debugfile.stem
+    held = [h.logfile, h.debugfile, h.logfile.with_suffix(".log.1"),
+            logs / f"{stem}-cse_01LIVE.log", logs / "bridge-transcript-cse_01LIVE.jsonl",
+            pin.logfile, logs / "bridge-transcript-session_01PIN.jsonl",
+            logs / f"{pin.debugfile.stem}-cse_01PIN.log"]
+    dead = [logs / f"{stem}-cse_01DEAD.log", logs / f"{stem}-cse_01DEAD.log.1",
+            logs / "bridge-transcript-cse_01DEAD.jsonl"]
+    fresh = logs / f"{stem}-cse_01DONE.log"
+    for f in (*held, *dead, fresh):
+        f.write_text("x")
+    _age_past_retention(m, *held, *dead)
+    state, now = _idle_check_due(m)
+    m.cycle(hosts, [], now, state)
+    assert [f.name for f in held if not f.exists()] == []    # still written, or a host's: kept
+    assert [f.name for f in dead if f.exists()] == []        # same host, session over: gone
+    assert fresh.exists()                                    # inside the week: kept
+
+
+@pytest.mark.parametrize("managed", [True, False], ids=["beside-a-managed-host", "alone"])
+@pytest.mark.parametrize("row", [
+    "",
+    "/Users/me/.local/bin/claude remote-control --session-id session_01PIN --debug-file={debug}",
+    "/usr/bin/script -q /dev/null {rc} gw -- --session-id session_01PIN --debug-file={debug}",
+], ids=["no-row", "claude-row", "pty-row"])
+def test_the_periodic_sweep_keeps_a_pin_an_earlier_supervisor_started(tmp_path, monkeypatch, row, managed):
+    """#758: a pinned host outlives the supervisor that started it, and the one
+    after holds no Popen for it -- start() only waits on its live pointer. Its
+    records are a live session's all the same: the config names its session, so
+    the sweep keeps them whatever ps shows of the pin (no-row: nothing), while a
+    dead session's records still go."""
+    m = load()
+    logs = tmp_path / "logs"
+    logs.mkdir()
+    monkeypatch.setattr(m, "LOGS", logs)
+    pin = m.Host(str(tmp_path / "pin"), "gw", ("--session-id", "session_01PIN"))   # proc None
+    hosts = {pin.folder: pin}
+    if managed:
+        hosts.update(_running_host(m, tmp_path / "repo", [time.time()]))
+    _ps_table(monkeypatch, m, row.format(debug=pin.debugfile, rc=m.HERE / "ccmorph-rc")
+              + "\n/bin/printf %s --session-id cse_01DEAD\n")
+    held = [logs / "bridge-transcript-session_01PIN.jsonl",
+            logs / f"{pin.debugfile.stem}-cse_01PIN.log", pin.logfile, pin.debugfile]
+    dead = logs / "bridge-transcript-cse_01DEAD.jsonl"
+    for f in (*held, dead):
+        f.write_text("x")
+    _age_past_retention(m, *held, dead)
+    state, now = _idle_check_due(m)
+    assert m.cycle(hosts, [], now, state) is True
+    assert [f.name for f in held if not f.exists()] == []
+    assert not dead.exists()
+
+
+def test_the_periodic_sweep_leaves_a_log_while_its_writer_names_it(tmp_path, monkeypatch):
+    """#758: a host's own logs, an edge's and an adapter's are one per folder or
+    route rather than one per session, and unlinking one a live process writes
+    orphans its descriptor. They are held while a writer may run: a host the
+    config still lists (running or adopted -- no Popen here), an edge Host, the
+    adapter of a configured route or of a ps row that starts with the adapter
+    ccmorph-rc launches (a --switch profile's). What no
+    writer names any more -- an adapter no row runs and no route names, or one
+    an unrelated command merely mentions -- ages out."""
+    m = load()
+    logs = tmp_path / "logs"
+    logs.mkdir()
+    monkeypatch.setattr(m, "LOGS", logs)
+    adapter = m.rc_module().ADAPTER
+    _ps_table(monkeypatch, m,
+              f"{adapter} adapter ds --auto --parent-pid 1\n"
+              f"/bin/echo {adapter} adapter old --auto --parent-pid 1\n")
+    h = m.Host(str(tmp_path / "repo"), "gw")      # served by an earlier supervisor's host: proc None
+    edge = m.Host(str(tmp_path / "edge"), "gw")
+    edge.edge, edge.logfile = True, logs / "edge-gw.log"
+    hosts = {h.folder: h, "edge:gw": edge}
+    stem = h.debugfile.stem
+    held = [h.logfile, h.debugfile, h.logfile.with_suffix(".log.1"), h.debugfile.with_suffix(".log.1"),
+            logs / "edge-gw.log", logs / "adapter-gw.log", logs / "adapter-ds.log"]
+    dead = [logs / f"{stem}-cse_01DEAD.log", logs / f"{stem}-cse_01DEAD.log.1",
+            logs / "bridge-transcript-cse_01DEAD.jsonl", logs / "adapter-old.log",
+            logs / "switch.log"]      # no --switch child runs: not held
+    for f in (*held, *dead):
+        f.write_text("x")
+    _age_past_retention(m, *held, *dead)
+    state, now = _idle_check_due(m)
+    assert m.cycle(hosts, [], now, state) is True
+    assert [f.name for f in held if not f.exists()] == []
+    assert [f.name for f in dead if f.exists()] == []
+
+
+@pytest.mark.parametrize("row", [
+    "python3 {rc} ds --switch",
+    "/usr/bin/python3 {rc} ds --switch",
+    "{rc} ds --switch",
+    "/Library/Frameworks/Python.framework/Versions/3.9/Resources/Python.app/Contents/MacOS/Python {rc} ds --switch",
+    "/Applications/Xcode App/Python.app/Contents/MacOS/Python {rc} ds --switch",
+    "/bin/sh /usr/bin/python3 {rc} ds --switch",
+    "/bin/echo {rc} ds --switch",
+    "",
+], ids=["env-python", "abs-python", "direct", "apple-python", "spaced-apple-python",
+        "shell-carrying-python", "echo-row", "no-child"])
+def test_the_periodic_sweep_reads_no_switch_writer_from_ps(tmp_path, monkeypatch, row):
+    """#758: ps flattens argv, so a `--switch` child's interpreter cannot be told
+    from the same words in another command's arguments (`/bin/sh /usr/bin/python3
+    <add-on>/ccmorph-rc ds --switch` kept an aged switch.log -- the gate's
+    refusal). No row holds switch.log: an aged one goes whatever ps shows, and
+    switch_log()'s stamp is what protects a live child's (the next test)."""
+    m = load()
+    logs = tmp_path / "logs"
+    logs.mkdir()
+    monkeypatch.setattr(m, "LOGS", logs)
+    _ps_table(monkeypatch, m, row.format(rc=m.rc_module().HERE / "ccmorph-rc") + "\n/usr/bin/vim x\n")
+    switch = logs / "switch.log"
+    switch.write_text("x")
+    _age_past_retention(m, switch)
+    state, now = _idle_check_due(m)
+    assert m.cycle({}, [], now, state) is True
+    assert not switch.exists()
+
+
+def test_a_switch_log_handed_to_a_child_outlives_the_sweep_and_then_ages_out(tmp_path, monkeypatch):
+    """#758: main() hands switch.log to a `--switch` child through switch_log(),
+    which stamps it: an old file handed to a new child is a week young, so the
+    sweep leaves it while the short-lived child writes through its descriptor,
+    and it ages out like any other once nothing hands it on."""
+    m = load()
+    logs = tmp_path / "logs"
+    logs.mkdir()
+    monkeypatch.setattr(m, "LOGS", logs)
+    _ps_table(monkeypatch, m, "/usr/bin/vim x\n")
+    switch = logs / "switch.log"
+    switch.write_text("old\n")
+    _age_past_retention(m, switch)
+    child = m.switch_log()
+    state, now = _idle_check_due(m)
+    assert m.cycle({}, [], now, state) is True
+    assert switch.exists()
+    child.write("new\n")
+    child.close()
+    assert switch.read_text() == "old\nnew\n"      # appended, through the path the sweep left
+    _age_past_retention(m, switch)
+    state, now = _idle_check_due(m)
+    assert m.cycle({}, [], now, state) is True
+    assert not switch.exists()
+
+
+def test_main_stamps_the_switch_log_it_hands_a_bring_up(tmp_path, monkeypatch):
+    """#758: the stamp must happen where main() hands the log over -- an old
+    switch.log opened for append keeps its old mtime, and the sweep then unlinks
+    it under the child's open descriptor."""
+    m = load()
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    cfg = tmp_path / "rc-hosts"
+    cfg.write_text(f"route=gateway\n{repo}\ninference=oli\n")
+    (tmp_path / "logs").mkdir()
+    switch = tmp_path / "logs" / "switch.log"
+    switch.write_text("old\n")
+    before = os.stat(switch).st_mtime - 2 * 86400     # inside the week: the boot sweep keeps it
+    os.utime(switch, (before, before))
+    popens = []
+    monkeypatch.setattr(m.subprocess, "Popen", lambda cmd, **kw: popens.append((cmd, kw)) or FakeProc())
+
+    def start(self):
+        self.proc, self.started = FakeProc(), m.time.time()
+
+    run_main(m, monkeypatch, tmp_path, cfg, start)
+    assert [c for c, _ in popens] == [[str(m.HERE / "ccmorph-rc"), "oli", "--switch"]]
+    assert Path(popens[0][1]["stderr"].name) == switch
+    assert os.stat(switch).st_mtime > before + 86400
+    assert switch.read_text() == "old\n"
+
+
+def _claude_store(tmp_path, monkeypatch, m):
+    """A native claude install under a home with a space: bin/claude links into
+    a store of versions, as ~/.local/bin/claude does."""
+    store = tmp_path / "home dir" / ".local" / "share" / "claude" / "versions"
+    store.mkdir(parents=True)
+    for v in ("2.1.329", "2.1.330"):
+        (store / v).write_text("")
+    link = tmp_path / "home dir" / ".local" / "bin" / "claude"
+    link.parent.mkdir(parents=True)
+    link.symlink_to(store / "2.1.330")
+    monkeypatch.setattr(m.shutil, "which", lambda name, *a, **kw: str(link) if name == "claude" else None)
+    return store, link
+
+
+def test_a_session_child_is_read_only_from_the_claude_that_runs_it(tmp_path, monkeypatch):
+    """#758: `--session-id` beside `--sdk-url` is a session child only when the
+    command is claude: argv[0] named claude, the claude the hosts run by its PATH
+    name or resolved file (whole-row prefix, so a home with a space still
+    matches), or a file straight in that link's store of versions (a child an
+    update left on the previous version). The same flags in another command's
+    arguments prove nothing -- for the sweep, and for session_pid(), whose pid
+    gets a SIGTERM."""
+    m = load()
+    store, link = _claude_store(tmp_path, monkeypatch, m)
+    rows = [f"{store}/2.1.330 --print --session-id cse_01NEW --sdk-url wss://x",
+            f"{store}/2.1.329 --print --session-id cse_01PREV --sdk-url wss://x",
+            f"{link} --print --session-id cse_01LINK --sdk-url wss://x",
+            "/x/claude --print --session-id cse_01NAMED --sdk-url wss://x",
+            "/bin/sh -c sleep --session-id cse_01SH --sdk-url wss://x",
+            f"/bin/sh {store}/2.1.330 --session-id cse_01ARG --sdk-url wss://x",
+            f"/bin/echo /x/claude --session-id cse_01ECHO --sdk-url wss://x",
+            f"{store}/sub/tool --session-id cse_01SUB --sdk-url wss://x"]
+    assert m.live_sessions(rows) == {"01NEW", "01PREV", "01LINK", "01NAMED"}
+    _ps_table(monkeypatch, m, "".join(f"{40 + i} {r}\n" for i, r in enumerate(rows)))
+    assert m.session_pid("cse_01NEW") == 40
+    assert m.session_pid("cse_01PREV") == 41
+    for sid in ("cse_01SH", "cse_01ARG", "cse_01ECHO", "cse_01SUB"):
+        assert m.session_pid(sid) is None
+
+
+def test_the_periodic_sweep_keeps_no_record_for_session_flags_in_another_command(tmp_path, monkeypatch):
+    """#758: a shell carrying a dead session's `--session-id ... --sdk-url`
+    as arguments kept its aged records; a real child under a home with a space
+    still keeps its own."""
+    m = load()
+    logs = tmp_path / "logs"
+    logs.mkdir()
+    monkeypatch.setattr(m, "LOGS", logs)
+    store, _ = _claude_store(tmp_path, monkeypatch, m)
+    hosts = _running_host(m, tmp_path / "repo", [time.time()])
+    h = next(iter(hosts.values()))
+    _ps_table(monkeypatch, m, f"/bin/sh -c sleep --session-id cse_01DEAD --sdk-url wss://x\n"
+                              f"{store}/2.1.330 --print --session-id cse_01LIVE --sdk-url wss://x\n")
+    live = [logs / f"{h.debugfile.stem}-cse_01LIVE.log", logs / "bridge-transcript-cse_01LIVE.jsonl"]
+    dead = [logs / f"{h.debugfile.stem}-cse_01DEAD.log", logs / "bridge-transcript-cse_01DEAD.jsonl"]
+    for f in (*live, *dead):
+        f.write_text("x")
+    _age_past_retention(m, *live, *dead)
+    state, now = _idle_check_due(m)
+    assert m.cycle(hosts, [], now, state) is True
+    assert [f.name for f in live if not f.exists()] == []
+    assert [f.name for f in dead if f.exists()] == []
+
+
+def test_a_bare_session_id_in_an_unrelated_command_does_not_keep_a_dead_record(tmp_path, monkeypatch):
+    """#758: a `--session-id` token alone proves nothing -- `printf %s
+    --session-id cse_01OLD` is not a session child. Only the argv session_pid()
+    reads as one (--session-id beside --sdk-url) keeps a record."""
+    import subprocess
+    m = load()
+    logs = tmp_path / "logs"
+    logs.mkdir()
+    monkeypatch.setattr(m, "LOGS", logs)
+    table = "/bin/printf %s --session-id cse_01OLD\n"
+    monkeypatch.setattr(m.subprocess, "run",
+                        lambda cmd, **kw: subprocess.CompletedProcess(cmd, 0, stdout=table, stderr=""))
+    hosts = _running_host(m, tmp_path / "repo", [time.time()])
+    h = next(iter(hosts.values()))
+    dead = [logs / f"{h.debugfile.stem}-cse_01OLD.log",
+            logs / "bridge-transcript-cse_01OLD.jsonl"]
+    for f in dead:
+        f.write_text("x")
+    _age_past_retention(m, *dead)
+    state, now = _idle_check_due(m)
+    m.cycle(hosts, [], now, state)
+    assert [f.name for f in dead if f.exists()] == []
+
+
+def test_a_failed_ps_leaves_the_records_for_the_next_check(tmp_path, monkeypatch):
+    """#758: a nonzero ps exit is an unread table even when it printed rows, so
+    that idle check unlinks nothing; the next check sweeps."""
+    import subprocess
+    m = load()
+    logs = tmp_path / "logs"
+    logs.mkdir()
+    monkeypatch.setattr(m, "LOGS", logs)
+    table = "/x/claude --session-id cse_01LIVE --sdk-url wss://x\n"
+    monkeypatch.setattr(m.subprocess, "run", lambda cmd, **kw: subprocess.CompletedProcess(
+        cmd, 1, stdout=table, stderr="ps: partial"))
+    hosts = _running_host(m, tmp_path / "repo", [time.time()])
+    old = logs / "bridge-transcript-cse_01OLD.jsonl"
+    old.write_text("x")
+    _age_past_retention(m, old)
+    state, now = _idle_check_due(m)
+    assert m.cycle(hosts, [], now, state) is True
+    assert old.exists()
+
+
+def test_the_periodic_sweep_waits_when_the_process_table_is_unread(tmp_path, monkeypatch):
+    """#758: with no process table nothing proves a session dead, so that idle
+    check unlinks nothing; the next one sweeps."""
+    m = load()
+    logs = tmp_path / "logs"
+    logs.mkdir()
+    monkeypatch.setattr(m, "LOGS", logs)
+    _ps_table(monkeypatch, m, "/x/claude --print --session-id cse_01LIVE --sdk-url wss://x\n", code=1)
+    hosts = _running_host(m, tmp_path / "repo", [time.time()])
+    old = logs / "bridge-transcript-cse_01OLD.jsonl"
+    old.write_text("x")
+    _age_past_retention(m, old)
+    state, now = _idle_check_due(m)
+    assert m.cycle(hosts, [], now, state) is True
+    assert old.exists()
+
+
+def test_the_periodic_sweep_drops_a_retired_folders_logs(tmp_path, monkeypatch):
+    """#758: a folder removed from rc-hosts keeps no claim on its host-level
+    logs. They are one per folder, not one per session, and with no process
+    naming them nothing writes them any more, so they must age out like any
+    other record -- otherwise a supervisor that never restarts accumulates
+    them as folders are retired (the evaluator's refusal)."""
+    m = load()
+    logs = tmp_path / "logs"
+    logs.mkdir()
+    monkeypatch.setattr(m, "LOGS", logs)
+    _ps_table(monkeypatch, m, "/usr/bin/vim notes.txt\n")
+    h = m.Host(str(tmp_path / "retired"), "gw")     # the folder is gone: hosts no longer holds it
+    old = [h.logfile, h.debugfile, h.logfile.with_suffix(".log.1"), h.debugfile.with_suffix(".log.1"),
+           logs / "bridge-transcript-session_01GONE.jsonl"]   # a retired pin's record: no config, no row
+    kept = logs / "kept.log"
+    for f in (*old, kept):
+        f.write_text("x")
+    _age_past_retention(m, *old)
+    state, now = _idle_check_due(m)
+    assert m.cycle({}, [], now, state) is True
+    assert [f.name for f in old if f.exists()] == []
+    assert kept.exists()                                    # inside the week: kept
+
+
+def test_a_script_row_running_a_shell_keeps_no_dead_record(tmp_path, monkeypatch):
+    """#758: a `script` row whose launched command is /bin/sh does not serve a
+    session just because a later word is the wrapper's path and a --session-id
+    (the evaluator's refusal). The launched command decides, so the dead
+    session's records go while a configured host's own logs stay."""
+    m = load()
+    logs = tmp_path / "logs"
+    logs.mkdir()
+    monkeypatch.setattr(m, "LOGS", logs)
+    _ps_table(monkeypatch, m,
+              "/usr/bin/script -q /dev/null /bin/sh /x/ccmorph-rc --session-id cse_01DEAD\n")
+    h = m.Host(str(tmp_path / "repo"), "gw")       # configured, not running
+    dead = [logs / "repo.debug-cse_01DEAD.log", logs / "bridge-transcript-cse_01DEAD.jsonl"]
+    own = [h.logfile, h.debugfile]
+    for f in (*dead, *own):
+        f.write_text("x")
+    _age_past_retention(m, *dead, *own)
+    state, now = _idle_check_due(m)
+    assert m.cycle({h.folder: h}, [], now, state) is True
+    assert [f.name for f in dead if f.exists()] == []
+    assert all(f.exists() for f in own)
+
+
+def _spaced_install(tmp_path):
+    """The add-on loaded from a copy under a path with spaces, beside ccmorph-rc
+    and the modules it imports, so HERE and rc_module() both read that path."""
+    import shutil
+    here = tmp_path / "Application Support" / "cc morph" / "remote-control"
+    here.mkdir(parents=True)
+    for name in ("ccmorph-rc-hosts", "ccmorph-rc", "rc_route.py", "rc_addon.py"):
+        shutil.copy(SCRIPT.parent / name, here / name)
+    return load_script(here / "ccmorph-rc-hosts", "rc_hosts")
+
+
+@pytest.mark.parametrize("managed", [True, False], ids=["beside-a-managed-host", "alone"])
+@pytest.mark.parametrize("row", ["pty-row", "claude-row"])
+def test_the_periodic_sweep_reads_a_live_pin_and_adapter_under_a_path_with_spaces(
+        tmp_path, monkeypatch, row, managed):
+    """#758: ps joins a command's argv with spaces, so an add-on, a lib dir or a
+    claude under a path with spaces split into several words, and a reader that
+    looked for the path at a word position missed the live pin and the adapter:
+    their aged records and log were unlinked while the processes still wrote
+    them. The rows the supervisor's own commands make are matched by their whole
+    start. The pin here is in no config, so only its ps row can hold it."""
+    monkeypatch.setenv("CCMORPH_LIB_DIR", str(tmp_path / "lib dir" / "lib"))
+    m = _spaced_install(tmp_path)
+    logs = tmp_path / "logs"
+    logs.mkdir()
+    monkeypatch.setattr(m, "LOGS", logs)
+    claude = str(tmp_path / "home dir" / ".local" / "bin" / "claude")
+    monkeypatch.setattr(m.shutil, "which", lambda name, *a, **kw: claude if name == "claude" else None)
+    adapter = m.rc_module().ADAPTER
+    assert " " in str(m.HERE) and " " in str(adapter)
+    pin = m.Host(str(tmp_path / "pin"), "gw", ("--session-id", "session_01PIN"))   # not in hosts
+    hosts = _running_host(m, tmp_path / "repo", [time.time()]) if managed else {}
+    launched = (f"/usr/bin/script -q /dev/null {m.HERE / 'ccmorph-rc'} gw -- " if row == "pty-row"
+                else f"{claude} remote-control ")
+    _ps_table(monkeypatch, m,
+              f"{launched}--session-id session_01PIN --debug-file={pin.debugfile}\n"
+              f"{adapter} adapter ds --auto --parent-pid 1\n")
+    held = [logs / "bridge-transcript-session_01PIN.jsonl",
+            logs / f"{pin.debugfile.stem}-cse_01PIN.log", logs / "adapter-ds.log"]
+    dead = [logs / "bridge-transcript-cse_01DEAD.jsonl", logs / "adapter-old.log"]
+    for f in (*held, *dead):
+        f.write_text("x")
+    _age_past_retention(m, *held, *dead)
+    state, now = _idle_check_due(m)
+    assert m.cycle(hosts, [], now, state) is True
+    assert [f.name for f in held if not f.exists()] == []
+    assert [f.name for f in dead if f.exists()] == []
 
 
 def test_a_pinned_host_start_removes_its_stale_bridge_transcript(tmp_path, monkeypatch):
