@@ -107,7 +107,12 @@ func PreToolUse(in io.Reader, w io.Writer) {
 	if !portableAgent(str("subagent_type")) {
 		only = []string{session}
 	}
-	d, err := Decide(c, Request{Prompt: str("prompt"), Effort: str("effort"), Only: only, Deadline: time.Now().Add(hookBudget)})
+	// One window for both routes: hookBudget is an absolute deadline under the
+	// hooks.json timeout, and Decide hands its deadline to every ledger write
+	// that follows, so the second route shares the window the hook started
+	// with instead of re-arming it (#873).
+	deadline := time.Now().Add(hookBudget)
+	d, err := Decide(c, Request{Prompt: str("prompt"), Effort: str("effort"), Only: only, Deadline: deadline})
 	if err != nil || d.Pick == nil { // the router picks a model; it never blocks the call
 		reason := "no profile serves this agent's kind and tier"
 		if err != nil {
@@ -122,7 +127,7 @@ func PreToolUse(in io.Reader, w io.Writer) {
 	}
 	if alias == "" && session != "" { // decide again among what this session runs natively
 		d2, err := Decide(c, Request{Prompt: str("prompt"), Effort: str("effort"), Kind: d.Task.Kind, Tier: d.Task.Tier, Only: []string{session},
-			Keep: func(o Option) bool { return aliasFor(session, o.Model) != "" }, Deadline: time.Now().Add(hookBudget)})
+			Keep: func(o Option) bool { return aliasFor(session, o.Model) != "" }, Deadline: deadline})
 		if err == nil && d2.Pick != nil {
 			d2.Task = d.Task
 			d, alias = d2, aliasFor(session, d2.Pick.Model)

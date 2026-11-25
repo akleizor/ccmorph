@@ -5,9 +5,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -330,6 +333,12 @@ func TestSessionProfileInAnEdgeSessionIsWhereInferenceRuns(t *testing.T) {
 		{"account", map[string]int{"llmgate": 47670}, "here"},
 		{"there", map[string]int{"llmgate": 47670}, "there"},
 		{"route", map[string]int{"other": 47100}, ""},
+		// #595: the stale-word answer, pinned. rc_addon trusts this word only
+		// while the --switch handoff exists and falls back to the route once it
+		// is gone (unlinked after the first request) — a state no on-disk
+		// reader can see, so this port still names switched_in though the edge
+		// serves llmgate. #595's fix must update this row.
+		{"switched_in", map[string]int{"llmgate": 47670}, "switched_in"},
 	} {
 		os.RemoveAll(filepath.Join(root, "profiles", ".rc-bridge"))
 		edgeSession(t, root, c.word, c.ports)
@@ -359,6 +368,64 @@ func TestPreToolUseDecidesAgainAmongNativeAliasesWhenThePickHasNone(t *testing.T
 	PreToolUse(strings.NewReader(agentCall), &out)
 	if out.Len() != 0 {
 		t.Fatalf("no native alias leaves the call as written: %s", out.String())
+	}
+}
+
+// The two routes of one PreToolUse share the hook's one budget: hookBudget is
+// documented as an absolute window under the host's 20 s kill, and Decide
+// stores its deadline as the process's ledger-lock budget, so a second Decide
+// that re-arms it lets the hook run past the kill mid-ledger-write (#873).
+// The assertion reads the stored ledgerDeadline and the value the first route
+// armed, so it pins the arithmetic, not a timing race.
+func TestPreToolUseHandsBothRoutesOneBudget(t *testing.T) {
+	root := hookEnv(t, true)
+	gateProfile(t, root)
+	t.Setenv("CLAUDE_CONFIG_DIR", filepath.Join(root, "profiles", "gate"))
+	t.Setenv(util.TierEnvKey("sonnet"), "claude-sonnet-5-5")
+	quotaSnapshot(t, map[string]float64{"here": 0.5, "there": 0.5})
+	// The stub decider call is the first route's measurable cost. At its first
+	// arrival the first Decide has armed its budget, so the value stored then
+	// is the hook's one window; time it with the hook already running.
+	var asked atomic.Bool
+	var askedAt, firstArmed atomic.Int64
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Questions map[string]any `json:"questions"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		if _, classify := body.Questions["kind"]; classify && !asked.Swap(true) {
+			askedAt.Store(time.Now().UnixNano())
+			firstArmed.Store(ledgerDeadline.Load())
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"answers": map[string]any{
+			"kind": map[string]string{"choice": "code"}, "tier": map[string]string{"choice": "mid"},
+			"family": map[string]string{"choice": "kimi"},
+		}})
+	}))
+	defer srv.Close()
+	if err := os.WriteFile(ConfigPath(), []byte(fmt.Sprintf(`{"enabled":true,"order":["kimi-k3"],"decider":{"url":%q}}`, srv.URL)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	old := hookBudget
+	hookBudget = 4 * time.Second
+	t.Cleanup(func() { hookBudget = old })
+
+	var out bytes.Buffer
+	PreToolUse(strings.NewReader(agentCall), &out)
+	if !strings.Contains(out.String(), `"model":"sonnet"`) {
+		t.Fatalf("both routes ran so the native sonnet answers: %s", out.String())
+	}
+	if !asked.Load() {
+		t.Fatal("the stub decider never answered: the first route never ran, and the test proves nothing")
+	}
+	got := ledgerDeadline.Load()
+	if windowEnd := time.Unix(0, askedAt.Load()).Add(hookBudget); time.Unix(0, got).After(windowEnd) {
+		t.Fatalf("the ledger deadline %v runs past the hook's start plus hookBudget (%v): the second route re-armed the window the first route started",
+			time.Unix(0, got), windowEnd)
+	}
+	if armed := firstArmed.Load(); got != armed {
+		t.Fatalf("the second route re-armed the hook's ledger budget: stored %v, the first route armed %v",
+			time.Unix(0, got), time.Unix(0, armed))
 	}
 }
 
