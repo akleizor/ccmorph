@@ -244,6 +244,21 @@ func stopIfOurs(pid, tmp string) {
 	}
 }
 
+// recordNames is whether the record at path names the bridge whose rendered
+// config lives in tmp: its TMPDIR field, split as parseHandle splits it. Each
+// start makes a fresh TMPDIR (MkdirTemp), so it names one bridge for good,
+// where a PID can be reused and a port or key can repeat. A record that is
+// missing, unreadable, half written or names another bridge is not this
+// bridge's to remove.
+func recordNames(path, tmp string) bool {
+	raw, err := os.ReadFile(path)
+	if err != nil || tmp == "" {
+		return false
+	}
+	f := strings.SplitN(strings.TrimSuffix(string(raw), "\n"), " ", 4)
+	return len(f) == 4 && f[3] == tmp
+}
+
 // Release ends this session's use; the last user stops the bridge.
 func (b *SharedBridge) Release(authDir string) {
 	if b == nil || b.users == nil {
@@ -269,7 +284,14 @@ func (b *SharedBridge) Release(authDir string) {
 				pid = 0 // a bridge that died left its PID to whatever the system started next
 			}
 			BridgeStop(pid, b.TmpDir, authDir)
-			os.Remove(b.state)
+			// The record goes only while it names this bridge. Once rm has taken
+			// this bridge's files, a fresh launch may have made new ones and
+			// recorded its own bridge at the same path; removing that record
+			// leaves the fresh bridge running unrecorded, and the next launch
+			// starts a second on the same auth dir (#250, GH-837).
+			if recordNames(b.state, b.TmpDir) {
+				os.Remove(b.state)
+			}
 		}
 	}
 	b.users.Close()

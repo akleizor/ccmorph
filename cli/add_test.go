@@ -90,11 +90,12 @@ func TestAddWizardTierColumnsArePinnedByName(t *testing.T) {
 // sits under the 120 s hang bound the zsh suite shares.
 const handoffForwardDeadline = 60 * time.Second
 
-// GH-649: closing the terminal sends SIGHUP/SIGTERM to the whole foreground
-// process group. The sign-in child must be the one that dies — the parent has
-// to survive long enough to run the caller's rollback. Before the handoff the
-// default disposition killed this process outright, which here took the whole
-// test binary down with it: reaching the assertions is half the assertion.
+// GH-649, GH-837: closing the terminal sends SIGHUP/SIGTERM to the whole
+// foreground process group, and Ctrl-C sends SIGINT. The sign-in child must be
+// the one that dies — the parent has to survive long enough to run the caller's
+// rollback. Before the handoff the default disposition killed this process
+// outright, which here took the whole test binary down with it: reaching the
+// assertions is half the assertion.
 //
 // GH-851: the handoff is deliberately async, so the test must not let the
 // child's own life end the wait. The old child left on its own in ~5 s and a
@@ -103,7 +104,7 @@ const handoffForwardDeadline = 60 * time.Second
 // forwarded signal can end this wait, and the deadline — the test's own
 // bound, in the zsh suite's hang-bound spirit — names the lost forward.
 func TestHandSignInSignalsReachTheChildNotTheParent(t *testing.T) {
-	for _, sig := range []syscall.Signal{syscall.SIGTERM, syscall.SIGHUP} {
+	for _, sig := range []syscall.Signal{syscall.SIGTERM, syscall.SIGHUP, syscall.SIGINT} {
 		t.Run(sig.String(), func(t *testing.T) {
 			cmd := exec.Command("sleep", "300")
 			if err := cmd.Start(); err != nil {

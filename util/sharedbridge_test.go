@@ -6,6 +6,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"syscall"
 	"testing"
 	"time"
@@ -668,4 +669,266 @@ func TestAnUnreadableRecordWhileHeldIsRefusedLoudly(t *testing.T) {
 		t.Fatal("the bridge another session holds must keep running")
 	}
 	a.Release(auth)
+}
+
+// fdDir lists this process's open descriptor numbers on Linux (a link to
+// /proc/self/fd) and on macOS (fdesc) alike. Only the numbers are read from
+// it: macOS's fdesc gives a stat of /dev/fd/N its own device number, so the
+// file behind each descriptor is read with fstat on the descriptor itself,
+// which names the file's real device and inode on both systems.
+const fdDir = "/dev/fd"
+
+// fdsNaming is how many of this process's descriptors are open on the file
+// whose fstat is want, matched by device and inode: it is how the test below
+// sees Release open the mutex without a hook in Release itself.
+func fdsNaming(t *testing.T, want syscall.Stat_t) int {
+	t.Helper()
+	entries, err := os.ReadDir(fdDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	n := 0
+	for _, e := range entries {
+		fd, err := strconv.Atoi(e.Name())
+		if err != nil {
+			continue
+		}
+		var st syscall.Stat_t
+		if syscall.Fstat(fd, &st) == nil && st.Dev == want.Dev && st.Ino == want.Ino {
+			n++
+		}
+	}
+	return n
+}
+
+// GH-837 (merge gate, c513c37): rm takes a profile's bridge files while a
+// session of it still runs. That session's Release opened the old mutex before
+// the unlink; a fresh launch then made a new mutex and is starting its bridge.
+// The old Release must finish on the generation it owns, the old mutex and its
+// own users lock, and never queue on the fresh bridge's mutex and then remove
+// the fresh record: a bridge left running with no record lets the next launch
+// start a second one on the same auth directory (#250).
+func TestAReleaseQueuedOnARemovedMutexLeavesTheNextBridgesRecord(t *testing.T) {
+	root := t.TempDir()
+	files := BridgeFiles(root, "p")
+	old, ok, err := AcquireBridge(root, "p", func() (string, string, string, string, bool) {
+		return "0", "4100", "stub", filepath.Join(root, "old"), true
+	})
+	if err != nil || !ok {
+		t.Fatalf("the old bridge must start: ok=%v err=%v", ok, err)
+	}
+	mu, err := os.OpenFile(files[1], os.O_RDWR, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mu.Close()
+	var muStat syscall.Stat_t
+	if err := syscall.Fstat(int(mu.Fd()), &muStat); err != nil {
+		t.Fatal(err)
+	}
+	// AcquireBridge closed its own descriptor on the mutex, so the count sees
+	// only this test's one now. Any other count means it could not see
+	// Release open the mutex either: that is a broken test, never a skip, so
+	// the interleaving below runs on Linux and macOS alike.
+	if n := fdsNaming(t, muStat); n != 1 {
+		t.Fatalf("%s must show this test's own descriptor on the mutex and no other before Release; it shows %d", fdDir, n)
+	}
+	if err := syscall.Flock(int(mu.Fd()), syscall.LOCK_EX); err != nil {
+		t.Fatal(err)
+	}
+	released := make(chan struct{})
+	go func() { old.Release(filepath.Join(root, "p")); close(released) }()
+	for until := time.Now().Add(5 * time.Second); fdsNaming(t, muStat) < 2; time.Sleep(time.Millisecond) {
+		if time.Now().After(until) {
+			t.Fatal("the old Release never opened the mutex")
+		}
+	}
+	for _, p := range files { // rm takes the bridge files with the profile
+		if err := os.Remove(p); err != nil {
+			t.Fatal(err)
+		}
+	}
+	type acquired struct {
+		ok  bool
+		err error
+	}
+	entered, resume := make(chan struct{}), make(chan struct{})
+	fresh := make(chan acquired, 1)
+	go func() {
+		_, ok, err := AcquireBridge(root, "p", func() (string, string, string, string, bool) {
+			close(entered)
+			<-resume
+			return "0", "4200", "stub", filepath.Join(root, "new"), true
+		})
+		fresh <- acquired{ok, err}
+	}()
+	select {
+	case <-entered:
+	case got := <-fresh:
+		t.Fatalf("the fresh acquire ended before its start: ok=%v err=%v", got.ok, got.err)
+	case <-time.After(5 * time.Second):
+		t.Fatal("the fresh acquire never reached its start")
+	}
+	if err := syscall.Flock(int(mu.Fd()), syscall.LOCK_UN); err != nil {
+		t.Fatal(err)
+	}
+	releasedFirst := false
+	select {
+	case <-released:
+		releasedFirst = true
+	case <-time.After(5 * time.Second):
+	}
+	close(resume)
+	select {
+	case got := <-fresh:
+		if got.err != nil || !got.ok {
+			t.Fatalf("the fresh bridge must start: ok=%v err=%v", got.ok, got.err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the fresh acquire never finished")
+	}
+	select {
+	case <-released:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the old Release never finished")
+	}
+	raw, err := os.ReadFile(files[0])
+	if err != nil || !strings.Contains(string(raw), " 4200 ") {
+		t.Fatalf("the old Release removed the fresh bridge's record: %q (%v)", raw, err)
+	}
+	if !releasedFirst {
+		t.Fatal("the old Release queued on the fresh bridge's mutex instead of finishing on the one it opened")
+	}
+}
+
+// GH-837 (merge gate, c9b9a63): the same rm, but the fresh launch finishes and
+// records its bridge before the old Release gets the mutex it opened. The old
+// Release is still the last user of its own bridge, so it stops that one and
+// removes its config; the record at the path is now the fresh bridge's, and it
+// stays: a bridge left running with no record lets the next launch start a
+// second one on the same auth directory (#250).
+func TestAReleaseAfterAFreshBridgeRecordedKeepsThatRecord(t *testing.T) {
+	root := t.TempDir()
+	files := BridgeFiles(root, "p")
+	oldTmp, newTmp := filepath.Join(root, "old"), filepath.Join(root, "new")
+	old, ok, err := AcquireBridge(root, "p", func() (string, string, string, string, bool) {
+		if err := os.MkdirAll(oldTmp, 0o700); err != nil {
+			t.Error(err)
+		}
+		return "0", "4100", "stub", oldTmp, true
+	})
+	if err != nil || !ok {
+		t.Fatalf("the old bridge must start: ok=%v err=%v", ok, err)
+	}
+	mu, err := os.OpenFile(files[1], os.O_RDWR, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mu.Close()
+	var muStat syscall.Stat_t
+	if err := syscall.Fstat(int(mu.Fd()), &muStat); err != nil {
+		t.Fatal(err)
+	}
+	if n := fdsNaming(t, muStat); n != 1 {
+		t.Fatalf("%s must show this test's own descriptor on the mutex and no other before Release; it shows %d", fdDir, n)
+	}
+	if err := syscall.Flock(int(mu.Fd()), syscall.LOCK_EX); err != nil {
+		t.Fatal(err)
+	}
+	released := make(chan struct{})
+	go func() { old.Release(filepath.Join(root, "p")); close(released) }()
+	for until := time.Now().Add(5 * time.Second); fdsNaming(t, muStat) < 2; time.Sleep(time.Millisecond) {
+		if time.Now().After(until) {
+			t.Fatal("the old Release never opened the mutex")
+		}
+	}
+	for _, p := range files { // rm takes the bridge files with the profile
+		if err := os.Remove(p); err != nil {
+			t.Fatal(err)
+		}
+	}
+	fresh, ok, err := AcquireBridge(root, "p", func() (string, string, string, string, bool) {
+		if err := os.MkdirAll(newTmp, 0o700); err != nil {
+			t.Error(err)
+		}
+		return "0", "4200", "stub", newTmp, true
+	})
+	if err != nil || !ok {
+		t.Fatalf("the fresh bridge must start and record itself: ok=%v err=%v", ok, err)
+	}
+	select {
+	case <-released:
+		t.Fatal("the old Release finished before the test unlocked the mutex it opened")
+	default:
+	}
+	if err := syscall.Flock(int(mu.Fd()), syscall.LOCK_UN); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-released:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the old Release never finished")
+	}
+	raw, err := os.ReadFile(files[0])
+	if err != nil || !strings.Contains(string(raw), " 4200 ") {
+		t.Fatalf("the old Release removed the fresh bridge's record: %q (%v)", raw, err)
+	}
+	if _, err := os.Stat(oldTmp); !os.IsNotExist(err) {
+		t.Fatalf("the old Release must still stop its own bridge and remove its config: %v", err)
+	}
+	if _, err := os.Stat(newTmp); err != nil {
+		t.Fatalf("the old Release must leave the fresh bridge's config: %v", err)
+	}
+	fresh.Release(filepath.Join(root, "p"))
+	if _, err := os.Stat(files[0]); !os.IsNotExist(err) {
+		t.Fatalf("the fresh bridge's own last Release must still remove its record: %v", err)
+	}
+}
+
+// GH-837: the last session out removes the bridge record only while it names
+// that session's bridge, by its TMPDIR, the one field no other bridge shares.
+// Its own record goes, with or without the newline a hand-written one ends
+// with; another bridge's, a half-written or an unreadable one stays.
+func TestTheLastReleaseRemovesOnlyTheRecordOfItsOwnBridge(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		record func(own string) string
+		gone   bool
+	}{
+		{"its own record", func(own string) string { return "0 4100 stub " + own }, true},
+		{"its own record with a newline", func(own string) string { return "0 4100 stub " + own + "\n" }, true},
+		{"another bridge's record", func(own string) string {
+			return "0 4300 stub " + filepath.Join(filepath.Dir(own), "ccmorph-bridge-other")
+		}, false},
+		{"a record naming a longer path", func(own string) string { return "0 4100 stub " + own + "-2" }, false},
+		{"a half-written record", func(string) string { return "" }, false},
+		{"an unreadable record", func(string) string { return "garbage" }, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root := t.TempDir()
+			files := BridgeFiles(root, "p")
+			own := filepath.Join(root, "Application Support", "ccmorph-bridge-own")
+			a, ok, err := AcquireBridge(root, "p", func() (string, string, string, string, bool) {
+				return "0", "4100", "stub", own, true
+			})
+			if err != nil || !ok {
+				t.Fatalf("the bridge must start: ok=%v err=%v", ok, err)
+			}
+			want := tc.record(own)
+			if err := os.WriteFile(files[0], []byte(want), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			a.Release(filepath.Join(root, "p"))
+			raw, err := os.ReadFile(files[0])
+			if tc.gone {
+				if !os.IsNotExist(err) {
+					t.Fatalf("the last Release must remove its own bridge's record: %q (%v)", raw, err)
+				}
+				return
+			}
+			if err != nil || string(raw) != want {
+				t.Fatalf("the last Release must keep a record that does not name its bridge: %q (%v), want %q", raw, err, want)
+			}
+		})
+	}
 }
