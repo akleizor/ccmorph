@@ -6,6 +6,7 @@ just written back over a lock it could not even make. The lock is the session's
 cover: only the paths that start claude refuse without it.
 """
 import fcntl
+import json
 import os
 from pathlib import Path
 import subprocess
@@ -50,6 +51,15 @@ def exclusive_holder(state, name="gw"):
     lock.parent.mkdir(parents=True, exist_ok=True)
     holder = open(lock, "a+")
     fcntl.flock(holder, fcntl.LOCK_EX)
+    return holder
+
+
+def shared_holder(state, name="gw"):
+    """Hold the profile's live lock the way a running session does: shared."""
+    lock = state / ".locks" / f"{name}.live"
+    lock.parent.mkdir(parents=True, exist_ok=True)
+    holder = open(lock, "a+")
+    fcntl.flock(holder, fcntl.LOCK_SH)
     return holder
 
 
@@ -121,3 +131,34 @@ def test_a_launch_refusal_names_a_lock_file_that_cannot_be_made(tmp_path):
     assert "could not be created" in result.stderr
     assert "nothing started" in result.stderr
     assert "another launch" not in result.stderr
+
+
+def test_login_while_a_session_runs_saves_the_approval_and_leaves_the_file_alone(tmp_path):
+    # #299: a session holds the live lock shared and rewrites .claude.json
+    # itself, so the approval must not rewrite the file under it. login saves
+    # the answer for the next launch to record; the file is left alone.
+    home, state = fresh_state(tmp_path)
+    key = "sk-issue-299-test-key-0001"
+    (state / "gw.conf").write_text(f"type=apikey\napi_key={key}\n")
+    (state / "profiles" / "gw").mkdir(parents=True)
+    claude_json = state / "profiles" / "gw" / ".claude.json"
+    body = json.dumps({"numStartups": 3,
+                       "customApiKeyResponses": {"approved": [], "rejected": [key[-20:]]}})
+    claude_json.write_text(body)
+
+    holder = shared_holder(state)
+    try:
+        result = run(home, state, "login gw")
+    finally:
+        holder.close()
+
+    assert result.returncode == 0, result.stderr
+    assert "next launch" in result.stdout, result.stdout
+    assert result.stderr == "", result.stderr
+    assert claude_json.read_text() == body
+    markers = list((state / ".locks").glob("gw.approve-*"))
+    assert len(markers) == 1, markers
+    marker = markers[0]
+    assert key not in marker.name and key[-20:] not in marker.name, marker.name
+    assert marker.stat().st_size == 0, marker.name
+    assert marker.stat().st_mode & 0o777 == 0o600, marker.name

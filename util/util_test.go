@@ -106,13 +106,24 @@ func migrateFixture(t *testing.T) (legacy, target string) {
 	return
 }
 
+// pickerFile is a .claude.json in profile p's home under a fresh profiles dir:
+// the picker's rewrite takes the profile's live lock beside that dir (#861).
+func pickerFile(t *testing.T) (profiles, path string) {
+	t.Helper()
+	profiles = filepath.Join(t.TempDir(), "profiles")
+	if err := os.MkdirAll(filepath.Join(profiles, "p"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	return profiles, filepath.Join(profiles, "p", ".claude.json")
+}
+
 // .claude.json is the user's file: a rewrite that changes one key keeps the others where they were.
 func TestPickerRewriteKeepsTheUsersKeyOrder(t *testing.T) {
-	path := filepath.Join(t.TempDir(), ".claude.json")
+	profiles, path := pickerFile(t)
 	if err := os.WriteFile(path, []byte(`{"zeta": 1.0, "alpha": {"y": 1, "b": 2}}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	rewriteJSON(path, func(doc *ordjson.Obj) bool { doc.Set("mid", true); return true })
+	rewriteJSON(profiles, "p", path, func(doc *ordjson.Obj) bool { doc.Set("mid", true); return true })
 	got, _ := os.ReadFile(path)
 	if want := "{\n  \"zeta\": 1.0,\n  \"alpha\": {\n    \"y\": 1,\n    \"b\": 2\n  },\n  \"mid\": true\n}"; string(got) != want {
 		t.Fatalf("got %q want %q", got, want)
@@ -244,12 +255,12 @@ func TestLaunchDiagnosticsKeepsTheWarningsWhenALayerCannotBeMerged(t *testing.T)
 // must come back byte-for-byte. An unpaired \ud83d escape used to be decoded
 // to a surrogate and written out as U+FFFD, silently mutating the file.
 func TestPickerRewriteKeepsALoneSurrogateByteForByte(t *testing.T) {
-	path := filepath.Join(t.TempDir(), ".claude.json")
+	profiles, path := pickerFile(t)
 	want := "{\n  \"history\": [\n    \"a b\\ud83d c\"\n  ]\n}"
 	if err := os.WriteFile(path, []byte(want), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	rewriteJSON(path, func(*ordjson.Obj) bool { return true })
+	rewriteJSON(profiles, "p", path, func(*ordjson.Obj) bool { return true })
 	got, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatal(err)
@@ -262,12 +273,12 @@ func TestPickerRewriteKeepsALoneSurrogateByteForByte(t *testing.T) {
 // A file with raw invalid UTF-8 is refused, never accepted and rewritten with
 // the replacement character.
 func TestPickerRewriteLeavesInvalidUTF8Alone(t *testing.T) {
-	path := filepath.Join(t.TempDir(), ".claude.json")
+	profiles, path := pickerFile(t)
 	want := "{\"k\":\"l\xe9on\"}"
 	if err := os.WriteFile(path, []byte(want), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	rewriteJSON(path, func(doc *ordjson.Obj) bool { doc.Set("x", true); return true })
+	rewriteJSON(profiles, "p", path, func(doc *ordjson.Obj) bool { doc.Set("x", true); return true })
 	got, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatal(err)
