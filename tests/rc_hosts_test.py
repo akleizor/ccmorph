@@ -1184,6 +1184,30 @@ def test_archived_line_is_dormant_and_cleaned_only_after_idle_limit(tmp_path):
     assert m.parse(text) == {str(folder): ("profile", ("--session-id", "session_01XB"))}
 
 
+@pytest.mark.parametrize("marker", ["archived={folder}", "archived= {folder}  # note"],
+                         ids=["plain", "space-and-comment"])
+def test_the_retired_pin_takes_its_archived_marker_with_it(tmp_path, marker):
+    """GH-847 review: archived_set() reads `archived= <folder> # note` as the
+    folder under the one line rule, but edit_config() matched the marker with
+    `line[9:]` -- the space included -- resolving " <folder>", so the marker
+    stayed after the pin it retired was dropped. The folder and its sibling pin
+    stayed dormant under a marker that should have gone. Reader and writer now
+    extract the value the same way."""
+    m = load()
+    cfg = tmp_path / "rc-hosts"
+    folder = tmp_path / "bridge"
+    folder.mkdir()
+    cfg.write_text(f"route=profile\n{marker.format(folder=folder)}\n"
+                   f"{folder} -- --session-id session_01X\n"
+                   f"{folder} -- --session-id session_01XB\n")
+    assert m.parse(cfg.read_text()) == {}           # the marker makes the folder dormant
+    m.edit_config(cfg, str(folder), "session_01X", loaded=cfg.read_text())
+    text = cfg.read_text()
+    assert "archived=" not in text                  # its marker went with its pin
+    assert text.count("# idle-retired") == 1        # its own line, not the sibling's
+    assert m.parse(text) == {str(folder): ("profile", ("--session-id", "session_01XB"))}
+
+
 def test_an_edit_that_cannot_be_statd_back_comes_back_without_a_stamp(tmp_path, monkeypatch, capsys):
     """#355: the marker reached the file but nothing could be committed for it --
     the post-write stat failed. The caller reads that as landed-and-unacked (the
@@ -1549,20 +1573,65 @@ def test_a_retired_folder_is_not_hosted(tmp_path):
     assert m.parse(f"route=gw\nretire={tmp_path}\n{other}\n") == {str(other): ("gw", ())}
 
 
-def settings_samples(m, tmp_path):
-    return {"idle_days=": "3", "purge_days=": "3", "park_hours=": "3",
-            "permission=": "plan", "inference=": "oli",
-            "archived=": str(tmp_path / "archived"),
-            "retire=": str(tmp_path / "retired"), m.TIER_PREFIX: "opus=m"}
+def test_every_settings_reader_applies_parse_s_line_rule(tmp_path):
+    """GH-847: a settings line must mean to its reader what parse() sees, not the
+    raw bytes. Read off the raw line, `retire=<folder>#done` retired a folder
+    spelled with the note while the one the operator named stayed hosted,
+    `inference=oli#x` handed inference() a profile named `oli#x`, and
+    `permission= plan` -- a line parse() skips as a setting -- read as no line at
+    all, in silence. The `#` cut and the whitespace after `=` are the line rule's,
+    and every settings reader applies them alike."""
+    m = load()
+    folder = str(tmp_path / "retired")
+    for line in (f"retire={folder}#done", f"retire={folder}  # done"):
+        assert m.retire_set(f"{line}\n") == {folder}, line
+        assert m.parse(f"route=gw\n{line}\n{folder}\n") == {}, line
+    assert m.inference_name("inference=oli#x\n") == "oli"
+    assert m.inference_name("inference=oli # x\n") == "oli"
+    assert m.inference_name("inference= oli # x\n") == "oli"   # whitespace after `=` is not the value
+    assert m.permission_mode("permission= plan\n") == "plan"
+    assert m.permission_mode("permission=plan  # the phone approves nothing\n") == "plan"
+    assert m.idle_days("idle_days= 3 # note\n") == 3.0
+    assert m.tier_map("route=gw\ntier.opus = m  # note\n") == {"opus": "m"}
+    # What parse() hides, no reader sees: a commented-out settings line.
+    assert m.retire_set(f"# retire={folder}\n") == set()
+    assert m.inference_name("# inference=oli\n") is None
+    assert m.permission_mode("# permission=plan\n") is None
 
 
-def test_every_settings_prefix_has_a_reader_and_is_skipped(tmp_path):
+def test_a_permission_value_no_mode_names_is_refused_out_loud(capsys):
+    """GH-847: `permission=` is skipped by parse() as a setting, so a reader that
+    hands back None for a value it read leaves the operator believing a mode is
+    in force. A value the CLI does not accept is named on one line."""
+    m = load()
+    assert m.permission_mode("permission=plan extra\n") is None
+    assert "permission=plan extra" in capsys.readouterr().out
+
+
+def settings_samples(m, tmp_path, *, commented=False):
+    """The one line each registry prefix reads. Plain, it is the baseline the
+    registry-removal meta test needs: a reader that quietly falls back to the raw
+    line still consumes `archived=/path`. Commented, it is how an operator may
+    write the same line -- a space after `=` and an inline `#` note -- which the
+    line rule must give every reader alike (#847)."""
+    note, pad = ("  # note", " ") if commented else ("", "")
+    return {"idle_days=": f"{pad}3{note}", "purge_days=": f"{pad}3{note}",
+            "park_hours=": f"{pad}3{note}",
+            "permission=": f"{pad}plan{note}", "inference=": f"{pad}oli{note}",
+            "archived=": f"{pad}{tmp_path / 'archived'}{note}",
+            "retire=": f"{pad}{tmp_path / 'retired'}{note}",
+            m.TIER_PREFIX: f"opus{pad}={pad}m{note}"}
+
+
+@pytest.mark.parametrize("commented", [False, True], ids=["plain", "space-and-comment"])
+def test_every_settings_prefix_has_a_reader_and_is_skipped(tmp_path, commented):
     """GH-655: the skip tuple and the per-key readers are one registry now, so
     neither can drift: a reader cannot exist without its line being skipped
     (`inference=`, which became a ghost host) and a skipped prefix cannot be
-    inert (`retire=`, which had no parser before this)."""
+    inert (`retire=`, which had no parser before this). Both written forms count:
+    the plain line, and the same line with a space after `=` and a `#` note."""
     m = load()
-    samples = settings_samples(m, tmp_path)
+    samples = settings_samples(m, tmp_path, commented=commented)
     assert set(samples) == set(m.SETTINGS_READERS)
     assert tuple(m.SETTINGS_READERS) == m.SETTINGS_PREFIXES
     for prefix, reader in m.SETTINGS_READERS.items():
@@ -1572,14 +1641,16 @@ def test_every_settings_prefix_has_a_reader_and_is_skipped(tmp_path):
         assert reader(text) != reader(f"route=gw\n{tmp_path}\n"), f"{prefix} has no reader"
 
 
-def test_no_reader_reads_without_its_registry_entry(tmp_path, monkeypatch):
+@pytest.mark.parametrize("commented", [False, True], ids=["plain", "space-and-comment"])
+def test_no_reader_reads_without_its_registry_entry(tmp_path, monkeypatch, commented):
     """GH-655 review: SETTINGS_READERS is the source of truth for the readers
     too, not only for parse()'s skip. Each reader finds its own prefix there, so
     deleting an entry silences that reader in the same edit that stops the skip;
     a reader left alive would consume a line parse() now hosts as a folder --
-    the `inference=` ghost host."""
+    the `inference=` ghost host. The plain sample is the one a hard-coded raw
+    matcher would still consume, so the deletion is checked on both forms."""
     m = load()
-    samples = settings_samples(m, tmp_path)
+    samples = settings_samples(m, tmp_path, commented=commented)
     baseline = f"route=gw\n{tmp_path}\n"
     for prefix, reader in list(m.SETTINGS_READERS.items()):
         with monkeypatch.context() as patch:
