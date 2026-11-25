@@ -736,6 +736,18 @@ def test_a_session_word_is_read_only_from_a_plain_id(tmp_path):
     assert session_target(None, "cse_1") is None
 
 
+def test_a_session_word_is_found_by_the_header_claude_code_really_sends(tmp_path):
+    """Claude Code sends a UUIDv5 of the session's --sdk-url, never the cse_ id (2026-11-25)."""
+    from rc_route import header_id, session_target
+    # a real pair: the Start UI host's --sdk-url id and the transcript id its requests carried
+    assert header_id("cse_01UYCe7WrYRm399JWcJrn7Rd") == "c3ca46e6-52e5-57cc-a1c3-6a9e88650085"
+    (tmp_path / "cse_01UYCe7WrYRm399JWcJrn7Rd").write_text("account\n")
+    (tmp_path / "cse_other").write_text("gw\n")
+    assert session_target(str(tmp_path), "c3ca46e6-52e5-57cc-a1c3-6a9e88650085") == "account"
+    assert session_target(str(tmp_path), header_id("cse_other")) == "gw"
+    assert session_target(str(tmp_path), header_id("cse_absent")) is None
+
+
 def test_inference_switch_is_read_live_and_defaults_to_the_route(tmp_path):
     switch = tmp_path / "inference"
     assert inference_target(None) == "route"

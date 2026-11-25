@@ -143,7 +143,9 @@ ccmorph-rc <route-profile> --unswitch cse_...           # it follows the shared 
 ```
 
 Every request carries its session's id (`X-Claude-Code-Session-Id`, the same for its
-subagents), so one session can run on its own profile while the rest share the switch.
+subagents: a UUIDv5 Claude Code derives from the session's `--sdk-url`, which the proxy
+matches to the `cse_...` id), so one session can run on its own profile while the rest
+share the switch.
 A profile already up beside the live edge with the same tiers is reused, not started
 again. A tier the route pinned outside the Claude family (fable on a gateway model)
 reaches another target as that target's own model for the alias.
