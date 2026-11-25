@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -87,14 +88,34 @@ func TestChooseTakesFreeThenBehindPaceThenAheadThenPaid(t *testing.T) {
 	}
 }
 
-func TestChooseTakesTheCheapestModelInsideOneProfile(t *testing.T) {
+func TestChooseTakesTheCheapestModelInsideOnePaidProfile(t *testing.T) {
 	opts := []Option{
-		{Profile: "gw", Model: "dear", Class: "free", Price: 10, Rank: 1},
-		{Profile: "gw", Model: "cheap", Class: "free", Price: 1, Rank: 2},
-		{Profile: "gw", Model: "unpriced", Class: "free", Price: math.Inf(1), Rank: 1},
+		{Profile: "gw", Model: "dear", Class: "api", Price: 10, Rank: 1},
+		{Profile: "gw", Model: "cheap", Class: "api", Price: 1, Rank: 2},
+		{Profile: "gw", Model: "unpriced", Class: "api", Price: math.Inf(1), Rank: 1},
 	}
 	if got := Choose(opts, nil)[0].Model; got != "cheap" {
 		t.Fatalf("got %s", got)
+	}
+}
+
+// 2026-11-25: on the free gateway every writing task went to a GPT model whose
+// list price was lower than Gemini's, though writing prefers Gemini.
+func TestChooseOnAFreeProfileFollowsTheKindBeforeListPrice(t *testing.T) {
+	opts := []Option{
+		{Profile: "gw", Model: "gpt-cheap", Class: "free", Price: 1, Rank: 3},
+		{Profile: "gw", Model: "gemini-dear", Class: "free", Price: 10, Rank: 1},
+		{Profile: "gw", Model: "unranked", Class: "free", Price: 0.5, Rank: 4},
+	}
+	if got := Choose(opts, nil)[0].Model; got != "gemini-dear" {
+		t.Fatalf("got %s, want the kind's first family", got)
+	}
+	opts = []Option{
+		{Profile: "gw", Model: "a", Class: "free", Price: 10, Rank: 4},
+		{Profile: "gw", Model: "b", Class: "free", Price: 1, Rank: 4},
+	}
+	if got := Choose(opts, nil)[0].Model; got != "b" {
+		t.Fatalf("got %s: equally ranked free options still go cheapest first", got)
 	}
 }
 
@@ -284,5 +305,19 @@ func TestANamedProfileAndModelRunAsNamedPastEveryRoutingFilter(t *testing.T) {
 	}
 	if _, err := Decide(c, Request{Prompt: "x", Kind: "code", Tier: "mid", Profile: "nope", Model: "m"}); err == nil {
 		t.Fatal("an unknown named profile must fail loudly")
+	}
+}
+
+func TestConfigKindsOverrideOnlyTheKindsTheyName(t *testing.T) {
+	t.Setenv("CCMORPH_STATE_DIR", t.TempDir())
+	if err := os.WriteFile(ConfigPath(), []byte(`{"kinds":{"writing":["gpt"]}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	c, err := LoadConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(c.Kinds["writing"], []string{"gpt"}) || !slices.Equal(c.Kinds["mechanical"], defaultKinds["mechanical"]) {
+		t.Fatalf("kinds %v", c.Kinds)
 	}
 }

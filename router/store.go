@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"maps"
 	"math"
 	"os"
 	"path/filepath"
@@ -44,13 +45,14 @@ type Config struct {
 }
 
 var defaultKinds = map[string][]string{
-	"writing":   {"gemini", "claude", "gpt"},
-	"code":      {"claude", "gpt"},
-	"design":    {"claude", "gpt"},
-	"search":    {"grok", "gemini-flash", "qwen"},
-	"vision":    {"gemini", "gemini-flash", "claude", "gpt"},
-	"x":         {"grok"},
-	"image_gen": {"gpt"},
+	"writing":    {"gemini", "claude", "gpt"},
+	"mechanical": {"qwen", "deepseek"},
+	"code":       {"claude", "gpt"},
+	"design":     {"claude", "gpt"},
+	"search":     {"grok", "gemini-flash", "qwen"},
+	"vision":     {"gemini", "gemini-flash", "claude", "gpt"},
+	"x":          {"grok"},
+	"image_gen":  {"gpt"},
 }
 
 func ConfigPath() string { return filepath.Join(paths.ProfileRoot(), "router.json") }
@@ -69,9 +71,10 @@ func LoadConfig() (Config, error) {
 			return c, err
 		}
 	}
-	if c.Kinds == nil {
-		c.Kinds = defaultKinds
-	}
+	// A kind router.json names replaces that kind's default; a kind it omits keeps it.
+	kinds := maps.Clone(defaultKinds)
+	maps.Copy(kinds, c.Kinds)
+	c.Kinds = kinds
 	if c.TierCap == nil {
 		// Size benchmarks rank coding and reasoning, not prose.
 		c.TierCap = map[string]string{"writing": "mid"}

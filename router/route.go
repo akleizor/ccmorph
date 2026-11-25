@@ -266,7 +266,9 @@ func classRank(o Option) int {
 }
 
 // Choose sorts the options: the user's order first, then class, largest slack,
-// cheapest, preference rank. The first one is the pick.
+// cheapest, preference rank. The first one is the pick. Between two free
+// options the kind's preference comes before list price: a free model costs
+// nothing, so its list price must not override the kind's family.
 func Choose(opts []Option, order []string) []Option {
 	out := slices.Clone(opts)
 	pos := func(m string) int {
@@ -280,6 +282,7 @@ func Choose(opts []Option, order []string) []Option {
 			float64(pos(a.Model) - pos(b.Model)),
 			float64(classRank(a) - classRank(b)),
 			b.Slack - a.Slack,
+			freeRank(a, b),
 			cmpInf(a.Price, b.Price),
 			float64(a.Rank - b.Rank),
 		} {
@@ -290,6 +293,15 @@ func Choose(opts []Option, order []string) []Option {
 		return strings.Compare(a.Profile+"\x00"+a.Model, b.Profile+"\x00"+b.Model)
 	})
 	return out
+}
+
+// freeRank orders two free options by the kind's preference and leaves any
+// other pair to price.
+func freeRank(a, b Option) float64 {
+	if a.Class != "free" || b.Class != "free" {
+		return 0
+	}
+	return float64(a.Rank - b.Rank)
 }
 
 func cmpInf(a, b float64) float64 {
