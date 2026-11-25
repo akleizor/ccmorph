@@ -19,6 +19,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"syscall"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -1547,31 +1548,67 @@ func TestCredentialIsNeverForwardedAcrossARedirect(t *testing.T) { // test_crede
 }
 
 func TestStopProcessesWaitsThenKillsAStubbornChild(t *testing.T) { // test_shutdown_waits_then_kills_a_stubborn_child
-	dir := t.TempDir()
-	ready, term := filepath.Join(dir, "ready"), filepath.Join(dir, "term")
-	cmd := exec.Command("sh", "-c", fmt.Sprintf(`trap 'echo got >> %s' TERM; : > %s; while :; do sleep 0.1; done`, term, ready))
-	p, err := start(cmd)
+	// stopProcesses's bounded contract: TERM, wait each live process's own
+	// grace, SIGKILL the survivors. The old proof pinned "asked first" to a
+	// trap the child runs before the grace ends, so a loaded scheduler could
+	// outrun it and a correct shutdown read as "never asked to terminate
+	// first" (GH-880). The witness is now one the scheduler cannot outrun:
+	// a second child keeps TERM's default disposition, so the kernel records
+	// the termination however loaded the machine is, and its exit signal
+	// proves the ask on the first and only stop, with no retry to mask a
+	// real omission. The stubborn child ignores TERM and must die by
+	// SIGKILL: what the grace literal now times is stopProcesses' own
+	// clock, which nothing outside it can beat.
+	// The ready file is written after the trap installs: a TERM that raced
+	// the exec would find the default disposition and kill a child that was
+	// never stubborn, so the stop waits for the boot handshake. It times
+	// only the child starting, which no scheduler dispute is about.
+	ready := filepath.Join(t.TempDir(), "ready")
+	asked := exec.Command("sleep", "30")
+	stubborn := exec.Command("sh", "-c", fmt.Sprintf(`trap '' TERM; : > %s; while :; do sleep 0.1; done`, ready))
+	pq, err := start(asked)
 	if err != nil {
 		t.Fatal(err)
 	}
-	for i := 0; i < 100; i++ {
+	ps, err := start(stubborn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	booted := false
+	for i := 0; i < 500 && !booted; i++ {
 		if _, err := os.Stat(ready); err == nil {
-			break
+			booted = true
+		} else {
+			time.Sleep(20 * time.Millisecond)
 		}
-		time.Sleep(20 * time.Millisecond)
 	}
-	swap(t, &stopGrace, 400*time.Millisecond)
+	if !booted {
+		stopProcesses(ps, pq)
+		t.Fatal("the stubborn child never installed its trap")
+	}
+	grace := 400 * time.Millisecond
+	swap(t, &stopGrace, grace)
 	began := time.Now()
-	stopProcesses(p)
-	if !p.exited() {
-		t.Fatal("the stubborn child outlived stopProcesses")
+	stopProcesses(ps, pq)
+	if !ps.exited() || !pq.exited() {
+		t.Fatal("a child outlived stopProcesses")
 	}
-	if time.Since(began) < 400*time.Millisecond {
+	if time.Since(began) < grace {
 		t.Error("SIGKILL came before the grace period ended")
 	}
-	if b, _ := os.ReadFile(term); !strings.Contains(string(b), "got") {
-		t.Error("the child was never asked to terminate first")
+	if !diedBy(pq, syscall.SIGTERM) {
+		t.Errorf("the child was never asked to terminate first: %v", pq.cmd.ProcessState)
 	}
+	if !diedBy(ps, syscall.SIGKILL) {
+		t.Errorf("the stubborn child was not escalated to SIGKILL: %v", ps.cmd.ProcessState)
+	}
+}
+
+// diedBy reports whether a stopped child the test ran was killed by the
+// given signal, the kernel's own record of which ask reached it first.
+func diedBy(p *proc, sig syscall.Signal) bool {
+	ws, ok := p.cmd.ProcessState.Sys().(syscall.WaitStatus)
+	return ok && ws.Signaled() && ws.Signal() == sig
 }
 
 func TestTetherWatchesEveryChildOfOneAdapter(t *testing.T) { // test_sigkilled_adapter_does_not_leak_its_children
