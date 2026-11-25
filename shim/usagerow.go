@@ -287,13 +287,14 @@ func onStop() {
 // writeRow is the hook's row writer; a test swaps it to stop a pass mid-backlog.
 var writeRow = writeUsageRow
 
+// scanNote makes logScanOnce's note once per process.
+var scanNote sync.Once
+
 // logScanOnce records a third-party read failure once per process: an
 // unreadable file in an archived neighbor (a root-owned row from a past
 // sudo'd compaction) must stop this row's redirect or ownership lookups, not
 // usage recording forever. The cursor pins only on this row's own write or
 // lock failure; a scan that could not see is treated as nothing found.
-var scanNote sync.Once
-
 func logScanOnce(err error) {
 	scanNote.Do(func() { fmt.Fprintln(os.Stderr, "ccmorph usage hook:", err) })
 }

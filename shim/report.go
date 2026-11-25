@@ -86,14 +86,14 @@ var rowsListed = func() {}
 // report count it once, not twice (#537).
 var flatRowsRead = func() {}
 
-// report is the spend window and verdict cohort; accepted costs span the whole
-// task. Its read writes nothing, and after it the flat rows of a pre-shard
-// store are moved into their day folders — a relocation, never a change to a
-// row's numbers.
 // maxReportDays is the largest day count time.Duration holds. The guard used
 // 739000, which overflows and turns `since` into a future time (#636).
 const maxReportDays = float64(math.MaxInt64 / int64(24*time.Hour))
 
+// report is the spend window and verdict cohort; accepted costs span the whole
+// task. Its read writes nothing, and after it the flat rows of a pre-shard
+// store are moved into their day folders — a relocation, never a change to a
+// row's numbers.
 func report(days float64) {
 	base := paths.StateDir()
 	now := time.Now().UTC()

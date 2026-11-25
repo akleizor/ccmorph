@@ -33,14 +33,14 @@ func helpAsked(words []string) bool {
 	return slices.Contains(words, "-h") || slices.Contains(words, "--help")
 }
 
-// verbArity is the most words each public command takes after the verb itself.
-// One more is refused before anything runs. run and probe are handled apart:
-// run's words after the profile are Claude Code's, and probe's are parsed by
-// context-probe, which reports its own usage.
 // verbOptions is every --option add and quota take; any other --word is
 // refused by name (#636).
 var verbOptions = map[string][]string{"add": nil, "quota": {"--json"}}
 
+// verbArity is the most words each public command takes after the verb itself.
+// One more is refused before anything runs. run and probe are handled apart:
+// run's words after the profile are Claude Code's, and probe's are parsed by
+// context-probe, which reports its own usage.
 var verbArity = map[string]int{"list": 0, "use": 1, "cred": 1, "inspect": 1, "context": 3,
 	"models": 2, "rm": 1, "mv": 2, "get": 2, "set": 3, "config": 1, "add": 1, "login": 1,
 	"hop": 1, "quota": 2, "doctor": 2, "update": 1, "uninstall": 0, "version": 0, "help": 1,
