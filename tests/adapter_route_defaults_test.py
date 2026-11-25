@@ -16,6 +16,7 @@ case copies the shipped library into an isolated state dir, stubs `claude`,
 """
 import json
 import os
+import re
 from pathlib import Path
 import shutil
 import signal
@@ -348,7 +349,18 @@ def _gh433_record(launch, row):
             'env': {k: ('<minted per launch>' if k in GH433_MINTED else scrub(v))
                     for k, v in sorted(env.items()) if k not in GH433_VOLATILE},
             'files': files,
-            'stderr': scrub(launch.last.stderr)}
+            'stderr': scrub(_without_readiness(launch.last.stderr))}
+
+
+# The adapter's progress lines speak only when its start passes a second
+# (util/adapterstart.go), so they say how loaded the machine is, not what the
+# launch wrote; the snapshot pins the rest (#902).
+_READINESS = re.compile(r"ccmorph: (Starting adapter for '[^\n]*'…"
+                        r"|Waiting for '[^\n]*' adapter \(\d+s\); Ctrl-C to cancel\.)\n")
+
+
+def _without_readiness(text):
+    return _READINESS.sub('', text)
 
 
 @pytest.mark.parametrize('case', ['token', 'gateway', 'gateway-no-model', 'hazard', 'hazard-withheld'])
