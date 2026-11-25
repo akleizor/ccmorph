@@ -65,6 +65,26 @@
   A session that outlives its provider profile's `rm` now removes the bridge
   record only while it names that session's own bridge, so a fresh launch's
   bridge is never left running unrecorded for the next launch to double.
+- **`ccmorph uninstall` names the shared session history it leaves.** The list
+  of what stays now includes the transcripts, prompt history and pasted text
+  under `~/.claude`, with the command that removes them, as the guide promised.
+  A history store that is a symlink is followed only to a store of its own name
+  outside `~/.claude`; any other target is named and left alone, and a state
+  root, code dir or receipts link that resolves into `~/.claude` is named as
+  the link too, without a trailing slash. A spelling is read the way the
+  kernel reads it, so a `..` after a symlink names the root the override
+  really selects, not an unrelated link. Any entry whose removal would still
+  reach what native `claude` reads — the home, `~/.claude`, `~/.claude.json`,
+  anything inside `~/.claude` but the session history, what a symlink in
+  `~/.claude` leads to (link after link), or any link or directory on the way
+  to one of them, a link in the middle of a target included — stays on the
+  list but off the command, so following the printed `rm -rf` never reaches
+  native `claude`'s settings or plugins. When `~/.claude`, its plugin store or
+  another link in it leads to the home or above it, what native `claude` reads
+  there cannot be searched, so no `rm -rf` line is printed at all. The state
+  root's line also names ccmorph's own program files when the root is the
+  install directory, so the list no longer says only your data stays while a
+  runnable copy remains (#810).
 - **`ccmorph doctor <profile>` no longer calls a provider profile ready when
   its bridge cannot start.** Doctor now asks the launch's own check: with
   `cliproxyapi` missing it fails and names the install step, and a missing or
