@@ -1547,31 +1547,129 @@ func TestCredentialIsNeverForwardedAcrossARedirect(t *testing.T) { // test_crede
 }
 
 func TestStopProcessesWaitsThenKillsAStubbornChild(t *testing.T) { // test_shutdown_waits_then_kills_a_stubborn_child
+	// stopProcesses's bounded contract is what this test may pin to a clock:
+	// TERM, wait the whole grace, SIGKILL. That the OS then runs a foreign
+	// child's trap inside the window is not its contract, and the old proof
+	// handed the child a 400 ms literal and required its marker inside it:
+	// under parallel load the scheduler outran the literal and a correct
+	// shutdown reported "never asked to terminate first" (GH-880). Now the
+	// grace is derived from the child's own measured scheduling round-trip,
+	// and a window in which the child never ran at all is a property of the
+	// machine, not of stopProcesses: re-measure, a bounded number of times.
+	// The failure modes stay red on their own checks: a KILL-only
+	// stopProcesses leaves an unsignaled child ticking until the kill (the
+	// marker check), and killing before the grace collapses the elapsed
+	// time under any grace the measurement could propose (the timing check).
+	var s stubbornStop
+	for attempt := 0; attempt < 6; attempt++ {
+		s = stopStubbornChildOnce(t)
+		if s.booted && (s.marker || s.outlived || s.elapsed < s.grace || s.ranLate) {
+			break // an outcome caused by the product, not the scheduler
+		}
+	}
+	if !s.booted {
+		t.Fatal("the machine never scheduled the child; the shutdown contract is not observable")
+	}
+	if s.outlived {
+		t.Fatal("the stubborn child outlived stopProcesses")
+	}
+	if s.elapsed < s.grace {
+		t.Error("SIGKILL came before the grace period ended")
+	}
+	if !s.marker {
+		t.Error("the child was never asked to terminate first")
+	}
+}
+
+// stubbornStop is one measured attempt at the stubborn-child shutdown.
+type stubbornStop struct {
+	grace, elapsed time.Duration
+	marker         bool // the child's TERM trap ran and wrote its file
+	outlived       bool // stopProcesses returned with the child alive
+	ranLate        bool // the heartbeat grew in the window's second half
+	booted         bool // the child ran often enough to be measured
+}
+
+// stopStubbornChildOnce measures the child's scheduling round-trip under the
+// load of the moment, gives stopProcesses six times that round-trip (never
+// less than the old 400 ms floor, never more than eight seconds), stops one
+// stubborn child and reports what was observed. ranLate separates the two
+// reasons a marker can stay missing: an unsignaled child keeps heartbeating
+// (a broken contract), while a child the scheduler never woke heartbeats not
+// at all (a loaded machine) — the child appends one line per loop turn, so
+// every line is proof it was given a turn, and a pending TERM is answered
+// on the same wake-up that writes the next line.
+func stopStubbornChildOnce(t *testing.T) stubbornStop {
+	t.Helper()
 	dir := t.TempDir()
-	ready, term := filepath.Join(dir, "ready"), filepath.Join(dir, "term")
-	cmd := exec.Command("sh", "-c", fmt.Sprintf(`trap 'echo got >> %s' TERM; : > %s; while :; do sleep 0.1; done`, term, ready))
+	term, beat := filepath.Join(dir, "term"), filepath.Join(dir, "beat")
+	cmd := exec.Command("sh", "-c", fmt.Sprintf(`trap 'echo got >> %s' TERM; while :; do echo tick >> %s; sleep 0.05; done`, term, beat))
 	p, err := start(cmd)
 	if err != nil {
 		t.Fatal(err)
 	}
-	for i := 0; i < 100; i++ {
-		if _, err := os.Stat(ready); err == nil {
-			break
+	maxGap, lines, last := time.Duration(0), 0, time.Now()
+	for time.Since(last) < 5*time.Second && lines < 3 {
+		if n := linesOf(beat); n > lines {
+			if lines > 0 {
+				if d := time.Since(last); d > maxGap {
+					maxGap = d
+				}
+			}
+			lines, last = n, time.Now()
+		} else {
+			time.Sleep(2 * time.Millisecond)
 		}
-		time.Sleep(20 * time.Millisecond)
 	}
-	swap(t, &stopGrace, 400*time.Millisecond)
+	var s stubbornStop
+	if lines < 3 { // no measurement is possible on this machine right now
+		p.kill()
+		return s
+	}
+	s.booted = true
+	s.grace = 400 * time.Millisecond
+	if g := 6 * maxGap; g > s.grace {
+		s.grace = g
+	}
+	if s.grace > 8*time.Second {
+		s.grace = 8 * time.Second
+	}
+	swap(t, &stopGrace, s.grace)
+	var lastGrow atomic.Int64
+	quit := make(chan struct{})
+	go func() {
+		for seen := lines; ; {
+			if n := linesOf(beat); n > seen {
+				seen = n
+				lastGrow.Store(time.Now().UnixNano())
+			}
+			select {
+			case <-quit:
+				return
+			case <-time.After(10 * time.Millisecond):
+			}
+		}
+	}()
 	began := time.Now()
 	stopProcesses(p)
-	if !p.exited() {
-		t.Fatal("the stubborn child outlived stopProcesses")
+	s.elapsed = time.Since(began)
+	close(quit)
+	s.outlived = !p.exited()
+	s.ranLate = time.Unix(0, lastGrow.Load()).After(began.Add(s.grace / 2))
+	if b, _ := os.ReadFile(term); strings.Contains(string(b), "got") {
+		s.marker = true
 	}
-	if time.Since(began) < 400*time.Millisecond {
-		t.Error("SIGKILL came before the grace period ended")
+	return s
+}
+
+// linesOf counts the lines of a file a child is appending to; a read racing
+// one append at worst misses its last line, which measurement tolerates.
+func linesOf(path string) int {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return 0
 	}
-	if b, _ := os.ReadFile(term); !strings.Contains(string(b), "got") {
-		t.Error("the child was never asked to terminate first")
-	}
+	return bytes.Count(b, []byte("\n"))
 }
 
 func TestTetherWatchesEveryChildOfOneAdapter(t *testing.T) { // test_sigkilled_adapter_does_not_leak_its_children
