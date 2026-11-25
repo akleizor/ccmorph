@@ -76,6 +76,15 @@ func WhyUnreachable(endpoint string, exit int, complaint string, waited time.Dur
 // proxy of its own choosing (viaProxy): a direct connect would then test a door
 // curl never used.
 func whyUnreachable(endpoint string, exit int, complaint string, waited time.Duration, viaProxy bool) string {
+	return whyUnreachableWithin(endpoint, exit, complaint, waited, viaProxy, 0)
+}
+
+// whyUnreachableWithin is whyUnreachable with claim, the longest wait the
+// caller's own progress line promised and its reaping grace allow: 0 when the
+// caller promised none. waited counts from the call, so scheduler delay can
+// carry it past that promise; the sentence then states no more than claim,
+// never a number the launch never advertised (#891).
+func whyUnreachableWithin(endpoint string, exit int, complaint string, waited time.Duration, viaProxy bool, claim time.Duration) string {
 	host, port := hostPort(endpoint)
 	where := ""
 	if host != "" {
@@ -110,6 +119,9 @@ func whyUnreachable(endpoint string, exit int, complaint string, waited time.Dur
 		return at("secure connection failed")
 	case exit == 28 || exit == -1:
 		n := secondsWaited(complaint, waited)
+		if claim > 0 {
+			n = min(n, max(int((claim+time.Second/2)/time.Second), 1))
+		}
 		unit := "seconds"
 		if n == 1 {
 			unit = "second"
@@ -218,6 +230,12 @@ func reachProgressAfter() time.Duration {
 }
 func reachBound() time.Duration { return min(envDuration("CCMORPH_REACH_BOUND", 5), 5*time.Second) }
 
+// reachWaitDelay is the grace the probe gives curl to be reaped after it
+// stops it at the bound (cmd.WaitDelay). A loaded scheduler can also delay
+// Start, so the verdict may claim the bound plus this grace, never the
+// scheduler's own delay (#891).
+const reachWaitDelay = time.Second
+
 func envDuration(name string, def float64) time.Duration {
 	if d, err := EnvSeconds(os.Getenv, name, def); err == nil {
 		return d
@@ -277,7 +295,7 @@ func ReachListing(base, key, via string, strip []string, progress func()) Reach 
 	var complaint strings.Builder
 	var got countedBytes
 	cmd.Stdout, cmd.Stderr = &got, &complaint
-	cmd.WaitDelay = time.Second
+	cmd.WaitDelay = reachWaitDelay
 	env := os.Environ()
 	if len(strip) > 0 {
 		env = slices.DeleteFunc(env, func(e string) bool {
@@ -330,7 +348,7 @@ func ReachListing(base, key, via string, strip []string, progress func()) Reach 
 	if killed && got > 0 {
 		return Reach{} // stopped once the gateway had begun to answer: a slow answer, as above
 	}
-	why := whyUnreachable(base, exit, complaint.String(), time.Since(start), viaProxy)
+	why := whyUnreachableWithin(base, exit, complaint.String(), time.Since(start), viaProxy, bound+reachWaitDelay)
 	return Reach{Why: why, Waited: why != "" && (exit == 28 || exit == -1)}
 }
 
