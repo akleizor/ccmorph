@@ -69,6 +69,8 @@ STATE = BRIDGE.state
 EDGES = BRIDGE.edges
 # "account", "route" or a profile: where every host's inference goes, read by the proxy on each turn (--switch).
 INFERENCE = BRIDGE.inference
+# The adapters' logs: a seam like EDGES and INFERENCE, so a test redirects them (#636).
+LOGS = BRIDGE.logs
 
 
 def edge_port(route: str) -> int:
@@ -385,8 +387,8 @@ def start_adapter(route: str, parent: int, env: dict[str, str]) -> str:
     model = profile_field(route, "model")
     # The adapter outlives this command; an inherited stderr would hold the caller's
     # pipe open (`ccmorph-rc X --switch 2>&1 | tail` never returned), so it gets a log.
-    BRIDGE.logs.mkdir(parents=True, exist_ok=True)
-    with open(BRIDGE.logs / f"adapter-{route}.log", "ab") as log:
+    LOGS.mkdir(parents=True, exist_ok=True)
+    with open(LOGS / f"adapter-{route}.log", "ab") as log:
         proc = subprocess.Popen([str(ADAPTER), "adapter", route, "--auto", "--parent-pid", str(parent),
                                  *(["--model", model] if model else [])],
                                 env=env, stdin=subprocess.DEVNULL, stdout=ready, stderr=log,

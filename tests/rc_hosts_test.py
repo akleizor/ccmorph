@@ -5384,6 +5384,7 @@ def test_both_scripts_read_one_state_root(tmp_path, monkeypatch):
     hosts = load()
     rc = load_script(Path(__file__).resolve().parent.parent / "addons/remote-control/ccmorph-rc", "rc_state_root")
     assert hosts.STATE_ROOT == rc.STATE_ROOT == tmp_path / "ccmorph"
+    assert rc.LOGS == hosts.LOGS
     monkeypatch.setenv("CCMORPH_STATE_DIR", str(tmp_path / "moved"))
     assert load().STATE_ROOT == tmp_path / "moved"
     addon = Path(__file__).resolve().parent.parent / "addons/remote-control"

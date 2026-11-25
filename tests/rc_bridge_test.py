@@ -253,6 +253,7 @@ def test_adapter_is_told_the_route_model(tmp_path, monkeypatch):
     (tmp_path / "gw.conf").write_text("type=apikey\nmodel=claude-opus-5-5\n")
     monkeypatch.setattr(rc, "STATE_ROOT", tmp_path)
     monkeypatch.setattr(rc, "STATE", tmp_path / "bridge")
+    monkeypatch.setattr(rc, "LOGS", tmp_path / "logs")   # never the real state's logs (#636)
     seen = {}
     class Stop(Exception):
         pass
@@ -267,7 +268,7 @@ def test_adapter_is_told_the_route_model(tmp_path, monkeypatch):
         pass
     assert seen["cmd"][-2:] == ["--model", "claude-opus-5-5"]
     # the long-lived adapter must not inherit the caller's stderr (a --switch pipe hung on it)
-    assert seen["stderr"].name.endswith("adapter-gw.log")
+    assert seen["stderr"].name == str(tmp_path / "logs" / "adapter-gw.log")
 
 
 def test_route_behaviour_flags_reach_the_session_either_way():
