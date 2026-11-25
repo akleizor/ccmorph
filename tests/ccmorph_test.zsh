@@ -438,6 +438,7 @@ setup_home() {
     'exit 1' \
     > "$HOME/bin/curl"
   chmod +x "$HOME/bin/curl"
+  warm_curl_stub
 
   # Automatic adapters are part of the launch path for custom endpoints. Keep the
   # hermetic fixture native-compatible; tests that exercise adapter behavior replace it.
@@ -466,6 +467,7 @@ make_fake_curl_probe_aware() {
     print -r -- 'for a do case "$a" in *http_code*) printf "__CCMORPH_STATUS__200"; exit 0 ;; esac; done'
     tail -n +2 "$f"; } > "$f.new" && mv "$f.new" "$f"
   chmod +x "$f"
+  warm_curl_stub
 }
 
 # Answers the keyed status probe (-w %{http_code}, the shape doctor and the
@@ -479,6 +481,24 @@ make_fake_curl_status() {
     print -r -- 'for a do case "$a" in *http_code*) printf "\n__CCMORPH_STATUS__'"$1"'"; exit 0 ;; esac; done'
     tail -n +2 "$f"; } > "$f.new" && mv "$f.new" "$f"
   chmod +x "$f"
+  warm_curl_stub
+}
+
+# A launch's reach probe gives a gateway five seconds to answer, and curl's own
+# start sits inside that bound (util/reach.go). macOS validates a freshly written
+# executable on its first exec; under a loaded machine those scans queue past the
+# bound, the probe kills the stub before it ever runs, and a healthy route is
+# reported as "no answer" (exit 75) — the load-only failure of #875. Installing a
+# stub pays that first exec here, outside any bound, so a launch measures the
+# route and never the scan. The run is isolated in an empty HOME: a stub that
+# records its calls (fake_gateway's curl.args) leaves the test's own record
+# untouched, and a stub that blocks must not use this (see write_curl_mock).
+warm_curl_stub() {
+  local stub="$HOME/bin/curl" isolated
+  isolated=$(mktemp -d) || return 0
+  HOME="$isolated" "$stub" </dev/null >/dev/null 2>&1
+  rm -rf "$isolated"
+  return 0
 }
 
 write_curl_mock() {
@@ -6958,6 +6978,7 @@ test_registry_supplies_window_when_endpoint_probe_has_none() {
     'exit 22' \
     > "$HOME/bin/curl"
   chmod +x "$HOME/bin/curl"
+  warm_curl_stub
   printf '%s\n' \
     'type=proxy' \
     'base_url=http://gw.invalid' \
@@ -7017,6 +7038,7 @@ test_launch_reads_its_arrays_under_a_callers_ksh_arrays() {
     'exit 22' \
     > "$HOME/bin/curl"
   chmod +x "$HOME/bin/curl"
+  warm_curl_stub
   printf '%s\n' \
     'type=proxy' \
     'base_url=http://gw.invalid' \
@@ -7027,7 +7049,12 @@ test_launch_reads_its_arrays_under_a_callers_ksh_arrays() {
   source "$CCMORPH_SOURCE"
 
   local rc=0
-  _ccm_launch -a routed --model context-model prompt >/dev/null 2>&1 || {
+  # Both launches keep their own words in the test home, so a failure names the
+  # real status and the launch's own output instead of deleting the evidence.
+  local launch_out="$test_home/launch.out" launch_rc=0
+  _ccm_launch -a routed --model context-model prompt >"$launch_out" 2>&1 || launch_rc=$?
+  (( launch_rc == 0 )) || {
+    print -u2 -- "the default-shell launch failed (exit $launch_rc):\n$(<"$launch_out")"
     rm -rf "$test_home"
     return 1
   }
@@ -7036,12 +7063,14 @@ test_launch_reads_its_arrays_under_a_callers_ksh_arrays() {
     'sanity: the default shell keeps the launch arguments' || rc=1
 
   : > "$CCMORPH_TEST_LOG"
-  local ksh_rc=0
+  local ksh_rc=0 ksh_out="$test_home/ksh-launch.out"
   ( setopt ksharrays
-    _ccm_launch -a routed --model context-model prompt >/dev/null 2>&1 || exit 1
+    _ccm_launch -a routed --model context-model prompt >"$ksh_out" 2>&1
+    local st=$?
+    (( st == 0 )) || exit $st
     [[ -o ksharrays ]] || exit 13 ) || ksh_rc=$?
   (( ksh_rc == 0 )) || {
-    print -u2 -- "the launch must not fail under a caller's KSH_ARRAYS (exit $ksh_rc)"
+    print -u2 -- "the launch must not fail under a caller's KSH_ARRAYS (exit $ksh_rc):\n$(<"$ksh_out")"
     rc=1
   }
   local ksh_arg="$(grep '^ARG' "$CCMORPH_TEST_LOG")"
@@ -7571,6 +7600,7 @@ test_launch_model_flag_drives_the_window_not_the_conf_default() {
     'exit 22' \
     > "$HOME/bin/curl"
   chmod +x "$HOME/bin/curl"
+  warm_curl_stub
   # Conf default is a claude id, exactly like the real gateway profiles.
   printf '%s\n' \
     'type=apikey' \
@@ -7582,13 +7612,19 @@ test_launch_model_flag_drives_the_window_not_the_conf_default() {
   source "$CCMORPH_SOURCE"
 
   local rc=0
-    _ccm_launch -a gw --model routed-xl prompt >/dev/null 2>&1 || {
+  # The launch's own words and status land in the test home: a failure says what
+  # happened, never a silent `return 1` with the evidence deleted.
+  local launch_out="$test_home/launch.out" launch_rc=0
+  _ccm_launch -a gw --model routed-xl prompt >"$launch_out" 2>&1 || launch_rc=$?
+  (( launch_rc == 0 )) || {
+    print -u2 -- "the launch failed (exit $launch_rc):\n$(<"$launch_out")"
     rm -rf "$test_home"
     return 1
   }
   local actual="$(<"$CCMORPH_TEST_LOG")"
+  local read_max="$(grep -m1 '^MAX_CONTEXT=' "$CCMORPH_TEST_LOG")"
   assert_contains "$actual" 'MAX_CONTEXT=1048576' \
-    'the --model flag, not the conf default, must size the launch window' || rc=1
+    "the --model flag, not the conf default, must size the launch window (read ${(qqq)read_max}; expected MAX_CONTEXT=1048576)" || rc=1
   assert_not_contains "$actual" 'MAX_CONTEXT=200000' \
     'a launched non-claude model must never be left to Claude Code'"'"'s 200000 default' || rc=1
   rm -rf "$test_home"
