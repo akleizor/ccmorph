@@ -227,7 +227,7 @@ def test_addon_dated_epoch_still_loads(tmp_path):
     rc = _launcher()
     src = tmp_path / "src"
     src.mkdir()
-    for name in ("rc_addon.py", "rc_route.py"):
+    for name in ("rc_addon.py", "rc_flow.py", "rc_route.py"):
         shutil.copy(ADDON.parent / name, src / name)
         os.utime(src / name, (0, 0))
     rc.HERE = src

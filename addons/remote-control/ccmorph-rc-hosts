@@ -92,7 +92,7 @@ import tempfile
 import time
 import urllib.error
 import urllib.request
-from contextlib import suppress
+from contextlib import redirect_stdout, suppress
 from datetime import datetime
 from pathlib import Path
 
@@ -108,7 +108,6 @@ LOGS = STATE_ROOT / "profiles" / ".rc-bridge" / "logs"
 EDGES = STATE_ROOT / "profiles" / ".rc-bridge" / "edges"
 INFERENCE = STATE_ROOT / "profiles" / ".rc-bridge" / "inference"   # ccmorph-rc reads the same file
 SESSION_WORDS = INFERENCE.parent / "sessions"      # one session's own word: ccmorph-rc --switch --session
-SESSION_LIST = INFERENCE.parent / "sessions.json"  # what a phone control lists to pick from
 
 
 _unread_edges: set[str] = set()   # routes whose edge read failed and was logged
@@ -1736,16 +1735,16 @@ def recover_processless(folders: list[str], done: dict[tuple[str, int], float],
     return sent
 
 
-def publish_sessions(folders: list[str]) -> None:
-    """List the active phone sessions, each with the word it routes by (its own from
-    `ccmorph-rc <profile> --switch --session <id>`, else null: the shared switch), in
-    sessions.json for a phone control to pick from. A word whose session is neither
-    active nor running is removed; nothing is removed on a failed fetch."""
-    if not folders:
-        return
+def list_sessions(folders: list[str]) -> dict | None:
+    """The active phone sessions of these repo hosts, each with the word it routes by
+    (its own from `ccmorph-rc <profile> --switch --session <id>`, else null: the shared
+    switch), for a phone control to pick from. A word whose session is neither active
+    nor running is removed. None when the sessions could not be read: nothing is
+    removed then. Run on request (`ccmorph-rc-hosts --list-sessions`), never by the
+    supervisor's loop: a change here reaches the next call with no restart."""
     token, found = host_sessions(folders, "active")
     if not token:
-        return
+        return None
     words = {p.name: p for p in SESSION_WORDS.iterdir()} if SESSION_WORDS.is_dir() else {}
     listed = []
     for folder, s in found:
@@ -1754,23 +1753,14 @@ def publish_sessions(folders: list[str]) -> None:
         if sid in words:
             with suppress(OSError):
                 word = words.pop(sid).read_text().strip() or None
-        listed.append({"id": sid, "title": s.get("title") or "", "folder": folder, "word": word})
+        listed.append({"id": sid, "title": s.get("title") or "", "folder": folder, "word": word,
+                       "working": s.get("worker_status") == "running",
+                       "connected": s.get("connection_status") == "connected"})
     for sid, path in words.items():
         if not path.name.endswith(".tmp") and session_pid(sid) is None:
             with suppress(OSError):
                 path.unlink()
-    record = {"account": account_name(), "sessions": listed}
-    try:
-        old = json.loads(SESSION_LIST.read_text())
-    except (OSError, ValueError):
-        old = None
-    if record != old:
-        try:
-            tmp = SESSION_LIST.with_name(f".{SESSION_LIST.name}.{os.getpid()}.tmp")
-            tmp.write_text(json.dumps(record))
-            tmp.replace(SESSION_LIST)
-        except OSError as e:      # the check must never take the supervisor down
-            log(f"session list not written: {e}")
+    return {"account": account_name(), "sessions": listed}
 
 
 BUSY = STATE_ROOT / "profiles" / ".rc-bridge" / "busy.json"
@@ -2228,7 +2218,6 @@ def cycle(hosts: "dict[str, Host]", repos: list[str], now: float, clock: Clock) 
         handed_back = recover_processless(repos, clock.recovered, up, clock.hand_back_failed,
                                           clock.parked)
         recover_interrupted(repos, up, handed_back)
-        publish_sessions([f for f in repos if f in up])   # as recover_*: only hosts that serve
     if now - clock.last_idle_check < IDLE_CHECK:
         return False
     for h in hosts.values():
@@ -2261,8 +2250,24 @@ def main(argv: list[str]) -> int:
                                  description=(__doc__ or "").split("\n\n")[0])
     ap.add_argument("--config", metavar="PATH", type=config_path,
                     help="folder list to watch (default: $CCMORPH_STATE_DIR/rc-hosts)")
+    ap.add_argument("--list-sessions", action="store_true",
+                    help="print the repo hosts' active sessions and each one's own profile as JSON, then exit")
     args = ap.parse_args(argv)
     config = Path(args.config) if args.config else STATE_ROOT / "rc-hosts"
+    if args.list_sessions:
+        try:
+            text = config.read_text()
+        except OSError as e:
+            print(f"ccmorph-rc-hosts: {config}: {e}", file=sys.stderr)
+            return 1
+        repos = [f for f, (_, a) in parse(text).items() if "--session-id" not in a]
+        with redirect_stdout(sys.stderr):      # log() writes stdout; the JSON alone goes there
+            record = list_sessions(repos)
+        if record is None:
+            print("ccmorph-rc-hosts: the sessions could not be read", file=sys.stderr)
+            return 1
+        print(json.dumps(record))
+        return 0
     os.environ["PATH"] = os.pathsep.join([str(Path.home() / ".local/bin"), "/opt/homebrew/bin",
                                           "/usr/local/bin", os.environ.get("PATH", "/usr/bin:/bin")])
     hosts: dict[str, Host] = {}

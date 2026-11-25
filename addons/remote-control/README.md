@@ -146,10 +146,19 @@ Every request carries its session's id (`X-Claude-Code-Session-Id`, the same for
 subagents), so one session can run on its own profile while the rest share the switch.
 A profile already up beside the live edge with the same tiers is reused, not started
 again. A tier the route pinned outside the Claude family (fable on a gateway model)
-reaches another target as that target's own model for the alias. The supervisor lists
-the active sessions and their picks in `sessions.json` beside the switch file and
-removes a session's pick once the session is gone. A conversation that moves between
+reaches another target as that target's own model for the alias.
+`ccmorph-rc-hosts --list-sessions` prints the active sessions and each one's pick as
+JSON, and removes a pick whose session is gone. A conversation that moves between
 providers carries thinking blocks the previous one signed; a provider may refuse them.
+
+The proxy takes a handoff within a second, not on the next request for that profile:
+`--switch` waits for it, and removes the handoff and leaves the word as it was when no
+proxy takes it. What the proxy does with each request (`rc_flow.py`, `rc_route.py`)
+reloads from the install when either file changes, on the next request, with no
+restart; a file that does not load leaves the running code in place. The key and the
+endpoints live in `rc_addon.py`, and a change to it, or to the launcher, still needs
+the edge restarted. Restarting the edge alone (its fixed port and CA stay) does not stop
+a session's process; restarting `ccmorph-rc-hosts` stops every host and its sessions.
 
 `ccmorph-rc-hosts` pins the route profile's tiers (each alias its profile maps outside
 its own Claude family, as `ccmorph get <route> --json` reports them); a
