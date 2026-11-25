@@ -194,7 +194,13 @@ func (l *launcher) valueRows(slot, name string, preview ...string) (string, bool
 			}
 			rows, ok := util.GwModels(l.conf(name), true, listing)
 			if !ok {
-				l.err("'" + name + "' endpoint returned no usable model list")
+				// The exclusions, not the endpoint, are what removed every model;
+				// say so and name the list to shorten (#862).
+				if util.ExclusionsLeaveNone(l.conf(name), listing) {
+					l.err(util.ExclusionsRefusal(name, l.conf(name)))
+				} else {
+					l.err("'" + name + "' endpoint returned no usable model list")
+				}
 				return "", false
 			}
 			return modelRows(rows), true

@@ -216,7 +216,7 @@ func ProjectPicker(in PickerIn, errw io.Writer) PickerResult {
 				// caller can word the route it could not reach.
 				return PickerUnreached
 			}
-			fmt.Fprintln(errw, "ccmorph: no cached or served picker models remain after excluded_models; revise the list or restore gateway access")
+			fmt.Fprintln(errw, "ccmorph: "+ExclusionsRefusal(in.Profile, contextConf))
 			return PickerRefused
 		}
 		return PickerDone
