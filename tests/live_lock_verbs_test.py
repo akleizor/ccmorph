@@ -121,3 +121,200 @@ def test_a_launch_refusal_names_a_lock_file_that_cannot_be_made(tmp_path):
     assert "could not be created" in result.stderr
     assert "nothing started" in result.stderr
     assert "another launch" not in result.stderr
+
+
+def test_a_launch_refuses_a_live_lock_that_is_a_symlink(tmp_path):
+    # GH-837: a link at the lock path is never a live lock, since an rm may
+    # unlink it under a launch that locked through it. The launch takes no
+    # lock through it, leaves its target alone and says what is in the way.
+    home, state = fresh_state(tmp_path, conf=True)
+    lock = state / ".locks" / "gw.live"
+    lock.parent.mkdir(parents=True)
+    lock.symlink_to(state / "nowhere")
+    result = run(home, state, "_env gw")
+    assert result.returncode == 1
+    assert f"could not be created at {lock}" in result.stderr
+    assert "symlink" in result.stderr
+    assert "nothing started" in result.stderr
+    assert not (state / "nowhere").exists()
+
+
+def test_rm_of_a_leftover_names_only_paths_that_exist_and_takes_the_live_lock(tmp_path):
+    """GH-837: Ctrl-C at a sign-in left profiles/<name> and .locks/<name>.live.
+    rm offered auth/<name> too, which the Claude-account sign-in never makes,
+    and left the lock behind; the next add then still found the name held.
+    What rm offers is what it removes, and the lock is one of those pieces."""
+    home, state = fresh_state(tmp_path)
+    leftover = state / "profiles" / "gw"
+    leftover.mkdir(parents=True)
+    lock = state / ".locks" / "gw.live"
+    lock.parent.mkdir(parents=True)
+    lock.write_text("")
+    result = run(home, state, "rm gw", "y\n")
+    assert result.returncode == 0, result.stderr
+    assert "Removed gw" in result.stdout
+    assert str(leftover) in result.stderr
+    assert str(lock) in result.stderr
+    assert not leftover.exists()
+    assert not lock.exists()
+    assert str(state / "auth" / "gw") not in result.stderr
+
+
+def test_rm_of_a_complete_profile_takes_its_live_lock_too(tmp_path):
+    # The lock is the profile's, so the removal the help caps with "This cannot
+    # be undone" leaves none of it behind (GH-837).
+    home, state = fresh_state(tmp_path, conf=True)
+    lock = state / ".locks" / "gw.live"
+    lock.parent.mkdir(parents=True)
+    lock.write_text("")
+    result = run(home, state, "rm gw", "y\n")
+    assert result.returncode == 0, result.stderr
+    assert not (state / "gw.conf").exists()
+    assert not lock.exists()
+
+
+def test_rm_of_a_leftover_auth_dir_names_it_and_not_a_missing_home(tmp_path):
+    # A provider sign-in leaves auth/<name> and no profile home; the offer
+    # follows the disk in this direction too (GH-837).
+    home, state = fresh_state(tmp_path)
+    auth = state / "auth" / "gw"
+    auth.mkdir(parents=True)
+    result = run(home, state, "rm gw", "y\n")
+    assert result.returncode == 0, result.stderr
+    assert str(auth) in result.stderr
+    assert str(state / "profiles" / "gw") not in result.stderr
+    assert not auth.exists()
+
+
+def test_rm_of_a_leftover_lock_alone_offers_and_takes_it(tmp_path):
+    # The probe counts the live lock as leftover state, so rm can clean up
+    # what an older build left behind (GH-837).
+    home, state = fresh_state(tmp_path)
+    lock = state / ".locks" / "gw.live"
+    lock.parent.mkdir(parents=True)
+    lock.write_text("")
+    result = run(home, state, "rm gw", "y\n")
+    assert result.returncode == 0, result.stderr
+    assert str(lock) in result.stderr
+    assert not lock.exists()
+    # The guard rm takes its turns under is the state dir's, never a leftover
+    # of the name: a second rm finds nothing to offer (GH-837).
+    again = run(home, state, "rm gw", "y\n")
+    assert again.returncode == 1
+    assert "no profile 'gw'" in again.stderr
+    assert ".live-removal" not in again.stderr
+
+
+def test_rm_of_a_leftover_dangling_live_link_offers_and_takes_it(tmp_path):
+    # A link naming nothing lexists, so the offer names it; rm must then
+    # take it, or the same leftover is offered on every run (GH-837).
+    home, state = fresh_state(tmp_path)
+    lock = state / ".locks" / "gw.live"
+    lock.parent.mkdir(parents=True)
+    lock.symlink_to(state / "nowhere")
+    result = run(home, state, "rm gw", "y\n")
+    assert result.returncode == 0, result.stderr
+    assert str(lock) in result.stderr
+    assert not os.path.lexists(lock)
+    assert not (state / "nowhere").exists()
+
+
+def test_rm_answered_no_keeps_the_leftover_and_its_lock(tmp_path):
+    home, state = fresh_state(tmp_path)
+    leftover = state / "profiles" / "gw"
+    leftover.mkdir(parents=True)
+    lock = state / ".locks" / "gw.live"
+    lock.parent.mkdir(parents=True)
+    lock.write_text("")
+    result = run(home, state, "rm gw", "n\n")
+    assert result.returncode == 1
+    assert "cancelled; nothing removed" in result.stderr
+    assert leftover.exists()
+    assert lock.exists()
+
+
+def test_rm_keeps_a_live_lock_a_running_launch_holds(tmp_path):
+    # GH-837's removal must not undercut #185: a lock another launch holds is
+    # that session's cover, so rm leaves the file and says why.
+    home, state = fresh_state(tmp_path, conf=True)
+    lock = state / ".locks" / "gw.live"
+    lock.parent.mkdir(parents=True)
+    lock.write_text("")
+    holder = open(lock, "a+")
+    fcntl.flock(holder, fcntl.LOCK_SH)
+    try:
+        result = run(home, state, "rm gw", "y\n")
+    finally:
+        holder.close()
+    assert result.returncode == 0, result.stderr
+    assert not (state / "gw.conf").exists()
+    assert lock.exists()
+    assert f"kept {lock}" in result.stderr
+    assert "still holds it" in result.stderr
+
+
+HOLDER_GO = '''package main
+import ("fmt"; "os"; "github.com/akleizor/ccmorph/util")
+func main() {
+ p := os.Args[1]
+ f, err := util.HoldLive(p,"p",nil)
+ if err != nil { panic(err) }
+ fmt.Println("held")
+ _, _ = os.Stdin.Read(make([]byte,1))
+ a, ea := f.Stat(); b, eb := os.Lstat(util.LiveLockPath(p,"p"))
+ if ea != nil || eb != nil || !os.SameFile(a,b) { fmt.Fprintln(os.Stderr,"first rm detached the replacement live lock"); os.Exit(1) }
+}'''
+
+
+def test_two_rm_runs_and_a_launch_never_detach_the_live_lock(tmp_path):
+    """GH-837 merge gate (d7c78c0), kept as its test. A first `rm` is stopped
+    by strace after its O_NOFOLLOW open saw the link at .locks/p.live and before
+    its unlink; a second `rm` runs to the end; a launch then takes the live
+    lock; the first `rm` finishes. The launch must still hold the file the path
+    names. strace pins the interleaving, so the test needs it (Linux)."""
+    import shutil
+    import pytest
+    if not shutil.which("strace") or not shutil.which("go"):
+        pytest.skip("needs strace and go to force the interleaving")
+    core = ROOT / "libexec" / "ccmorph-core"
+    if not core.exists():
+        pytest.skip("needs the built core: make shim")
+    holder = tmp_path / "hold"
+    (tmp_path / "hold.go").write_text(HOLDER_GO)
+    subprocess.run(["go", "build", "-o", str(holder), str(tmp_path / "hold.go")],
+                   check=True, cwd=ROOT, timeout=HANG_TIMEOUT)
+    state = tmp_path / "state"
+    profiles = state / "profiles"
+    profiles.mkdir(parents=True)
+    lock = state / ".locks" / "p.live"
+    lock.parent.mkdir()
+    target = tmp_path / "target"
+    target.touch()
+    lock.symlink_to(target)
+    env = {k: v for k, v in os.environ.items()
+           if not k.startswith(("CCMORPH_", "_CCMORPH_", "CLAUDE_", "ANTHROPIC_"))}
+    env.update(HOME=str(tmp_path), CCMORPH_STATE_DIR=str(state),
+               _CCMORPH_LIBEXEC_DIR=str(core.parent))
+    rm = [str(core), "cli", "rm", "p"]
+    trace = ["strace", "-f", "-qq", "-P", str(lock), "-e", "trace=%file",
+             "-e", "inject=unlinkat:delay_enter=4s"]
+    with subprocess.Popen(trace + rm, env=env, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                          stderr=subprocess.PIPE, text=True) as first:
+        first.stdin.write("y\n")
+        first.stdin.flush()
+        for line in first.stderr:
+            if "openat(" in line and "ELOOP" in line:
+                break
+        else:
+            assert first.wait(timeout=HANG_TIMEOUT) == 0 and not os.path.lexists(lock)
+            return
+        second = subprocess.run(rm, env=env, input="y\n", capture_output=True, text=True, timeout=HANG_TIMEOUT)
+        assert second.returncode == 0 or ("no profile" in second.stderr and not os.path.lexists(lock)), second.stderr
+        with subprocess.Popen([str(holder), str(profiles)], stdin=subprocess.PIPE,
+                              stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True) as launch:
+            assert launch.stdout.readline().strip() == "held"
+            first.communicate(timeout=HANG_TIMEOUT)
+            assert first.returncode == 0
+            _, err = launch.communicate(input="\n", timeout=HANG_TIMEOUT)
+            assert launch.returncode == 0, err
+    assert target.exists()
