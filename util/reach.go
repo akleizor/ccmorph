@@ -1,6 +1,7 @@
 package util
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"net"
@@ -244,6 +245,7 @@ func ReachBoundSeconds() int {
 type Reach struct {
 	Why    string // the cause in plain words, "" when the gateway answered or failed in a way WhyUnreachable cannot name
 	Waited bool   // nothing answered within the bound: curl timed out, or was stopped at the bound
+	Body   string // the listing, on a 2xx final answer: headers stripped, ids undisguised; "" otherwise
 }
 
 // ReachListing is the launch's early question to a gateway (#260): one
@@ -252,7 +254,8 @@ type Reach struct {
 // the launch listing's own shape, so a stub that answers the listing answers
 // this. progress runs once, if the request is still running after
 // reachProgressAfter. Any HTTP answer, an error status included, is an answer:
-// Why is "". via is the profile's CCMORPH_UPSTREAM_PROXY: the probe admits a
+// Why is ""; a 2xx answer's listing is Body, so the launch need not ask again
+// (#636). via is the profile's CCMORPH_UPSTREAM_PROXY: the probe admits a
 // session, so it takes the session's own route, through netroute's rules
 // (GH-580): the proxy it names, or a direct dial where NO_PROXY or loopback
 // exempts the gateway; empty or unusable, the environment's resolution
@@ -284,7 +287,7 @@ func ReachListing(base, key, via string, strip []string, progress func()) Reach 
 	}
 	cmd.Stdin = strings.NewReader(config)
 	var complaint strings.Builder
-	var got countedBytes
+	var got bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &got, &complaint
 	cmd.WaitDelay = time.Second
 	env := os.Environ()
@@ -324,7 +327,9 @@ func ReachListing(base, key, via string, strip []string, progress func()) Reach 
 		}
 	}
 	if err == nil {
-		return Reach{}
+		// curl -f exited 0: a 2xx, or a 3xx it did not follow; listingBody tells them
+		// apart, and only a 2xx is the listing the launch asks for next (#636).
+		return Reach{Body: undisguise(listingBody(got.String()))}
 	}
 	exit := exitOf(err)
 	if killed {
@@ -336,20 +341,39 @@ func ReachListing(base, key, via string, strip []string, progress func()) Reach 
 	if m := bytesReceived.FindStringSubmatch(complaint.String()); m != nil && m[1] != "0" {
 		return Reach{} // a slow answer is still an answer: the listing's own wait judges it
 	}
-	if killed && got > 0 {
+	if killed && got.Len() > 0 {
 		return Reach{} // stopped once the gateway had begun to answer: a slow answer, as above
 	}
 	why := whyUnreachable(base, exit, complaint.String(), time.Since(start), viaProxy)
 	return Reach{Why: why, Waited: why != "" && (exit == 28 || exit == -1)}
 }
 
-// countedBytes counts what curl wrote to stdout (the response headers, then
-// the listing) and keeps none of it: one byte is an answer.
-type countedBytes int64
-
-func (c *countedBytes) Write(p []byte) (int, error) {
-	*c += countedBytes(len(p))
-	return len(p), nil
+// listingBody is the listing in curl's stdout, or "" when the final response was
+// not a 2xx: curl -f exits 0 on a 3xx it does not follow, and a redirect's body
+// is no listing. -D - writes each response's headers before its body; every block
+// that opens "HTTP/" ends at its blank line (a 1xx block comes before the final
+// one) and is removed. Output with no status line (a stub's bare body) is the
+// body as it stands.
+func listingBody(out string) string {
+	final := ""
+	for strings.HasPrefix(out, "HTTP/") {
+		line, _, _ := strings.Cut(out, "\n")
+		if f := strings.Fields(line); len(f) > 1 {
+			final = f[1]
+		}
+		i, n := strings.Index(out, "\r\n\r\n"), 4
+		if j := strings.Index(out, "\n\n"); j >= 0 && (i < 0 || j < i) {
+			i, n = j, 2
+		}
+		if i < 0 {
+			return ""
+		}
+		out = out[i+n:]
+	}
+	if final != "" && !strings.HasPrefix(final, "2") {
+		return ""
+	}
+	return out
 }
 
 // seconds is a duration as curl's timeout flags spell it: "2", or "0.5".

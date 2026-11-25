@@ -203,6 +203,35 @@ func TestRunProbeAsksTheRouteTheLaunchUses(t *testing.T) {
 	}
 }
 
+// #636: the reach probe's 2xx listing is the launch's, so the gateway key check
+// does not ask the route again; a probe that handed on nothing (a 3xx, say)
+// leaves the key check its one request.
+func TestReachProbeListingIsTheLaunchsListing(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	for _, c := range []struct {
+		name  string
+		reach util.Reach
+		asks  int
+	}{
+		{"a 2xx listing", util.Reach{Body: "{\"data\":[{\"id\":\"m\"}]}\n"}, 0},
+		{"nothing handed on", util.Reach{}, 1},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			asks := 0
+			savedProbe, savedReach := probeListing, reachListing
+			probeListing = func(string, string, ...string) (string, string) { asks++; return "", "000" }
+			reachListing = func(string, string, string, []string, func()) util.Reach { return c.reach }
+			t.Cleanup(func() { probeListing, reachListing = savedProbe, savedReach })
+			state, profiles := gatewayProfile(t, "gwmemo", "type=apikey\nbase_url=http://127.0.0.1:9\napi_key=k")
+			libexec, _ := coreCalls(t)
+			_, out := launchAs(t, false, state, profiles, libexec, "gwmemo", []string{"--model", "m", "-p", "hi"})
+			if asks != c.asks {
+				t.Fatalf("the key check asked the route %d times, want %d: %s", asks, c.asks, out)
+			}
+		})
+	}
+}
+
 // A launch that opens no session asks the route nothing (#650), the probe
 // included, and a URL's credential never reaches the probe's sentence.
 func TestRunProbeSkipsALaunchThatOpensNoSessionAndHidesTheURLsCredential(t *testing.T) {

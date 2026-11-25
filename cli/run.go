@@ -434,17 +434,20 @@ func (l *launcher) resolveLaunch(name string, interactive, native bool, argv []s
 					} else {
 						// Doctor's own request for a gateway — no anthropic-version
 						// header — so what doctor calls a rejection, launch does too.
-						body, code := probeListing(base, k)
-						switch probeVerdict(code) {
-						case probeRejected:
-							rejected, _ := strconv.Atoi(code)
-							l.err(listingFailure(name, profile.RedactURL(base), rejected))
-							return fail()
-						case probeAccepted:
-							// The listing this pass was about to fetch anyway is
-							// already in hand, so the happy path still asks the
-							// route once.
-							l.memo[base+"\x1f"+k] = strings.TrimRight(body, "\n")
+						// the reach probe's 2xx listing is already in hand: the key was not rejected (#636)
+						if l.memo[listingKey(base, k)] == "" {
+							body, code := probeListing(base, k)
+							switch probeVerdict(code) {
+							case probeRejected:
+								rejected, _ := strconv.Atoi(code)
+								l.err(listingFailure(name, profile.RedactURL(base), rejected))
+								return fail()
+							case probeAccepted:
+								// The listing this pass was about to fetch anyway is
+								// already in hand, so the happy path still asks the
+								// route once.
+								l.memo[listingKey(base, k)] = strings.TrimRight(body, "\n")
+							}
 						}
 					}
 				}
@@ -1767,6 +1770,11 @@ func (l *launcher) reachGateway(name, base, key, via string) (why string, down b
 		fmt.Fprintf(os.Stderr, "ccmorph: Checking '%s' gateway (up to %ds); Ctrl-C to cancel.\n", name, util.ReachBoundSeconds())
 	}
 	r := reachListing(base, key, via, strip, progress)
+	if body := strings.TrimRight(r.Body, "\n"); body != "" {
+		// The probe's 2xx is this launch's listing: the key check and the
+		// picker read it from the memo instead of asking again (#636).
+		l.memo[listingKey(base, key)] = body
+	}
 	if r.Why == "" {
 		return "", false
 	}

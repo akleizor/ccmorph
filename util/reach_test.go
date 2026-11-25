@@ -216,10 +216,56 @@ func TestReachListingStepsAsideForAnAnswer(t *testing.T) {
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			reachCurl(t, c.body)
-			if r := ReachListing("http://127.0.0.1:9", "k", "", nil, nil); r != (Reach{}) {
+			r := ReachListing("http://127.0.0.1:9", "k", "", nil, nil)
+			if r.Why != "" || r.Waited {
 				t.Fatalf("got %+v, want nothing to say", r)
 			}
+			want := ""
+			if c.name == "a listing" {
+				want = `{"data":[]}`
+			}
+			if r.Body != want {
+				t.Fatalf("Body %q, want %q", r.Body, want)
+			}
 		})
+	}
+}
+
+// #636: the probe's 2xx is the launch's listing, handed on without the headers
+// -D - wrote; a redirect curl -f did not follow, or headers that never end, hand
+// on nothing, so the key check still asks.
+func TestReachListingHandsOnOnlyA2xxListing(t *testing.T) {
+	for _, c := range []struct {
+		name, body string
+		want       Reach
+	}{
+		{"a 100 then a 200", `printf 'HTTP/1.1 100 Continue\r\n\r\nHTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\r\n{"data":[{"id":"m1"}]}'`,
+			Reach{Body: `{"data":[{"id":"m1"}]}`}},
+		{"a redirect", `printf 'HTTP/1.1 302 Found\r\nLocation: /elsewhere\r\n\r\n<html>moved</html>'`, Reach{}},
+		{"an HTTP/2 200", `printf 'HTTP/2 200\r\n\r\n{"data":[]}'`, Reach{Body: `{"data":[]}`}},
+		{"headers that never end", `printf 'HTTP/1.1 200 OK\r\n'`, Reach{}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			reachCurl(t, c.body)
+			if r := ReachListing("http://127.0.0.1:9", "k", "", nil, nil); r != c.want {
+				t.Fatalf("got %+v, want %+v", r, c.want)
+			}
+		})
+	}
+}
+
+func TestListingBody(t *testing.T) {
+	for _, c := range []struct{ in, want string }{
+		{"", ""},
+		{`{"data":[]}`, `{"data":[]}`},
+		{"HTTP/1.1 200 OK\n\nX", "X"},
+		{"HTTP/1.1 100 Continue\r\n\r\nHTTP/1.1 200 OK\r\nA: b\r\n\r\nX", "X"},
+		{"HTTP/1.1 301 Moved\r\n\r\nX", ""},
+		{"HTTP/1.1 100 Continue\r\n\r\nHTTP/1.1 404 Not Found\r\n\r\nX", ""},
+	} {
+		if got := listingBody(c.in); got != c.want {
+			t.Errorf("listingBody(%q) = %q, want %q", c.in, got, c.want)
+		}
 	}
 }
 
