@@ -568,22 +568,21 @@ TABLE_UNREAD = "SKIP adapter: could not tell whether a translator is running"
 
 
 def _doctor_until_table_read(tmp_path, conf, curl, profile, tries=3):
-    """(plain run, whether its table read was lost, bindir): doctor's plain
-    report, asked again only while the run says its process table read lost
-    the one-second bound (a loaded machine, #902). The plain report hides
-    that, so each try is followed by a --verbose run that names it; a try that
-    read the table answers at once, right or wrong, so a retry never hides a
-    wrong answer. The two runs read the table apart, so a plain answer after
-    a lost verbose read is judged as lost too: the strict form is never
-    weaker than the plain one."""
+    """(verbose run, its summary adapter lines, whether its table read was
+    lost, bindir). One --verbose run answers both: its summary line and its
+    SKIP marker come from the same process-table read, so a lost read is never
+    judged by another run's answer. Asked again only while the read lost the
+    one-second bound (a loaded machine, #902); a try that read the table
+    answers at once, right or wrong, so a retry never hides a wrong answer."""
     for _ in range(tries):
-        result, _, bindir = run_doctor(tmp_path, conf, curl, profile=profile)
-        verbose, _, _ = run_doctor(tmp_path, conf, curl, args=("--verbose",),
-                                   profile=profile)
+        verbose, _, bindir = run_doctor(tmp_path, conf, curl, args=("--verbose",),
+                                        profile=profile)
         lost = TABLE_UNREAD in verbose.stdout
         if not lost:
             break
-    return result, lost, bindir
+    # Summary lines say "adapter: this ..."; the verbose detail lines never do.
+    summary = [l for l in verbose.stdout.splitlines() if "adapter: this " in l]
+    return verbose, summary, lost, bindir
 
 
 @pytest.mark.parametrize("slow", ["", "ps", "lsof"],
@@ -604,8 +603,9 @@ printf '%s\n' '__CCMORPH_STATUS__200'
     decoy, listeners, ports, stop = _adapter_tree(tmp_path, profile, shape)
     _adapter_stubs(tmp_path / "bin", slow, ports)
     try:
-        result, lost, bindir = _doctor_until_table_read(tmp_path, conf, curl, profile)
-        assert result.returncode == 0, result.stderr
+        verbose, adapters, lost, bindir = _doctor_until_table_read(
+            tmp_path, conf, curl, profile)
+        assert verbose.returncode == 0, verbose.stderr
         # One adapter line by default, in every case (also when the table read
         # blew its bound): whether this profile needs a translator now, never
         # a pid or a process-inspection detail a first-time reader cannot act
@@ -613,25 +613,25 @@ printf '%s\n' '__CCMORPH_STATUS__200'
         # the open session shows; with no session readable, that none starts
         # until a model is chosen. A running adapter alone is not a
         # translator: only a cliproxyapi child is.
-        adapters = [l for l in result.stdout.splitlines() if "adapter:" in l]
-        assert len(adapters) == 1, result.stdout
+        assert len(adapters) == 1, verbose.stdout
+        result, _, _ = run_doctor(tmp_path, conf, curl, profile=profile)
+        assert result.returncode == 0, result.stderr
+        assert len([l for l in result.stdout.splitlines() if "adapter:" in l]) == 1, \
+            result.stdout
         if slow == "ps" and sys.platform != "darwin":
             # Off darwin the table's read is a ps, so this run can lose it to
             # the bound.
-            assert _until_a_model(profile).fullmatch(adapters[0]), result.stdout
+            assert _until_a_model(profile).fullmatch(adapters[0]), verbose.stdout
         elif lost and _until_a_model(profile).fullmatch(adapters[0]):
             # Every try lost the table's one-second bound under load (GH-467,
             # #902): the designed answer then is the until-a-model line.
             pass
         elif shape == "native-route":
-            assert adapters == [NO_TRANSLATOR_NOW], result.stdout
+            assert adapters == [NO_TRANSLATOR_NOW], verbose.stdout
         else:
-            assert adapters == [TRANSLATOR_NOW], result.stdout
+            assert adapters == [TRANSLATOR_NOW], verbose.stdout
         # Read-only: the profile's own hook never ran, so nothing was started.
         assert not (bindir / "doctor.marker").exists()
-        verbose, _, _ = run_doctor(tmp_path, conf, curl, args=("--verbose",),
-                                   profile=profile)
-        assert verbose.returncode == 0, verbose.stderr
         assert_adapter_report(verbose.stdout, decoy, listeners)
         assert not (bindir / "doctor.marker").exists()
     finally:
@@ -655,12 +655,12 @@ def test_doctor_adapter_line_names_a_running_translator_issue_272(tmp_path, shap
         stub = tmp_path / "bin" / "cliproxyapi"
         stub.write_text("#!/bin/sh\nexit 0\n")
         stub.chmod(0o755)
-        result, lost, _ = _doctor_until_table_read(tmp_path, conf, OK_CURL, profile)
-        assert result.returncode == 0, result.stdout + result.stderr
+        verbose, adapters, lost, _ = _doctor_until_table_read(
+            tmp_path, conf, OK_CURL, profile)
+        assert verbose.returncode == 0, verbose.stdout + verbose.stderr
         need = "OK adapter: this endpoint needs a translator; cliproxyapi is installed"
-        adapters = [l for l in result.stdout.splitlines() if "adapter:" in l]
         # Only a run whose table read was lost may leave the session out.
-        assert adapters == [need + suffix] or lost and adapters == [need], result.stdout
+        assert adapters == [need + suffix] or lost and adapters == [need], verbose.stdout
     finally:
         stop()
 

@@ -1755,8 +1755,18 @@ cmd_run() {  # $1 = case dir, rest = ccmorph arguments; the installed command, h
 
 # 14.1 update: no ref is the latest release (the one-liner's default), new code
 # live, user state byte-identical.
-d=$(upd_env upd_main) || fail "upd_main setup install rc!=0 (output above)"; cmd_run "$d" update; rc=$?
+d=$(upd_env upd_main) || fail "upd_main setup install rc!=0 (output above)"
+# A file held open across the update, as the running launcher and library are:
+# a replacement by rename leaves the open file its old bytes and gives the path
+# the new ones; a write in place would show the new bytes through the open file.
+exec {_held}<"$d/home/.config/ccmorph/lib/ccmorph.sh"
+cmd_run "$d" update; rc=$?
 (( rc == 0 )) && ok "update: exits 0" || { fail "update rc=$rc"; cat "$d/out" "$d/err" }
+_held_bytes="$(cat <&$_held)"; exec {_held}<&-
+[[ "$_held_bytes" != *'_CCMORPH_VERSION="9.9.9"'* ]] \
+  && grep -qxF '_CCMORPH_VERSION="9.9.9"' "$d/home/.config/ccmorph/lib/ccmorph.sh" \
+  && ok "update: an open library keeps its old bytes, the path gets the new" \
+  || fail "update: the library was rewritten in place, under its open readers"
 grep -qxF "$url_release" "$d/curl.argv" 2>/dev/null \
   && ok "update: no ref downloads the latest release" || { fail "update: curl argv lacks the latest release"; cat "$d/curl.argv" 2>&1 }
 # An exported CCMORPH_REF does not redirect the bare command; only an argument does.

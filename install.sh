@@ -529,14 +529,24 @@ CONFIG_REAL="${CONFIG_DIR:A}"
 # `ccmorph update` runs from the launcher and library it replaces, and zsh
 # reads a running script as it goes, so bytes rewritten under it ended the
 # update with a parse error at exit 1; the rename leaves the running shell its
-# old file. A symlinked DST keeps its link and its target is replaced; an
-# existing DST keeps its mode (the copy starts from it); a failed step leaves
-# no temp file and fails the install.
+# old file. A symlinked DST, dangling or not, keeps its link: the chain is
+# followed and its last target replaced, staged beside it so the rename stays
+# on one filesystem. An existing DST keeps its exact mode; a new one takes
+# SRC's. A failed step leaves no temp file, DST untouched, and fails the
+# install.
+zmodload -F zsh/stat b:zstat
 _replace() {
-  local src="$1" dst="$2" tmp
-  [[ -L "$dst" ]] && dst="${dst:A}"
+  local src="$1" dst="$2" tmp link hops=0
+  local -a mode
+  while [[ -L "$dst" ]] && (( hops++ < 40 )); do
+    link="$(readlink -- "$dst")" || break
+    [[ "$link" == /* ]] || link="${dst:h}/$link"
+    dst="$link"
+  done
   tmp="${dst:h}/.${dst:t}.new.$$"
-  { { [[ ! -e "$dst" ]] || cp "$dst" "$tmp"; } && cp "$src" "$tmp" && mv -f "$tmp" "$dst"; } \
+  { cp "$src" "$tmp" \
+    && { [[ ! -e "$dst" ]] || { zstat -A mode +mode -- "$dst" && chmod "$(( [##8] mode[1] & 8#7777 ))" "$tmp"; }; } \
+    && mv -f "$tmp" "$dst"; } \
     || { rm -f "$tmp"; print -u2 -- "ccmorph install: could not place $dst"; return 1; }
 }
 
@@ -550,17 +560,18 @@ _replace "$SRC/bin/ccmorph" "$BIN_DIR/ccmorph"
 # Copied, never activated: local.sh itself stays absent until someone writes it.
 # Same directory guard as above: in-place, this is a copy onto itself.
 if [[ "$SRC" != "$CONFIG_REAL" ]]; then
-  cp "$SRC/share/local.sh.example" "$CONFIG_DIR/local.sh.example"
-  cp "$SRC/share/profile.conf.example" "$CONFIG_DIR/profile.conf.example"
+  _replace "$SRC/share/local.sh.example" "$CONFIG_DIR/local.sh.example"
+  _replace "$SRC/share/profile.conf.example" "$CONFIG_DIR/profile.conf.example"
 fi
 chmod +x "${EXECUTABLES[@]/#/$CONFIG_DIR/}"
 # Place the core resolved above, once its directory exists.
 for _name in ccmorph-core; do
   _shim="$_core_src"
-  # Remove first: copying over a running-signed Mach-O in place keeps the kernel's stale
-  # code-signature cache for the old bytes, and macOS then kills the new binary (exit 137).
+  # A rename, never a copy in place: writing over a running-signed Mach-O keeps the
+  # kernel's stale code-signature cache for the old bytes, and macOS then kills the
+  # new binary (exit 137). The rename gives a new file and never leaves the path empty.
   [[ "${_shim:A}" == "${CONFIG_REAL}/libexec/$_name" ]] \
-    || { rm -f "$CONFIG_DIR/libexec/$_name" && cp "$_shim" "$CONFIG_DIR/libexec/$_name"; }
+    || _replace "$_shim" "$CONFIG_DIR/libexec/$_name"
   chmod +x "$CONFIG_DIR/libexec/$_name"
 done
 chmod +x "$BIN_DIR/ccmorph"
@@ -570,7 +581,7 @@ chmod +x "$BIN_DIR/ccmorph"
 # under it — cannot hide the runtime from `ccmorph` itself (#834). A hidden
 # dotfile: the command directory holds commands, and this is the command's own
 # wiring, not a command; the uninstall below removes it with the command.
-print -r -- "$CONFIG_DIR/lib" > "$BIN_DIR/.ccmorph-libdir"
+_replace =(print -r -- "$CONFIG_DIR/lib") "$BIN_DIR/.ccmorph-libdir"
 # Move profile homes through the same guarded owner used by normal launches.
 # The SOURCE tree's lib, for the reason the migrate below states: same bytes,
 # but macOS validates a freshly copied binary's signature on its first exec,
