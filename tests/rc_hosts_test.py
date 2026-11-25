@@ -1879,6 +1879,173 @@ def test_a_created_edge_leaves_no_git_repo_in_the_state_dir(tmp_path, monkeypatc
     assert not (m.EDGES.parent / ".git").exists()      # ... without a repo in the state dir
 
 
+def test_a_slashed_route_gets_a_cleaned_edge_log_and_survives_the_tick(tmp_path, monkeypatch, capsys):
+    """A folder host's log name is cleaned of path characters before it is joined onto
+    LOGS; the edge host's was built from the raw `route=` (issue #846): `route=gw/eu`
+    opened `edge-gw/eu.log` inside a directory nothing ever creates, and the
+    FileNotFoundError escaped the tick with no guard, so launchd restarted the
+    supervisor into the same crash and Remote Control went down on one config line.
+    The edge now starts -- naming the line in the log -- and its log sits directly
+    under LOGS under the cleaned name."""
+    m = load()
+    cfg = tmp_path / "rc-hosts"
+    cfg.write_text(f"route=gw/eu\n{tmp_path}/a\n")
+    (tmp_path / "a").mkdir()
+    # the real Host.start, with only the spawn faked: the open() that raised is
+    # the one this tick runs, and main() must outlive it.
+    monkeypatch.setattr(m.subprocess, "Popen", lambda cmd, **kw: FakeProc())
+    run_main(m, monkeypatch, tmp_path, cfg, m.Host.start, edge_ready=lambda route: False)
+    assert "started via gw/eu" in capsys.readouterr().out
+    logs = sorted(p.name for p in (tmp_path / "logs").glob("edge-*.log"))
+    assert len(logs) == 1 and logs[0].startswith("edge-gw-eu-")   # cleaned, one file
+    assert not (tmp_path / "logs" / "gw").exists()                # never a subdirectory
+
+
+def test_two_routes_that_clean_alike_open_their_own_edge_logs(tmp_path, monkeypatch):
+    """#846 review: the first fix named a cleaned route with a CRC32 suffix, and
+    two distinct profile names can be steered onto one checksum -- both edges
+    then opened one log and wrote one state record, so one route adopted the
+    other's edge. These two long underscore-heavy routes -- the reviewer's pair,
+    equal stems and equal CRC32 -- now keep their whole names, because a token a
+    single file name can hold is never renamed."""
+    m = load()
+    a = "a____b_c___d__e___f__g___h__i_j____k__l_m____n____o___p_q"
+    b = "a_b____c____d__e___f___g___h____i__j___k_l_m____n___o_p___q"
+    cfg = tmp_path / "rc-hosts"
+    cfg.write_text(f"route={a}\n{tmp_path}/a\n{tmp_path}/b route={b}\n")
+    for d in "ab":
+        (tmp_path / d).mkdir()
+    logs = []
+    def spawn(cmd, **kw):                    # the real start(), with only the spawn faked
+        if "--edge" in cmd:
+            logs.append(Path(kw["stdout"].name))
+        return FakeProc()
+    monkeypatch.setattr(m.subprocess, "Popen", spawn)
+    run_main(m, monkeypatch, tmp_path, cfg, m.Host.start, edge_ready=lambda route: False)
+    assert len(logs) == 2 and len(set(logs)) == 2       # one log per edge, never one shared log
+    assert all(p.parent == tmp_path / "logs" for p in logs)   # both directly under LOGS
+
+
+def test_a_second_route_pushed_onto_an_owned_edge_name_is_refused_in_the_log(tmp_path, monkeypatch, capsys):
+    """Any digest has an equal-name case somewhere, so the supervisor keeps the
+    promise itself rather than trusting it: a route whose edge name the first
+    route already owns is refused with a line naming both, as a refused pin line
+    is (#342) -- never silently sharing the log or the state record."""
+    m = load()
+    monkeypatch.setattr(m, "edge_name", lambda route: "one-name")   # force the collision
+    cfg = tmp_path / "rc-hosts"
+    cfg.write_text(f"route=first\n{tmp_path}/a\n{tmp_path}/b route=second\n")
+    for d in "ab":
+        (tmp_path / d).mkdir()
+    monkeypatch.setattr(m.subprocess, "Popen", lambda cmd, **kw: FakeProc())
+    run_main(m, monkeypatch, tmp_path, cfg, m.Host.start, edge_ready=lambda route: False)
+    out = capsys.readouterr().out
+    assert "refused" in out and "one-name" in out and "second" in out
+    assert "not hosted, its route second was refused" in out   # nor is its bridge
+    assert len(list((tmp_path / "logs").glob("edge-*.log"))) == 1   # the second opened nothing
+
+
+def test_a_folder_log_name_keeps_the_cleaning_it_always_had(tmp_path, monkeypatch):
+    """The folder site's cleaning is the one the edge now shares (#846): the very
+    expression it ran before the shared helper existed is the oracle here, so a
+    change to the rule can never move a folder's log out from under its rows."""
+    import re
+    m = load()
+    monkeypatch.setattr(m, "LOGS", tmp_path)
+    folder = "/srv/a project/c++"
+    h = m.Host(folder, "gw")
+    name = re.sub(r"[^A-Za-z0-9]+", "-", folder).strip("-")
+    assert h.logfile == tmp_path / f"{name}.log"
+    assert h.debugfile == tmp_path / f"{name}.debug.log"
+
+
+def _recording_start(m, started):
+    """The real Host.start's identity recorded, with the spawn faked: what the
+    supervisor decided to run, and under which name, without a process."""
+    def start(host):
+        started.append((host.route, host.edge, host.folder))
+        host.proc, host.started = FakeProc(), m.time.time()
+    return start
+
+
+def test_routes_that_differ_only_by_letter_case_run_one_edge(tmp_path, monkeypatch, capsys):
+    """#846 review round 4: on macOS's case-insensitive volume `edge-gw.log` and
+    `edge-GW.log` are one file, and the supervisor compared names case-sensitively,
+    so it started both edges onto one log and one state record. A name is one file
+    when it differs only by case: `GW` is refused in the log, and none of its
+    folders are hosted -- a bridge behind a refused edge would wait forever on it
+    and read the owner's record (INTENT 8, 3). `gw` serves two folders, so the
+    one-folder `GW` loses even though it sorts first."""
+    m = load()
+    started = []
+    cfg = tmp_path / "rc-hosts"
+    cfg.write_text(f"route=gw\n{tmp_path}/a\n{tmp_path}/b\n{tmp_path}/c route=GW\n")
+    for d in "abc":
+        (tmp_path / d).mkdir()
+    monkeypatch.setattr(m.subprocess, "Popen", lambda cmd, **kw: FakeProc())
+    run_main(m, monkeypatch, tmp_path, cfg, _recording_start(m, started))
+    assert [r for r, edge, _ in started if edge] == ["gw"]       # one edge, the owner
+    assert not [f for f, edge, _ in started if not edge and f.endswith("/c")]
+    out = capsys.readouterr().out
+    assert "edge: GW refused, gw already owns the name gw" in out
+    assert "not hosted, its route GW was refused" in out
+
+
+def test_a_running_edge_keeps_its_name_when_a_case_twin_arrives_with_more_folders(tmp_path,
+                                                                                monkeypatch, capsys):
+    """A name already serving a live edge is not taken away by a later reload: a
+    config edit adding two folders on `route=GW` -- more than `gw` has -- must not
+    let the twin win the name off the running edge, or the edge that is up would
+    keep writing the log and record the twin now owns (review round 4, as round 3
+    for a digest alias). The twin is refused and none of its folders are hosted."""
+    m = load()
+    started = []
+    cfg = tmp_path / "rc-hosts"
+    cfg.write_text(f"route=gw\n{tmp_path}/a\n")
+    for d in "abc":
+        (tmp_path / d).mkdir()
+    monkeypatch.setattr(m.subprocess, "Popen", lambda cmd, **kw: FakeProc())
+    ticks = [0]
+    def sleep(_):
+        ticks[0] += 1
+        if ticks[0] == 1:                    # mid-run: the twin arrives with two folders
+            cfg.write_text(f"route=gw\n{tmp_path}/a\n{tmp_path}/b route=GW\n{tmp_path}/c route=GW\n")
+        if ticks[0] > 4:                     # the rewrite's own mtime drives the reload
+            raise SystemExit                 # (ns granularity, as every reload test here assumes)
+    run_main(m, monkeypatch, tmp_path, cfg, _recording_start(m, started), sleep=sleep,
+             edge_ready=lambda route: False)
+    assert [r for r, edge, _ in started if edge] == ["gw"]       # the running edge kept its name
+    assert not [r for r, _, _ in started if r == "GW"]           # the twin hosts nothing
+    out = capsys.readouterr().out
+    assert "edge: GW refused, gw already owns the name gw" in out
+    assert out.count("not hosted, its route GW was refused") == 2
+
+
+def test_a_route_spelled_as_another_routes_cleaned_name_gets_its_own_edge_log(tmp_path, monkeypatch,
+                                                                            capsys):
+    """A route may BE the text another route's name is built from -- `gw-eu-<digest>`
+    is exactly what `edge_name("gw/eu")` emits, and a person may type it as a
+    route. It is not that profile name (a hyphen is not in [A-Za-z0-9_]), so it
+    is cleaned and digests to a name of its own: both edges start, on two
+    different logs, and neither is refused."""
+    m = load()
+    alias = m.edge_name("gw/eu")
+    cfg = tmp_path / "rc-hosts"
+    cfg.write_text(f"route=gw/eu\n{tmp_path}/a\n{tmp_path}/b route={alias}\n")
+    for d in "ab":
+        (tmp_path / d).mkdir()
+    logs = []
+    def spawn(cmd, **kw):                    # the real start(), with only the spawn faked
+        if "--edge" in cmd:
+            logs.append(Path(kw["stdout"].name))
+        return FakeProc()
+    monkeypatch.setattr(m.subprocess, "Popen", spawn)
+    run_main(m, monkeypatch, tmp_path, cfg, m.Host.start, edge_ready=lambda route: False)
+    assert len(logs) == 2 and len(set(logs)) == 2       # a name of its own, never the first's
+    assert all(p.parent == tmp_path / "logs" for p in logs)
+    assert "already owns the name" not in capsys.readouterr().out
+
+
 def test_every_processless_session_is_handed_back_and_retried_slowly(tmp_path, monkeypatch):
     """Archive removes a clean worktree and unarchive never restarts it (2026-10-10);
     a session idle without a process waited hours on a message (2026-10-12)."""
