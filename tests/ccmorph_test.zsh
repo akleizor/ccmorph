@@ -4341,6 +4341,28 @@ test_hop_to_a_wrong_name_inside_claude_answers_in_one_line() {
   return $rc
 }
 
+# A launch whose adapter readiness wait passes one second prints advisory
+# lines to the same stream as its status: "ccmorph: Starting adapter for
+# '<label>'…" at one second, then "ccmorph: Waiting for '<profile>' adapter
+# (Ns); Ctrl-C to cancel." every five after (util/adapterstart.go). On a
+# loaded host that wait crosses a second routinely — the reason #766 raised
+# the readiness limit — so an exact comparison of launch output must not
+# depend on the readiness clock: drop exactly those whole advisory lines and
+# hold every other byte exact (#856).
+strip_readiness_advisories() {
+  setopt localoptions extended_glob
+  local line
+  local -a kept
+  for line in "${(@f)1}"; do
+    case $line in
+      ('ccmorph: Starting adapter for '*…|'ccmorph: Waiting for '*"' adapter ("[0-9]#'s); Ctrl-C to cancel.')
+        continue ;;
+    esac
+    kept+=("$line")
+  done
+  print -r -- "${(F)kept}"
+}
+
 test_relay_resume_preserves_dangerous_permission_mode() {
   local test_home
   test_home=$(mktemp -d)
@@ -4388,6 +4410,7 @@ test_relay_resume_preserves_dangerous_permission_mode() {
     rm -rf "$test_home"
     return 1
   }
+  relay_output="$(strip_readiness_advisories "$relay_output")"
 
   local actual="$(<"$CCMORPH_TEST_LOG")"
   local rc=0
@@ -4462,6 +4485,7 @@ check_relay_cache_notice_absent() {
 
   local output actual_rc=0 rc=0
   output=$(ccmorph run proxy 2>&1) || actual_rc=$?
+  output="$(strip_readiness_advisories "$output")"
   if [[ -n "$preflight" ]]; then
     assert_contains "$output" "$expected_output" 'the target must fail its preflight' || rc=1
     [[ "$actual_rc" == "$expected_rc" &&
