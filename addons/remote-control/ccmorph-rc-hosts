@@ -29,6 +29,21 @@ family), read at each reload; a `tier.<alias>=<model>` line overrides one alias.
 A route profile's file is watched too, so a tier set on the profile (`ccmorph set`,
 or Stark's phone control) reaches the hosts within a tick, with no edit here.
 
+`inference=<profile>` promises the switch holds across restarts (issue #595). The
+supervisor compares the line's literal value with the value it last applied
+(profiles/.rc-bridge/inference-wanted, kept across its own restarts), so a reload
+or boot whose `inference=` value did not move writes nothing and a manual
+`--switch` stays. A moved value is applied once: `account` and `route` are written
+here; a profile goes to `ccmorph-rc <profile> --switch` once exactly one shared
+edge is live, retried with backoff, one child at a time. A proxy takes a handoff
+within a second and keeps it only in memory, so an edge or proxy restart loses
+it: the choice made for that is to re-hand, never to keep the key on disk. Every
+tick the supervisor asks the live edge's proxy what it holds (held.<pid>.json)
+and runs `ccmorph-rc <profile> --switch --rehand` for whatever profile the switch
+file names -- the config's or a manual one -- when that proxy does not hold it. A
+re-hand writes no word and takes no place in line, so it never overtakes a choice
+made meanwhile.
+
 A worktree session (`.claude/worktrees/...`) is never pinned: it shares its repo
 host's environment, and pinning it takes over that host's row in the app.
 
@@ -107,6 +122,8 @@ STATE_ROOT = Path(os.environ.get("CCMORPH_STATE_DIR") or
 LOGS = STATE_ROOT / "profiles" / ".rc-bridge" / "logs"
 EDGES = STATE_ROOT / "profiles" / ".rc-bridge" / "edges"
 INFERENCE = STATE_ROOT / "profiles" / ".rc-bridge" / "inference"   # ccmorph-rc reads the same file
+WANTED = STATE_ROOT / "profiles" / ".rc-bridge" / "inference-wanted"   # the inference= value last applied, as written
+SWITCH_WORD = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]*")   # a profile word, as rc_route reads one
 SESSION_WORDS = INFERENCE.parent / "sessions"      # one session's own word: ccmorph-rc --switch --session
 
 
@@ -333,14 +350,15 @@ def inference_account(text: str) -> str:
     return account_name()
 
 
-def inference(text: str, routes: set[str], account: str) -> str:
-    """`inference=<profile>` -- where every host's model calls go: "account" for the
-    account profile the phone signs in with, "route" for a route the config names (or
-    no line), else the profile itself, which `ccmorph-rc <profile> --switch` brings up
-    beside the edge. Each proxy reads the result on every turn: nothing restarts.
-    A "" account (none, or an ambiguous set: see inference_account) matches no word."""
-    name = inference_name(text)
-    return "account" if name == account else "route" if name is None or name in routes else name
+def inference(text: str) -> str:
+    """The config's `inference=<profile>` value as written (inference_name); "" with
+    no line. The supervisor compares this literal and nothing derived from it: the
+    word a profile spells in the switch file ("route" while its own edge answers)
+    moves with edge liveness under an unchanged config, and a moved derived word read
+    as a changed ask overwrote a manual --switch (issue #595). What the value means
+    -- "account", "route" or the profile -- is ccmorph-rc's inference_word, the one
+    rule --switch uses too."""
+    return inference_name(text) or ""
 
 
 def tier_map(text: str, profile: dict[str, str] | None = None) -> dict[str, str]:
@@ -2174,7 +2192,7 @@ def held_logs(hosts: "dict[str, Host]") -> "set[Path] | None":
     return held
 
 
-def start_switch(target: str) -> None:
+def start_switch(target: str, rehand: bool = False) -> subprocess.Popen:
     """Start `ccmorph-rc <target> --switch` with LOGS/switch.log as its stderr,
     then set the log's mtime to now. The periodic sweep removes switch.log by age
     alone (held_logs() reads no ps row for it), so the stamp is what keeps a
@@ -2186,10 +2204,219 @@ def start_switch(target: str) -> None:
     LOGS is made first: a fresh state dir reaches here before any Host.start (#596)."""
     LOGS.mkdir(parents=True, exist_ok=True)
     with open(LOGS / "switch.log", "a") as err:
-        subprocess.Popen([str(HERE / "ccmorph-rc"), target, "--switch"],
-                         stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
-                         stderr=err, start_new_session=True)
-    os.utime(LOGS / "switch.log")
+        child = subprocess.Popen([str(HERE / "ccmorph-rc"), target, "--switch", *(["--rehand"] if rehand else [])],
+                                 stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                                 stderr=err, start_new_session=True)
+    try:
+        os.utime(LOGS / "switch.log")
+    except OSError:
+        pass    # the child runs: the Switcher must hold it, or it would start a second one (#595)
+    return child
+
+
+def live_word() -> str | None:
+    """The word every proxy answers now (ccmorph-rc's read_inference rule), read
+    without loading the launcher: a reload and a finished child consult it, and
+    neither may fail on a launcher a partial install never wrote (#845)."""
+    try:
+        return INFERENCE.read_text().strip() or None
+    except OSError:
+        return None
+
+
+class Switcher:
+    """The one owner of the `inference=` promise across boot, reloads and restarts (issue #595).
+
+    It compares the config's literal ask with the ask it last applied (WANTED, kept
+    across supervisor restarts): an unchanged ask -- a comment edit, a boot -- writes
+    nothing, so a manual `--switch` stands until the `inference=` line itself moves.
+    A changed ask is applied in tend(): "account"/"route" written here, a profile
+    handed to `ccmorph-rc <profile> --switch` once exactly one shared edge is live,
+    retried with backoff. One child at a time, and nothing is written while it runs;
+    every writer of the switch file lands by the ticket it took when it started
+    (ccmorph-rc land_word), so an older child finishing late cannot overwrite a newer
+    choice. Each outcome is logged under the child's own word. Once the ask is
+    applied, the live word's profile is re-handed whenever the live edge's proxy
+    does not hold it: an edge or proxy restart loses every endpoint it held.
+
+    The account an ask names is resolved here through account_name(), never by
+    dying (#596), and every step that touches the filesystem -- loading the
+    launcher, the switch file, switch.log, the record -- is retried on the next
+    tick when it raises OSError, with one line per distinct failure (#845).
+    """
+
+    def __init__(self) -> None:
+        self.ask = None                  # the loaded config's literal ask; "" = no inference= line
+        self.base = None                 # the switch word when this ask arrived, or as we last wrote it
+        self.done = self.recorded()      # the ask last applied, across supervisor restarts
+        self.proc = None                 # the one running `ccmorph-rc <word> --switch`
+        self.proc_for = None             # (its word, whether it applies the ask)
+        self.backoff, self.next_try = BACKOFF_MIN, 0.0
+        self.said = None                 # the last waiting line, logged once
+        self.failure = None              # the last OSError logged, so a lasting refusal is one line
+
+    @staticmethod
+    def recorded():
+        """The ask last applied; None on a first run or an unreadable record."""
+        try:
+            return WANTED.read_text().strip()
+        except OSError:
+            return None
+
+    def record(self, ask: str) -> None:
+        WANTED.parent.mkdir(parents=True, exist_ok=True)
+        tmp = WANTED.with_name(WANTED.name + ".tmp")
+        tmp.write_text(ask + "\n")
+        tmp.replace(WANTED)
+        self.done = ask
+
+    def record_after(self, ask: str) -> None:
+        """Record an applied ask; a record that cannot be written is retried by the
+        next tick's apply(), which finds the word already in force."""
+        try:
+            self.record(ask)
+        except OSError as e:
+            self.fail(("record", type(e).__name__, e.errno),
+                      f"inference: {ask or 'route'} in force but not recorded ({e}); retrying next tick")
+
+    def say(self, line: str) -> None:
+        if line != self.said:
+            self.said = line
+            log(line)
+
+    def fail(self, failure: tuple, line: str) -> None:
+        if failure != self.failure:
+            self.failure = failure
+            log(line)
+
+    def reload(self, ask: str) -> None:
+        """A config was read; only a changed ask is work for tend(). Nothing here
+        loads the launcher or writes: a reload cannot end the supervisor (#845)."""
+        if ask != self.ask:
+            self.ask = ask
+            self.base = live_word()
+            self.backoff, self.next_try, self.said = BACKOFF_MIN, 0.0, None
+
+    def dispatch(self, word: str, applies: bool) -> None:
+        self.proc = start_switch(word, rehand=not applies)   # a re-hand writes no word
+        self.proc_for, self.said = (word, applies), None
+        log(f"inference: bringing up {word}" if applies else f"inference: re-handing {word} to the live edge")
+
+    def edge(self):
+        """(how many shared edges serve, the one --switch would hand to or None):
+        ccmorph-rc's switch_edge -- the rule --switch counts with -- over edge_ready."""
+        def serving(f: Path) -> dict | None:
+            if not edge_ready(f.stem):
+                return None
+            try:
+                rec = json.loads(f.read_text())
+                int(rec["pid"])
+                return rec
+            except (OSError, ValueError, KeyError, TypeError):
+                return None
+        return rc_module().switch_edge(EDGES, serving)
+
+    def held(self, word: str, edge) -> bool:
+        """Whether the live edge's proxy holds `word`'s endpoint (ccmorph-rc hand_held)."""
+        return edge is not None and rc_module().hand_held(word, int(edge["pid"]), str(edge["started"])) is not None
+
+    def tend(self, now: float) -> None:
+        if self.proc is not None:
+            rc = self.proc.poll()
+            if rc is None:
+                return                       # one child at a time; nothing writes meanwhile
+            word, applies = self.proc_for
+            self.proc = self.proc_for = None
+            if rc == 0:
+                self.backoff, self.next_try = BACKOFF_MIN, 0.0
+                self.base = live_word()      # the child's word is ours
+                if self.base in (word, "route", None):   # None: no word readable to say otherwise
+                    log(f"inference: {word} live")
+                else:                        # it landed, then a newer switch replaced it
+                    log(f"inference: {word} landed, then the switch was set to {self.base} by hand")
+                if applies:
+                    self.record_after(word)
+            else:
+                self.next_try = now + self.backoff
+                log(f"inference: {word} bring-up failed (rc={rc}); retrying in {self.backoff:g}s "
+                    f"(see {LOGS / 'switch.log'})")
+                self.backoff = min(self.backoff * 2, BACKOFF_MAX)
+            # no return: this tick still looks at the edges, so a down tick is never missed
+        if self.ask is None or now < self.next_try:
+            return
+        if self.ask != self.done:
+            self.apply()
+            return
+        try:
+            self.rehand()
+        except OSError as e:
+            self.fail(("rehand", type(e).__name__, e.errno),
+                      f"inference: cannot keep the live word's endpoint ({e}); retrying next tick")
+
+    def apply(self) -> None:
+        ask = self.ask
+        try:
+            rc = rc_module()
+            account = account_name() if ask else ""
+        except OSError as e:
+            self.fail(("resolve", type(e).__name__, e.errno),
+                      f"inference: cannot resolve the word ({e}); retrying next tick")
+            return
+        if self.failure is not None and self.failure[0] == "resolve":
+            self.failure = None
+        live = rc.read_inference(INFERENCE)
+        if not ask and self.done is None and live is not None:
+            self.record_after(ask)       # no line, nothing applied before: a word in force stays
+            return
+        if live is not None and live != self.base:
+            self.record_after(ask)
+            log(f"inference: {ask or 'route'} not applied: the switch was set to {live} by hand after the config asked")
+            return
+        word = "route" if not ask else rc.inference_word(ask, account)
+        try:
+            if word in ("account", "route"):
+                if live != word:
+                    if not rc.land_word(word, rc.take_ticket(INFERENCE), INFERENCE):
+                        self.record(ask)    # a --switch that started meanwhile landed first: it stands
+                        log(f"inference: {word} not applied: the switch was set to "
+                            f"{live_word()} by hand after the config asked")
+                        return
+                    self.base = word
+                self.record(ask)
+                self.failure = None
+                log(f"inference: {word} for every proxy")
+                return
+            n, edge = self.edge()
+            if live == word and self.held(word, edge):
+                self.record(ask)
+                self.failure = None
+                log(f"inference: {word} live")
+                return
+            if n != 1:
+                self.say(f"inference: {word} waits for exactly one live shared edge ({n} live)")
+                return
+            self.dispatch(word, applies=True)    # --switch itself names any refusal (switch.log)
+            self.failure = None
+        except OSError as e:
+            self.fail((word, type(e).__name__, e.errno),
+                      f"inference {word}: not applied ({e}); retrying next tick")
+
+    def rehand(self) -> None:
+        """Keep the LIVE word's endpoint in the live edge's proxy: re-run --switch for
+        whatever the switch file names -- the config's profile or a manual one --
+        when that proxy does not say it holds it (an edge or proxy restart, or an
+        adapter that stopped answering). It never changes which profile is live."""
+        word = live_word()
+        if word in (None, "account", "route") or not SWITCH_WORD.fullmatch(word):
+            return
+        n, edge = self.edge()
+        if n != 1:
+            self.say(f"inference: {word} waits for exactly one live shared edge to hold its endpoint ({n} live)")
+            return
+        if self.held(word, edge):
+            self.said = None
+            return
+        self.dispatch(word, applies=False)
 
 
 class Clock:
@@ -2275,11 +2502,8 @@ def main(argv: list[str]) -> int:
     seen = None
     profiles_seen = None   # the loaded routes' profile mtimes: a tier set there reloads too
     text = ""
-    switched = None
-    inference_routes: set[str] = set()   # routes the loaded config names: a retried resolution reads them
-    retry_inference = False    # the inference word could not be resolved: retried every tick
-    pending_inference = None   # a switch word/bring-up the filesystem refused: retried every tick
-    inference_failure = None   # the last failure logged, so a lasting refusal is one line
+    sw = Switcher()
+    inference_routes: set[str] = set()   # routes the loaded config names: their profiles' tiers reload too
     clock = Clock()
     stopping = []
     signal.signal(signal.SIGTERM, lambda *_: stopping.append(1))
@@ -2306,13 +2530,10 @@ def main(argv: list[str]) -> int:
                 # `tier.<alias>=` line changes what no host runs and must restart nothing.
                 tiers = {r: route_tiers(r, text) for r in routes}
                 perm = permission_mode(text)
-                # live in every proxy: no host restarts for it. A profile is brought
-                # up once per change, not on every reload. The word is resolved and
-                # put in force below, where an OSError leaves it pending for the
-                # next tick (#845).
+                # live in every proxy: no host restarts for it. The Switcher puts the
+                # ask in force in tend(), where an OSError is retried next tick (#845).
                 inference_routes = routes
-                retry_inference = True
-                pending_inference = None   # a reloaded config supersedes the last word
+                sw.reload(inference(text))
                 # --permission-mode and the ANTHROPIC_DEFAULT_*_MODEL pins are fixed when
                 # a host's process starts, so a host whose permission or tiers changed has
                 # to be restarted to carry them. The shared edge pins the tiers too; only
@@ -2364,55 +2585,6 @@ def main(argv: list[str]) -> int:
                     hosts.setdefault(folder, Host(folder, route, args, tiers[route], perm))
                 log(f"config: {len(want)} folder(s): " + ", ".join(
                     f"{f} via {r}{' ' + ' '.join(a) if a else ''}" for f, (r, a) in want.items()))
-        # Put the reload's inference word in force. Resolving it can itself touch
-        # the filesystem -- account_candidates() loads the launcher module beside
-        # this script, so a fresh supervisor whose ccmorph-rc was never written
-        # raised FileNotFoundError before the bring-up guard could run (#845).
-        # Both the resolution and the apply (the shared switch file; opening
-        # switch.log and exec'ing the launcher) are guarded: an OSError from
-        # either (a full disk, a read-only .rc-bridge/, a missing launcher) leaves
-        # the work pending and retried on a later tick, as the unrecorded markers
-        # below are; one line names the cause per distinct failure, not one per
-        # second while it lasts.
-        if retry_inference or pending_inference is not None:
-            if retry_inference:
-                try:
-                    target = inference(text, inference_routes, inference_account(text))
-                except OSError as e:
-                    failure = ("resolve", type(e).__name__, e.errno)
-                    if failure != inference_failure:
-                        log(f"inference: cannot resolve the word ({e}); retrying next tick")
-                        inference_failure = failure
-                else:
-                    retry_inference = False
-                    # A resolution failure is over, but an apply failure outlives a
-                    # reload: an unrelated config edit between two refused writes of
-                    # the same word must not log the same cause again (#845 review).
-                    if inference_failure is not None and inference_failure[0] == "resolve":
-                        inference_failure = None
-                    pending_inference = target if (target in ("account", "route")
-                                                   or target != switched) else None
-            if pending_inference is not None:
-                target = pending_inference
-                try:
-                    if target in ("account", "route"):
-                        rc_module().write_inference(target, INFERENCE)
-                    else:
-                        # LOGS is created by the first Host.start, later in this same tick:
-                        # a fresh state dir whose first config carries inference=<profile>
-                        # died FileNotFoundError on this open, before any edge had started
-                        # -- the same past-the-early-returns hole the #419 comment names (#596).
-                        # start_switch() makes it, mkdir first, and stamps it for the sweep
-                        # once the child runs (#758).
-                        start_switch(target)
-                        log(f"inference: bringing up {target}")
-                except OSError as e:
-                    failure = (target, type(e).__name__, e.errno)
-                    if failure != inference_failure:
-                        log(f"inference {target}: not applied ({e}); retrying next tick")
-                        inference_failure = failure
-                else:
-                    switched, pending_inference, inference_failure = target, None, None
         # A retire whose edit did not land left the pinned line active-looking:
         # write its marker now, on every tick, until one lands -- an unreadable
         # or read-only config is retried rather than abandoned (the state is
@@ -2443,6 +2615,7 @@ def main(argv: list[str]) -> int:
                     text, seen = after             # (unacknowledged: `text` stays the loaded config)
                 log(f"{folder}: {h.session_id} archived or expired; bridge retired")
             h.exited = None
+        sw.tend(now)   # after the host loop: an edge started this tick is not live yet
         repos = [h.folder for h in hosts.values() if not h.edge and not h.session_id]
         idle_due = cycle(hosts, repos, now, clock)
         # The destructive pass must not run under a config the file no longer

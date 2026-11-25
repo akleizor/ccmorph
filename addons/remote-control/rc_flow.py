@@ -13,8 +13,8 @@ import tempfile
 from pathlib import Path
 
 from rc_route import (ACCOUNT_METADATA, SESSION_HEADER, encode_json, inference_target,
-                      is_event_upload, is_inference, normalize_body, reroute, session_target,
-                      set_model, slim_events)
+                      is_event_upload, is_inference, lost_endpoint_note, normalize_body, reroute,
+                      session_target, set_model, slim_events)
 
 
 def _sessions(s) -> str | None:
@@ -62,7 +62,12 @@ def requestheaders(flow, s) -> None:
         if alt := s.switched(target):
             upstream, key, tiers = alt
         else:
-            s.log(f"switch    {target} was never brought up (ccmorph-rc {target} --switch); on the route")
+            # issue #595: which repair is true depends on the state dir, so rc_route decides
+            # what this line may name (a session's own word is repaired with --session).
+            if s.inference and getattr(s, "logs", True):
+                # getattr: a proxy started before these existed reloads this module too
+                s.log(lost_endpoint_note(target, Path(s.inference).parent, getattr(s, "parent", 0),
+                                         req.headers.get(SESSION_HEADER) if own else None))
             target = "route"
     headers, (scheme, host, port) = reroute(dict(req.headers.items()), upstream, key)
     flow.metadata["rc_tiers"] = tiers
