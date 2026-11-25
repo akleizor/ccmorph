@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"os"
 	"path/filepath"
+	"regexp"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -80,8 +82,14 @@ func TestAdapterStartModelScopeHonorsTheEnvBoundAndSaysTheWait(t *testing.T) {
 	if rc != 1 {
 		t.Fatalf("rc %d, stderr %q", rc, errw.String())
 	}
-	if !strings.Contains(errw.String(), "timed out after 1s") {
-		t.Errorf("stderr %q, want the waited seconds (1s)", errw.String())
+	// The line reports the wait the loop measured (#260), not the literal
+	// bound: a gate host under load can take the first poll several seconds
+	// late, so pin the timeout branch and its seconds unit, never "1s".
+	timedOut := regexp.MustCompile(`: adapter timed out after ([0-9]+)s; session not started\.`).FindStringSubmatch(errw.String())
+	if timedOut == nil {
+		t.Errorf("stderr %q, want a timeout naming the measured wait in seconds", errw.String())
+	} else if said, _ := strconv.Atoi(timedOut[1]); said < 1 || time.Duration(said)*time.Second > waited {
+		t.Errorf("stderr %q reports %s waited, measured %v: the line must report the wait it saw", errw.String(), timedOut[1], waited)
 	}
 	if waited > 10*time.Second {
 		t.Errorf("env bound ignored: waited %v for a 1s bound", waited)

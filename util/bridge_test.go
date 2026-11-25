@@ -168,6 +168,10 @@ exit 1
 // floor and on an unparseable banner it writes the section.
 func TestBridgeRenderVersionGate(t *testing.T) {
 	requireLoopback(t) // bridgeStart picks its port by binding one
+	// The gate reads the stub's -h before rendering, and an empty read counts
+	// as a current bridge (BannerBelow): give the spawn the same headroom the
+	// adapter's bound gets, so a loaded host cannot flip the below-floor case.
+	t.Setenv("CCMORPH_BRIDGE_BANNER_TIMEOUT", "600")
 	for _, tc := range []struct {
 		name       string
 		banner     string

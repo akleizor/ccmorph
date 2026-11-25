@@ -12703,6 +12703,14 @@ run_test test_one_interactive_flag_is_the_only_way_to_ask
 run_test test_every_credential_type_states_how_it_authenticates
 
 # Bootstrap must observe the projected cache, not race a background refresh.
+# The launch reaches the gateway before it projects, and that reach probe bounds
+# the stub's first exec (util/reach.go, #875): this inline stub was the one such
+# stub left unwarmed. Under load its first exec can outlast or fail inside the
+# probe's five seconds; the probe then reads the failure as no cause, the picker
+# reads the missing listing as nothing to project, claude opens on the stale
+# cache and the test returns only a bare status. Warm the stub outside every
+# bound, and keep the launch's status, its words and the fake claude's own check
+# for the failure print instead of deleting them with the test home.
 test_picker_projection_is_complete_before_claude_entry() {
   local test_home; test_home=$(mktemp -d); setup_home "$test_home"
   printf '%s\n' 'type=proxy' 'base_url=http://gw.invalid' 'api_key=test-key' 'model=opaque-model' > "$HOME/.config/ccmorph/gw.conf"
@@ -12717,11 +12725,21 @@ test_picker_projection_is_complete_before_claude_entry() {
     'JSON' \
     > "$HOME/bin/curl"
   chmod +x "$HOME/bin/curl"
-  printf '%s\n' '#!/bin/sh' 'python3 -c '\''import json,os,sys; d=json.load(open(os.environ["CLAUDE_CONFIG_DIR"]+"/.claude.json")); assert all(r["label"] == r["value"] for r in d["additionalModelOptionsCache"])'\'' ' > "$HOME/bin/claude"
+  warm_curl_stub
+  printf '%s\n' '#!/bin/sh' \
+    'python3 -c '\''import json,os,sys; d=json.load(open(os.environ["CLAUDE_CONFIG_DIR"]+"/.claude.json")); rows=d["additionalModelOptionsCache"]; bad=[r for r in rows if r["label"] != r["value"]]; print("picker rows at claude entry:", json.dumps(rows)); sys.exit(("unprojected picker rows at claude entry: "+json.dumps(bad)) if bad else 0)'\'' > "$HOME/fake-claude.check" 2>&1' \
+    > "$HOME/bin/claude"
   chmod +x "$HOME/bin/claude"
   source "$CCMORPH_SOURCE"
-  _ccm_launch -a gw prompt
-  local rc=$?
+  local out rc=0
+  out=$(_ccm_launch -a gw prompt 2>&1) || rc=$?
+  if (( rc != 0 )); then
+    local said=""
+    [[ -f "$HOME/fake-claude.check" ]] && said=$(<"$HOME/fake-claude.check")
+    print -u2 -- "the picker launch failed (exit $rc); its output:"
+    print -u2 -- "${out:-<none>}"
+    print -u2 -- "the fake claude's check said: ${said:-<not run>}"
+  fi
   rm -rf "$test_home"
   return $rc
 }
