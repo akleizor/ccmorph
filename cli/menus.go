@@ -60,6 +60,8 @@ func (l *launcher) describeProfiles(active string, types []string, accept func(m
 			d.detail = l.accountModel(n)
 			if d.detail == "" {
 				d.detail = "Browser login"
+			} else {
+				d.detail += ", " + l.modelOrigin(n) // #862
 			}
 		case "apikey":
 			d.detail = f["base_url"]
@@ -67,7 +69,7 @@ func (l *launcher) describeProfiles(active string, types []string, accept func(m
 				d.detail = "api.anthropic.com"
 			}
 			if m := l.accountModel(n); m != "" {
-				d.detail += " → " + m
+				d.detail += " → " + m + ", " + l.modelOrigin(n)
 			}
 		}
 		d.private = f["private"] == "1"
