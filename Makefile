@@ -12,7 +12,7 @@ TAG := v$(VERSION)
 DIST := dist
 TARBALL := $(DIST)/ccmorph-$(TAG).tar.gz
 
-.PHONY: help shim test test-go gate gate-launch gate-install gate-configure gate-py check-version dist release clean
+.PHONY: help shim test test-go gate gate-clients gate-launch gate-install gate-configure gate-py check-version dist release clean
 
 help:
 	@echo "ccmorph $(VERSION)"
@@ -56,7 +56,15 @@ test-go:
 # its own scratch homes and mostly waits on process spawns, so they overlap: 185 s
 # one after another, about a minute at once on a quiet host. Never chain them.
 gate: shim
-	@$(MAKE) -j5 gate-launch gate-install gate-configure gate-py test-go
+	@$(MAKE) -j6 gate-launch gate-install gate-configure gate-py gate-clients test-go
+
+# The whole-module client guard (#829): a production &http.Client{} or
+# http.DefaultTransport clone that honours HTTPS_PROXY must also trust the CA a
+# Remote Control session exports, or its handshake fails inside the edge before
+# any request leaves. Its own target so a failure reads as this rule, not as a
+# line in test-go's output.
+gate-clients:
+	@go test ./guard
 
 gate-launch:
 	@zsh tests/ccmorph_test.zsh
