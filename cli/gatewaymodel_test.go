@@ -256,6 +256,17 @@ func TestDoctorNotesAGatewayWithNoSavedModelIssue862(t *testing.T) {
 			t.Fatalf("a saved model is not the no-model case:\n%s", out)
 		}
 	})
+	t.Run("a body that is not a listing", func(t *testing.T) {
+		state, profiles, _, _ := gw862(t, "", "")
+		t.Setenv("LISTING", `{"error":"x"}`)
+		out, rc := doctorOutput(t, &launcher{dir: state, profileDirs: profiles}, "gw862")
+		if strings.Contains(out, "INFO model:") {
+			t.Fatalf("a body that is not a listing cannot judge the first launch:\n%s", out)
+		}
+		if !strings.Contains(out, "FAIL gateway: malformed model listing (HTTP 200)\n") || rc != 1 {
+			t.Fatalf("doctor's malformed-listing FAIL changed, rc %d:\n%s", rc, out)
+		}
+	})
 }
 
 // GH-862: without a terminal the launch refuses an unmapped alias with the
