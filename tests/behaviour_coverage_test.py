@@ -133,6 +133,12 @@ def seed(box):
 # --- use / list -------------------------------------------------------------
 
 def test_use_sets_the_default_and_bare_use_reports_it(box):
+    # #636: with no profile at all, bare use says so on stderr and names
+    # neither a default nor the command just typed.
+    empty = box.run('use')
+    assert empty.stdout == '', empty.stdout
+    assert 'No profiles yet' in empty.stderr, empty.stderr
+    assert 'ccmorph use' not in empty.stdout + empty.stderr, empty.stderr
     seed(box)
     bare = box.run('use')
     # #636: piped, stdout is the default's name and there is none: empty, with
@@ -141,7 +147,7 @@ def test_use_sets_the_default_and_bare_use_reports_it(box):
     # GH-368: profiles exist but none is the default, so the answer names the
     # profiles to choose from and never the command just typed.
     assert 'Profiles: gw tok work' in bare.stderr
-    assert 'ccmorph use' not in bare.stdout
+    assert 'ccmorph use' not in bare.stdout + bare.stderr, bare.stderr
     done = box.run('use', 'tok')
     assert done.returncode == 0, done.stderr
     assert 'Default set' in done.stdout

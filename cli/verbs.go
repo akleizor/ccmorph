@@ -478,8 +478,14 @@ func (l *launcher) use(args []string) int {
 			}
 		} else if names := l.confNames(); len(names) == 0 {
 			// #368: a fresh install hears the one sentence every command gives,
-			// not the command it just typed with no profile to name.
-			fmt.Println(l.dim + noProfilesMsg + l.reset)
+			// not the command it just typed with no profile to name. Off a
+			// terminal it goes to stderr: stdout is the default's name, and
+			// there is none (#636).
+			if isTTY(1) {
+				fmt.Println(l.dim + noProfilesMsg + l.reset)
+			} else {
+				fmt.Fprintln(os.Stderr, noProfilesMsg)
+			}
 		} else {
 			// #368: profiles exist but none is the default, so the answer names
 			// the profiles to choose from, never the command just typed.
