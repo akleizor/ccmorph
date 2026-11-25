@@ -180,3 +180,38 @@ func TestShownEndpointNeverPrintsACredential(t *testing.T) {
 		})
 	}
 }
+
+// #852: the credential scan globs the per-provider auth dir under the
+// profile root, which is user-settable and must stay literal. A root with
+// an unclosed `[` made the joined pattern invalid, the ignored error answered
+// nothing, and a completed sign-in was reported as "no credential appeared".
+func TestProviderLoginFindsTheCredentialUnderABracketedRoot(t *testing.T) {
+	root := t.TempDir()
+	dir := filepath.Join(root, "state[6")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	bin := filepath.Join(root, "bin")
+	if err := os.MkdirAll(bin, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// The fake stands in for cliproxyapi's browser login: it takes its auth
+	// dir from the -config file and writes the sign-in there, exactly as the
+	// real login leaves it on disk.
+	script := "#!/bin/sh\n" +
+		"dir=$(sed -n 's/^auth-dir: \"\\(.*\\)\"$/\\1/p' \"$3\")\n" +
+		"printf '{\"access_token\":\"x\"}' > \"$dir/cred.json\"\n"
+	if err := os.WriteFile(filepath.Join(bin, "cliproxyapi"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// The fake itself shells out to sed, so PATH is the fake first and the
+	// tools after, not the fake alone.
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	l := &launcher{dir: dir}
+	if !l.providerLogin("demo", "codex") {
+		t.Fatal("a finished sign-in under a root holding `[` was reported as no credential")
+	}
+	if _, err := os.Stat(filepath.Join(dir, "auth", "demo", "cred.json")); err != nil {
+		t.Fatalf("the written credential was not found by the scan: %v", err)
+	}
+}
