@@ -1153,6 +1153,27 @@ def test_no_failed_start_ever_leaves_the_route_key_behind(tmp_path, monkeypatch,
     assert list(rc.STATE.glob("route-key.*")) == []
 
 
+def test_a_start_removes_what_a_killed_launcher_left_and_keeps_live_ones(tmp_path, monkeypatch):
+    """A SIGKILL runs no cleanup, so its route key stayed on disk for good. The next
+    start removes the files of every launcher that is gone, and only those."""
+    import os
+    import subprocess
+    rc = _edge_spawn_state(tmp_path, monkeypatch)
+    rc.STATE.mkdir(parents=True, exist_ok=True)
+    gone = subprocess.Popen([sys.executable, "-c", ""])
+    gone.wait()
+    dead_key = rc.STATE / f"route-key.{gone.pid}.abc"
+    dead_key.write_text("secret")
+    dead_addon = rc.STATE / f"addon.{gone.pid}.abc"
+    dead_addon.mkdir()
+    (dead_addon / "rc_addon.py").write_text("")
+    live = rc.STATE / f"{rc.owned_prefix('route-key')}abc"
+    live.write_text("in use")
+    rc.sweep_orphans(rc.STATE)
+    assert not dead_key.exists() and not dead_addon.exists()
+    assert live.exists()
+
+
 @pytest.mark.parametrize("spawn_mode", ["child", "object"], ids=["spawned-child", "handle-with-no-stop-api"])
 @pytest.mark.parametrize("sig,expected", [
     (signal.SIGTERM, str(128 + signal.SIGTERM)),
@@ -1438,7 +1459,7 @@ rc.shutil.which = lambda name: "/test/" + name
 real_mkstemp = rc.tempfile.mkstemp
 def mkstemp(*a, **k):
     made = real_mkstemp(*a, **k)
-    if k.get("prefix") == "route-key.":
+    if str(k.get("prefix", "")).startswith("route-key."):
         os.kill(os.getpid(), sig)                 # the file exists; own_edge has not got its name yet
     return made
 rc.tempfile.mkstemp = mkstemp
