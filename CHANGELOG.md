@@ -25,6 +25,22 @@
 
 ### Fixed
 
+- **Recording a key approval or the model picker's rows no longer drops what a
+  running session saved.** `ccmorph add`, `login`, a launch and a hop record
+  Claude Code's answer in the profile's `.claude.json`, and every gateway launch
+  rewrites the picker rows there and the allowlist in the profile's settings
+  layer. Each of these rewrites now holds the profile's live lock exclusively
+  across its read and its rename — the mode the repo's other whole-file writers
+  take — so a running session's own save, a second approval or another launch's
+  rewrite can no longer be lost under it. While a session of the profile is
+  open, `login` and `add` save the answer and the next launch records it before
+  Claude Code starts; a launch that finds it still waiting says so and starts
+  nothing. A second launch of a profile whose session is open keeps the picker
+  rows the files already hold until a launch can write them. The first-run
+  answers a hop or a second profile seeds into the profile's config run
+  through the same locked rewrite, so an approval recorded while the answers
+  are gathered keeps its place too (#299, #861).
+
 - **One hand-edited conf line no longer splits the commands.** An unknown key or
   an effort level outside low…max used to hide the profile from `list` (which
   then said "No profiles yet"), let `get` answer confidently, and stop
