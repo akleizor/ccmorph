@@ -143,19 +143,34 @@ var (
 	hanRune    = regexp.MustCompile(`\p{Han}`)
 	latinRune  = regexp.MustCompile(`\p{Latin}`)
 	zhLanguage = regexp.MustCompile(`(?i)\b(chinese|cantonese|mandarin)\b|中文|粵語|廣東話|普通話`)
+	// The language a brief asks the text to come out in: "into English",
+	// "in Cantonese", "譯成英文".
+	targetLanguage = regexp.MustCompile(`(?i)\b(?:into|in)\s+(\p{L}+)|(?:成|做|為|为)\s*(中文|粵語|廣東話|普通話|英文|英語|日文|韓文|法文|德文)`)
 )
 
-// writtenLang is "zh" when the text to write is Chinese: a brief mostly in
-// Han characters, or one that names the language. shortcut: a brief that
-// names Chinese only as its source language counts too; ask the decider if
-// that misroutes in practice.
+// writtenLang is "zh" when the text to write is Chinese. A named output
+// language decides ("translate this Chinese article into English" is not);
+// otherwise a brief mostly in Han characters, or one that names Chinese.
 func writtenLang(prompt string) string {
+	for _, m := range targetLanguage.FindAllStringSubmatch(prompt, -1) {
+		lang := m[1] + m[2]
+		if zhLanguage.MatchString(lang) {
+			return "zh"
+		}
+		if hanRune.MatchString(lang) || latinRune.MatchString(lang) && languageWord.MatchString(lang) {
+			return ""
+		}
+	}
 	han := len(hanRune.FindAllStringIndex(prompt, -1))
 	if han > len(latinRune.FindAllStringIndex(prompt, -1)) || zhLanguage.MatchString(prompt) {
 		return "zh"
 	}
 	return ""
 }
+
+// languageWord tells a language after "in"/"into" from any other word there
+// ("in a friendly tone", "into three parts").
+var languageWord = regexp.MustCompile(`(?i)^(english|japanese|korean|french|german|spanish|italian|portuguese|russian|arabic|hindi|thai|vietnamese|indonesian|malay)$`)
 
 // Classify asks the decider for kind and tier, or falls back to keyword rules with a note.
 func Classify(prompt string, d *Decider, timeout time.Duration) (Task, string) {

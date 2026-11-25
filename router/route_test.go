@@ -338,28 +338,37 @@ func TestMechanicalTopKeepsAProfileWithoutItsFamilies(t *testing.T) {
 
 func TestChineseWritingPrefersDeepseekOnAFreeProfile(t *testing.T) {
 	for brief, want := range map[string]string{
-		"寫一篇關於定投嘅文章":                               "zh",
-		"Write a blog post in Cantonese about DCA": "zh",
-		"Write a blog post about DCA":              "",
-		"Summarize this README for the team":       "",
+		"寫一篇關於定投嘅文章":                                        "zh",
+		"Write a blog post in Cantonese about DCA":          "zh",
+		"Translate this README into Chinese":                "zh",
+		"Write a blog post about DCA":                       "",
+		"Translate this Chinese article into English":       "",
+		"將呢篇文章翻譯成英文":                                        "",
+		"Write it in a friendly tone for Chinese investors": "zh",
 	} {
 		if got := writtenLang(brief); got != want {
 			t.Errorf("writtenLang(%q) = %q, want %q", brief, got, want)
 		}
 	}
-	// gemini lists dearer, so price alone would never change the pick: only the order does.
-	labels := func(_, m string) (Label, bool) {
-		price := map[string]float64{"gemini-4": 5, "deepseek-v4": 1}[m]
-		return Label{Family: strings.Split(m, "-")[0], Tier: "mid", Price: price}, true
+	// One free gateway serving both families: only the brief's language moves
+	// the pick. Kind and tier are given, the path a dispatch retry also takes.
+	root, state := t.TempDir(), t.TempDir()
+	t.Setenv("CCMORPH_STATE_DIR", root)
+	t.Setenv("XDG_STATE_HOME", state)
+	conf := "type=apikey\nbase_url=http://127.0.0.1:9\nmodel=gemini-4\nenv.ANTHROPIC_DEFAULT_SONNET_MODEL=deepseek-v5\n"
+	if err := os.WriteFile(filepath.Join(root, "gw.conf"), []byte(conf), 0o600); err != nil {
+		t.Fatal(err)
 	}
-	ps := []Profile{{Name: "gw", Class: "free", Models: []string{"gemini-4", "deepseek-v4"}, Enabled: true}}
-	for lang, want := range map[string]string{"zh": "deepseek-v4", "": "gemini-4"} {
-		opts, _, err := Options(Task{Kind: "writing", Tier: "mid", Lang: lang}, ps, labels, defaultKinds, 0, Pin{})
-		if err != nil || len(opts) == 0 {
-			t.Fatalf("lang %q: options %v err %v", lang, opts, err)
-		}
-		if got := Choose(opts, nil)[0].Model; got != want {
-			t.Errorf("lang %q picked %s, want %s", lang, got, want)
+	c, _ := LoadConfig()
+	c.Profiles = map[string]ProfileConfig{"gw": {Class: "free"}}
+	for brief, want := range map[string]string{
+		"寫一篇關於定投嘅短文":                                     "deepseek-v5",
+		"Write a short post about dollar-cost averaging": "gemini-4",
+		"Translate this Chinese article into English":    "gemini-4",
+	} {
+		d, err := Decide(c, Request{Prompt: brief, Kind: "writing", Tier: "mid", NoDecider: true})
+		if err != nil || d.Pick == nil || d.Pick.Model != want {
+			t.Errorf("%q: pick %+v err %v, want %s", brief, d.Pick, err, want)
 		}
 	}
 }
