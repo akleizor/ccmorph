@@ -320,6 +320,8 @@ func TestSeedPersonAnswersDefersWhileALiveSessionHoldsTheLock(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
+	restore := SetLockWait(0)
+	defer restore()
 
 	gaps, err := SeedPersonAnswers(profiles, "target", folder)
 
@@ -375,6 +377,52 @@ func TestSeedPersonAnswersWithoutTheLiveLockLeavesTheAnswersForLater(t *testing.
 	}
 	if after := mustRead(t, target); after != body {
 		t.Fatalf("a seeding with no live lock rewrote the file: %s", after)
+	}
+}
+
+// #861: the seeding of first-run answers is the other real whole-file writer
+// of the profile's .claude.json besides the key approval. It must hold the
+// profile's live lock across its own read and rename: a key approval made
+// between them would otherwise be erased under the seeding's rename. A real
+// ApproveKey in a second process (a same-process writer would share the
+// cached lock descriptor and never contend) finds the profile in use at the
+// seeding's seam, lands once the seeding finishes, and both writes stand.
+func TestSeedPersonAnswersKeepsAKeyApprovalMadeAtItsSeam(t *testing.T) {
+	const key = "sk-issue-861-seed-key-0001"
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	profiles := filepath.Join(t.TempDir(), "profiles")
+	folder := resolved(filepath.Join(t.TempDir(), "work"))
+	writeClaudeJSON(t, filepath.Join(profiles, "sibling"), answeredDoc(t, folder, "dark", ""))
+	target := writeClaudeJSON(t, filepath.Join(profiles, "p"), `{"numStartups":3}`)
+	if err := os.MkdirAll(filepath.Dir(LiveLockPath(profiles, "p")), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	old := profileJSONRead
+	t.Cleanup(func() { profileJSONRead = old })
+	var during string
+	profileJSONRead = func(string) { during = approveKeyChild(t, profiles, key) }
+
+	gaps, err := SeedPersonAnswers(profiles, "p", folder)
+
+	if err != nil {
+		t.Fatalf("seeding failed: %v", err)
+	}
+	if gaps.Onboarding || gaps.Trust {
+		t.Fatalf("a filled profile still reports gaps: %+v in %s", gaps, mustRead(t, target))
+	}
+	if during != "in-use" {
+		t.Fatalf("the key approval met at the seeding's seam did not find the profile in use: %q — the seeding rewrote the file without the live lock, and its rename would erase what landed between its read and its write", during)
+	}
+	if after := approveKeyChild(t, profiles, key); after != "recorded" {
+		t.Fatalf("the key approval did not land once the seeding finished: %q", after)
+	}
+	checkAnswers(t, target, folder, "dark")
+	got := mustRead(t, target)
+	for _, want := range []string{`"numStartups":3`, `"` + keyTail(key) + `"`} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("missing %s in %s — the write made at the seeding's read was lost", want, got)
+		}
 	}
 }
 

@@ -4,7 +4,6 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
-	"syscall"
 	"time"
 
 	"github.com/akleizor/ccmorph/ordjson"
@@ -31,7 +30,14 @@ type PersonGaps struct {
 // will still be asked, so the caller can say which answer is the safe one
 // before claude starts. A file that cannot be safely rewritten — symlinked,
 // unparsable, or holding a projects tree of another shape — is refused, not
-// guessed at, and the gaps read as unanswered.
+// guessed at, and the gaps read as unanswered. The rewrite is
+// rewriteProfileJSON's: the profile's live lock is held exclusively from the
+// authoritative read to the rename, so a key approval, a picker row or a live
+// session's own save made while the answers were gathered is not lost under
+// this rename (#185, #205, #299, #861). When the lock cannot be taken within
+// the bounded wait nothing is written, the answers wait for a launch that can
+// hold it, and the gaps read as this call first saw them; the caller re-takes
+// the live lock before claude starts.
 func SeedPersonAnswers(profiles, name, folder string) (PersonGaps, error) {
 	if !profile.ValidName(name) {
 		return PersonGaps{Onboarding: true, Trust: true}, errors.New("invalid profile name: " + name)
@@ -44,6 +50,9 @@ func SeedPersonAnswers(profiles, name, folder string) (PersonGaps, error) {
 	if paths.IsSymlink(path) {
 		return PersonGaps{Onboarding: true, Trust: true}, errors.New(path + ": symbolic links are not allowed")
 	}
+	// The gaps of this first, unlocked read answer the no-questions case
+	// without touching a lock or reading the sources at all. It is never the
+	// file a rewrite trusts: the helper reads and edits again under the lock.
 	doc, err := loadObj(path, ordjson.New())
 	if err != nil {
 		return PersonGaps{Onboarding: true, Trust: true}, err
@@ -52,33 +61,18 @@ func SeedPersonAnswers(profiles, name, folder string) (PersonGaps, error) {
 	if !before.Onboarding && !before.Trust {
 		return before, nil
 	}
-	dirty, err := seedPerson(doc, personDocs(profiles, name), folder)
-	if err != nil || !dirty {
-		return before, err
-	}
-	// The rewrite runs only while this launch is the sole holder of the
-	// profile's live lock: a live session of the same profile writes its own
-	// answers, and a whole-file swap must not race it (#185, #205). With no lock
-	// to hold, the answers wait for a launch that can hold it, and the caller
-	// re-takes the live lock before claude starts.
-	live, _ := HoldLive(profiles, name, nil)
-	if live == nil {
-		return before, nil
-	}
-	if syscall.Flock(int(live.Fd()), syscall.LOCK_EX|syscall.LOCK_NB) != nil {
-		// The failed conversion can leave this fd unlocked (Linux drops the
-		// shared lock first), so the lock the session runs under is taken back or
-		// gone; either way this rewrite waits for a launch that holds it.
-		if !flockWithin(live, syscall.LOCK_SH) {
-			ReleaseLive(profiles, name)
+	var edited *ordjson.Obj
+	err = rewriteProfileJSON(profiles, name, path, func(doc *ordjson.Obj) (bool, error) {
+		edited = doc
+		return seedPerson(doc, personDocs(profiles, name), folder)
+	}, atomicJSON)
+	if err != nil {
+		if errors.Is(err, ErrProfileInUse) {
+			return before, nil
 		}
-		return before, nil
-	}
-	defer syscall.Flock(int(live.Fd()), syscall.LOCK_SH)
-	if err := atomicJSON(path, doc); err != nil {
 		return before, err
 	}
-	return personGaps(doc, folder), nil
+	return personGaps(edited, folder), nil
 }
 
 // personGaps reads which first-run questions the doc still leaves Claude Code

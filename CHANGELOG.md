@@ -30,7 +30,10 @@
   open, `login` and `add` save the answer and the next launch records it before
   Claude Code starts; a launch that finds it still waiting says so and starts
   nothing. A second launch of a profile whose session is open keeps the picker
-  rows the files already hold until a launch can write them (#299, #861).
+  rows the files already hold until a launch can write them. The first-run
+  answers a hop or a second profile seeds into the profile's config run
+  through the same locked rewrite, so an approval recorded while the answers
+  are gathered keeps its place too (#299, #861).
 
 - **One hand-edited conf line no longer splits the commands.** An unknown key or
   an effort level outside low…max used to hide the profile from `list` (which
