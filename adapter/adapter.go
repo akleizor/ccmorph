@@ -928,7 +928,7 @@ func serve(a *cliArgs, rows []Row, required, upstream, key, routeIdentity, upstr
 	// so does every launch.
 	if len(usable) == 0 && !a.probeFailed {
 		if a.auto && required == "" {
-			fmt.Printf("EXIT=no declared or cached model protocol; set a model with ccmorph set %s model <model-id> and retry (the compatibility check may incur a small charge)\n", a.profile)
+			fmt.Printf("EXIT=%s\n", util.NoModelReason(a.profile))
 			return 1
 		}
 		die("no usable models on this endpoint; refusing to start")
