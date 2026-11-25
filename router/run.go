@@ -322,6 +322,11 @@ func withHints(answer string, hints []string) string {
 	return answer + "\n" + strings.Join(hints, "\n")
 }
 
+// workerStarted is the moment a worker's process exists, before any line of
+// it has run. A variable so a test can count the launches a dispatch made
+// where no kill can outrun the count (#874).
+var workerStarted = func(pid int) {}
+
 // workerRun is one attempt: its stdout as the caller asked for it, the final
 // answer within it, its stderr, its exit status, and whether it ran a tool.
 type workerRun struct {
@@ -356,6 +361,7 @@ func runWorker(ctx context.Context, pick *Option, prompt, cwd, job string, deadl
 	if err := cmd.Start(); err != nil {
 		return workerRun{errText: err.Error(), status: 1}
 	}
+	workerStarted(cmd.Process.Pid)
 	done := make(chan error, 1)
 	go func() { done <- cmd.Wait() }()
 	w := workerRun{}
