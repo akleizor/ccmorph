@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"errors"
 	"fmt"
 	"github.com/akleizor/ccmorph/util"
 	"github.com/akleizor/ccmorph/util/paths"
@@ -47,13 +48,23 @@ func (l *launcher) rm(args []string) int {
 	if rc, done := l.locked(name, append([]string{"rm"}, args...)); done {
 		return rc
 	}
+	// What rm offers is what it will remove (GH-837): a leftover from a
+	// cancelled sign-in is the profile home and the live lock, never the auth
+	// directory the browser logins use, so the offer names only paths on disk.
 	pdir, auth := filepath.Join(l.profileDirs, name), filepath.Join(l.dir, "auth", name)
+	live := util.LiveLockPath(l.profileDirs, name)
 	if !l.exists(name) {
-		if !paths.Lexists(pdir) && !paths.Lexists(auth) {
+		var leftover []string
+		for _, p := range []string{pdir, auth, live} {
+			if paths.Lexists(p) {
+				leftover = append(leftover, p)
+			}
+		}
+		if len(leftover) == 0 {
 			l.noProfile(name)
 			return 1
 		}
-		fmt.Fprintf(os.Stderr, "Profile '%s' has no .conf. Remove leftover private state?\n  %s\n  %s\nShared conversation history will be kept.\n", name, pdir, auth)
+		fmt.Fprintf(os.Stderr, "Profile '%s' has no .conf. Remove leftover private state?\n  %s\nShared conversation history will be kept.\n", name, strings.Join(leftover, "\n  "))
 		if rc := uiConfirm("Remove these leftovers?"); rc != 0 {
 			// Esc at a terminal is already answered by the picker's own Cancelled
 			// line (rc 2), and a second line would make rm the one command that
@@ -108,6 +119,13 @@ func (l *launcher) rm(args []string) int {
 	os.Remove(filepath.Join(l.profileDirs, "..", ".locks", name+".lock"))
 	// A saved approval waits for a session that may never end now (#299).
 	util.DropApprovals(l.profileDirs, name)
+	// The live lock goes with the profile (GH-837), unless a launch still holds
+	// it: that lock is its #185 cover, so it stays and rm says so.
+	if err := util.RemoveLive(l.profileDirs, name); errors.Is(err, util.ErrLiveHeld) {
+		l.err("kept " + live + ": another launch of '" + name + "' still holds it — `lsof " + live + "` names the holder")
+	} else if err != nil {
+		l.err("kept " + live + ": " + err.Error())
+	}
 	for _, p := range util.BridgeFiles(filepath.Join(l.dir, "auth"), name) {
 		os.Remove(p)
 	}
