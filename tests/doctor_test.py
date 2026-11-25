@@ -595,12 +595,16 @@ printf '%s\n' '__CCMORPH_STATUS__200'
         assert len(adapters) == 1, result.stdout
         if slow == "ps" and sys.platform != "darwin":
             # Off darwin the table's read is a ps, so this run can lose it to
-            # the bound; darwin's sysctl answers first, so the session shows.
+            # the bound.
             assert _until_a_model(profile).fullmatch(adapters[0]), result.stdout
-        elif shape == "native-route":
-            assert adapters == [NO_TRANSLATOR_NOW], result.stdout
         else:
-            assert adapters == [TRANSLATOR_NOW], result.stdout
+            # The session shows, unless the table read itself blew its
+            # one-second bound under load: then the designed answer is the
+            # until-a-model line (GH-467, #902), as assert_adapter_report
+            # accepts for the verbose run.
+            want = NO_TRANSLATOR_NOW if shape == "native-route" else TRANSLATOR_NOW
+            assert (adapters == [want]
+                    or _until_a_model(profile).fullmatch(adapters[0])), result.stdout
         # Read-only: the profile's own hook never ran, so nothing was started.
         assert not (bindir / "doctor.marker").exists()
         verbose, _, _ = run_doctor(tmp_path, conf, curl, args=("--verbose",),

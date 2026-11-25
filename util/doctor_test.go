@@ -1,6 +1,7 @@
 package util
 
 import (
+	"context"
 	"crypto/sha256"
 	"errors"
 	"fmt"
@@ -158,7 +159,7 @@ func TestDoctorRouteAdapterLine(t *testing.T) {
 	}
 }
 
-// runningAdapter's answer for a live adapter whose exec path carries a space:
+// The adapter match for a live adapter whose exec path carries a space:
 // the joined command line cannot say where the path ends and the arguments
 // begin, the kernel's argv can. The session is reported with the adapter's own
 // pid as the in-process shim (GH-49, PR #40), exactly as a live session reads.
@@ -167,10 +168,13 @@ func TestRunningAdapterMatchesArgvAcrossSpaces(t *testing.T) {
 	cmd := holdProc(t, os.Args[0], BridgeFiles(t.TempDir(), "p")[2],
 		"/x/my adapter/ccmorph-core", "adapter", profile)
 	want := fmt.Sprintf("%d\t%d:shim", cmd.Process.Pid, cmd.Process.Pid)
-	if got := runningAdapter(profile); got != want {
+	// The table without runningAdapter's one-second bound: the match is under
+	// test, not how fast a loaded machine reads its process list (#902).
+	table := processTableWithin(context.Background())
+	if got := adapterSession(table, profile); got != want {
 		t.Fatalf("got %q, want %q", got, want)
 	}
-	if got := runningAdapter("no-such-profile"); got != "" {
+	if got := adapterSession(table, "no-such-profile"); got != "" {
 		t.Fatalf("a profile nothing serves must report nothing, got %q", got)
 	}
 }
