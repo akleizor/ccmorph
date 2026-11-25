@@ -26,6 +26,7 @@ tags; update rather than patch in place.
 | `~/.config/ccmorph/<name>.conf` | one profile: API key, OAuth token, or an email for a subscription login. On macOS the key and token move to the login keychain on first use and the conf keeps only `keychain:<name>.<key>`; with no login keychain (Linux, CI, a throwaway `$HOME`) they stay in this file in plain text | `600` |
 | login keychain, service `ccmorph` | that profile's API key or OAuth token (macOS) | keychain ACL |
 | `~/.config/ccmorph/profiles/<name>/models.json` | context limits `ccmorph probe` discovered for the profile's route; no credential | `600` |
+| `~/.config/ccmorph/profiles/.rc-bridge/switch-<profile>.json` | Remote Control add-on only: the endpoint and key of a profile `ccmorph-rc <profile> --switch` brought up beside the shared edge, read by its proxies on every turn; on macOS a copy of a key the keychain otherwise holds | `600`, removed when the edge it serves exits |
 | `~/.config/ccmorph/` | the state root (honours `CCMORPH_STATE_DIR`, then `XDG_CONFIG_HOME`) | `700` |
 | `~/.config/ccmorph/profiles/<name>/` | that profile's Claude Code config, including its own auth state | `700` |
 | `${TMPDIR}/ccmorph-<uid>.log` | launch and adapter diagnostics | ephemeral; created `600`, and an existing log of ours is tightened to `600` |

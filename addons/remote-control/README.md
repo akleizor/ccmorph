@@ -131,11 +131,23 @@ ccmorph-rc <route-profile> --switch  # back to the edge's route
 No host restarts and no session is interrupted: each proxy reads the switch on every
 turn. The account profile sends calls to Anthropic untouched; the edge's route uses the
 edge as before; any other route or provider profile is brought up beside the edge
-(its adapter, and a provider's bridge, live as long as the edge does) and handed to the
-proxy through a 0600 file it deletes on read, so its key stays in memory only. Its model
-map is applied, so a provider such as codex receives its own models. `inference=<profile>`
-in `rc-hosts` does the same from the config. A proxy started before this feature needs one
-restart to load it.
+(its adapter, and a provider's bridge, live as long as the edge does) and
+handed to every proxy through a 0600 file, profiles/.rc-bridge/switch-<profile>.json,
+which each proxy reads on every turn, so a restarted proxy finds it again. The file
+lives as long as the edge it was brought up beside: that edge's proxy removes it when
+the edge exits, and ccmorph-rc-hosts removes one whose edge is gone. It names the
+edge process's start as well as its pid (the kernel's own start mark, never `ps`'s
+whole second), so a number the OS recycles is not taken for the edge it was made
+beside, and neither this file nor the sidecar adapter outlives that edge process.
+On macOS it is a copy of a key the keychain otherwise holds. Its model map is
+applied, so a provider such as codex receives its own models. When two switches
+overlap, the one started last wins: an older one that finishes after it writes
+nothing, neither the word nor this file, and says which profile is live.
+`inference=<profile>` in `rc-hosts` does the same from the config: the supervisor
+brings the profile up once an edge is live, retries until it lands, re-hands it when
+the edge is replaced, and writes the switch only when the `inference=` value itself
+changes, so a manual `--switch` stays until that line is edited. A proxy started
+before this feature needs one restart to load it.
 
 `ccmorph-rc-hosts` pins the route profile's tiers (each alias its profile maps outside
 its own Claude family, as `ccmorph get <route> --json` reports them); a
@@ -163,7 +175,7 @@ the Mac is never touched.
 |---|---|
 | The claude.ai credential never reaches the route | `rc_route.reroute`; `tests/rc_bridge_test.py` |
 | A dead route is an error, never a fallback to the subscription | `tests/rc_bridge_failclosed_test.py` |
-| The route key is in no argv, environment, or lingering file | 0600 file deleted on read; `mitmdump` is resolved before it is written, and every later exit including TERM/HUP/QUIT/INT unlinks it (a signal the caller ignores stays ignored); a `--switch` handoff holding the key is staged in a 0600 temp only that switch owns and written with TERM/HUP/QUIT/INT deferred until it is live or gone; `tests/rc_bridge_test.py` (`-k 'no_failed_start or termination_during_proxy_startup or as_the_route_key_file or termination_during_a_switch or switch_whose'`) and `tests/rc_route_key_repro_test.py` |
+| The route key is in no argv, environment, or lingering file | 0600 file deleted on read; `mitmdump` is resolved before it is written, and every later exit including TERM/HUP/QUIT/INT unlinks it (a signal the caller ignores stays ignored); a `--switch` handoff holding the key is staged in a 0600 temp only that switch owns and written with TERM/HUP/QUIT/INT deferred until it is live or gone, and once live it is kept 0600 for the life of the edge it serves, then removed (issue #595); `tests/rc_bridge_test.py` (`-k 'no_failed_start or termination_during_proxy_startup or as_the_route_key_file or termination_during_a_switch or switch_whose'`) and `tests/rc_route_key_repro_test.py` |
 | Routed responses are verified, not assumed | `served-by=` in the debug log flags any response carrying Anthropic's organization header |
 | No system trust change | CA lives in `profiles/.rc-bridge/mitm` (0700); only `NODE_EXTRA_CA_CERTS` of this process |
 | No orphans | proxy and adapter follow the Claude pid and exit with it; a start that fails stops the proxy it spawned (`tests/rc_bridge_test.py -k failed_start_stops`) |
