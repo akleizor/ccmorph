@@ -75,6 +75,9 @@ func Decide(c Config, r Request) (Decision, error) {
 	if r.Tier == "" {
 		d.Task = Capped(d.Task, c.TierCap)
 	}
+	if d.Task.Kind == "writing" {
+		d.Task.Lang = writtenLang(r.Prompt)
+	}
 	if r.Profile != "" && r.Model != "" {
 		// A named profile and model is the caller's choice: run it as named, past
 		// every routing filter (disabled, reserved, advisor-only), or fail loudly.
@@ -133,6 +136,9 @@ func reserve(id string, d Decision, brief string, extra Row) {
 	row := Row{"id": id, "ts": nowSec(), "kind": d.Task.Kind, "tier": d.Task.Tier, "tier_source": d.Task.Source,
 		"profile": d.Pick.Profile, "model": d.Pick.Model, "family": d.Pick.Family, "effort": d.Pick.Effort,
 		"brief": brief, "outcome": nil}
+	if d.Task.Lang != "" {
+		row["lang"] = d.Task.Lang
+	}
 	for k, v := range extra {
 		row[k] = v
 	}
@@ -494,7 +500,8 @@ func complete(c Config, id, text, hard string) string {
 	if row["escalated"] == true {
 		return "router: quality failed after the one escalation; return the failure to the main agent."
 	}
-	families := c.Kinds[fmt.Sprint(row["kind"])]
+	lang, _ := row["lang"].(string)
+	families := familyOrder(c.Kinds, fmt.Sprint(row["kind"]), lang)
 	if len(families) == 0 {
 		return fmt.Sprintf("router: quality fail; %s has no rank-1 family configured. Return to the main agent.", row["kind"])
 	}

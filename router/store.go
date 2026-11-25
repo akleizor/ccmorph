@@ -46,6 +46,7 @@ type Config struct {
 
 var defaultKinds = map[string][]string{
 	"writing":    {"gemini", "claude", "gpt"},
+	"writing_zh": {"deepseek", "gemini", "claude", "gpt"},
 	"mechanical": {"qwen", "deepseek"},
 	"code":       {"claude", "gpt"},
 	"design":     {"claude", "gpt"},

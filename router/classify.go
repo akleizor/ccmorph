@@ -139,6 +139,24 @@ func Heuristic(prompt string) Task {
 	return t
 }
 
+var (
+	hanRune    = regexp.MustCompile(`\p{Han}`)
+	latinRune  = regexp.MustCompile(`\p{Latin}`)
+	zhLanguage = regexp.MustCompile(`(?i)\b(chinese|cantonese|mandarin)\b|中文|粵語|廣東話|普通話`)
+)
+
+// writtenLang is "zh" when the text to write is Chinese: a brief mostly in
+// Han characters, or one that names the language. shortcut: a brief that
+// names Chinese only as its source language counts too; ask the decider if
+// that misroutes in practice.
+func writtenLang(prompt string) string {
+	han := len(hanRune.FindAllStringIndex(prompt, -1))
+	if han > len(latinRune.FindAllStringIndex(prompt, -1)) || zhLanguage.MatchString(prompt) {
+		return "zh"
+	}
+	return ""
+}
+
 // Classify asks the decider for kind and tier, or falls back to keyword rules with a note.
 func Classify(prompt string, d *Decider, timeout time.Duration) (Task, string) {
 	if d == nil || d.URL == "" {

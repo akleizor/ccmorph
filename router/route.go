@@ -23,6 +23,18 @@ type Task struct {
 	Kind   string `json:"kind"`
 	Tier   string `json:"tier"`
 	Source string `json:"source"`
+	// Lang is "zh" for writing whose text is Chinese; its families then come
+	// from the writing_zh order.
+	Lang string `json:"lang,omitempty"`
+}
+
+// familyOrder is the kind's family preference: Chinese writing takes
+// writing_zh when one is set, every other task its kind's own order.
+func familyOrder(kinds map[string][]string, kind, lang string) []string {
+	if zh := kinds["writing_zh"]; kind == "writing" && lang == "zh" && len(zh) > 0 {
+		return zh
+	}
+	return kinds[kind]
 }
 
 // Window is one quota window: Used is the share spent (0..1), times are Unix seconds.
@@ -145,7 +157,7 @@ func Options(t Task, profiles []Profile, labels func(profile, model string) (Lab
 	if !slices.Contains(Kinds, t.Kind) || Efforts[t.Tier] == "" {
 		return nil, nil, fmt.Errorf("task needs a valid kind and tier")
 	}
-	order := kinds[t.Kind]
+	order := familyOrder(kinds, t.Kind, t.Lang)
 	capable := order
 	if len(capable) == 0 && t.Kind == "x" {
 		capable = []string{"grok"}

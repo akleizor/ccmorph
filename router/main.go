@@ -379,7 +379,8 @@ func report(args []string, stdout, stderr io.Writer) int {
 	}
 	finished, failed := 0, 0
 	for _, r := range rows {
-		ranked := c.Kinds[fmt.Sprint(r["kind"])]
+		lang, _ := r["lang"].(string)
+		ranked := familyOrder(c.Kinds, fmt.Sprint(r["kind"]), lang)
 		if r["tier"] == "top" && len(ranked) > 0 && !slices.Contains(ranked[:min(2, len(ranked))], fmt.Sprint(r["family"])) {
 			failures = append(failures, fmt.Sprintf("top-tier route %v missed its kind's rank-1/2 family", r["id"]))
 		}

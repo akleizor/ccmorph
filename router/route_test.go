@@ -335,3 +335,31 @@ func TestMechanicalTopKeepsAProfileWithoutItsFamilies(t *testing.T) {
 		t.Fatalf("options %v, dropped %v, err %v: a top pick must not need a qwen or deepseek model", opts, dropped, err)
 	}
 }
+
+func TestChineseWritingPrefersDeepseekOnAFreeProfile(t *testing.T) {
+	for brief, want := range map[string]string{
+		"寫一篇關於定投嘅文章":                               "zh",
+		"Write a blog post in Cantonese about DCA": "zh",
+		"Write a blog post about DCA":              "",
+		"Summarize this README for the team":       "",
+	} {
+		if got := writtenLang(brief); got != want {
+			t.Errorf("writtenLang(%q) = %q, want %q", brief, got, want)
+		}
+	}
+	// gemini lists dearer, so price alone would never change the pick: only the order does.
+	labels := func(_, m string) (Label, bool) {
+		price := map[string]float64{"gemini-4": 5, "deepseek-v4": 1}[m]
+		return Label{Family: strings.Split(m, "-")[0], Tier: "mid", Price: price}, true
+	}
+	ps := []Profile{{Name: "gw", Class: "free", Models: []string{"gemini-4", "deepseek-v4"}, Enabled: true}}
+	for lang, want := range map[string]string{"zh": "deepseek-v4", "": "gemini-4"} {
+		opts, _, err := Options(Task{Kind: "writing", Tier: "mid", Lang: lang}, ps, labels, defaultKinds, 0, Pin{})
+		if err != nil || len(opts) == 0 {
+			t.Fatalf("lang %q: options %v err %v", lang, opts, err)
+		}
+		if got := Choose(opts, nil)[0].Model; got != want {
+			t.Errorf("lang %q picked %s, want %s", lang, got, want)
+		}
+	}
+}
