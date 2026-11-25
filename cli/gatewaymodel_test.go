@@ -1,6 +1,8 @@
 package cli
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"os"
 	"path/filepath"
 	"strings"
@@ -89,4 +91,168 @@ func TestRunNamesExcludedModelsThatLeaveNothingIssue862(t *testing.T) {
 			t.Fatalf("terminal=%v: the adapter started after a refusal:\n%s", terminal, c)
 		}
 	}
+}
+
+// readBack is a file's bytes, for "a read changed the file" checks.
+func readBack(t *testing.T, path string) string {
+	t.Helper()
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return "<missing>"
+	}
+	return string(b)
+}
+
+// GH-862: doctor's FAIL model row says where the alias came from, in the same
+// words run prints, and names the one command that picks a served model; the
+// profile and the shared file keep their bytes.
+func TestDoctorNamesWhereAnUnservedAliasCameFromIssue862(t *testing.T) {
+	type tc struct {
+		shared, extra, origin string
+		ownLayer              bool
+	}
+	for _, c := range []tc{
+		{shared: `{"model":"opus"}`, origin: "from ~/.claude/settings.json"},
+		{shared: `{"env":{"ANTHROPIC_MODEL":"opus"}}`, origin: "from ~/.claude/settings.json"},
+		{shared: `{"model":"opus[1m]"}`, origin: "from ~/.claude/settings.json"},
+		{extra: "\nmodel=opus\nmodel_source=claude-settings\nmodel_defaults=1\n", origin: "from ~/.claude/settings.json"},
+		{extra: "\nmodel=opus\n", origin: "saved in this profile"},
+		{shared: `{"model":"sonnet"}`, ownLayer: true, origin: "saved in this profile"},
+	} {
+		t.Run(c.origin+c.shared+c.extra, func(t *testing.T) {
+			state, profiles, _, _ := gw862(t, c.extra, c.shared)
+			conf := filepath.Join(state, "gw862.conf")
+			sharedPath := filepath.Join(os.Getenv("HOME"), ".claude", "settings.json")
+			if c.ownLayer {
+				os.WriteFile(filepath.Join(profiles, "gw862", "settings.json"), []byte(`{"model":"opus"}`), 0o600)
+			}
+			confBefore, sharedBefore := readBack(t, conf), readBack(t, sharedPath)
+			out, rc := doctorOutput(t, &launcher{dir: state, profileDirs: profiles}, "gw862")
+			want := "FAIL model: " + util.UnservedTier("gw862", "opus", c.origin, nil)
+			if !strings.Contains(out, want+"\n") {
+				t.Fatalf("doctor did not print the row\nwant: %s\ngot:\n%s", want, out)
+			}
+			if end := "FAIL not ready: " + util.UnservedTierFix("gw862"); !strings.HasSuffix(strings.TrimSpace(out), end) {
+				t.Fatalf("doctor's verdict\ngot: %s\nwant ending: %s", out, end)
+			}
+			if rc != 1 {
+				t.Fatalf("rc %d, want 1:\n%s", rc, out)
+			}
+			if got := readBack(t, conf); got != confBefore {
+				t.Fatalf("doctor changed the conf:\n%s\n->\n%s", confBefore, got)
+			}
+			if got := readBack(t, sharedPath); got != sharedBefore {
+				t.Fatalf("doctor changed ~/.claude/settings.json:\n%s\n->\n%s", sharedBefore, got)
+			}
+		})
+	}
+	t.Run("the profile maps the tier", func(t *testing.T) {
+		state, profiles, _, _ := gw862(t, "\nenv.ANTHROPIC_DEFAULT_OPUS_MODEL=model-a\n", `{"model":"opus"}`)
+		out, rc := doctorOutput(t, &launcher{dir: state, profileDirs: profiles}, "gw862")
+		if strings.Contains(out, "FAIL model:") {
+			t.Fatalf("a mapped tier is no fault:\n%s", out)
+		}
+		if end := "OK ready: start it with ccmorph run gw862"; !strings.HasSuffix(strings.TrimSpace(out), end) || rc != 0 {
+			t.Fatalf("want rc 0 ending %q, got rc %d:\n%s", end, rc, out)
+		}
+	})
+}
+
+// GH-862: an excluded_models that removes every served model fails doctor with
+// the same refusal run prints; one model left stays ready; a body that is not a
+// listing reports no exclusions row.
+func TestDoctorFailsWhenExcludedModelsLeaveNoModelIssue862(t *testing.T) {
+	t.Run("every model excluded", func(t *testing.T) {
+		state, profiles, _, _ := gw862(t, "\nexcluded_models=model-a,model-b\n", "")
+		conf := filepath.Join(state, "gw862.conf")
+		out, rc := doctorOutput(t, &launcher{dir: state, profileDirs: profiles}, "gw862")
+		want := "FAIL model: " + util.ExclusionsRefusal("gw862", conf)
+		if !strings.Contains(out, want+"\n") {
+			t.Fatalf("doctor did not print the row\nwant: %s\ngot:\n%s", want, out)
+		}
+		end := "FAIL not ready: " + util.ExclusionsFix("gw862", conf)
+		if !strings.HasSuffix(strings.TrimSpace(out), end) || rc != 1 {
+			t.Fatalf("want rc 1 ending %q, got rc %d:\n%s", end, rc, out)
+		}
+	})
+	t.Run("one model left", func(t *testing.T) {
+		state, profiles, _, _ := gw862(t, "\nexcluded_models=model-a\n", "")
+		out, rc := doctorOutput(t, &launcher{dir: state, profileDirs: profiles}, "gw862")
+		if strings.Contains(out, "FAIL model:") {
+			t.Fatalf("one model left is startable (the picker offers it):\n%s", out)
+		}
+		if end := "OK ready: start it with ccmorph run gw862"; !strings.HasSuffix(strings.TrimSpace(out), end) || rc != 0 {
+			t.Fatalf("want rc 0 ending %q, got rc %d:\n%s", end, rc, out)
+		}
+	})
+	t.Run("empty listing", func(t *testing.T) {
+		state, profiles, _, _ := gw862(t, "\nexcluded_models=model-a,model-b\n", "")
+		t.Setenv("LISTING", `{"data":[]}`)
+		out, rc := doctorOutput(t, &launcher{dir: state, profileDirs: profiles}, "gw862")
+		if !strings.Contains(out, "FAIL model: "+exclusionsRefusal(state)) || rc != 1 {
+			t.Fatalf("want the exclusions FAIL, got rc %d:\n%s", rc, out)
+		}
+	})
+	t.Run("a body that is not a listing", func(t *testing.T) {
+		state, profiles, _, _ := gw862(t, "\nexcluded_models=model-a,model-b\n", "")
+		t.Setenv("LISTING", `{"error":"x"}`)
+		out, _ := doctorOutput(t, &launcher{dir: state, profileDirs: profiles}, "gw862")
+		if strings.Contains(out, "excluded_models") {
+			t.Fatalf("a body that is not a listing cannot judge the exclusions:\n%s", out)
+		}
+	})
+}
+
+func exclusionsRefusal(state string) string {
+	return util.ExclusionsRefusal("gw862", filepath.Join(state, "gw862.conf"))
+}
+
+// GH-862: a gateway profile with no saved model and no known protocol stays
+// ready — from a terminal, run asks first — but says so, in the adapter's own
+// refusal sentence.
+func TestDoctorNotesAGatewayWithNoSavedModelIssue862(t *testing.T) {
+	t.Run("plain listing", func(t *testing.T) {
+		state, profiles, _, _ := gw862(t, "", "")
+		out, rc := doctorOutput(t, &launcher{dir: state, profileDirs: profiles}, "gw862")
+		want := "INFO model: none saved; in a terminal, ccmorph run asks which model first, and without one it stops: " +
+			util.NoModelReason("gw862")
+		if !strings.Contains(out, want+"\n") {
+			t.Fatalf("doctor did not note the stop\nwant: %s\ngot:\n%s", want, out)
+		}
+		if end := "OK ready: start it with ccmorph run gw862"; !strings.HasSuffix(strings.TrimSpace(out), end) || rc != 0 {
+			t.Fatalf("want rc 0 ending %q, got rc %d:\n%s", end, rc, out)
+		}
+	})
+	t.Run("the listing declares a protocol", func(t *testing.T) {
+		state, profiles, _, _ := gw862(t, "", "")
+		t.Setenv("LISTING", `{"data":[{"id":"model-a","supported_endpoints":["/v1/messages"]},{"id":"model-b"}]}`)
+		out, _ := doctorOutput(t, &launcher{dir: state, profileDirs: profiles}, "gw862")
+		if strings.Contains(out, "INFO model:") {
+			t.Fatalf("a declared protocol decides the first launch:\n%s", out)
+		}
+	})
+	t.Run("the adapter cache knows a model", func(t *testing.T) {
+		state, profiles, _, _ := gw862(t, "", "")
+		sum := sha256.Sum256([]byte("https://gw.test"))
+		dir := filepath.Join(profiles, ".adapter-cache")
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		cache := `{"endpoint":"https://gw.test","anthropic_path":"/v1/messages","thinking_probe":2,` +
+			`"rows":[{"model":"model-a","dialect":"anthropic","note":"","cap":null,"nothink":false,"id_recycle":false,"status":200}]}`
+		if err := os.WriteFile(filepath.Join(dir, hex.EncodeToString(sum[:])[:16]+".json"), []byte(cache), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		out, _ := doctorOutput(t, &launcher{dir: state, profileDirs: profiles}, "gw862")
+		if strings.Contains(out, "INFO model:") {
+			t.Fatalf("a cached protocol decides the first launch:\n%s", out)
+		}
+	})
+	t.Run("a saved model", func(t *testing.T) {
+		state, profiles, _, _ := gw862(t, "\nmodel=model-a\n", "")
+		out, _ := doctorOutput(t, &launcher{dir: state, profileDirs: profiles}, "gw862")
+		if strings.Contains(out, "INFO model:") {
+			t.Fatalf("a saved model is not the no-model case:\n%s", out)
+		}
+	})
 }

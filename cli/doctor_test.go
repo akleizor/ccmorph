@@ -239,8 +239,8 @@ func TestDoctorTranslatorVerdictUsesTheModelLaunchClassifies(t *testing.T) {
 			want := "FAIL adapter: this endpoint needs a translator; cliproxyapi is not installed; install it: " + step
 			verdict := "FAIL not ready: install the translator: " + step
 			if tc.tierMissing {
-				want = "FAIL model: no gateway model is mapped to tier 'opus'; a launch would stop at adapter start"
-				verdict = "FAIL not ready: choose an explicit model: ccmorph set gw412 model <model-id>"
+				want = "FAIL model: opus, saved in this profile, is a Claude model alias this gateway does not serve; pick a model this gateway serves: ccmorph set gw412 model -i"
+				verdict = "FAIL not ready: pick a model this gateway serves: ccmorph set gw412 model -i"
 			}
 			if !strings.Contains(out, want) {
 				t.Fatalf("doctor did not report the verdict for the model launch runs\nwant row: %s\ngot:\n%s", want, out)
