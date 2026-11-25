@@ -124,14 +124,24 @@ func TestDispatchTimeoutKillsTheWorkerAndNeverRetries(t *testing.T) {
 	hookEnv(t, true)
 	dir := t.TempDir()
 	fakeWorker(t, `echo run >> `+dir+`/runs; exec sleep 30`)
+	timeout := time.Second
 	start := time.Now()
 	var errOut bytes.Buffer
 	code := Main([]string{"dispatch", "--kind", "code", "--tier", "small", "--timeout", "1", "brief"}, strings.NewReader(""), io.Discard, &errOut)
-	if code != 124 || time.Since(start) > 5*time.Second || !strings.Contains(errOut.String(), "timeout (exit 124)") {
-		t.Fatalf("exit %d after %s: %q", code, time.Since(start), errOut.String())
+	elapsed := time.Since(start)
+	// The bound is a backstop for a kill that never came — the fake worker
+	// would then sleep out its 30 s — and takes its margin from the timeout:
+	// a loaded machine spends seconds on post-deadline bookkeeping (#874).
+	if code != 124 || elapsed > 10*timeout || !strings.Contains(errOut.String(), "timeout (exit 124)") {
+		t.Fatalf("exit %d after %s: %q", code, elapsed, errOut.String())
 	}
-	if runs, _ := os.ReadFile(filepath.Join(dir, "runs")); strings.Count(string(runs), "run") != 1 {
-		t.Fatalf("a timed-out run was run again: %q", runs)
+	// A timed-out worker is never run again. The retry's signature is a
+	// second record; zero is legitimate — the kill can land between the
+	// dispatch launching the worker and its shell recording the run, which
+	// is exactly how the old != 1 check failed on a loaded machine (#874).
+	runs, _ := os.ReadFile(filepath.Join(dir, "runs"))
+	if n := strings.Count(string(runs), "run"); n > 1 {
+		t.Fatalf("a timed-out run was run again: %d records %q", n, runs)
 	}
 }
 
@@ -183,11 +193,22 @@ func TestDispatchDeadlineBoundsRouting(t *testing.T) {
 	if err := writeJSON(ConfigPath(), Config{Enabled: true, Decider: &Decider{URL: srv.URL}}); err != nil {
 		t.Fatal(err)
 	}
+	timeout := 300 * time.Millisecond
 	start := time.Now()
-	var out bytes.Buffer
-	code := Main([]string{"dispatch", "--timeout", "0.3", "fix the bug"}, strings.NewReader(""), &out, io.Discard)
-	if code != 124 || time.Since(start) > 3*time.Second || out.String() != "" {
-		t.Fatalf("exit %d after %s, out %q", code, time.Since(start), out.String())
+	var out, errOut bytes.Buffer
+	code := Main([]string{"dispatch", "--timeout", "0.3", "fix the bug"}, strings.NewReader(""), &out, &errOut)
+	elapsed := time.Since(start)
+	// The promise is a routing phase, not a wall clock: every request to
+	// this decider is parked in its handler until the cleanup registered
+	// above, which runs after these assertions, so a dispatch that returned
+	// at all was cut off by its own deadline, never answered. The bound
+	// only backstops a dispatch that ignores the deadline wholesale, and
+	// takes its margin from the deadline: the post-deadline bookkeeping
+	// alone ran to 3.5 s on a load-170 machine, tripping the literal 3 s
+	// this replaces (#874).
+	if code != 124 || out.String() != "" || elapsed > 60*timeout ||
+		!strings.Contains(errOut.String(), "ran past the deadline") {
+		t.Fatalf("exit %d after %s, out %q, err %q", code, elapsed, out.String(), errOut.String())
 	}
 }
 
