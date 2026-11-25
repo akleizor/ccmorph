@@ -19,10 +19,10 @@ import (
 	"github.com/akleizor/ccmorph/profile"
 )
 
-// PrivateNetworkAdvice rides only on the no-answer sentence: a gateway that
+// privateNetworkAdvice rides only on the no-answer sentence: a gateway that
 // never answers is the one cause a private network the person has not joined
 // explains (#260).
-const PrivateNetworkAdvice = "(if it is an internal endpoint, connect your private network and try again)"
+const privateNetworkAdvice = "(if it is an internal endpoint, connect your private network and try again)"
 
 var (
 	afterMillis = regexp.MustCompile(`after ([0-9]+) ?(?:ms|milliseconds)`)
@@ -92,7 +92,7 @@ func whyUnreachable(endpoint string, exit int, complaint string, waited time.Dur
 		if where != "" {
 			s += " from " + where
 		}
-		return s + detail + " " + PrivateNetworkAdvice
+		return s + detail + " " + privateNetworkAdvice
 	}
 	switch {
 	case exit == 6:
