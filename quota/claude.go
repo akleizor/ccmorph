@@ -180,15 +180,9 @@ func SubscriptionToken(dir string) (string, string, error) {
 	return c.OAuth.AccessToken, claudePlan(c.OAuth.SubscriptionType, c.OAuth.RateLimitTier), nil
 }
 
-// httpClient honours the proxy environment, and the extra CA a Claude Code
-// session trusts (NODE_EXTRA_CA_CERTS), so it also works inside one.
-func httpClient() *http.Client {
-	if transport != nil {
-		return &http.Client{Transport: transport, Timeout: 15 * time.Second}
-	}
-	tr := http.DefaultTransport.(*http.Transport).Clone()
-	if cfg := netroute.ExtraCAs(); cfg != nil {
-		tr.TLSClientConfig = cfg
-	}
-	return &http.Client{Transport: tr, Timeout: 15 * time.Second}
-}
+// httpClient builds the CA-aware fetcher: it honours the proxy environment and
+// the extra CA a Claude Code session trusts (NODE_EXTRA_CA_CERTS), so the read
+// also works inside one. Tests replace the whole builder with a client on an
+// in-process round trip, so production never swaps a transport in after
+// construction (#829).
+var httpClient = func() *http.Client { return netroute.NewClient(15 * time.Second) }

@@ -26,12 +26,11 @@ import (
 	"github.com/akleizor/ccmorph/util"
 )
 
-// usageURL and transport are swapped by tests. The transport keeps the tests
+// usageURL and httpClient (claude.go) are swapped by tests, so the tests stay
 // in-process: quota never needs a listening port to be verified.
 var (
-	usageURL  = "https://api.anthropic.com/api/oauth/usage"
-	transport http.RoundTripper
-	now       = time.Now
+	usageURL = "https://api.anthropic.com/api/oauth/usage"
+	now      = time.Now
 )
 
 // Main reads one profile per stdin line,

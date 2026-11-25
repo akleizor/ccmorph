@@ -1440,6 +1440,29 @@ func TestCatalogueUsesTheProxyForRemoteTargets(t *testing.T) {
 	}
 }
 
+// TestTheServeClientsTrustTheSessionsExtraCA is #829's hypothesis: a remote
+// target may cross the proxy a Remote Control edge plants, and that proxy signs
+// every host with the CA NODE_EXTRA_CA_CERTS names. Outside a session the TLS
+// config stays nil, so Go's own default stands.
+func TestTheServeClientsTrustTheSessionsExtraCA(t *testing.T) {
+	_, ca := edgeCertificate(t)
+	t.Setenv("NODE_EXTRA_CA_CERTS", ca)
+	s := NewServer("")
+	for _, c := range []struct {
+		name   string
+		client *http.Client
+	}{{"remote", s.remote}, {"loopback", s.loopback}} {
+		tr := c.client.Transport.(*http.Transport)
+		if tr.TLSClientConfig == nil || tr.TLSClientConfig.RootCAs == nil {
+			t.Fatalf("%s client does not trust the session's extra CA", c.name)
+		}
+	}
+	t.Setenv("NODE_EXTRA_CA_CERTS", "")
+	if tr := NewServer("").remote.Transport.(*http.Transport); tr.TLSClientConfig != nil {
+		t.Fatal("with no NODE_EXTRA_CA_CERTS the TLS config must stay nil")
+	}
+}
+
 func TestLoopbackTargetIgnoresProxy(t *testing.T) {
 	proxied := false
 	proxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { proxied = true }))
