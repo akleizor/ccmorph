@@ -26,10 +26,72 @@ func bridgeProc(t *testing.T, tmp string) *exec.Cmd {
 	}
 	go cmd.Wait()
 	t.Cleanup(func() { cmd.Process.Kill() })
-	if yours, known := owns(cmd.Process.Pid, tmp); !known || !yours {
-		t.Fatalf("the fake bridge (pid %d, tmp %s) must read as ours", cmd.Process.Pid, tmp)
+	// The kernel read can answer two transient ways for the pid just started,
+	// and production treats both as alive and retries: doubt — the read could
+	// not answer at all, which answers() reads as alive (#409) — and the
+	// fork/exec publish window, where the pid exists and has not exec'd the
+	// bridge yet, so the read answers with the argv the child still carries
+	// from its parent, certainly not ours for the microseconds before exec
+	// publishes it. Production never reads a bridge it just started inside
+	// that window; the fake bridge reads it immediately, so it waits through
+	// both under a small deadline. It fails only on an answer that outlasts
+	// them: owns() still says certainly-not-ours at the deadline — the one
+	// answer that means this fake bridge really is not ours (#867).
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		yours, known := owns(cmd.Process.Pid, tmp)
+		if yours {
+			break
+		}
+		if time.Now().After(deadline) {
+			if known {
+				t.Fatalf("the fake bridge (pid %d, tmp %s) must read as ours", cmd.Process.Pid, tmp)
+			}
+			break // doubt throughout: a read that never answered is not fatal here either
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 	return cmd
+}
+
+// The fake bridge must not demand a certainty production never asks for.
+// The kernel read answers two transient ways for a pid just started: doubt
+// (#409) — #409 made owns() answer known=false when the read cannot answer
+// for a live pid, the way procImage's two syscalls can leave it after the
+// process left in between, and answers() treats doubt as alive and retries —
+// and the fork/exec publish window: the pid exists but has not exec'd the
+// bridge yet, so the read answers certainly-not-ours with the argv the child
+// still carries from the parent. A one-shot check obeys either answer and
+// failed this suite under gate load; the wait must outlast both (#867).
+func TestBridgeProcWaitsThroughATransientRead(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		read func(pid int) ([]string, bool)
+	}{
+		{"doubt", func(int) ([]string, bool) { return nil, false }},
+		{"the parent's argv before exec", func(int) ([]string, bool) { return os.Args, true }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			tmp := filepath.Join(t.TempDir(), "ccmorph-bridge-1")
+			orig := argvOfPID
+			reads := 0
+			argvOfPID = func(pid int) ([]string, bool) {
+				reads++
+				if reads == 1 {
+					return tc.read(pid) // transient: the first read cannot answer for the bridge yet
+				}
+				return orig(pid)
+			}
+			t.Cleanup(func() { argvOfPID = orig })
+			cmd := bridgeProc(t, tmp)
+			if reads < 2 {
+				t.Fatalf("one transient read must be waited out, not obeyed: reads=%d", reads)
+			}
+			if yours, known := owns(cmd.Process.Pid, tmp); !known || !yours {
+				t.Fatal("the fake bridge must read as ours once the transient read is retried")
+			}
+		})
+	}
 }
 
 // stubProbe makes every launch this test starts ask f instead of a real port.
