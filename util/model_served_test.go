@@ -323,7 +323,7 @@ func TestModelsAnswerReadsTheRefusedStatus(t *testing.T) {
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			fakeCurl(t, catalogue, c.rc, c.stderr)
-			body, status, ok := ModelsAnswer("http://proxy.invalid", "test-key")
+			body, status, _, ok := ModelsAnswerWhy("http://proxy.invalid", "test-key")
 			if ok != c.wantOK || status != c.wantStatus {
 				t.Fatalf("got ok=%v status=%d, want ok=%v status=%d", ok, status, c.wantOK, c.wantStatus)
 			}

@@ -39,22 +39,11 @@ func ModelsListing(base, key string, errw io.Writer) (body string, ok bool) {
 	return fetchModels(key, errw, listingArgs(base, "--max-time", "20")...)
 }
 
-// ModelsAnswer is ModelsListing for a person: curl's complaint is read, never
+// ModelsAnswerWhy is ModelsListing for a person: curl's complaint is read, never
 // printed, and status is the HTTP status the endpoint refused the request with,
-// 0 when nothing answered.
-func ModelsAnswer(base, key string) (body string, status int, ok bool) {
-	body, status, _, ok = modelsAnswer(base, key, false)
-	return body, status, ok
-}
-
-// ModelsAnswerWhy is ModelsAnswer with why: when nothing answered (status 0
-// and not ok), the cause in plain words, "" when WhyUnreachable cannot name it
-// (#260).
+// 0 when nothing answered; why is then the cause in plain words, "" when
+// WhyUnreachable cannot name it (#260).
 func ModelsAnswerWhy(base, key string) (body string, status int, why string, ok bool) {
-	return modelsAnswer(base, key, true)
-}
-
-func modelsAnswer(base, key string, name bool) (body string, status int, why string, ok bool) {
 	var complaint strings.Builder
 	start := time.Now()
 	raw, err := curlKeyed(key, listingArgs(base, "--max-time", "20"), &complaint)
@@ -65,10 +54,7 @@ func modelsAnswer(base, key string, name bool) (body string, status int, why str
 		status, _ = strconv.Atoi(m[1])
 		return "", status, "", false
 	}
-	if name {
-		why = WhyUnreachable(base, exitOf(err), complaint.String(), time.Since(start))
-	}
-	return "", 0, why, false
+	return "", 0, WhyUnreachable(base, exitOf(err), complaint.String(), time.Since(start)), false
 }
 
 // ListingReply is the one listing request set's model check reads (gh728),
