@@ -1746,7 +1746,7 @@ func (l *launcher) routeRefusal(name string) string {
 // doctor's bounds, through the profile's env.CCMORPH_UPSTREAM_PROXY (via)
 // when it names one, the route the session's own requests take. A progress line follows one second of
 // waiting. why is the cause, said here in the sentence models and doctor use,
-// "" when the gateway answered or failed in a way the four causes do not name;
+// "" when the gateway answered or failed in a way the causes WhyUnreachable names do not cover;
 // down is true when nothing answered within the bound: then the route check is
 // named too, and the caller ends the launch, because every later wait (the
 // picker's, the adapter's) would sit on the same silence.

@@ -121,7 +121,7 @@ func listingFailure(name, endpoint string, status int) string {
 }
 
 // listingFailureWhy is listingFailure with why, util.WhyUnreachable's cause for
-// a request nothing answered (status 0): which of the four causes it was, with
+// a request nothing answered (status 0): which of its causes it was, with
 // the host and port, and the private-network advice only when nothing answered
 // at all. With no cause to name, the sentence says only that no list came back
 // (#260).

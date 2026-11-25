@@ -38,6 +38,9 @@ var (
 	// through a proxy (" via NAME", then " over proxy NAME"). An older curl names
 	// the proxy's own host and port instead.
 	failedConnect = regexp.MustCompile(`Failed to connect to (\S+)(?: port |:)([0-9]+)( via | over |[ :]|$)`)
+	// curl's exit 5 names the proxy it could not resolve, never the endpoint;
+	// a user:pass@ before the host never reaches the sentence.
+	saysNoProxy = regexp.MustCompile(`Could not resolve proxy: (?:[^\s@]*@)?([^\s:/@]+)`)
 )
 
 // secureFailures are curl's exit statuses for a TLS connection that could not
@@ -62,8 +65,8 @@ var connectProbe = func(host, port string) error {
 }
 
 // WhyUnreachable names why a request to endpoint got no HTTP answer, from
-// curl's exit status, its stderr complaint and how long the request ran: name
-// not found, connection refused, secure connection failed, or no answer. It
+// curl's exit status, its stderr complaint and how long the request ran: proxy
+// not found, name not found, connection refused, secure connection failed, or no answer. It
 // returns "" for any other exit status, so the caller keeps its own words for
 // what it cannot name. The host and port come from the redacted URL, never the
 // raw one, so a credential in the URL cannot reach the sentence; curl's own
@@ -95,6 +98,12 @@ func whyUnreachable(endpoint string, exit int, complaint string, waited time.Dur
 		return s + detail + " " + privateNetworkAdvice
 	}
 	switch {
+	case exit == 5:
+		// Nothing reached the endpoint, so it is neither blamed nor named.
+		if m := saysNoProxy.FindStringSubmatch(complaint); m != nil {
+			return "proxy not found: " + m[1]
+		}
+		return "proxy not found"
 	case exit == 6:
 		return at("name not found")
 	case exit == 7:
