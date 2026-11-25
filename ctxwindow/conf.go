@@ -251,10 +251,11 @@ func glob(name, pattern string) bool {
 	i, j, star, mark := 0, 0, -1, 0
 	for i < len(n) {
 		switch {
-		case j < len(p) && (p[j] == '?' || p[j] == n[i]):
-			i, j = i+1, j+1
+		// first: a * in the pattern is a wildcard even where the name holds a *
 		case j < len(p) && p[j] == '*':
 			star, mark, j = j, i, j+1
+		case j < len(p) && (p[j] == '?' || p[j] == n[i]):
+			i, j = i+1, j+1
 		case star >= 0:
 			mark++
 			i, j = mark, star+1

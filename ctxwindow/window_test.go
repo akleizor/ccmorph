@@ -600,7 +600,9 @@ func TestGlobMatchesStarAndQuestionMark(t *testing.T) {
 		// one byte, and the regexp's metacharacters stay literal.
 		{"模型-界", "模型-?", true}, {"模型-界界", "模型-?", false}, {"a.b", "a?b", true}, {"axb", "a.b", false},
 		{"a(1)", "a(?)", true}, {"", "*", true}, {"", "?", false}, {"ab", "*b*", true}, {"aXbYc", "a*b*c", true}, {"abc", "a*d", false},
-		{"line\nbreak", "line*", true}} {
+		{"line\nbreak", "line*", true},
+		// A * in the pattern is a wildcard even where the name holds a * (#636).
+		{"*yx", "*x", true}, {"a*", "a*", true}, {"a*b", "a*", true}, {"ab", "a*b", true}, {"ab", "a", false}} {
 		if got := glob(c.name, c.pat); got != c.want {
 			t.Errorf("glob(%q,%q)=%v", c.name, c.pat, got)
 		}
