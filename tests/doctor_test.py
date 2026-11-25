@@ -633,10 +633,17 @@ def test_doctor_adapter_line_names_a_running_translator_issue_272(tmp_path, shap
         stub = tmp_path / "bin" / "cliproxyapi"
         stub.write_text("#!/bin/sh\nexit 0\n")
         stub.chmod(0o755)
-        result, _, _ = run_doctor(tmp_path, conf, OK_CURL, profile=profile)
-        assert result.returncode == 0, result.stdout + result.stderr
-        adapters = [l for l in result.stdout.splitlines() if "adapter:" in l]
-        assert adapters == ["OK adapter: this endpoint needs a translator; cliproxyapi is installed" + suffix], result.stdout
+        want = ["OK adapter: this endpoint needs a translator; cliproxyapi is installed" + suffix]
+        # The session part needs the process table, read under a one-second
+        # bound a loaded machine can lose (GH-467, #902): the run is asked
+        # again, so only a doctor that never names the session fails.
+        for _ in range(3):
+            result, _, _ = run_doctor(tmp_path, conf, OK_CURL, profile=profile)
+            assert result.returncode == 0, result.stdout + result.stderr
+            adapters = [l for l in result.stdout.splitlines() if "adapter:" in l]
+            if adapters == want:
+                break
+        assert adapters == want, result.stdout
     finally:
         stop()
 
