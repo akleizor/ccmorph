@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/akleizor/ccmorph/util"
+	"github.com/akleizor/ccmorph/util/paths"
 )
 
 // gw862 is one gateway profile, gw862, on a fake route listing $LISTING
@@ -253,6 +254,116 @@ func TestDoctorNotesAGatewayWithNoSavedModelIssue862(t *testing.T) {
 		out, _ := doctorOutput(t, &launcher{dir: state, profileDirs: profiles}, "gw862")
 		if strings.Contains(out, "INFO model:") {
 			t.Fatalf("a saved model is not the no-model case:\n%s", out)
+		}
+	})
+}
+
+// GH-862: without a terminal the launch refuses an unmapped alias with the
+// alias, its source, the fix and a few served ids, before any adapter starts.
+func TestRunWithoutATerminalNamesAnUnservedAliasIssue862(t *testing.T) {
+	for _, tc := range []struct {
+		name, extra, shared, origin string
+		argv                        []string
+	}{
+		{"saved alias", "", `{"model":"opus"}`, "from ~/.claude/settings.json", nil},
+		{"typed alias", "", `{"model":"opus"}`, "given with --model", []string{"--model", "opus"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			state, profiles, libexec, calls := gw862(t, tc.extra, tc.shared)
+			rc, out := launchAs(t, false, state, profiles, libexec, "gw862", tc.argv)
+			want := "ccmorph: " + util.UnservedTier("gw862", "opus", tc.origin, []string{"model-a", "model-b"})
+			if !strings.Contains(out, want) {
+				t.Fatalf("stderr does not name the alias, its source, the fix and the served ids\nwant: %s\ngot:\n%s", want, out)
+			}
+			if rc != 1 {
+				t.Fatalf("rc %d, want 1:\n%s", rc, out)
+			}
+			if c := calls(); strings.Contains(c, "adapter-start") {
+				t.Fatalf("the adapter started after the refusal:\n%s", c)
+			}
+		})
+	}
+	t.Run("the profile maps the tier", func(t *testing.T) {
+		state, profiles, libexec, calls := gw862(t, "\nenv.ANTHROPIC_DEFAULT_OPUS_MODEL=model-a\n", `{"model":"opus"}`)
+		_, out := launchAs(t, false, state, profiles, libexec, "gw862", nil)
+		if strings.Contains(out, "is a Claude model alias") {
+			t.Fatalf("a mapped tier starts the session it names:\n%s", out)
+		}
+		c := calls()
+		if !strings.Contains(c, "adapter-start") || !strings.Contains(c, "model-a") {
+			t.Fatalf("the launch did not start the adapter with the mapped id:\n%s", c)
+		}
+	})
+}
+
+// GH-862: in a terminal the launch says why the saved alias cannot start, then
+// opens the picker on the served ids — no Keep row for the alias, the heading
+// naming it — and the pick, or its cancel, changes nothing on disk.
+func TestRunInATerminalOffersThePickerForAnUnservedAliasIssue862(t *testing.T) {
+	fakeFzf := func(t *testing.T) (argsFile, sawFile string) {
+		t.Helper()
+		dir := t.TempDir()
+		argsFile, sawFile = filepath.Join(dir, "args"), filepath.Join(dir, "saw")
+		body := "#!/bin/sh\n" +
+			"[ \"$1\" = --version ] && { echo 0.50.0; exit 0; }\n" +
+			"printf '%s\\n' \"$@\" > \"$FZF_ARGS\"\n" +
+			"cat > \"$FZF_SAW\"\n" +
+			"exit 130\n"
+		if err := os.WriteFile(filepath.Join(dir, "fzf"), []byte(body), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		t.Setenv("FZF_ARGS", argsFile)
+		t.Setenv("FZF_SAW", sawFile)
+		t.Setenv("PATH", dir+":"+os.Getenv("PATH"))
+		return argsFile, sawFile
+	}
+	t.Run("cancelled", func(t *testing.T) {
+		state, profiles, libexec, calls := gw862(t, "", `{"model":"opus"}`)
+		t.Setenv("TERM", "xterm-256color")
+		sharedPath := filepath.Join(os.Getenv("HOME"), ".claude", "settings.json")
+		sharedBefore := readBack(t, sharedPath)
+		argsFile, sawFile := fakeFzf(t)
+		rc, out := launchAs(t, true, state, profiles, libexec, "gw862", nil)
+		if rc != 1 {
+			t.Fatalf("rc %d, want 1:\n%s", rc, out)
+		}
+		want := "ccmorph: " + util.UnservedTier("gw862", "opus", "from ~/.claude/settings.json", nil)
+		if !strings.Contains(out, want) {
+			t.Fatalf("stderr does not say why before the picker\nwant: %s\ngot:\n%s", want, out)
+		}
+		saw := readBack(t, sawFile)
+		if !strings.Contains(saw, "model-a") || !strings.Contains(saw, "model-b") {
+			t.Fatalf("the picker did not open on the served ids:\n%s", saw)
+		}
+		if strings.Contains(saw, "@keep") {
+			t.Fatalf("the picker offers the alias that cannot start:\n%s", saw)
+		}
+		if args := readBack(t, argsFile); !strings.Contains(args, "Model — gw862 (opus is not served here)") {
+			t.Fatalf("the picker heading does not name the alias:\n%s", args)
+		}
+		if c := calls(); strings.Contains(c, "adapter-start") {
+			t.Fatalf("the adapter started after a cancelled picker:\n%s", c)
+		}
+		f := map[string]string{}
+		for _, line := range strings.Split(readBack(t, filepath.Join(state, "gw862.conf")), "\n") {
+			if k, v, ok := strings.Cut(line, "="); ok {
+				f[k] = v
+			}
+		}
+		if f["model"] != "opus" || f["model_source"] != "claude-settings" {
+			t.Fatalf("the launch changed the saved model or lost its source: %v", f)
+		}
+		if got := readBack(t, sharedPath); got != sharedBefore {
+			t.Fatalf("~/.claude/settings.json changed:\n%s\n->\n%s", sharedBefore, got)
+		}
+	})
+	t.Run("a served saved model opens no picker", func(t *testing.T) {
+		state, profiles, libexec, _ := gw862(t, "\nmodel=model-a\nmodel_defaults=1\n", "")
+		t.Setenv("TERM", "xterm-256color")
+		_, sawFile := fakeFzf(t)
+		launchAs(t, true, state, profiles, libexec, "gw862", nil)
+		if paths.Exists(sawFile) {
+			t.Fatal("the picker opened although the saved model is served")
 		}
 	})
 }

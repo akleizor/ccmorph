@@ -266,9 +266,13 @@ func (l *launcher) pickValue(slot, name string) (string, bool) {
 // the Keep row `set model -i` opens on, so Enter alone means the saved model
 // (#377). The custom-ID escape stays with the commands that can save one; a
 // profile with nothing saved opens the plain catalogue, titled so.
-func (l *launcher) pickLaunchModel(name, saved string) (string, bool) {
+// unserved, when set, is a saved model the gateway cannot serve: the heading names it.
+func (l *launcher) pickLaunchModel(name, saved, unserved string) (string, bool) {
 	heading := "Model — " + name
-	if saved == "" {
+	switch {
+	case unserved != "":
+		heading += " (" + unserved + " is not served here)"
+	case saved == "":
 		heading += " (none saved)"
 	}
 	return l.pickRows("model", name, saved, "labels", func(rows string) (string, string) {
