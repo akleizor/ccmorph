@@ -1,6 +1,7 @@
 import getpass
 import http.server
 import socketserver
+import time
 
 import pytest
 
@@ -34,6 +35,16 @@ http.server.HTTPServer.server_bind = _bind_without_reverse_dns
 @pytest.fixture(autouse=True)
 def fixed_identity(monkeypatch):
     monkeypatch.setattr(getpass, "getuser", lambda: "ccmorph-tester")
+
+
+# The export suites' local days: one zone pin, asked for by name by both (#636).
+@pytest.fixture
+def hong_kong(monkeypatch):
+    monkeypatch.setenv("TZ", "Asia/Hong_Kong")
+    time.tzset()
+    yield
+    monkeypatch.undo()
+    time.tzset()
 
 
 @pytest.hookimpl(tryfirst=True)

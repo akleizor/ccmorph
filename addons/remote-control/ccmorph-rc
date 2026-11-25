@@ -54,7 +54,7 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 # the routing decision beside this script, however it was loaded (test, install, exec)
 sys.path.insert(0, str(HERE))
-from rc_route import ACCOUNT_METADATA, SESSION_ID, BridgeDirs, edge_name, project_slug, safe_part, state_root  # noqa: E402
+from rc_route import ACCOUNT_METADATA, SESSION_ID, BridgeDirs, edge_name, project_slug, safe_part, state_root
 LIB_DIR = Path(os.environ.get("CCMORPH_LIB_DIR") or HERE.parent.parent / "lib")
 CCMORPH = LIB_DIR / "ccmorph.sh"
 ADAPTER = LIB_DIR.parent / "libexec" / "ccmorph-core"

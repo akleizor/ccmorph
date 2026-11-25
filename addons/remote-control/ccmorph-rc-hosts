@@ -102,7 +102,7 @@ HERE = Path(__file__).resolve().parent
 # (#845: a partial install's reload must survive). The state root is
 # ccmorph-rc's own, from the module both scripts read (#636).
 sys.path.insert(0, str(HERE))
-from rc_route import BridgeDirs, edge_name, project_slug, safe_part, state_root  # noqa: E402
+from rc_route import BridgeDirs, edge_name, project_slug, safe_part, state_root
 STATE_ROOT = state_root()
 BRIDGE = BridgeDirs(STATE_ROOT)   # ccmorph-rc derives the same dirs from the same class
 LOGS = BRIDGE.logs

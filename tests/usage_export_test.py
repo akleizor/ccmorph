@@ -10,13 +10,14 @@ import shutil
 import subprocess
 import sys
 import tempfile
-import time
 
 import pytest
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 from rc_hosts_test import is_python_helper  # noqa: E402
 from support import HANG_TIMEOUT, load_script  # noqa: E402
+
+pytestmark = pytest.mark.usefixtures("hong_kong")
 
 # The shim's own bound (costLimit in shim/sidecar.go, 2**53/100); shim/sidecar_test.go
 # asserts the Go constant equals this literal, and the test below that the exporter's matches.
@@ -26,16 +27,6 @@ EXPORTER = pathlib.Path(__file__).parent.parent / "share/usage-export"
 ue = load_script(EXPORTER, "usage_export")
 
 ABSENT = object()
-
-
-@pytest.fixture(autouse=True)
-def hong_kong(monkeypatch):
-    """Days are local days; pin the zone so the day boundaries below do not move with the host."""
-    monkeypatch.setenv("TZ", "Asia/Hong_Kong")
-    time.tzset()
-    yield
-    monkeypatch.undo()
-    time.tzset()
 
 
 def local(year, month, day, hour=0):

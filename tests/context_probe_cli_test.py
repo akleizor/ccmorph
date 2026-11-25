@@ -13,7 +13,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 
 import pytest
 
-from support import (FAKE_SERVER_NO_DNS, HANG_TIMEOUT, LOOPBACK_SKIP,  # noqa: F401
+from support import (HANG_TIMEOUT, LOOPBACK_SKIP,
                      can_bind_loopback, helper_cmd,
                      port_outside_the_ephemeral_pool)
 
