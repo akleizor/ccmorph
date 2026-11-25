@@ -3718,7 +3718,7 @@ def _spaced_install(tmp_path):
     import shutil
     here = tmp_path / "Application Support" / "cc morph" / "remote-control"
     here.mkdir(parents=True)
-    for name in ("ccmorph-rc-hosts", "ccmorph-rc", "rc_route.py", "rc_addon.py"):
+    for name in ("ccmorph-rc-hosts", "ccmorph-rc", "rc_route.py", "rc_flow.py", "rc_addon.py"):
         shutil.copy(SCRIPT.parent / name, here / name)
     return load_script(here / "ccmorph-rc-hosts", "rc_hosts")
 
@@ -5340,9 +5340,8 @@ def test_profile_field_reads_an_unreadable_conf_as_no_field(tmp_path, capsys):
 
 
 def test_the_session_list_names_each_sessions_own_word_and_drops_stale_ones(monkeypatch):
-    """A phone control picks a profile per session from sessions.json. A word whose
+    """A phone control picks a profile per session from `--list-sessions`. A word whose
     session is archived and not running is removed; a failed fetch removes nothing."""
-    import json
     m = load()
     m.SESSION_WORDS.mkdir(parents=True)
     (m.SESSION_WORDS / "cse_live").write_text("gpro\n")
@@ -5351,12 +5350,34 @@ def test_the_session_list_names_each_sessions_own_word_and_drops_stale_ones(monk
     monkeypatch.setattr(m, "account_name", lambda: "me")
     monkeypatch.setattr(m, "session_pid", lambda sid: 7 if sid == "cse_running" else None)
     monkeypatch.setattr(m, "host_sessions", lambda folders, status: ("", []))
-    m.publish_sessions(["repo"])
+    assert m.list_sessions(["repo"]) is None
     assert sorted(p.name for p in m.SESSION_WORDS.iterdir()) == ["cse_gone", "cse_live", "cse_running"]
-    found = [("repo", {"id": "cse_live", "title": "Fix it"}), ("repo", {"id": "cse_new"})]
+    found = [("repo", {"id": "cse_live", "title": "Fix it", "worker_status": "running",
+                       "connection_status": "connected"}), ("repo", {"id": "cse_new"})]
     monkeypatch.setattr(m, "host_sessions", lambda folders, status: ("tok", found))
-    m.publish_sessions(["repo"])
-    assert json.loads(m.SESSION_LIST.read_text()) == {"account": "me", "sessions": [
-        {"id": "cse_live", "title": "Fix it", "folder": "repo", "word": "gpro"},
-        {"id": "cse_new", "title": "", "folder": "repo", "word": None}]}
+    assert m.list_sessions(["repo"]) == {"account": "me", "sessions": [
+        {"id": "cse_live", "title": "Fix it", "folder": "repo", "word": "gpro", "working": True, "connected": True},
+        {"id": "cse_new", "title": "", "folder": "repo", "word": None, "working": False, "connected": False}]}
     assert sorted(p.name for p in m.SESSION_WORDS.iterdir()) == ["cse_live", "cse_running"]
+
+
+def test_list_sessions_prints_only_json_and_asks_only_about_repo_hosts(tmp_path, monkeypatch, capsys):
+    """Stark parses stdout: log() writes there too, so a line the fetch logs goes to
+    stderr. A pinned conversation line is not a repo host and is not asked about."""
+    import json
+    m = load()
+    cfg = tmp_path / "rc-hosts"
+    cfg.write_text(f"route=gw\n{tmp_path / 'a'}\n{tmp_path / 'b'} -- --session-id cse_pin\n")
+    asked = []
+
+    def fetch(folders, status):
+        asked.append(folders)
+        m.log("active session check failed: once")
+        return "tok", []
+    monkeypatch.setattr(m, "host_sessions", fetch)
+    monkeypatch.setattr(m, "account_name", lambda: "me")
+    assert m.main(["--config", str(cfg), "--list-sessions"]) == 0
+    out = capsys.readouterr()
+    assert json.loads(out.out) == {"account": "me", "sessions": []}
+    assert "check failed" in out.err
+    assert asked == [[str(tmp_path / "a")]]

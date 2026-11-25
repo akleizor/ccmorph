@@ -13,7 +13,7 @@ import pytest
 from support import HANG_TIMEOUT, load_script
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "addons" / "remote-control"))
-from rc_route import inference_target, is_inference, reroute  # noqa: E402
+from rc_route import ACCOUNT_METADATA, inference_target, is_inference, reroute  # noqa: E402
 
 OAUTH = "sk-ant-oat01-ACCOUNT-SECRET"
 
@@ -771,7 +771,7 @@ def _addon(monkeypatch, tmp_path, word):
     monkeypatch.setenv("RC_UPSTREAM", "http://127.0.0.1:5000")
     monkeypatch.setenv("RC_KEY_FILE", str(key))
     monkeypatch.setenv("RC_INFERENCE", str(switch))
-    for name in ("RC_TIERS", "RC_LOG"):
+    for name in ("RC_TIERS", "RC_LOG", "RC_SOURCE"):
         monkeypatch.delenv(name, raising=False)
     return load_script(ADDON, "rc_addon_decision")
 
@@ -802,7 +802,7 @@ def test_the_account_word_marks_what_it_leaves_first_party(word, first_party, tm
     addon = _addon(monkeypatch, tmp_path, word)
     flow = _Flow()
     addon.requestheaders(flow)
-    assert (flow.metadata.get(addon.ACCOUNT_METADATA) is True) == first_party
+    assert (flow.metadata.get(ACCOUNT_METADATA) is True) == first_party
     if first_party:
         assert (flow.request.scheme, flow.request.host) == ("https", "api.anthropic.com")
         assert flow.request.headers == {"authorization": "Bearer ACCOUNT"}
@@ -816,7 +816,7 @@ def test_the_guard_exempts_the_mark_the_account_branch_sets(tmp_path, monkeypatc
     closes the account destination for every flow without it, and the account
     branch is the only code that sets it."""
     addon = _addon(monkeypatch, tmp_path, "account")
-    assert f"!~meta {addon.ACCOUNT_METADATA}" in _launcher().FAIL_CLOSED
+    assert f"!~meta {ACCOUNT_METADATA}" in _launcher().FAIL_CLOSED
 
 
 def test_a_pinned_tier_reaches_the_backend_without_the_context_marker():
@@ -864,6 +864,7 @@ def _switch_state(tmp_path, monkeypatch):
     monkeypatch.setattr(rc, "adapter_env", lambda: {})
     monkeypatch.setattr(rc, "start_adapter", lambda profile, owner, env: "http://127.0.0.1:54505")
     monkeypatch.setattr(rc, "get_tiers", lambda profile: {"sonnet": "claude-sonnet-5-5"})
+    monkeypatch.setattr(rc, "handoff_taken", lambda hand, payload: True)   # the edge's proxy took it
     return rc, route_env
 
 
@@ -889,6 +890,7 @@ def _switch_addon(monkeypatch, state):
     # suite's environment (REVIEW.md: a test that cannot fail).
     monkeypatch.setenv("RC_TIERS", json.dumps(_BOOT_TIERS))
     monkeypatch.delenv("RC_PARENT_PID", raising=False)
+    monkeypatch.delenv("RC_SOURCE", raising=False)
     try:
         import mitmproxy  # noqa: F401
     except ImportError:
@@ -981,7 +983,7 @@ def test_a_session_word_overrides_the_shared_switch_for_its_own_requests(tmp_pat
             scheme="https", host="api.anthropic.com", port=443))
         addon.requestheaders(f)
         return f
-    assert flow("cse_mine").metadata.get(addon.ACCOUNT_METADATA) is True
+    assert flow("cse_mine").metadata.get(ACCOUNT_METADATA) is True
     assert flow("cse_other").metadata["rc_route"] is True
     assert flow("../inference").metadata["rc_route"] is True
 
@@ -1460,3 +1462,91 @@ raise SystemExit(3)
                             capture_output=True, text=True, timeout=HANG_TIMEOUT)
     assert result.returncode == 0, f"child exit={result.returncode}; stderr={result.stderr}"
     assert list(state.rglob("route-key.*")) == []
+
+
+def _hot_addon(monkeypatch, tmp_path):
+    """The addon as a running proxy holds it: its own private copy, and RC_SOURCE the
+    install's folder it reloads rc_flow and rc_route from."""
+    import shutil
+    src, private = tmp_path / "src", tmp_path / "addon.x"
+    for d in (src, private):
+        d.mkdir()
+        for name in ("rc_addon.py", "rc_flow.py", "rc_route.py"):
+            shutil.copy(ADDON.parent / name, d / name)
+    state = tmp_path / "state"
+    state.mkdir()
+    (state / "inference").write_text("route\n")
+    (state / "route-key").write_text("route-key")
+    for k, v in {"RC_UPSTREAM": "http://127.0.0.1:60111", "RC_KEY_FILE": str(state / "route-key"),
+                 "RC_INFERENCE": str(state / "inference"), "RC_LOG": str(state / "addon.log"),
+                 "RC_SOURCE": str(src), "RC_TIERS": "{}"}.items():
+        monkeypatch.setenv(k, v)
+    monkeypatch.delenv("RC_PARENT_PID", raising=False)
+    addon = load_script(private / "rc_addon.py", "rc_addon_hot")
+    monkeypatch.setattr(addon, "RECHECK", 0)
+    return addon, src, state
+
+
+def _routed_port(addon):
+    flow = _Flow()
+    addon.requestheaders(flow)
+    return flow.request.port
+
+
+def test_a_routing_change_reaches_the_running_proxy_with_no_restart(tmp_path, monkeypatch):
+    """A routing fix used to need the proxy restarted, which took every phone session's
+    turn with it. rc_flow and rc_route now reload from the install when they change;
+    the key, held by the loader, stays. A file that does not load (a checkout half
+    written) keeps the running code, and its next change is loaded."""
+    import os
+    addon, src, state = _hot_addon(monkeypatch, tmp_path)
+    assert _routed_port(addon) == 60111
+    flow_py = src / "rc_flow.py"
+    good = flow_py.read_text()
+    flow_py.write_text(good.replace("upstream, key, tiers = s.upstream, s.key, s.tiers",
+                                    "upstream, key, tiers = 'http://127.0.0.1:60222', s.key, s.tiers"))
+    os.utime(flow_py, ns=(1, 2_000_000_000_000_000_000))
+    assert _routed_port(addon) == 60222                        # no restart: the next request
+    flow_py.write_text("def requestheaders(:\n")
+    os.utime(flow_py, ns=(1, 3_000_000_000_000_000_000))
+    assert _routed_port(addon) == 60222                        # broken: the running code stays
+    assert "failed" in (state / "addon.log").read_text()
+    flow_py.write_text(good)
+    os.utime(flow_py, ns=(1, 4_000_000_000_000_000_000))
+    assert _routed_port(addon) == 60111
+    assert "rc_flow" not in sys.modules                         # nothing else sees the reload
+
+
+def test_the_proxy_takes_a_handoff_without_waiting_for_a_request(tmp_path, monkeypatch):
+    """A session's profile can sit idle for days, and the handoff is its key on disk
+    until the proxy reads it. The proxy now looks every half second, not on the next
+    request for that profile."""
+    import json
+    addon, _, state = _hot_addon(monkeypatch, tmp_path)
+    hand = state / "switch-gw.json"
+    hand.write_text(json.dumps({"upstream": "http://127.0.0.1:54505", "key": "k2", "tiers": {}}))
+    import threading
+    threading.Thread(target=addon._take_handoffs, daemon=True).start()
+    for _ in range(50):
+        if not hand.exists():
+            break
+        time.sleep(0.1)
+    assert not hand.exists()
+    assert addon.SWITCHED["gw"] == ("http://127.0.0.1:54505", "k2", {})
+
+
+def test_a_handoff_no_proxy_takes_is_removed_and_nothing_changes(tmp_path, monkeypatch):
+    """A proxy started before the handoff poller never reads a handoff no request
+    asks for: the switch removes its key file again and puts the word back."""
+    rc, _ = _switch_state(tmp_path, monkeypatch)
+    monkeypatch.setattr(rc, "handoff_taken", lambda hand, payload: False)
+    (rc.STATE / "sessions").mkdir(parents=True)
+    (rc.STATE / "sessions" / "cse_1").write_text("account\n")
+    with pytest.raises(SystemExit):
+        rc.switch("gw", "me", "cse_1")
+    assert list(rc.STATE.glob("switch-*")) == []
+    assert (rc.STATE / "sessions" / "cse_1").read_text() == "account\n"
+    assert not (rc.STATE / "up-gw.json").exists()
+    with pytest.raises(SystemExit):
+        rc.switch("gw", "me", "cse_2")
+    assert not (rc.STATE / "sessions" / "cse_2").exists()

@@ -413,7 +413,7 @@ FAIL_CLOSED = (rf"|(~d ^api\.anthropic\.com$ & ~u /v1/messages & !~meta {ACCOUNT
 def private_addon(parent: Path) -> Path:
     """Copy the addon and its module into a fresh 0700 directory; return the script."""
     run = Path(tempfile.mkdtemp(prefix="addon.", dir=parent))
-    for name in ("rc_addon.py", "rc_route.py"):
+    for name in ("rc_addon.py", "rc_flow.py", "rc_route.py"):
         # copy, not copy2: mitmproxy loads a -s script only if its mtime beats its
         # last load (0), so a source delivered with epoch timestamps never loads.
         shutil.copy(HERE / name, run / name)
@@ -492,7 +492,8 @@ def own_edge(route: str, me: int, args, fixed_port: int | None):
         port = fixed_port or free_port()
         proxy_env = {k: v for k, v in os.environ.items() if k not in strip_env()}
         proxy_env.update(RC_UPSTREAM=upstream, RC_KEY_FILE=key_file, RC_PARENT_PID=str(me),
-                         RC_TIERS=json.dumps(pinned_tiers(os.environ)), RC_INFERENCE=str(INFERENCE))
+                         RC_TIERS=json.dumps(pinned_tiers(os.environ)), RC_INFERENCE=str(INFERENCE),
+                         RC_SOURCE=str(HERE))
         if args.debug:
             proxy_env["RC_LOG"] = str(STATE / "debug.log")
         proxy = subprocess.Popen(
@@ -651,6 +652,24 @@ def brought_up(profile: str, owner: int, tiers: dict | None) -> bool:
     return False
 
 
+HANDOFF_WAIT = 5.0      # seconds; the proxy looks for a handoff every half second
+
+
+def handoff_taken(hand: Path, payload: bytes, seconds: float = HANDOFF_WAIT) -> bool:
+    """Whether the proxy took this handoff (or a newer switch replaced it) in time."""
+    for i in range(int(seconds / 0.1) + 1):
+        if i:
+            time.sleep(0.1)
+        try:
+            if hand.read_bytes() != payload:
+                return True
+        except FileNotFoundError:
+            return True
+        except OSError:
+            pass
+    return False
+
+
 def switch(profile: str, account: str, session: str | None = None) -> None:
     """Send inference to `profile` from the next turn, with no restart: every host's,
     or with `session` that one phone session's only (the rest keep the shared switch).
@@ -660,6 +679,11 @@ def switch(profile: str, account: str, session: str | None = None) -> None:
     if session is not None and not SESSION_ID.fullmatch(session):
         die(f"'{session}' is not a session id")
     word = "account" if profile == account else "route" if live_edge(profile) else profile
+    word_path = INFERENCE if session is None else STATE / "sessions" / session
+    try:
+        previous = word_path.read_text().strip() or None
+    except OSError:
+        previous = None
     hand = payload = None
     if word == "account":
         # The account's own model per alias, for a tier the route pinned (fable -> the
@@ -712,13 +736,7 @@ def switch(profile: str, account: str, session: str | None = None) -> None:
                     os.unlink(tmp)    # a temp that never became the handoff still holds the route key
                 raise
         try:
-            if session is None:
-                write_inference(word)
-            else:
-                (STATE / "sessions").mkdir(parents=True, exist_ok=True)
-                write_inference(word, STATE / "sessions" / session)
-            if hand is not None:
-                write_json(STATE / f"up-{safe_part(profile)}.json", up)
+            write_inference(word, word_path)
         except BaseException:
             if hand is not None:
                 # The word never landed, so no request reads this handoff: leaving it would
@@ -730,6 +748,21 @@ def switch(profile: str, account: str, session: str | None = None) -> None:
             raise
     finally:
         signal.pthread_sigmask(signal.SIG_SETMASK, old_mask)
+    if hand is not None:
+        if not handoff_taken(hand, payload):
+            # No proxy took it: the key must not wait on disk for a request, and the
+            # word must not name a profile nothing serves.
+            with suppress(OSError):
+                if hand.read_bytes() == payload:
+                    hand.unlink()
+            if previous is not None:
+                write_inference(previous, word_path)
+            else:
+                with suppress(OSError):
+                    word_path.unlink()
+            die(f"the edge's proxy did not take '{profile}' within {HANDOFF_WAIT:g}s "
+                f"(a proxy started before this ccmorph-rc does not); nothing changed")
+        write_json(STATE / f"up-{safe_part(profile)}.json", up)
     who = f"session {session}'s" if session else "every host's"
     print(f"ccmorph-rc: {who} inference now goes to '{profile}' from the next turn", file=sys.stderr)
 
