@@ -19,6 +19,17 @@
 
 ### Fixed
 
+- **Recording a key approval no longer drops what a running session saved.**
+  `ccmorph add`, `login`, a launch and a hop record Claude Code's answer in the
+  profile's `.claude.json`; the rewrite now holds the profile's live lock
+  exclusively across its read and its rename — the mode the repo's other
+  whole-file writers take — so a running session's own save and a second
+  approval can no longer be lost under it. While a session of the profile is
+  open, `login` and `add` save the answer and the next launch records it before
+  Claude Code starts; a launch that finds it still waiting says so and starts
+  nothing. A launch that is rewriting the profile's config is waited for,
+  bounded, and named if it outlasts the wait (#299).
+
 - **One hand-edited conf line no longer splits the commands.** An unknown key or
   an effort level outside low…max used to hide the profile from `list` (which
   then said "No profiles yet"), let `get` answer confidently, and stop
