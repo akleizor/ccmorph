@@ -10,7 +10,7 @@ from pathlib import Path
 
 import pytest
 
-from support import HANG_TIMEOUT, load_script
+from support import HANG_TIMEOUT, load_script, wait_until
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "addons" / "remote-control"))
 from rc_route import ACCOUNT_METADATA, inference_target, is_inference, reroute  # noqa: E402
@@ -1527,11 +1527,7 @@ def test_the_proxy_takes_a_handoff_without_waiting_for_a_request(tmp_path, monke
     hand.write_text(json.dumps({"upstream": "http://127.0.0.1:54505", "key": "k2", "tiers": {}}))
     import threading
     threading.Thread(target=addon._take_handoffs, daemon=True).start()
-    for _ in range(50):
-        if not hand.exists():
-            break
-        time.sleep(0.1)
-    assert not hand.exists()
+    assert wait_until(lambda: not hand.exists(), HANG_TIMEOUT)
     assert addon.SWITCHED["gw"] == ("http://127.0.0.1:54505", "k2", {})
 
 
