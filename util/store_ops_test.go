@@ -452,3 +452,101 @@ func TestStoreNamesAnInvalidNativeEffortAndSetEffortReplacesIt(t *testing.T) {
 		t.Fatalf("after the repair, effort = %q", got)
 	}
 }
+
+// GH-862: a model imported from the shared ~/.claude/settings.json is marked so
+// every screen can name where it came from; the mark outlives the shared file,
+// and a read never touches either file.
+func TestStoreSeedRecordsAModelImportedFromClaudeSettingsIssue862(t *testing.T) {
+	for _, shared := range []string{`{"model":"opus"}`, `{"env":{"ANTHROPIC_MODEL":"opus"}}`} {
+		t.Run(shared, func(t *testing.T) {
+			s := newStoreEnv(t)
+			s.write(s.settings, `{}`)
+			s.write(s.shared, shared)
+			sharedBytes := s.read(s.shared)
+			before := s.state()
+			if got := s.ok("get", "model_source", StoreChange{}); got != "claude-settings\n" {
+				t.Fatalf("get model_source before seeding: %q", got)
+			}
+			if s.state() != before {
+				t.Fatal("a read changed the profile")
+			}
+			if got := s.ok("seed-model-defaults", "model", StoreChange{}); got != "opus\n" {
+				t.Fatalf("seed-model-defaults printed %q", got)
+			}
+			f := s.fields()
+			if f["model"] != "opus" || f["model_source"] != "claude-settings" || f["model_defaults"] != "1" {
+				t.Fatalf("conf fields after seeding: %v", f)
+			}
+			if s.read(s.shared) != sharedBytes {
+				t.Fatal("the shared settings were changed")
+			}
+			if err := os.Remove(s.shared); err != nil {
+				t.Fatal(err)
+			}
+			if got := s.ok("get", "model_source", StoreChange{}); got != "claude-settings\n" {
+				t.Fatalf("get model_source after the shared file went away: %q", got)
+			}
+		})
+	}
+}
+
+// GH-862: saving a model through the store is the person's own choice, so the
+// imported marker goes; an effort-only save keeps it.
+func TestStoreSavingAModelClearsTheImportedSourceIssue862(t *testing.T) {
+	s := newStoreEnv(t)
+	s.write(s.settings, `{}`)
+	s.write(s.shared, `{"model":"opus"}`)
+	s.ok("seed-model-defaults", "model", StoreChange{})
+	s.ok("set", "", StoreChange{Effort: "high"})
+	if f := s.fields(); f["model_source"] != "claude-settings" {
+		t.Fatalf("an effort-only save dropped the imported source: %v", f)
+	}
+	s.ok("set", "", StoreChange{Model: "model-a"})
+	f := s.fields()
+	if f["model"] != "model-a" {
+		t.Fatalf("conf fields after saving a model: %v", f)
+	}
+	if _, ok := f["model_source"]; ok {
+		t.Fatalf("saving a model left the imported source behind: %v", f)
+	}
+	if got := s.ok("get", "model_source", StoreChange{}); got != "\n" {
+		t.Fatalf("get model_source after saving a model: %q", got)
+	}
+}
+
+// GH-862: a model the profile owns — its layer or its conf — records no source.
+func TestStoreAProfileOwnedModelRecordsNoSourceIssue862(t *testing.T) {
+	t.Run("default layer", func(t *testing.T) {
+		s := newStoreEnv(t)
+		s.write(s.shared, `{"model":"opus"}`)
+		if got := s.ok("seed-model-defaults", "model", StoreChange{}); got != "old\n" {
+			t.Fatalf("seed printed %q", got)
+		}
+		if _, ok := s.fields()["model_source"]; ok {
+			t.Fatalf("a model from the profile's own layer was marked: %v", s.fields())
+		}
+	})
+	t.Run("own layer model", func(t *testing.T) {
+		s := newStoreEnv(t)
+		s.write(s.settings, `{"model":"mine"}`)
+		s.write(s.shared, `{"model":"opus"}`)
+		if got := s.ok("seed-model-defaults", "model", StoreChange{}); got != "mine\n" {
+			t.Fatalf("seed printed %q", got)
+		}
+		if _, ok := s.fields()["model_source"]; ok {
+			t.Fatalf("a model from the profile's own layer was marked: %v", s.fields())
+		}
+	})
+	t.Run("conf model", func(t *testing.T) {
+		s := newStoreEnv(t)
+		s.write(s.conf, storeConf+"model=conf-model\n")
+		s.write(s.settings, `{}`)
+		s.write(s.shared, `{"model":"opus"}`)
+		if got := s.ok("seed-model-defaults", "model", StoreChange{}); got != "conf-model\n" {
+			t.Fatalf("seed printed %q", got)
+		}
+		if _, ok := s.fields()["model_source"]; ok {
+			t.Fatalf("a model already in the conf was marked: %v", s.fields())
+		}
+	})
+}
