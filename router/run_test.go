@@ -4,9 +4,11 @@ import (
 	"bytes"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -123,15 +125,59 @@ func TestDispatchPassesClaudeFlagsTaskTagAndDeadline(t *testing.T) {
 func TestDispatchTimeoutKillsTheWorkerAndNeverRetries(t *testing.T) {
 	hookEnv(t, true)
 	dir := t.TempDir()
-	fakeWorker(t, `echo run >> `+dir+`/runs; exec sleep 30`)
+	// The prompt is the one string of this test's that lands in the launched
+	// worker's argv and nowhere else: the watcher counts launches in the
+	// process table, where a process exists from its launch — while the runs
+	// file is the shell's first write racing the kill, which on a loaded
+	// machine the kill won (#874).
+	prompt := "dispatch874witness"
+	timeout := time.Second
+	// "sleep 30 & wait", not "exec sleep 30": the watcher reads the launch
+	// from the shell's own argv, and exec — dash does it for a script's last
+	// command even unasked — would replace it. The dispatch kills the whole
+	// process group, so the background sleep dies with the shell.
+	fakeWorker(t, `echo run >> `+dir+`/runs; sleep 30 & wait`)
+	launched := map[string]bool{}
+	watchEnd, watched := make(chan struct{}), make(chan struct{})
+	go func() {
+		defer close(watched)
+		for {
+			select {
+			case <-watchEnd:
+				return
+			default:
+			}
+			if out, err := exec.Command("pgrep", "-f", prompt).Output(); err == nil {
+				for _, pid := range strings.Fields(string(out)) {
+					launched[pid] = true
+				}
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+	}()
 	start := time.Now()
 	var errOut bytes.Buffer
-	code := Main([]string{"dispatch", "--kind", "code", "--tier", "small", "--timeout", "1", "brief"}, strings.NewReader(""), io.Discard, &errOut)
-	if code != 124 || time.Since(start) > 5*time.Second || !strings.Contains(errOut.String(), "timeout (exit 124)") {
-		t.Fatalf("exit %d after %s: %q", code, time.Since(start), errOut.String())
+	code := Main([]string{"dispatch", "--kind", "code", "--tier", "small", "--timeout", "1", prompt}, strings.NewReader(""), io.Discard, &errOut)
+	elapsed := time.Since(start)
+	close(watchEnd)
+	<-watched
+	// The bound is a backstop for a kill that never came — the fake worker
+	// would then sleep out its 30 s — and takes its margin from the timeout:
+	// a loaded machine spends seconds on post-deadline bookkeeping (#874).
+	if code != 124 || elapsed > 10*timeout || !strings.Contains(errOut.String(), "timeout (exit 124)") {
+		t.Fatalf("exit %d after %s: %q", code, elapsed, errOut.String())
 	}
-	if runs, _ := os.ReadFile(filepath.Join(dir, "runs")); strings.Count(string(runs), "run") != 1 {
-		t.Fatalf("a timed-out run was run again: %q", runs)
+	// The 124 must come from killing a worker the dispatch actually launched;
+	// the record file cannot say, because its absence is also what a launch
+	// that never happened leaves behind.
+	if len(launched) == 0 {
+		t.Fatalf("dispatch returned %d after %s without launching the worker: %q", code, elapsed, errOut.String())
+	}
+	// A timed-out worker is never run again: a second observed launch or a
+	// second record says it was.
+	runs, _ := os.ReadFile(filepath.Join(dir, "runs"))
+	if n := strings.Count(string(runs), "run"); n > 1 || len(launched) > 1 {
+		t.Fatalf("a timed-out run was launched again: %d process(es), %d record(s) %q", len(launched), n, runs)
 	}
 }
 
@@ -177,17 +223,41 @@ echo '{"type":"result","is_error":true,"result":"quota exceeded"}'; exit 1`)
 func TestDispatchDeadlineBoundsRouting(t *testing.T) {
 	hookEnv(t, true)
 	fakeWorker(t, `echo ran`)
+	// Bind the listener before httptest would: an environment that refuses a
+	// loopback bind has nothing for this test to pin — httptest.NewServer
+	// would panic the binary and hide that (#874). Skip there, run fully
+	// where a bind is allowed.
+	ln, lnErr := net.Listen("tcp", "127.0.0.1:0")
+	if lnErr != nil {
+		t.Skipf("this environment refuses a loopback listener: %v", lnErr)
+	}
 	block := make(chan struct{})
-	srv := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { <-block }))
+	srv := httptest.NewUnstartedServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { <-block }))
+	srv.Listener = ln
+	srv.Start()
 	t.Cleanup(func() { close(block); srv.Close() })
 	if err := writeJSON(ConfigPath(), Config{Enabled: true, Decider: &Decider{URL: srv.URL}}); err != nil {
 		t.Fatal(err)
 	}
+	timeout := 300 * time.Millisecond
 	start := time.Now()
-	var out bytes.Buffer
-	code := Main([]string{"dispatch", "--timeout", "0.3", "fix the bug"}, strings.NewReader(""), &out, io.Discard)
-	if code != 124 || time.Since(start) > 3*time.Second || out.String() != "" {
-		t.Fatalf("exit %d after %s, out %q", code, time.Since(start), out.String())
+	var out, errOut bytes.Buffer
+	code := Main([]string{"dispatch", "--timeout", "0.3", "fix the bug"}, strings.NewReader(""), &out, &errOut)
+	elapsed := time.Since(start)
+	// The promise is a routing phase, not a wall clock: every request to
+	// this decider is parked in its handler until the cleanup registered
+	// above, which runs after these assertions, so a dispatch that returned
+	// at all was cut off by its own deadline, never answered. Which note it
+	// left depends only on whether routing was scheduled before the deadline,
+	// so either deadline attempt proves it; the bound backstops a dispatch
+	// that ignores the deadline wholesale, and takes its margin from the
+	// deadline: the post-deadline bookkeeping alone ran to 3.5 s on a
+	// load-170 machine, tripping the literal 3 s this replaces (#874).
+	err := errOut.String()
+	deadlineCut := strings.Contains(err, "ran past the deadline") ||
+		strings.Contains(err, "deadline passed before a worker could start")
+	if code != 124 || out.String() != "" || elapsed > 60*timeout || !deadlineCut {
+		t.Fatalf("exit %d after %s, out %q, err %q", code, elapsed, out.String(), err)
 	}
 }
 
