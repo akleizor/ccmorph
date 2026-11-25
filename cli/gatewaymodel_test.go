@@ -491,3 +491,50 @@ func TestRunWithExclusionsThatLeaveAModelOrMeetAnEmptyListingIssue862(t *testing
 		}
 	})
 }
+
+// GH-862: wherever run stops before a session, doctor fails with the same cause
+// and the same fix, with and without a terminal, and nothing starts an adapter.
+func TestDoctorAndRunNameTheSameCauseAndFixIssue862(t *testing.T) {
+	for _, tc := range []struct {
+		name, extra, shared, cause string
+		fix                        func(conf string) string
+	}{
+		{"alias", "", `{"model":"opus"}`,
+			"opus, from ~/.claude/settings.json, is a Claude model alias this gateway does not serve",
+			func(string) string { return util.UnservedTierFix("gw862") }},
+		{"exclusions", "\nexcluded_models=model-a,model-b\n", "",
+			"no cached or served picker models remain after excluded_models, which removes every model this gateway serves",
+			func(conf string) string { return util.ExclusionsFix("gw862", conf) }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			state, profiles, libexec, calls := gw862(t, tc.extra, tc.shared)
+			fix := tc.fix(filepath.Join(state, "gw862.conf"))
+			out, rc := doctorOutput(t, &launcher{dir: state, profileDirs: profiles}, "gw862")
+			row := ""
+			for _, line := range strings.Split(out, "\n") {
+				if strings.HasPrefix(line, "FAIL model: ") {
+					row = line
+				}
+			}
+			if !strings.Contains(row, tc.cause) || !strings.Contains(row, fix) {
+				t.Fatalf("doctor's FAIL model row %q lacks the cause %q or the fix %q:\n%s", row, tc.cause, fix, out)
+			}
+			if !strings.HasSuffix(strings.TrimSpace(out), "\nFAIL not ready: "+fix) || rc != 1 {
+				t.Fatalf("doctor rc %d, want 1 ending %q:\n%s", rc, "FAIL not ready: "+fix, out)
+			}
+			for _, terminal := range []bool{false, true} {
+				if terminal {
+					t.Setenv("TERM", "xterm-256color")
+					fakeFzf862(t)
+				}
+				rc, stderr := launchAs(t, terminal, state, profiles, libexec, "gw862", nil)
+				if rc != 1 || !strings.Contains(stderr, tc.cause) || !strings.Contains(stderr, fix) {
+					t.Fatalf("terminal=%v: run rc %d, want 1 with the cause %q and the fix %q:\n%s", terminal, rc, tc.cause, fix, stderr)
+				}
+			}
+			if c := calls(); strings.Contains(c, "adapter-start") {
+				t.Fatalf("a launch started the adapter:\n%s", c)
+			}
+		})
+	}
+}
