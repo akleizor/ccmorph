@@ -1202,7 +1202,13 @@ def test_help_prints_the_ccusage_command_with_the_export_paths_filled_in(tmp_pat
     home.mkdir()
     output = tmp_path / "out with spaces"
     cases = [(["--help"], home / ".cache" / "ccmorph-usage"),
-             (["--output", str(output), "--help"], output)]
+             (["--output", str(output), "--help"], output),
+             # #636: argparse's own rules, not a hand scan of the line.
+             ([f"--output={output}", "--help"], output),
+             (["--out", str(output), "--help"], output),
+             (["--output", str(tmp_path / "first"), "--output", str(output), "--help"], output),
+             (["--help", "--output", str(output)], output),
+             (["-h"], home / ".cache" / "ccmorph-usage")]
     for args, root in cases:
         ran = subprocess.run(
             [sys.executable, str(EXPORTER), *args],

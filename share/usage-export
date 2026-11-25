@@ -574,16 +574,25 @@ def ccusage_command(output):
             f"--config {shlex.quote(os.path.join(root, 'ccusage.json'))}")
 
 
+class _HelpPeek(argparse.ArgumentParser):
+    """A parser that never prints or exits: --help's look at --output."""
+
+    def error(self, message):
+        raise ValueError(message)
+
+
 def help_output(argv):
-    """The --output --help resolves: the one on this command line, else the
-    default. Read before argparse runs, because --help exits during parsing
-    and so never rejects a missing required flag."""
-    for i, arg in enumerate(argv):
-        if arg == "--output" and i + 1 < len(argv):
-            return Path(argv[i + 1])
-        if arg.startswith("--output="):
-            return Path(arg.split("=", 1)[1])
-    return DEFAULT_OUTPUT
+    """The --output a --help resolves, read by argparse's own rules over the
+    exporter's own options (an abbreviation such as --out, the last of repeated
+    flags, --output=X), so it is the folder the run would use (#636). Read before
+    the real parser runs, because --help exits during parsing; a line argparse
+    refuses resolves the default, and the real parser then names the mistake."""
+    peek = _HelpPeek(add_help=False)
+    add_options(peek)
+    try:
+        return peek.parse_known_args(argv)[0].output
+    except ValueError:
+        return DEFAULT_OUTPUT
 
 
 def report(stats, output, source):
@@ -632,6 +641,20 @@ def report(stats, output, source):
     ] + tail)
 
 
+def add_options(parser):
+    """The exporter's options, added once: the run's parser and --help's peek read one set (#636)."""
+    parser.add_argument("--output", type=Path, metavar="ROOT", default=DEFAULT_OUTPUT,
+                        help="directory the export lands in; default "
+                             f"{DEFAULT_OUTPUT}")
+    # The default is resolved, not argparse's: a --source the person named must
+    # exist (GH-843), while the default folder may be absent — before the first
+    # session there is no store at all, and that is an empty one, not a mistake (#647).
+    parser.add_argument("--source", type=Path, metavar="ROOT", default=None,
+                        help="ccmorph receipt store to read; the default folder is named above")
+    parser.add_argument("--since", metavar="YYYYMMDD",
+                        help="first local date to export; default all history")
+
+
 def main():
     # RawDescriptionHelpFormatter keeps the authored lines: the ccusage command
     # stays on its own line, ready to copy, instead of reflowing into one
@@ -651,16 +674,7 @@ def main():
         epilog="Then, with ccusage installed (`npm install -g ccusage`):\n"
                + ccusage_command(help_output(sys.argv[1:])),
         formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--output", type=Path, metavar="ROOT", default=DEFAULT_OUTPUT,
-                        help="directory the export lands in; default "
-                             f"{DEFAULT_OUTPUT}")
-    # The default is resolved, not argparse's: a --source the person named must
-    # exist (GH-843), while the default folder may be absent — before the first
-    # session there is no store at all, and that is an empty one, not a mistake (#647).
-    parser.add_argument("--source", type=Path, metavar="ROOT", default=None,
-                        help="ccmorph receipt store to read; the default folder is named above")
-    parser.add_argument("--since", metavar="YYYYMMDD",
-                        help="first local date to export; default all history")
+    add_options(parser)
     args = parser.parse_args()
     since = None
     if args.since is not None:
