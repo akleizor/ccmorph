@@ -10737,7 +10737,7 @@ test_the_installer_wires_no_shell_and_installs_managed_commands() {
   local installer="$(<"$REPO_ROOT/install.sh")"
   local rc=0
 
-  assert_contains "$installer" 'cp "$SRC/bin/ccmorph" "$BIN_DIR/ccmorph"' \
+  assert_contains "$installer" 'mv -f "$BIN_DIR/.ccmorph.new.$$" "$BIN_DIR/ccmorph"' \
     'installer must place ccmorph on PATH' || rc=1
   assert_not_contains "$installer" 'cp "$SRC/claude" "$BIN_DIR/claude"' \
     'installer must not install a claude wrapper' || rc=1

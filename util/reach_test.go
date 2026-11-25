@@ -176,7 +176,8 @@ func TestReachListingPrintsProgressAndGivesUpOnASilentGateway(t *testing.T) {
 func TestReachListingNamesAnInstantFailureWithoutProgress(t *testing.T) {
 	noProxy(t)
 	stubConnect(t, nil)
-	t.Setenv("CCMORPH_REACH_PROGRESS", "0.5")
+	// The product's own one-second bound: a stub that exits at once must beat
+	// it, and a shorter one only raced a loaded machine's fork (#902).
 	for _, c := range []struct{ name, body, want string }{
 		{"refused", "printf '%s\\n' 'curl: (7) Failed to connect to 127.0.0.1 port 9: Connection refused' >&2; exit 7",
 			"connection refused: 127.0.0.1 port 9"},
