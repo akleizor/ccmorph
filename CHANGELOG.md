@@ -7,6 +7,10 @@
 
 ## Unreleased
 
+### Fixed
+
+- **`ccmorph update` no longer ends with a parse error.** The installer rewrote the launcher while `update` was still running from it, so zsh read the new file at the old offsets and the update exited 1 after it had already finished. The launcher is now replaced by a rename, and the running update keeps its own file.
+
 ### Added
 
 - **`ccmorph router on` routes subagent work across your profiles.** Off by default. With it on, sessions get a `delegate` tool and Agent hooks: free gateways first, then the subscription furthest behind its pace, then paid keys, and inside a profile the cheapest model that fits the task's kind and tier. `ccmorph router status`, `dispatch` (`--dry-run` to see the pick only) and `report` show and check it. `dispatch` also serves scripts and services: `--timeout` bounds the whole run, flags after `--` reach the worker's claude, and the caller's `CCMORPH_TASK` tags its spend. The hooks never deny an Agent call: when no pick fits the session, the call runs as written.

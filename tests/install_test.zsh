@@ -1682,6 +1682,11 @@ cp -R "$TMP/stage/ccmorph-v1.2.3" "$TMP/stage99/ccmorph-main"
 cp "$REPO/libexec/ccmorph-core" "$TMP/stage99/ccmorph-main/libexec/ccmorph-core"
 sed 's/^_CCMORPH_VERSION=.*/_CCMORPH_VERSION="9.9.9"/' "$REPO/lib/ccmorph.sh" > "$TMP/stage99/ccmorph-main/lib/ccmorph.sh"
 grep -qxF '_CCMORPH_VERSION="9.9.9"' "$TMP/stage99/ccmorph-main/lib/ccmorph.sh" || fail "update: could not stage the 9.9.9 tree"
+# A launcher whose bytes differ from the installed one, as every real release's
+# do: `update` runs from the file it replaces, so an install that rewrites it in
+# place leaves the running zsh reading new bytes at old offsets.
+{ sed -n 1p "$REPO/bin/ccmorph"; print -r -- "# 9.9.9 launcher: a line the installed one lacks, so every later byte moves"; sed 1d "$REPO/bin/ccmorph" } \
+  > "$TMP/stage99/ccmorph-main/bin/ccmorph"
 tar -czf "$TMP/src99.tar.gz" -C "$TMP/stage99" ccmorph-main
 
 # The GitHub archive shape of a tag: a source tree whose libexec/ carries only

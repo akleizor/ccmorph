@@ -530,7 +530,11 @@ if [[ "$SRC" != "$CONFIG_REAL" ]]; then
   mkdir -p "$CONFIG_DIR"/{bin,lib,libexec,share/claude-plugin/{.claude-plugin,commands,hooks},share/claude-plugin-router/{.claude-plugin,hooks,skills/router},share/zsh/site-functions}
   for _f in "${COMPONENTS[@]}"; do cp "$SRC/$_f" "$CONFIG_DIR/$_f"; done
 fi
-cp "$SRC/bin/ccmorph" "$BIN_DIR/ccmorph"
+# A rename, not a copy over it: `ccmorph update` runs this from the launcher
+# it replaces, and zsh reads a running script as it goes, so bytes rewritten
+# under it ended the update with a parse error at exit 1. The rename leaves
+# the running shell its old file.
+cp "$SRC/bin/ccmorph" "$BIN_DIR/.ccmorph.new.$$" && mv -f "$BIN_DIR/.ccmorph.new.$$" "$BIN_DIR/ccmorph"
 # The opt-in reference, so a host can see every seam without reading the source.
 # Copied, never activated: local.sh itself stays absent until someone writes it.
 # Same directory guard as above: in-place, this is a copy onto itself.
