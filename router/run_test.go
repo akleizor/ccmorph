@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -124,14 +125,29 @@ func TestDispatchTimeoutKillsTheWorkerAndNeverRetries(t *testing.T) {
 	hookEnv(t, true)
 	dir := t.TempDir()
 	fakeWorker(t, `echo run >> `+dir+`/runs; exec sleep 30`)
+	// The runs file is the shell's first write, which the deadline's SIGKILL can
+	// beat on a loaded machine (#874); the launch is read where no kill can
+	// outrun it, from the dispatch's own cmd.Start.
+	var started []int
+	old := workerStarted
+	workerStarted = func(pid int) { started = append(started, pid) }
+	t.Cleanup(func() { workerStarted = old })
+	timeout := time.Second
 	start := time.Now()
 	var errOut bytes.Buffer
 	code := Main([]string{"dispatch", "--kind", "code", "--tier", "small", "--timeout", "1", "brief"}, strings.NewReader(""), io.Discard, &errOut)
-	if code != 124 || time.Since(start) > 5*time.Second || !strings.Contains(errOut.String(), "timeout (exit 124)") {
-		t.Fatalf("exit %d after %s: %q", code, time.Since(start), errOut.String())
+	elapsed := time.Since(start)
+	runs, _ := os.ReadFile(filepath.Join(dir, "runs"))
+	n := strings.Count(string(runs), "run")
+	// A backstop for a kill that never came (the worker would sleep out 30 s),
+	// with its margin taken from --timeout.
+	if code != 124 || elapsed > 10*timeout || !strings.Contains(errOut.String(), "timeout (exit 124)") {
+		t.Fatalf("exit %d after %s, started %v, %d record(s) %q: %q", code, elapsed, started, n, runs, errOut.String())
 	}
-	if runs, _ := os.ReadFile(filepath.Join(dir, "runs")); strings.Count(string(runs), "run") != 1 {
-		t.Fatalf("a timed-out run was run again: %q", runs)
+	// Exactly one launched worker, never run again; zero records is a kill that
+	// beat the shell's first write.
+	if len(started) != 1 || n > 1 {
+		t.Fatalf("want one launched worker and no rerun: started %v, %d record(s) %q, exit %d after %s: %q", started, n, runs, code, elapsed, errOut.String())
 	}
 }
 
@@ -178,16 +194,30 @@ func TestDispatchDeadlineBoundsRouting(t *testing.T) {
 	hookEnv(t, true)
 	fakeWorker(t, `echo ran`)
 	block := make(chan struct{})
-	srv := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { <-block }))
+	srv := loopbackServer(t, http.HandlerFunc(func(http.ResponseWriter, *http.Request) { <-block }))
 	t.Cleanup(func() { close(block); srv.Close() })
 	if err := writeJSON(ConfigPath(), Config{Enabled: true, Decider: &Decider{URL: srv.URL}}); err != nil {
 		t.Fatal(err)
 	}
+	timeout := 300 * time.Millisecond
 	start := time.Now()
-	var out bytes.Buffer
-	code := Main([]string{"dispatch", "--timeout", "0.3", "fix the bug"}, strings.NewReader(""), &out, io.Discard)
-	if code != 124 || time.Since(start) > 3*time.Second || out.String() != "" {
-		t.Fatalf("exit %d after %s, out %q", code, time.Since(start), out.String())
+	var out, errOut bytes.Buffer
+	code := Main([]string{"dispatch", "--timeout", "0.3", "fix the bug"}, strings.NewReader(""), &out, &errOut)
+	elapsed := time.Since(start)
+	// The promise is a routing phase, not a wall clock: every request to
+	// this decider is parked in its handler until the cleanup registered
+	// above, which runs after these assertions, so a dispatch that returned
+	// at all was cut off by its own deadline, never answered. Which note it
+	// left depends only on whether routing was scheduled before the deadline,
+	// so either deadline attempt proves it; the bound backstops a dispatch
+	// that ignores the deadline wholesale, and takes its margin from the
+	// deadline: the post-deadline bookkeeping alone ran to 3.5 s on a
+	// load-170 machine, tripping the literal 3 s this replaces (#874).
+	err := errOut.String()
+	deadlineCut := strings.Contains(err, "ran past the deadline") ||
+		strings.Contains(err, "deadline passed before a worker could start")
+	if code != 124 || out.String() != "" || elapsed > 60*timeout || !deadlineCut {
+		t.Fatalf("exit %d after %s, out %q, err %q", code, elapsed, out.String(), err)
 	}
 }
 
@@ -197,4 +227,21 @@ func TestDispatchRefusesASecondSeparatorAndAPrintBundle(t *testing.T) {
 			t.Errorf("%q after -- must be refused", bad)
 		}
 	}
+}
+
+// loopbackServer serves h on one loopback listener, chosen as
+// httptest.NewServer chooses it — 127.0.0.1, else [::1] — and skips the test
+// only where neither address can bind.
+func loopbackServer(t *testing.T, h http.Handler) *httptest.Server {
+	t.Helper()
+	ln, err4 := net.Listen("tcp", "127.0.0.1:0")
+	if err4 != nil {
+		var err6 error
+		if ln, err6 = net.Listen("tcp6", "[::1]:0"); err6 != nil {
+			t.Skipf("no loopback listener: 127.0.0.1: %v; [::1]: %v", err4, err6)
+		}
+	}
+	srv := &httptest.Server{Listener: ln, Config: &http.Server{Handler: h}}
+	srv.Start()
+	return srv
 }
