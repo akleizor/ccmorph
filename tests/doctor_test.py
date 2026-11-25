@@ -1475,13 +1475,16 @@ def test_doctor_terminal_statuses(tmp_path):
             os.close(master)
 
 
-def run_bare_doctor(tmp_path, confs=(), claude=True, python=None, rc_hosts=False):
+def run_bare_doctor(tmp_path, confs=(), claude=True, python=None, rc_hosts=False, rc=None):
     """`ccmorph doctor` with no profile argument, on a PATH holding only what it names."""
     state = tmp_path / "state"
     bindir = tmp_path / "bin"
     state.mkdir()
     bindir.mkdir()
     (tmp_path / "tmp").mkdir()
+    if rc is not None:
+        (tmp_path / "home").mkdir()
+        (tmp_path / "home" / ".zshrc").write_text(rc)
     # No python3 by default: the core runs on none, so a bare PATH must pass.
     for tool in ("zsh", "env"):
         found = shutil.which(tool)
@@ -1523,6 +1526,29 @@ def test_bare_doctor_names_both_completion_lines_gh363(tmp_path):
     result, _ = run_bare_doctor(tmp_path)
     assert "INFO   fpath=(" in result.stdout, result.stdout
     assert "INFO   autoload -Uz compinit && compinit # add both lines to ~/.zshrc" in result.stdout, result.stdout
+
+
+@pytest.mark.parametrize("rc", [
+    # #582: a # at a word start (after ;) begins a zsh comment, so the compinit
+    # behind it starts nothing. Doctor must say the line is missing, not read
+    # the comment as the rc already running it.
+    "fpath=($HOME/.config/ccmorph/share/zsh/site-functions $fpath)\n"
+    "setopt correct;# autoload -Uz compinit && compinit\n",
+    # #582: \r is an ordinary word character to zsh, so a CRLF rc's compinit\r
+    # is a command zsh fails to find; the rc has not started completions, and
+    # doctor must still name the compinit line the user has to add.
+    "fpath=($HOME/.config/ccmorph/share/zsh/site-functions $fpath)\r\n"
+    "autoload -Uz compinit && compinit\r\n",
+    # #582 review: zsh reads the whole file, so a string opened on one line is
+    # still open on the next; once it closes, ;# begins a comment there too.
+    "fpath=($HOME/.config/ccmorph/share/zsh/site-functions $fpath)\n"
+    ": 'a\nb';# autoload -Uz compinit && compinit\n",
+])
+def test_bare_doctor_completion_row_follows_zsh_on_word_starts_and_crs_gh582(tmp_path, rc):
+    result, _ = run_bare_doctor(tmp_path, rc=rc)
+    assert "INFO completion: nothing in ~/.zshrc runs compinit — add:" in result.stdout, result.stdout
+    assert "INFO   autoload -Uz compinit && compinit" in result.stdout, result.stdout
+    assert "put the fpath line above compinit" not in result.stdout, result.stdout
 
 
 def test_doctor_on_a_fresh_install_fails_without_claude(tmp_path):
