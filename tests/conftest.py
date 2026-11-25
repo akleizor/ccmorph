@@ -1,5 +1,6 @@
 import getpass
 import http.server
+import os
 import socketserver
 
 import pytest
@@ -8,6 +9,11 @@ import pytest
 # of 5 makes macOS reset the overflow, which the adapter reads as a transport
 # error and the tests saw as a randomly missing model.
 socketserver.TCPServer.request_queue_size = 128
+
+# #892: the ceiling probes in timeout_verdict_test.py sleep past the 60 s
+# ceiling by design, so the suite never even collects them — they run only
+# when CCMORPH_TIMEOUT_REPRO names them.
+collect_ignore = [] if os.environ.get("CCMORPH_TIMEOUT_REPRO") else ["timeout_verdict_test.py"]
 
 
 # HTTPServer.server_bind resolves its own address with socket.getfqdn, a reverse
