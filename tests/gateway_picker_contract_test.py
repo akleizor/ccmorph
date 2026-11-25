@@ -396,6 +396,82 @@ def test_a_failed_make_shim_leaves_the_published_core_as_it_was(tmp_path):
     assert sorted(p.name for p in (checkout / 'libexec').iterdir()) == ['ccmorph-core']
 
 
+# The landing gate's runner refuses every new name inside the checkout; only
+# the caller's ${TMPDIR} takes one (#840, rounds 5 to 8). The recipe reserves a
+# staging name with `mkdir` alone, so an entry already at that name — a file, a
+# FIFO, a symlink — is refused without ever being opened.
+REFUSING_MKDIR = (
+    '#!/bin/sh\n'
+    'case "$2" in\n'
+    '  libexec/.shim-build.*|libexec/shim-build.*|.shim-build.*|shim-build.*)\n'
+    '    echo "mkdir: $2: Operation not permitted" >&2; exit 1;;\n'
+    'esac\n'
+    'exec /bin/mkdir "$@"\n')
+
+# A runner where every directory is refused: no staging name is available and
+# the build must say so at once, without opening anything in ${TMPDIR}.
+NO_MKDIR = '#!/bin/sh\necho "mkdir: $2: Operation not permitted" >&2\nexit 1\n'
+
+
+def refusing_checkout(tmp_path, mkdir_stub=REFUSING_MKDIR, go_body='printf new-core > "$out"\n'):
+    """A checkout that refuses the checkout's staging names, as the gate
+    runner's sandbox does, with an empty operator ${TMPDIR} beside it."""
+    checkout, env = shim_checkout(tmp_path, go_body, 'exit 0\n')
+    (checkout / 'libexec/ccmorph-core').write_text('old')
+    (checkout / 'ccmorph-core').mkdir()  # the root file candidate cannot be made
+    stubs = Path(env['PATH'].split(os.pathsep)[0])
+    (stubs / 'mkdir').write_text(mkdir_stub)
+    (stubs / 'mkdir').chmod(0o755)
+    operator_tmp = tmp_path / 'operator-tmp'
+    operator_tmp.mkdir()
+    env['TMPDIR'] = str(operator_tmp)
+    return checkout, env, operator_tmp
+
+
+@pytest.mark.parametrize('build', ['published', 'failed'])
+def test_make_shim_staged_under_tmpdir_removes_only_what_it_made_issue_840(tmp_path, build):
+    """GH-840 gate: when the checkout refuses every new name the build stages
+    a directory under the caller's ${TMPDIR}. Cleanup must remove what the
+    build made there — its own staging directory — and never the caller's temp
+    directory, which `rmdir "$(dirname "$stage")"` removed."""
+    go_body = 'printf new-core > "$out"\n' if build == 'published' else 'exit 1\n'
+    checkout, env, operator_tmp = refusing_checkout(tmp_path, go_body=go_body)
+    r = make_shim(checkout, env)
+    core = (checkout / 'libexec/ccmorph-core').read_text()
+    if build == 'published':
+        assert r.returncode == 0, r.stdout + r.stderr
+        assert core == 'new-core'
+    else:
+        assert r.returncode != 0, r.stdout + r.stderr
+        assert core == 'old'
+    assert operator_tmp.is_dir(), r.stdout + r.stderr
+    assert sorted(p.name for p in operator_tmp.iterdir()) == [], r.stdout + r.stderr
+
+
+@pytest.mark.parametrize('occupied', ['file', 'fifo'])
+def test_make_shim_refuses_an_occupied_staging_name_without_opening_it_issue_840(tmp_path, occupied):
+    """GH-840 gate: a staging name is reserved with `mkdir` only, which refuses
+    an entry already there without opening it. A fixed-name fallback opened
+    $TMPDIR/ccmorph-core with a redirection, and a FIFO planted there (a shared
+    temporary directory is not the build's) made `make shim` wait forever for a
+    reader — the REVIEW.md failure kind "a trust boundary crossed on a
+    predictable path in a shared temporary directory". The build must fail
+    promptly, leave the entry exactly as it was, and leave the core alone."""
+    checkout, env, operator_tmp = refusing_checkout(tmp_path, mkdir_stub=NO_MKDIR)
+    theirs = operator_tmp / 'ccmorph-core'
+    if occupied == 'file':
+        theirs.write_text('theirs')
+    else:
+        os.mkfifo(theirs)
+    r = subprocess.run(['make', '-C', str(checkout), 'shim', 'CCMORPH_CODESIGN_IDENTITY=test-identity'],
+                       env=env, capture_output=True, text=True,
+                       timeout=HANG_TIMEOUT)  # the suite's bound: an opened FIFO never returns
+    assert r.returncode != 0, r.stdout + r.stderr
+    assert 'no staging name' in r.stderr, r.stderr
+    assert (theirs.is_fifo() if occupied == 'fifo' else theirs.read_text() == 'theirs')
+    assert (checkout / 'libexec/ccmorph-core').read_text() == 'old'
+
+
 def test_copied_lib_copies_source_not_the_checkouts_incidental_contents_issue_220(tmp_path, monkeypatch):
     """`copied_lib` copies the repository's own source, never the checkout's
     incidental contents: local tooling leaves data git ignores in the root — on
