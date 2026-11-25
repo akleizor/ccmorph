@@ -21,6 +21,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 
@@ -1547,31 +1548,143 @@ func TestCredentialIsNeverForwardedAcrossARedirect(t *testing.T) { // test_crede
 }
 
 func TestStopProcessesWaitsThenKillsAStubbornChild(t *testing.T) { // test_shutdown_waits_then_kills_a_stubborn_child
-	dir := t.TempDir()
-	ready, term := filepath.Join(dir, "ready"), filepath.Join(dir, "term")
-	cmd := exec.Command("sh", "-c", fmt.Sprintf(`trap 'echo got >> %s' TERM; : > %s; while :; do sleep 0.1; done`, term, ready))
-	p, err := start(cmd)
+	// stopProcesses's bounded contract: TERM every live process, wait each its
+	// own grace, SIGKILL the survivors (GH-880). A real child that survives
+	// TERM keeps no record of it once SIGKILLed, and a trap it runs can be
+	// outrun by a loaded scheduler, so no real child is asked to run between
+	// the TERM and the KILL. Each stop is witnessed where nothing can be late:
+	//   - recordingProc, the stubborn target, logs in the test's own goroutine
+	//     which of terminate and kill reached it and when;
+	//   - the real stubborn child ignores TERM and must die by SIGKILL;
+	//   - the real obedient child keeps TERM's default disposition, so the
+	//     kernel records SIGTERM as its death when the TERM is sent.
+	// Both stops have one shape, (recorder, real child): a TERM skipped by
+	// position or by kind misses a witnessed target in one of them.
+	grace := 400 * time.Millisecond
+	swap(t, &stopGrace, grace)
+	ready := filepath.Join(t.TempDir(), "ready")
+	stubborn, err := start(exec.Command("sh", "-c", fmt.Sprintf(`trap '' TERM; : > %s; while :; do sleep 0.1; done`, ready)))
 	if err != nil {
 		t.Fatal(err)
 	}
-	for i := 0; i < 100; i++ {
+	t.Cleanup(func() { killIfLive(stubborn) })
+	obedient, err := start(exec.Command("sleep", "30"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { killIfLive(obedient) })
+	// The ready file is written after the trap installs: a TERM that raced the
+	// exec would find the default disposition and kill a child that was never
+	// stubborn. This times the child starting, never the stop.
+	booted := false
+	for i := 0; i < 500 && !booted; i++ {
 		if _, err := os.Stat(ready); err == nil {
-			break
+			booted = true
+		} else {
+			time.Sleep(20 * time.Millisecond)
 		}
-		time.Sleep(20 * time.Millisecond)
 	}
-	swap(t, &stopGrace, 400*time.Millisecond)
+	if !booted {
+		t.Fatal("the stubborn child never installed its trap")
+	}
+
+	recA, callsA := recordingProc()
 	began := time.Now()
-	stopProcesses(p)
-	if !p.exited() {
-		t.Fatal("the stubborn child outlived stopProcesses")
-	}
-	if time.Since(began) < 400*time.Millisecond {
+	stopProcesses(recA, stubborn)
+	if time.Since(began) < grace {
 		t.Error("SIGKILL came before the grace period ended")
 	}
-	if b, _ := os.ReadFile(term); !strings.Contains(string(b), "got") {
-		t.Error("the child was never asked to terminate first")
+	checkAskedThenKilled(t, *callsA, grace)
+	if !stubborn.exited() {
+		t.Fatal("the stubborn child outlived stopProcesses")
 	}
+	if !diedBy(stubborn, syscall.SIGKILL) {
+		t.Errorf("the stubborn child was not escalated to SIGKILL: %v", stubborn.cmd.ProcessState)
+	}
+
+	recB, callsB := recordingProc()
+	stopProcesses(recB, obedient)
+	checkAskedThenKilled(t, *callsB, grace)
+	if !obedient.exited() {
+		t.Fatal("the obedient child outlived stopProcesses")
+	}
+	if !diedBy(obedient, syscall.SIGTERM) {
+		t.Errorf("the child was never asked to terminate first: %v", obedient.cmd.ProcessState)
+	}
+}
+
+// stopCall is one call stopProcesses made on a recordingProc.
+type stopCall struct {
+	method string // "terminate", "kill" or "unknown"
+	at     time.Time
+}
+
+func (c stopCall) String() string { return c.method }
+
+// recordingProc is an in-process proc (cmd nil) that ignores the TERM ask and
+// ends only at the kill. proc.terminate and proc.kill both call stop for such a
+// proc, so stop reads its own call stack to log which method asked, and when.
+// The log is written inside stopProcesses's own goroutine: no scheduler can
+// make it late.
+func recordingProc() (*proc, *[]stopCall) {
+	calls := &[]stopCall{}
+	p := &proc{done: make(chan struct{})}
+	p.stop = func() {
+		method := "unknown"
+		pcs := make([]uintptr, 16)
+		frames := runtime.CallersFrames(pcs[:runtime.Callers(1, pcs)])
+		for {
+			f, more := frames.Next()
+			if strings.HasSuffix(f.Function, ".(*proc).terminate") {
+				method = "terminate"
+				break
+			}
+			if strings.HasSuffix(f.Function, ".(*proc).kill") {
+				method = "kill"
+				break
+			}
+			if !more {
+				break
+			}
+		}
+		*calls = append(*calls, stopCall{method, time.Now()})
+		if method == "kill" && !p.exited() {
+			close(p.done)
+		}
+	}
+	return p, calls
+}
+
+// checkAskedThenKilled requires a recordingProc's log to be exactly one
+// terminate, then one kill at least grace later.
+func checkAskedThenKilled(t *testing.T, calls []stopCall, grace time.Duration) {
+	t.Helper()
+	if len(calls) == 0 || calls[0].method != "terminate" {
+		t.Errorf("the child was never asked to terminate first: stop calls %v", calls)
+		return
+	}
+	if len(calls) != 2 || calls[1].method != "kill" {
+		t.Errorf("the stubborn child was not killed once after the ask: stop calls %v", calls)
+		return
+	}
+	if gap := calls[1].at.Sub(calls[0].at); gap < grace {
+		t.Errorf("SIGKILL came before the grace period ended: %v after the ask, grace %v", gap, grace)
+	}
+}
+
+// killIfLive SIGKILLs and reaps a child a failed test left running.
+func killIfLive(p *proc) {
+	if p != nil && !p.exited() {
+		p.kill()
+		<-p.done
+	}
+}
+
+// diedBy reports whether a stopped child the test ran was killed by the
+// given signal, the kernel's own record of which ask reached it first.
+func diedBy(p *proc, sig syscall.Signal) bool {
+	ws, ok := p.cmd.ProcessState.Sys().(syscall.WaitStatus)
+	return ok && ws.Signaled() && ws.Signal() == sig
 }
 
 func TestTetherWatchesEveryChildOfOneAdapter(t *testing.T) { // test_sigkilled_adapter_does_not_leak_its_children
