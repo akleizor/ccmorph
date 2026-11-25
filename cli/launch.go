@@ -324,7 +324,7 @@ func (l *launcher) log(msg string) {
 	if err != nil {
 		return
 	}
-	fmt.Fprintf(f, "%s [%d] %s\n", time.Now().Format("2006-01-02 15:04:05"), l.launcherPID, msg)
+	l.logLine(f, msg)
 	f.Close()
 	if fi, err := os.Stat(l.logPath); err == nil && fi.Mode().IsRegular() && fi.Size() > 102400 {
 		data, err := os.ReadFile(l.logPath)
@@ -347,6 +347,14 @@ func (l *launcher) log(msg string) {
 			NoChmod: true,
 		})
 	}
+}
+
+// logLine appends one launcher log line through an already-open handle. It is
+// the one way to record a line while a child holds that same descriptor: log
+// can rotate the file by rename, and the child's later writes would land in
+// the unlinked inode (#768).
+func (l *launcher) logLine(f *os.File, msg string) {
+	fmt.Fprintf(f, "%s [%d] %s\n", time.Now().Format("2006-01-02 15:04:05"), l.launcherPID, msg)
 }
 
 // logInit creates the log 0600, and tightens an own regular file that is looser.

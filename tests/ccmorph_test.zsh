@@ -1930,8 +1930,14 @@ test_claude_subcommands_are_asked_for_never_hardcoded() {
 
   # Option arity (#334) is TestOptionStep in util/launchflags_test.go.
 
-  # ccmorph's own verbs win over anything the binary also names, so a future Claude
-  # Code `list` or `use` cannot steal a ccmorph command.
+  # A word ccmorph ALSO owns is still Claude Code's once it sits after
+  # `run <profile>` (INTENT promise 6): this lookup answers from the installed
+  # binary alone (#768 -- excluding `rm` here sent `run <p> rm <id>` down the
+  # session path, refusing Claude's own session pruning while the endpoint was
+  # down). A future Claude Code `list` or `rm` still cannot steal a ccmorph
+  # command, because the TOP-LEVEL dispatch consumes ccmorph's own verbs
+  # before the run entry is ever reached -- guarded further below, where
+  # `ccmorph rm <profile>` must stay ccmorph's own verb.
   printf '%s\n' \
     '#!/bin/sh' \
     'cat <<EOF' \
@@ -1944,8 +1950,8 @@ test_claude_subcommands_are_asked_for_never_hardcoded() {
   _CCMORPH_CLAUDE_VERBS=""
   local verb
   for verb in list rm; do
-    if _ccm_is_claude_subcommand "$verb"; then
-      print -u2 -- "FAIL: ccmorph's own '$verb' must win over Claude Code's"
+    if ! _ccm_is_claude_subcommand "$verb"; then
+      print -u2 -- "FAIL: '$verb' listed by the installed binary must be a Claude subcommand for the run entry"
       rc=1
     fi
   done
@@ -2003,14 +2009,25 @@ test_arguments_reach_claude_exactly_as_given() {
   # A ROUTED profile with a default model: the case that used to inject --model.
   write_apikey_conf gw 'api_key=k' 'base_url=https://gateway.invalid' 'model=gw-model'
   fake_claude_help
+  # Plant a NO-OP sizing probe BEFORE any launch: with it in place the real
+  # background probe never runs, so every launch below sees the same unsized
+  # context store. It is not the witness -- a detached child writes whenever it
+  # gets there. The witness is the launcher's own "probe nudge spawned" record
+  # in that launch's own log, written before it goes on (#768).
+  printf '%s\n' '#!/bin/sh' \
+    'exit 0' > "$HOME/.config/ccmorph/libexec/context-probe"
+  chmod +x "$HOME/.config/ccmorph/libexec/context-probe"
   source "$CCMORPH_SOURCE"
 
   local rc=0 argv
   # The last case is the #334 value-looks-like-a-flag spelling: `--effort`
   # there is the system prompt's VALUE, so no effort flag was given and the
   # arguments must pass through untouched either way.
-  for argv in 'mcp list' 'remote-control --name x' 'prompt' '-p hello --output-format json' \
-              '--system-prompt --effort -p x'; do
+  # 'rm sess-1' is #768: Claude's own rm removes a background session and needs
+  # no endpoint -- the dead gateway is exactly when a person prunes a bad
+  # session -- so ccmorph's verb table must not claim it after `run <profile>`.
+  for argv in 'mcp list' 'rm sess-1' 'remote-control --name x' 'prompt' \
+              '-p hello --output-format json' '--system-prompt --effort -p x'; do
     : > "$CCMORPH_TEST_LOG"
     ccmorph run gw ${=argv} || {
       print -u2 -- "FAIL: ccmorph run gw $argv must succeed"
@@ -2062,6 +2079,79 @@ test_arguments_reach_claude_exactly_as_given() {
       print -u2 -- "FAIL: a word behind run's -- was rewritten: $(<"$CCMORPH_TEST_LOG")"
       rc=1
     fi
+  done
+
+  # The other half of #768: a launch that opens no session also makes NO model
+  # decision (INTENT promise 6, #650). Two ran anyway: the send-id derivation
+  # rewrote a claude-pinned profile's ANTHROPIC_MODEL for the launch
+  # (claude-sonnet-4-5 became its [1m] send id), and the unsized-window refresh
+  # spawned the background sizing probe -- which the gw profile above, whose
+  # model no table sizes, triggers on every session launch. The no-op probe
+  # stand-in is planted at the top of this test; the argv-logging fake claude
+  # reads ANTHROPIC_MODEL back from the environment it was handed.
+  write_apikey_conf gw1m 'api_key=k' 'base_url=https://gateway.invalid' \
+    'model=claude-sonnet-4-5' 'context_window.claude-sonnet-4-5=1000000'
+  for argv in 'rm sess-1' 'mcp list'; do
+    : > "$CCMORPH_TEST_LOG"
+    ccmorph run gw1m ${=argv} || {
+      print -u2 -- "FAIL: ccmorph run gw1m $argv must succeed"
+      rc=1; continue
+    }
+    assert_contains "$(<"$CCMORPH_TEST_LOG")" "MODEL_ENV=claude-sonnet-4-5"$'\n' \
+      "'$argv' opens no session and must not rewrite the pinned model to its send id" || rc=1
+  done
+
+  # A no-session launch on the UNSIZED profile must spawn no sizing probe.
+  # Each launch gets its OWN log, and the witness is the line the launcher
+  # writes itself right after it spawns the probe -- so when `ccmorph run`
+  # returns the answer is decided: a detached probe from an earlier launch
+  # cannot write into this launch's log, and a probe this launch spawned is
+  # already recorded. No wait, no file shared between launches (#768).
+  local _CCMORPH_LOG launchlog
+  for argv in 'rm sess-1' 'mcp list'; do
+    launchlog="$HOME/launch-${argv// /-}.log"
+    : > "$launchlog"
+    _CCMORPH_LOG="$launchlog"
+    ccmorph run gw ${=argv} >/dev/null 2>&1 || {
+      print -u2 -- "FAIL: ccmorph run gw $argv must succeed"
+      rc=1; continue
+    }
+    assert_not_contains "$(<"$launchlog")" 'probe nudge spawned' \
+      "'$argv' opens no session and must spawn no background sizing probe" || rc=1
+  done
+
+  # The control that proves the witness is live: a SESSION launch on the same
+  # unsized profile must still spawn the sizing probe (that is what the
+  # refresh exists for), recorded in its own log by the time it returns.
+  launchlog="$HOME/launch-session.log"
+  : > "$launchlog"
+  _CCMORPH_LOG="$launchlog"
+  ccmorph run gw prompt >/dev/null 2>&1 || {
+    print -u2 -- "FAIL: ccmorph run gw prompt (probe control) must succeed"
+    rc=1
+  }
+  assert_contains "$(<"$launchlog")" 'probe nudge spawned profile=gw' \
+    'a session launch on an unsized profile must still spawn the sizing probe' || rc=1
+
+  # The matrix above answers with a HEALTHY stub adapter, so it pins argv but
+  # cannot show that a no-session launch leaves the route alone. #768 is that
+  # half: Claude's `rm <id>` prunes a background session and needs no endpoint
+  # -- the moment a person reaches for it is exactly when the endpoint is down
+  # -- so with the adapter dying the way an endpoint-down start does, only a
+  # launch that opens no session still reaches Claude Code. A session-path rm
+  # is refused here, which is the bug: ccmorph's verb table claimed the word.
+  local adapter="$HOME/.config/ccmorph/libexec/ccmorph-adapter"
+  printf '%s\n' '#!/bin/sh' \
+    'echo "ccmorph: adapter exited before readiness; session not started." >&2' \
+    'exit 1' > "$adapter"
+  for argv in 'mcp list' 'rm sess-1'; do
+    : > "$CCMORPH_TEST_LOG"
+    ccmorph run gw ${=argv} || {
+      print -u2 -- "FAIL: with the endpoint down 'ccmorph run gw $argv' opens no session and must still pass through"
+      rc=1; continue
+    }
+    assert_contains "$(<"$CCMORPH_TEST_LOG")" "ARG${tab}${argv// /$tab}"$'\nSUBAGENT' \
+      "'$argv' must reach Claude Code untouched while the endpoint is down" || rc=1
   done
 
   rm -rf "$test_home"

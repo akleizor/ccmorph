@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 // GH-370: the set form's warning trusted the discovered table — empty whenever
@@ -148,4 +149,121 @@ func TestTheUnlistedModelWarningNeverCutsAWordAtEightyColumns(t *testing.T) {
 	if lines := warnLines("", 80); len(lines) != 0 {
 		t.Errorf("an empty warning prints nothing: %q", lines)
 	}
+}
+
+// GH-768: a launch that opens no session must spawn no sizing probe, and the
+// zsh suite proves it by reading the launcher's own record at the moment
+// `ccmorph run` returns -- never by racing the detached child's first write.
+// That record only exists if the launcher writes it synchronously, right after
+// a successful Start: a line written by the child, or from the Wait goroutine,
+// can arrive after the launch has already exited.
+func TestTheProbeNudgeRecordsItsSpawnBeforeItReturns(t *testing.T) {
+	libexec := t.TempDir()
+	logPath := filepath.Join(t.TempDir(), "launch.log")
+	l := &launcher{libexec: libexec, logPath: logPath, memo: map[string]string{}}
+
+	// No core beside libexec: nothing is spawned, and no spawn is recorded.
+	l.probeNudge("gw")
+	if b, _ := os.ReadFile(logPath); strings.Contains(string(b), "probe nudge spawned") {
+		t.Fatalf("a missing core must spawn nothing, yet the log records a spawn: %q", b)
+	}
+
+	if err := os.WriteFile(filepath.Join(libexec, "ccmorph-core"), []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	l.probeNudge("gw")
+	// Read immediately: no retry, no sleep. The record belongs to probeNudge's
+	// own return, not to the detached child.
+	b, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatalf("the spawn record must be on disk when probeNudge returns: %v", err)
+	}
+	if !strings.Contains(string(b), "probe nudge spawned profile=gw") {
+		t.Fatalf("the launcher must record the spawn before it goes on, got: %q", b)
+	}
+}
+
+// GH-768 review: the spawn record must not rotate the launch log after the
+// probe's child has inherited its descriptor. l.log rewrites a log past
+// 100 KiB by atomic rename; a child still writing to the old inode would lose
+// its diagnostics. probeNudge records through the open append handle instead.
+func TestTheProbeSpawnRecordNeverRotatesTheLogUnderItsChild(t *testing.T) {
+	libexec, dir := t.TempDir(), t.TempDir()
+	logPath := filepath.Join(dir, "launch.log")
+	release := filepath.Join(dir, "release")
+	// Past the rotation threshold: one more line written through l.log rotates.
+	seed := strings.Repeat(strings.Repeat("x", 199)+"\n", 512)
+	if err := os.WriteFile(logPath, []byte(seed), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	script := "#!/bin/sh\nuntil [ -f \"$CCMORPH_TEST_RELEASE\" ]; do sleep 0.02; done\nprintf 'probe-child-finished\\n'\n"
+	if err := os.WriteFile(filepath.Join(libexec, "ccmorph-core"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("CCMORPH_TEST_RELEASE", release)
+	l := &launcher{libexec: libexec, logPath: logPath, memo: map[string]string{}}
+
+	l.probeNudge("gw")
+	if b, _ := os.ReadFile(logPath); !strings.Contains(string(b), "probe nudge spawned profile=gw") {
+		t.Fatalf("the spawn record must be on disk when probeNudge returns")
+	}
+
+	if err := os.WriteFile(release, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		if b, err := os.ReadFile(logPath); err == nil && strings.Contains(string(b), "probe-child-finished") {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatalf("the probe's own output vanished from the launch log: the spawn record rotated the file under its child")
+}
+
+// GH-768 review (82ace71): the record the zsh matrix reads is the launcher's,
+// written at a point synchronized with its return -- not the child's own first
+// write. With the child provably still blocked -- it writes only once a release
+// file appears -- the record is already on disk when probeNudge returns, and
+// the child has written nothing. A record written by the child, or from the
+// Wait goroutine after the child exits, cannot be there, so this test cannot
+// pass by winning a race.
+func TestTheSpawnRecordPrecedesTheProbeChildsOwnWrite(t *testing.T) {
+	libexec, dir := t.TempDir(), t.TempDir()
+	logPath := filepath.Join(dir, "launch.log")
+	release := filepath.Join(dir, "release")
+	// The child never writes until the release appears; the deferred release
+	// below frees it even when an assertion fails first, so no probe is left
+	// spinning after the test.
+	defer func() { _ = os.WriteFile(release, nil, 0o600) }()
+	script := "#!/bin/sh\nuntil [ -f \"$CCMORPH_TEST_RELEASE\" ]; do sleep 0.02; done\nprintf 'probe-child-wrote\\n'\n"
+	if err := os.WriteFile(filepath.Join(libexec, "ccmorph-core"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("CCMORPH_TEST_RELEASE", release)
+	l := &launcher{libexec: libexec, logPath: logPath, memo: map[string]string{}}
+
+	l.probeNudge("gw")
+	b, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatalf("the spawn record must be on disk when probeNudge returns: %v", err)
+	}
+	if !strings.Contains(string(b), "probe nudge spawned profile=gw") {
+		t.Fatalf("the launcher must record the spawn before it goes on, got: %q", b)
+	}
+	if strings.Contains(string(b), "probe-child-wrote") {
+		t.Fatalf("the child is blocked on its release, so it cannot have written: %q", b)
+	}
+
+	if err := os.WriteFile(release, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		if b, err := os.ReadFile(logPath); err == nil && strings.Contains(string(b), "probe-child-wrote") {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatalf("the released probe child wrote nothing, so the record above proved no ordering")
 }
