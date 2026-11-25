@@ -389,6 +389,9 @@ func (l *launcher) doctor(name string, verbose bool) int {
 	// firstFix is the command or step that repairs the first failed check: the
 	// verdict names it instead of pointing at the rows above (#282).
 	firstFix := ""
+	// warnFix is the step the first warning that names one carries: a WARN
+	// verdict names it instead of the launch that warning would fail (#841).
+	warnFix := ""
 	// report prints one line and remembers its subject (the text before the
 	// first colon) so a warning can be named in the verdict without repeating it.
 	report := func(kind, msg string, fix ...string) {
@@ -405,6 +408,9 @@ func (l *launcher) doctor(name string, verbose bool) int {
 		case "WARN":
 			if !slices.Contains(warns, subject) {
 				warns = append(warns, subject)
+			}
+			if warnFix == "" && len(fix) > 0 {
+				warnFix = fix[0]
 			}
 		}
 		l.status(kind, msg)
@@ -691,7 +697,11 @@ func (l *launcher) doctor(name string, verbose bool) int {
 	case firstFix != "":
 		l.status("FAIL", "not ready: "+firstFix)
 	case len(warns) > 0:
-		l.status("WARN", "may not start: check "+strings.Join(warns, ", ")+" (see above); then: ccmorph run "+name)
+		next := "then: ccmorph run " + name
+		if warnFix != "" {
+			next = warnFix
+		}
+		l.status("WARN", "may not start: check "+strings.Join(warns, ", ")+" (see above); "+next)
 	default:
 		l.status("OK", "ready: start it with ccmorph run "+name)
 	}

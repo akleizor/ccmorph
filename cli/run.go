@@ -39,6 +39,10 @@ func runFlag(a string) bool {
 // answer a listing without a network.
 var probeListing = util.ProbeListing
 
+// reachListing is the launch's reachability probe (#260), a package var so a
+// test can answer it without a network.
+var reachListing = util.ReachListing
+
 // probeStatus is util.ProbeStatus, and probeVerdict is util.ProbeVerdict: the
 // one status switch every probe of a credential reads (#488 spelled it once in
 // cli; #516 moved it down so doctor's four route checks read the same one).
@@ -104,6 +108,8 @@ type launchPlan struct {
 
 	opensSession bool // the argv opens a session: neither a Claude subcommand nor a print-and-exit printout
 
+	reachWhy string // why the gateway could not be reached, in plain words; "" when it answered or was not asked (#260)
+
 	relayFile string   // the hop relay this pass owns and must clean up
 	common    []string // env every pass carries
 	penv      []string // the profile's launch env
@@ -167,6 +173,7 @@ func (l *launcher) resolveLaunch(name string, interactive, native bool, argv []s
 	}
 
 	defaultModel, tag := "", ""
+	routeBase, routeKey, routeVia := "", "", "" // a gateway's endpoint, key and profile proxy, for the reach probe (#260)
 	typ, usageRoute := "", ""
 	l.usageHook = ""
 	routed, isProvider, needsAdapter := false, false, false
@@ -191,6 +198,10 @@ func (l *launcher) resolveLaunch(name string, interactive, native bool, argv []s
 			routed, tag = true, f["tag"]
 			if _, native := nativeBase(f["base_url"]); !native {
 				needsAdapter = true
+				routeBase, routeKey = f["base_url"], f["api_key"]
+				// The session's own route knob: the adapter's probes and the
+				// shim read the conf's spelling alone (adapter environWith).
+				routeVia = f["env.CCMORPH_UPSTREAM_PROXY"]
 			}
 		case "provider":
 			routed, isProvider = true, true
@@ -258,13 +269,33 @@ func (l *launcher) resolveLaunch(name string, interactive, native bool, argv []s
 	// walk (#334) tells both from a flag-shaped option value.
 	opensSession := !subcommand && !util.OpensNoSession(args, table)
 
-	if needsAdapter && askMissing && !subcommand && explicit == "" && defaultModel == "" && isTTY(0) && isTTY(2) {
+	// A gateway launch asks its endpoint first, bounded the way doctor is, so
+	// nothing after it can wait on a gateway in silence (#260). Silence ends
+	// the launch here; a cause named at once lets it go on as it always has.
+	reachWhy := ""
+	if needsAdapter && opensSession && l.adapterProfile != name {
+		var down bool
+		if reachWhy, down = l.reachGateway(name, routeBase, routeKey, routeVia); down {
+			return nil, util.RCGatewayDown
+		}
+	}
+	// The picker could only fail on a gateway just named unreachable, and only
+	// a terminal opens it: skipping it keeps the terminal launch on the path
+	// the no-terminal one takes, so both end on the same words (#260).
+	if needsAdapter && askMissing && !subcommand && explicit == "" && defaultModel == "" && reachWhy == "" && isTTY(0) && isTTY(2) {
 		interactive = true
 	}
 	if interactive && explicit == "" && routed {
 		if name == "" {
 			l.err("-i needs an profile: name one, or set a default with ccmorph use <profile>")
 			return nil, 2
+		}
+		// The gateway was just named unreachable and has no list to pick from:
+		// the launch ends on that cause and the route check, never a second copy
+		// of the sentence and never the saved model -i was asked to replace (#260).
+		if reachWhy != "" {
+			fmt.Fprintf(os.Stderr, "  Check the route: ccmorph doctor %s\n", name)
+			return nil, 1
 		}
 		picked, ok := l.pickLaunchModel(name, defaultModel)
 		if !ok {
@@ -347,8 +378,8 @@ func (l *launcher) resolveLaunch(name string, interactive, native bool, argv []s
 		explicit: explicit, resume: resume, launchModel: launchModel,
 		defaultModel: defaultModel, askedModel: askedModel, resumeCarried: resumeCarried,
 		needsAdapter: needsAdapter, isProvider: isProvider, tag: tag,
-		opensSession: opensSession,
-		relayFile:    relayFile, common: common,
+		opensSession: opensSession, reachWhy: reachWhy,
+		relayFile: relayFile, common: common,
 	}
 	if name != "" {
 		// A named profile runs on its own route and credential: nothing the Remote
@@ -498,7 +529,7 @@ func (l *launcher) runLaunch(p *launchPlan) (*relayNext, int) {
 				// route never speaks the pass ends naming it, in the class a caller
 				// can tell from a crash — never with the picker's config message.
 				if !l.awaitListing(name, base, key) {
-					l.err(listingFailure(name, profile.RedactURL(base), 0))
+					l.err(listingFailureWhy(name, profile.RedactURL(base), 0, p.reachWhy))
 					fmt.Fprintf(os.Stderr, "  Check the route: ccmorph doctor %s\n", name)
 					return nil, util.RCGatewayDown
 				}
@@ -1677,14 +1708,54 @@ func (l *launcher) routeRefusal(name string) string {
 		}
 		return ""
 	}
-	_, code := util.ProbeListing(base, authKey(env))
+	_, code, why := util.ProbeListingWhy(base, authKey(env))
 	switch probeVerdict(code) {
 	case probeSilent:
+		if why != "" {
+			return "could not reach '" + profile.RedactURL(base) + "' — " + why
+		}
 		return "the endpoint " + profile.RedactURL(base) + " did not answer"
 	case probeRejected:
 		return "the endpoint rejected the API key (HTTP " + code + ")"
 	}
 	return ""
+}
+
+// reachGateway is the launch's first question to a gateway (#260): the
+// profile's base_url and api_key — the route profile.Env builds, since an
+// env.* line may not override either (profile.BackendEnv) — asked once with
+// doctor's bounds, through the profile's env.CCMORPH_UPSTREAM_PROXY (via)
+// when it names one, the route the session's own requests take. A progress line follows one second of
+// waiting. why is the cause, said here in the sentence models and doctor use,
+// "" when the gateway answered or failed in a way the four causes do not name;
+// down is true when nothing answered within the bound: then the route check is
+// named too, and the caller ends the launch, because every later wait (the
+// picker's, the adapter's) would sit on the same silence.
+func (l *launcher) reachGateway(name, base, key, via string) (why string, down bool) {
+	if base == "" || key == "" {
+		return "", false
+	}
+	// A key Claude Code was told to refuse stops the launch before any
+	// request (#236): keyApproval says so, and the probe must not ask first.
+	if util.KeyResponse(filepath.Join(l.profileDirs, name), key) == util.KeyRefused {
+		return "", false
+	}
+	var strip []string
+	if l.inEdge() {
+		strip = edgeEnv // a named profile never dials through the edge (see resolveLaunch)
+	}
+	progress := func() {
+		fmt.Fprintf(os.Stderr, "ccmorph: Checking '%s' gateway (up to %ds); Ctrl-C to cancel.\n", name, util.ReachBoundSeconds())
+	}
+	r := reachListing(base, key, via, strip, progress)
+	if r.Why == "" {
+		return "", false
+	}
+	l.err(listingFailureWhy(name, profile.RedactURL(base), 0, r.Why))
+	if r.Waited {
+		fmt.Fprintf(os.Stderr, "  Check the route: ccmorph doctor %s\n", name)
+	}
+	return r.Why, r.Waited
 }
 
 // adapterModel is the gateway id the adapter serves: the explicit or default

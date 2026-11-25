@@ -2,6 +2,7 @@ import hashlib
 import json
 import os
 import re
+import shlex
 import signal
 import subprocess
 import sys
@@ -98,6 +99,48 @@ printf '%s\\n' '__CCMORPH_STATUS__200'
     # through the caller's own HTTPS_PROXY rather than refusing every proxy.
     assert "--noproxy" not in args
     assert any("/v1/models?limit=1000" in arg for arg in args)
+
+
+@pytest.mark.parametrize("case", ["name-not-found-issue-260", "refused-issue-260",
+                                  "secure-issue-260", "secure-name-mismatch-issue-260",
+                                  "no-answer-issue-260"])
+def test_doctor_names_the_one_cause_of_an_unreachable_gateway(tmp_path, case):
+    """GH-260: doctor answered four transport failures with one timeout
+    sentence that sent everyone to a private network. Each cause is named with
+    its host and port, the advice rides only on the no-answer case, and curl's
+    own words are read, never printed."""
+    shapes = {
+        "name-not-found-issue-260": ("https://gw.example.internal", 6,
+            "curl: (6) Could not resolve host: gw.example.internal",
+            "WARN gateway: name not found: gw.example.internal port 443", False),
+        "refused-issue-260": ("http://127.0.0.1:9443", 7,
+            "curl: (7) Failed to connect to 127.0.0.1 port 9443: Connection refused",
+            "WARN gateway: connection refused: 127.0.0.1 port 9443", False),
+        "secure-issue-260": ("https://127.0.0.1:18080", 35,
+            "curl: (35) OpenSSL/3.0.13: error:0A00010B:SSL routines::wrong version number",
+            "WARN gateway: secure connection failed: 127.0.0.1 port 18080", False),
+        "secure-name-mismatch-issue-260": ("https://gw.example", 51,
+            "curl: (51) SSL: no alternative certificate subject name matches target hostname 'gw.example'",
+            "WARN gateway: secure connection failed: gw.example port 443", False),
+        "no-answer-issue-260": ("http://10.255.255.1:8080", 28,
+            "curl: (28) Failed to connect to 10.255.255.1 port 8080 after 2003 ms: Timeout was reached",
+            "WARN gateway: no answer from 10.255.255.1 port 8080 after 2 seconds "
+            "(if it is an internal endpoint, connect your private network and try again)", True),
+    }
+    base, code, complaint, want, advice = shapes[case]
+    curl = f"#!/bin/sh\nprintf '%s\\n' {shlex.quote(complaint)} >&2\nexit {code}\n"
+    result, _, _ = run_doctor(tmp_path, f"type=apikey\nbase_url={base}\napi_key=k\n", curl)
+    out = result.stdout + result.stderr
+    assert want in result.stdout, out
+    assert ("private network" in result.stdout) == advice, out
+    assert "did not answer within 5 seconds" not in out
+    assert "curl:" not in out
+    # GH-841: the verdict names the edit, not the launch that sent the person
+    # here.
+    assert result.stdout.splitlines()[-1] == (
+        "WARN may not start: check gateway (see above); "
+        "if the endpoint is wrong, change it: ccmorph config demo"), out
+    assert "then: ccmorph run" not in out
 
 
 def test_doctor_reports_a_refused_api_key(tmp_path):
