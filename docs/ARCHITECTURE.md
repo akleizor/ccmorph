@@ -99,7 +99,11 @@ discovered for the profile's current route, and `.locks/<name>.lock` is its writ
 lock. A key approval an open session holds off is kept the same way:
 `.locks/<name>.approve-<digest>` is an empty, owner-only file named by a digest of
 the key's last 20 characters (the part Claude Code itself stores in plain text),
-kept until the next launch records it and removed by `rm`. A conf from before this
+kept until the next launch records it and removed by `rm`. `.locks/<name>.live` is
+the profile's live lock: every session holds it shared for its life, and every
+whole-file rewrite ccmorph makes of the profile's `.claude.json` (a key approval,
+the picker's rows, the first-run answers) or, by the picker, of its settings layer
+holds it exclusively from its read to its rename. A conf from before this
 split still carrying an inline `context_discovered=`
 line is read as before and moved out by the next migration. On macOS `api_key` and
 `token` move to the login keychain (service `ccmorph`) on first use; the conf keeps
