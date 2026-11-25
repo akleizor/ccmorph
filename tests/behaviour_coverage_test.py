@@ -1510,3 +1510,26 @@ def test_list_and_inspect_say_where_the_model_came_from_gh_862(box):
     assert '→ model-a, saved in this profile' in row(box.run('list').stdout, 'gw')
     assert 'saved in this profile' in model_row(box.run('inspect', 'gw').stdout)
     assert shared.read_bytes() == before[1]
+
+
+@pytest.mark.parametrize('conf,shown', [
+    ('type=apikey\napi_key=k\nexcluded_models=model-a,model-b\n',
+     'model-a, model-b'),
+    ('type=apikey\napi_key=k\nexcluded_models=model-a\n', 'model-a'),
+    ('type=provider\nprovider=codex\nexcluded_models=x\n', 'x'),
+    ('type=apikey\napi_key=k\n', None),
+], ids=['two', 'one', 'provider', 'none'])
+def test_inspect_lists_excluded_models_gh_862(box, conf, shown):
+    # GH-862: the guide sends a person whose session misbehaves to inspect, but
+    # inspect printed nothing for the picker's exclusions.
+    box.conf('p', conf)
+    before = (box.state / 'p.conf').read_bytes()
+    out = box.run('inspect', 'p')
+    assert out.returncode == 0, out.stderr
+    rows = [line.strip() for line in out.stdout.splitlines() if line.strip().split()[:1] == ['excluded']]
+    if shown is None:
+        assert rows == [], out.stdout
+    else:
+        assert len(rows) == 1, out.stdout
+        assert shown in rows[0] and 'excluded_models' in rows[0], rows[0]
+    assert (box.state / 'p.conf').read_bytes() == before

@@ -94,6 +94,11 @@ func (l *launcher) inspect(args []string) int {
 		}
 	}
 
+	// The picker's exclusions, read where a session that misbehaves is diagnosed (#862).
+	if ex := f["excluded_models"]; ex != "" {
+		grid(10, "excluded", strings.ReplaceAll(ex, ",", ", ")+"  "+l.dim+"excluded_models — left out of every model picker"+l.reset)
+	}
+
 	// Window only when it is a probed fact about a routed model: an unprobed
 	// default is not reported as though it were measured.
 	if model != "" && typ == "apikey" {
