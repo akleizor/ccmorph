@@ -517,9 +517,10 @@ names the knob, while the launcher keeps its default. A gateway that already
 speaks Anthropic is fronted by the shim alone, with no translator.
 Set `env.CCMORPH_UPSTREAM_PROXY` (an `http://` CONNECT proxy) to route the
 profile's session through a proxy, e.g. a loopback bridge holding the macOS
-Local Network grant for a gateway on the LAN. It covers the compatibility
-probes that admit a launch, the translator, and the request shim on either
-serve path — one resolver for all of them. It never overrides `NO_PROXY`
+Local Network grant for a gateway on the LAN. It covers the reachability
+check `ccmorph run` asks first, the compatibility probes that admit a launch,
+the translator, and the request shim on either serve path — one resolver for
+all of them. It never overrides `NO_PROXY`
 or sends a loopback gateway through the proxy. Reads that are not the session's
 requests — a context window, quota, a listing, the price book — keep the
 ambient `HTTPS_PROXY`/`NO_PROXY` contract under "Reaching a private endpoint".
