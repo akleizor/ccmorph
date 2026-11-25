@@ -289,6 +289,16 @@ func SessionProfile() string {
 // account profile; "route", no file or a word that is not a name the route whose
 // edge record holds this session's proxy port; any other word that profile. A
 // route no record names answers "".
+//
+// A word naming a profile is believed on its name alone, and that is a known
+// divergence from the word's owner: rc_addon gates the same word on _switched,
+// which reads and unlinks the --switch handoff on the first request, so after
+// boot, a config reload or an edge restart — states #595 is open for — it logs
+// "was never brought up" and serves the edge's own route, while this reader
+// still answers the word and the hook builds aliases from a profile the edge no
+// longer serves. The proxy's live map is memory-only, so no on-disk signal here
+// can see that state; until #595 persists it, this is the ported rule's known
+// limit, pinned by the stale-word case in TestSessionProfileInAnEdgeSessionIsWhereInferenceRuns.
 func edgeInferenceProfile(account string, port int) string {
 	bridge := filepath.Join(paths.ProfileRoot(), "profiles", ".rc-bridge")
 	word := "route"
