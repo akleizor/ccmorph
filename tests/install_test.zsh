@@ -1599,6 +1599,35 @@ grep -qxF "  autoload -Uz compinit && compinit" "$d/out" \
   && fail "path: a live FPATH from .zshenv is told the compinit line again" \
   || ok "path: a live FPATH from .zshenv is not told the compinit line again"
 
+# The verb's exit status is a verdict at 0 (runs) and 1 (does not); anything
+# above 1 is a scan that could not run, not a third answer (#582). Read as
+# "yes", it would suppress the line that makes Tab work; read as "no", it
+# would at least print that line but claim a verdict the scan never reached.
+# So a failed scan stays additive: the compinit advice prints, and the rc is
+# accused of nothing.
+d=$(fresh_env path_comp_scan_failed)
+print 'fpath=($HOME/.config/ccmorph/share/zsh/site-functions $fpath)' > "$d/home/.zshrc"
+failed_rc=$(<"$d/home/.zshrc")
+mkdir -p "$d/src"
+(cd "$REPO" && tar --exclude=./.git --exclude=./.claude --exclude=./dist --exclude='./libexec/ccmorph-core*' -cf - .) | tar -xf - -C "$d/src"
+printf '#!/bin/sh\n[ "$1 $2" = "util compinit-runs" ] && exit 2\nexit 0\n' > "$d/src/libexec/ccmorph-core"
+chmod +x "$d/src/libexec/ccmorph-core"
+env -i HOME="$d/home" ZDOTDIR="$d/home" PATH="$d/bin:/usr/bin:/bin:/opt/homebrew/bin" \
+  zsh "$d/src/install.sh" > "$d/out" 2>&1 </dev/null; rc=$?
+(( rc == 0 )) && ok "path: an install whose compinit scan could not run still succeeds" \
+  || { fail "path: a failed compinit scan failed the install (rc=$rc)"; cat "$d/out"; }
+grep -qxF "  autoload -Uz compinit && compinit" "$d/out" \
+  && ok "path: a scan that could not run is still told the compinit line" \
+  || { fail "path: a scan that could not run suppressed the compinit line"; cat "$d/out"; }
+grep -qF "nothing in it starts zsh's completion system" "$d/out" \
+  && fail "path: a scan that could not run was reported as a verdict" \
+  || ok "path: a scan that could not run is not reported as a verdict"
+grep -qF 'fpath=' "$d/out" \
+  && fail "path: a scan that could not run is told the fpath line the rc already has" \
+  || ok "path: a scan that could not run is not told the fpath line again"
+[[ "$(<"$d/home/.zshrc")" == "$failed_rc" ]] \
+  && ok "path: a scan that could not run leaves .zshrc byte-identical" || fail "path: installer edited .zshrc"
+
 # ZDOTDIR moves the zsh file; an unknown or unset SHELL gets the zsh advice, which
 # is what a bare `env -i` run (every test above this section) always printed.
 d=$(path_run path_zdot /bin/zsh Linux "$TMP/path_zdot_zd")
