@@ -4,7 +4,6 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
-	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -105,23 +104,18 @@ func KeyResponse(home, key string) KeyState {
 	return KeyUnanswered
 }
 
-// approveKeyRead runs between ApproveKey's read of .claude.json and its write;
-// a test puts a second writer of the same file there (#299).
-var approveKeyRead = func() {}
-
 // ApproveKey records key as approved in the profile's .claude.json, so Claude
 // Code never asks the first-launch question. An earlier refusal for the same
 // key is cleared. Every other key in the file keeps its place and value, and
 // the file is rewritten only when the answer actually changes. The rewrite is
-// a whole-file read-modify-write of a file a running session, SeedPersonAnswers
-// or a launch's merge also writes, so it runs while this process is the sole
-// holder of the profile's live lock — exclusively from the read to the rename,
-// the mode those siblings take — and no write can be lost under it (#299).
-// When the lock cannot be taken that way within the bounded wait, nothing is
-// written and the error wraps ErrProfileInUse, so the caller can keep the
-// approval for the next launch with SaveApproval. A symlinked or unparsable
-// file, or a customApiKeyResponses that is not an object, is an error: the
-// caller must not guess and clobber what Claude Code wrote.
+// rewriteProfileJSON's: the profile's live lock is held exclusively from the
+// read to the rename, so no session, launch, picker or second approval writes
+// the file under it and no write is lost (#299, #861). When the lock cannot be
+// taken within the bounded wait, nothing is written and the error wraps
+// ErrProfileInUse, so the caller can keep the approval for the next launch
+// with SaveApproval. A symlinked or unparsable file, or a customApiKeyResponses
+// that is not an object, is an error: the caller must not guess and clobber
+// what Claude Code wrote.
 func ApproveKey(profiles, name, key string) error {
 	if !profile.ValidName(name) {
 		return errors.New("invalid profile name: " + name)
@@ -133,96 +127,51 @@ func ApproveKey(profiles, name, key string) error {
 	if fi, err := os.Lstat(path); err == nil && !fi.Mode().IsRegular() {
 		return errors.New(path + ": not a regular file")
 	}
-	// The profile's live lock is held exclusively across the read and the
-	// rename: every ccmorph session holds it shared for its life and every
-	// whole-file writer takes it exclusively, so while this rewrite runs no
-	// session, launch or second approval can write the file — and none of
-	// theirs can be lost under it either (#299). A holder that outlasts the
-	// bounded wait (promise 8) leaves the file untouched; the caller can save
-	// the approval for the next launch instead of dropping it.
-	lock := LiveLockPath(profiles, name)
-	liveMu.Lock()
-	_, held := liveFDs[lock]
-	liveMu.Unlock()
-	live, why := HoldLive(profiles, name, nil)
-	if live == nil {
-		if errors.Is(why, ErrLiveHeld) {
-			return fmt.Errorf("%s: another launch is rewriting the profile's config: %w", path, ErrProfileInUse)
-		}
-		return errors.New(lock + ": the live lock could not be created: " + why.Error())
-	}
-	if !held {
-		// A caller that starts no session of this profile — a hop's check —
-		// must not keep its lock past this call.
-		defer ReleaseLive(profiles, name)
-	}
-	if !flockWithin(live, syscall.LOCK_EX) {
-		// The failed conversion can leave this fd unlocked (Linux drops the
-		// shared lock first), so the lock the session runs under is taken back
-		// or gone; either way this rewrite waits for a caller that holds it.
-		if !flockWithin(live, syscall.LOCK_SH) {
-			ReleaseLive(profiles, name)
-		}
-		return fmt.Errorf("%s: %w", path, ErrProfileInUse)
-	}
-	defer syscall.Flock(int(live.Fd()), syscall.LOCK_SH)
-	doc, err := loadObj(path, ordjson.New())
-	if err != nil {
-		return err
-	}
-	approveKeyRead()
-	responses := keyResponses(doc)
-	created := false
-	if responses == nil {
-		if _, ok := doc.Get("customApiKeyResponses"); ok {
-			if v, _ := doc.Get("customApiKeyResponses"); v != nil {
-				return errors.New(path + ": customApiKeyResponses is not a JSON object")
+	return rewriteProfileJSON(profiles, name, path, func(doc *ordjson.Obj) (bool, error) {
+		responses := keyResponses(doc)
+		created := false
+		if responses == nil {
+			if _, ok := doc.Get("customApiKeyResponses"); ok {
+				if v, _ := doc.Get("customApiKeyResponses"); v != nil {
+					return false, errors.New(path + ": customApiKeyResponses is not a JSON object")
+				}
 			}
+			responses = ordjson.New()
+			doc.Set("customApiKeyResponses", responses)
+			created = true
 		}
-		responses = ordjson.New()
-		doc.Set("customApiKeyResponses", responses)
-		created = true
-	}
-	tail := keyTail(key)
-	approved, okA := stringList(responses, "approved")
-	if !okA {
-		return errors.New(path + ": customApiKeyResponses.approved is not a JSON array")
-	}
-	rejected, okR := stringList(responses, "rejected")
-	if !okR {
-		return errors.New(path + ": customApiKeyResponses.rejected is not a JSON array")
-	}
-	changed := created
-	if !hasString(approved, tail) {
-		responses.Set("approved", append(append([]any{}, approved...), tail))
-		changed = true
-	}
-	if hasString(rejected, tail) {
-		kept := make([]any, 0, len(rejected))
-		for _, e := range rejected {
-			if v, ok := e.(string); ok && v == tail {
-				continue
+		tail := keyTail(key)
+		approved, okA := stringList(responses, "approved")
+		if !okA {
+			return false, errors.New(path + ": customApiKeyResponses.approved is not a JSON array")
+		}
+		rejected, okR := stringList(responses, "rejected")
+		if !okR {
+			return false, errors.New(path + ": customApiKeyResponses.rejected is not a JSON array")
+		}
+		changed := created
+		if !hasString(approved, tail) {
+			responses.Set("approved", append(append([]any{}, approved...), tail))
+			changed = true
+		}
+		if hasString(rejected, tail) {
+			kept := make([]any, 0, len(rejected))
+			for _, e := range rejected {
+				if v, ok := e.(string); ok && v == tail {
+					continue
+				}
+				kept = append(kept, e)
 			}
-			kept = append(kept, e)
+			responses.Set("rejected", kept)
+			changed = true
 		}
-		responses.Set("rejected", kept)
-		changed = true
-	}
-	if !responses.Has("rejected") {
-		responses.Set("rejected", []any{})
-		changed = true
-	}
-	if !changed {
-		return nil
-	}
-	return atomicJSON(path, doc)
+		if !responses.Has("rejected") {
+			responses.Set("rejected", []any{})
+			changed = true
+		}
+		return changed, nil
+	}, atomicJSON)
 }
-
-// ErrProfileInUse is why an approval could not be recorded: a session or
-// launch of the profile holds its config, so a whole-file rewrite now would
-// race that holder's own save and could lose it (#299). The caller can keep
-// the approval for the next launch with SaveApproval instead of dropping it.
-var ErrProfileInUse = errors.New("a session or launch of the profile is open")
 
 // approvalMarker names the file an approval waiting for an open session lives
 // in: beside the profile's other locks, never inside the profile's own dir

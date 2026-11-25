@@ -152,10 +152,10 @@ func TestApproveKeyKeepsAWriteMadeBetweenItsReadAndItsRename(t *testing.T) {
 		return true
 	}
 
-	old := approveKeyRead
-	t.Cleanup(func() { approveKeyRead = old })
+	old := profileJSONRead
+	t.Cleanup(func() { profileJSONRead = old })
 	pending := false
-	approveKeyRead = func() { pending = !otherWriter() }
+	profileJSONRead = func(string) { pending = !otherWriter() }
 
 	if err := ApproveKey(profiles, "p", key); err != nil {
 		t.Fatal(err)
@@ -188,9 +188,9 @@ func TestApproveKeyHoldsTheLiveLockAloneBetweenItsReadAndItsRename(t *testing.T)
 		defer f.Close()
 		return syscall.Flock(int(f.Fd()), how|syscall.LOCK_NB) == nil
 	}
-	old := approveKeyRead
-	t.Cleanup(func() { approveKeyRead = old })
-	approveKeyRead = func() {
+	old := profileJSONRead
+	t.Cleanup(func() { profileJSONRead = old })
+	profileJSONRead = func(string) {
 		if take(syscall.LOCK_SH) {
 			t.Error("the live lock could be taken shared under the rewrite: a session could start under it")
 		}
@@ -307,10 +307,10 @@ func TestTwoApprovalsAtOnceBothLand(t *testing.T) {
 	if err := os.MkdirAll(filepath.Dir(LiveLockPath(profiles, "p")), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	old := approveKeyRead
-	t.Cleanup(func() { approveKeyRead = old })
+	old := profileJSONRead
+	t.Cleanup(func() { profileJSONRead = old })
 	var during string
-	approveKeyRead = func() { during = approveKeyChild(t, profiles, other) }
+	profileJSONRead = func(string) { during = approveKeyChild(t, profiles, other) }
 	if err := ApproveKey(profiles, "p", key); err != nil {
 		t.Fatal(err)
 	}
