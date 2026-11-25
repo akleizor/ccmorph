@@ -843,7 +843,7 @@ func (l *launcher) providerLogin(name, provider string) bool {
 		return false
 	}
 	for _, pat := range []string{"*.json", "*/*.json"} {
-		if m, _ := filepath.Glob(filepath.Join(auth, pat)); len(m) > 0 && cred == "" {
+		if m, _ := filepath.Glob(filepath.Join(paths.GlobQuote(auth), pat)); len(m) > 0 && cred == "" {
 			for _, f := range m {
 				if paths.IsFile(f) {
 					cred = f
@@ -857,7 +857,7 @@ func (l *launcher) providerLogin(name, provider string) bool {
 		return false
 	}
 	for _, pat := range []string{"*.json", "*/*.json", "*/*/*.json"} {
-		m, _ := filepath.Glob(filepath.Join(auth, pat))
+		m, _ := filepath.Glob(filepath.Join(paths.GlobQuote(auth), pat))
 		for _, f := range m {
 			os.Chmod(f, 0o600)
 		}
