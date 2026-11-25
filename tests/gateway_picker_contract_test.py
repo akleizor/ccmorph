@@ -396,6 +396,75 @@ def test_a_failed_make_shim_leaves_the_published_core_as_it_was(tmp_path):
     assert sorted(p.name for p in (checkout / 'libexec').iterdir()) == ['ccmorph-core']
 
 
+# The landing gate's runner refuses every new name inside the checkout; only
+# the caller's ${TMPDIR} takes one (#840, rounds 5 and 6). `tmpdir-dir` lets a
+# staged directory be made there; `tmpdir-file` refuses every directory, so the
+# recipe falls through to the plain file named ccmorph-core, which the checkout
+# root cannot hold either (a directory already has that name).
+REFUSING_MKDIR = {
+    'tmpdir-dir': (
+        '#!/bin/sh\n'
+        'case "$2" in\n'
+        '  libexec/.shim-build.*|libexec/shim-build.*|.shim-build.*|shim-build.*)\n'
+        '    echo "mkdir: $2: Operation not permitted" >&2; exit 1;;\n'
+        'esac\n'
+        'exec /bin/mkdir "$@"\n'),
+    'tmpdir-file': '#!/bin/sh\necho "mkdir: $2: Operation not permitted" >&2\nexit 1\n',
+}
+
+
+def refusing_checkout(tmp_path, where, go_body='printf new-core > "$out"\n'):
+    """A checkout that refuses every new staging name, as the gate runner's
+    sandbox does, with an empty operator ${TMPDIR} beside it."""
+    checkout, env = shim_checkout(tmp_path, go_body, 'exit 0\n')
+    (checkout / 'libexec/ccmorph-core').write_text('old')
+    (checkout / 'ccmorph-core').mkdir()  # the root file candidate cannot be made
+    stubs = Path(env['PATH'].split(os.pathsep)[0])
+    (stubs / 'mkdir').write_text(REFUSING_MKDIR[where])
+    (stubs / 'mkdir').chmod(0o755)
+    operator_tmp = tmp_path / 'operator-tmp'
+    operator_tmp.mkdir()
+    env['TMPDIR'] = str(operator_tmp)
+    return checkout, env, operator_tmp
+
+
+@pytest.mark.parametrize('where', ['tmpdir-dir', 'tmpdir-file'])
+@pytest.mark.parametrize('build', ['published', 'failed'])
+def test_make_shim_staged_under_tmpdir_removes_only_what_it_made_issue_840(tmp_path, where, build):
+    """GH-840 gate: when the checkout refuses every new name the build stages
+    under the caller's ${TMPDIR}. Cleanup must remove what the build made there
+    — the staged directory, or the plain ccmorph-core file — and never the
+    caller's temp directory, which `rmdir "$(dirname "$stage")"` removed
+    whenever the stage was the plain file."""
+    go_body = 'printf new-core > "$out"\n' if build == 'published' else 'exit 1\n'
+    checkout, env, operator_tmp = refusing_checkout(tmp_path, where, go_body)
+    r = make_shim(checkout, env)
+    core = (checkout / 'libexec/ccmorph-core').read_text()
+    if build == 'published':
+        assert r.returncode == 0, r.stdout + r.stderr
+        assert core == 'new-core'
+    else:
+        assert r.returncode != 0, r.stdout + r.stderr
+        assert core == 'old'
+    assert operator_tmp.is_dir(), r.stdout + r.stderr
+    assert sorted(p.name for p in operator_tmp.iterdir()) == [], r.stdout + r.stderr
+
+
+def test_make_shim_never_takes_a_tmpdir_file_it_did_not_make_issue_840(tmp_path):
+    """GH-840 gate: the plain-file loop began with `rm -f`, so a file someone
+    else had put at $TMPDIR/ccmorph-core was deleted, and then taken as the
+    stage. A name this build did not make is left exactly as it was, and the
+    build says it has no staging name rather than using it."""
+    checkout, env, operator_tmp = refusing_checkout(tmp_path, 'tmpdir-file')
+    theirs = operator_tmp / 'ccmorph-core'
+    theirs.write_text('theirs')
+    r = make_shim(checkout, env)
+    assert r.returncode != 0, r.stdout + r.stderr
+    assert 'no staging name' in r.stderr, r.stderr
+    assert theirs.read_text() == 'theirs'
+    assert (checkout / 'libexec/ccmorph-core').read_text() == 'old'
+
+
 def test_copied_lib_copies_source_not_the_checkouts_incidental_contents_issue_220(tmp_path, monkeypatch):
     """`copied_lib` copies the repository's own source, never the checkout's
     incidental contents: local tooling leaves data git ignores in the root — on
