@@ -3,7 +3,6 @@ package util
 import (
 	"fmt"
 	"io"
-	"os"
 	"path/filepath"
 	"strings"
 
@@ -34,25 +33,17 @@ func iterItems(v any) ([]any, bool) {
 	return nil, false
 }
 
-// rewriteJSON is the picker's single read, mutate, atomic replace of one settings file.
-// Any failure leaves the file as it was.
-func rewriteJSON(path string, mutate func(doc *ordjson.Obj) bool) {
-	doc := ordjson.New()
-	b, err := os.ReadFile(path)
-	switch {
-	case err == nil:
-		v, perr := ordjson.Parse(b)
-		o := asObj(v)
-		if perr != nil || o == nil {
-			return
-		}
-		doc = o
-	case !os.IsNotExist(err):
-		return
-	}
-	if mutate(doc) {
-		AtomicWrite(path, ".proj.", ordjson.Marshal(doc, true), 0o600, false)
-	}
+// rewriteJSON is the picker's read, mutate, atomic replace of one file in profile
+// name's home — its .claude.json or its settings layer — through the one locked
+// rewrite every writer of those files shares (#861). Any failure, and a holder
+// of the profile's live lock that outlasts the bounded wait, leaves the file as
+// it was: the rows the file already hold stand until a launch can write them.
+func rewriteJSON(profiles, name, path string, mutate func(doc *ordjson.Obj) bool) error {
+	return rewriteProfileJSON(profiles, name, path, func(doc *ordjson.Obj) (bool, error) {
+		return mutate(doc), nil
+	}, func(path string, doc *ordjson.Obj) error {
+		return AtomicWrite(path, ".proj.", ordjson.Marshal(doc, true), 0o600, false)
+	})
 }
 
 // PickerIn is what the project picker needs: the profile's home dir, conf, its own
@@ -231,7 +222,10 @@ func ProjectPicker(in PickerIn, errw io.Writer) PickerResult {
 		return PickerDone
 	}
 
-	rewriteJSON(filepath.Join(home, ".claude.json"), func(doc *ordjson.Obj) bool {
+	// The profile is the home itself, so the lock is the one ApproveKey and a
+	// session of this profile take for the same files (#861).
+	profiles, name := filepath.Dir(home), filepath.Base(home)
+	rewriteJSON(profiles, name, filepath.Join(home, ".claude.json"), func(doc *ordjson.Obj) bool {
 		if cur, has := doc.Get("additionalModelOptionsCache"); has && ordjson.Equal(cur, rows) {
 			return false
 		}
@@ -239,7 +233,7 @@ func ProjectPicker(in PickerIn, errw io.Writer) PickerResult {
 		return true
 	})
 
-	rewriteJSON(layer, func(doc *ordjson.Obj) bool {
+	rewriteJSON(profiles, name, layer, func(doc *ordjson.Obj) bool {
 		beforeModels, _ := doc.Get("availableModels")
 		beforeModel, _ := doc.Get("model")
 		changed := func() bool {

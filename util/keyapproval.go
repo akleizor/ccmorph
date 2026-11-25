@@ -1,11 +1,16 @@
 package util
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
+	"syscall"
 
 	"github.com/akleizor/ccmorph/ordjson"
+	"github.com/akleizor/ccmorph/profile"
 	"github.com/akleizor/ccmorph/util/paths"
 )
 
@@ -99,67 +104,138 @@ func KeyResponse(home, key string) KeyState {
 	return KeyUnanswered
 }
 
-// ApproveKey records key as approved in the profile home's .claude.json, so
-// Claude Code never asks the first-launch question. An earlier refusal for the
-// same key is cleared. Every other key in the file keeps its place and value,
-// and the file is rewritten only when the answer actually changes. A symlinked
-// or unparsable file, or a customApiKeyResponses that is not an object, is an
-// error: the caller must not guess and clobber what Claude Code wrote.
-func ApproveKey(home, key string) error {
-	path := filepath.Join(home, ".claude.json")
+// ApproveKey records key as approved in the profile's .claude.json, so Claude
+// Code never asks the first-launch question. An earlier refusal for the same
+// key is cleared. Every other key in the file keeps its place and value, and
+// the file is rewritten only when the answer actually changes. The rewrite is
+// rewriteProfileJSON's: the profile's live lock is held exclusively from the
+// read to the rename, so no session, launch, picker or second approval writes
+// the file under it and no write is lost (#299, #861). When the lock cannot be
+// taken within the bounded wait, nothing is written and the error wraps
+// ErrProfileInUse, so the caller can keep the approval for the next launch
+// with SaveApproval. A symlinked or unparsable file, or a customApiKeyResponses
+// that is not an object, is an error: the caller must not guess and clobber
+// what Claude Code wrote.
+func ApproveKey(profiles, name, key string) error {
+	if !profile.ValidName(name) {
+		return errors.New("invalid profile name: " + name)
+	}
+	path := filepath.Join(profiles, name, ".claude.json")
 	if paths.IsSymlink(path) {
 		return errors.New(path + ": symbolic links are not allowed")
 	}
 	if fi, err := os.Lstat(path); err == nil && !fi.Mode().IsRegular() {
 		return errors.New(path + ": not a regular file")
 	}
-	doc, err := loadObj(path, ordjson.New())
+	return rewriteProfileJSON(profiles, name, path, func(doc *ordjson.Obj) (bool, error) {
+		responses := keyResponses(doc)
+		created := false
+		if responses == nil {
+			if _, ok := doc.Get("customApiKeyResponses"); ok {
+				if v, _ := doc.Get("customApiKeyResponses"); v != nil {
+					return false, errors.New(path + ": customApiKeyResponses is not a JSON object")
+				}
+			}
+			responses = ordjson.New()
+			doc.Set("customApiKeyResponses", responses)
+			created = true
+		}
+		tail := keyTail(key)
+		approved, okA := stringList(responses, "approved")
+		if !okA {
+			return false, errors.New(path + ": customApiKeyResponses.approved is not a JSON array")
+		}
+		rejected, okR := stringList(responses, "rejected")
+		if !okR {
+			return false, errors.New(path + ": customApiKeyResponses.rejected is not a JSON array")
+		}
+		changed := created
+		if !hasString(approved, tail) {
+			responses.Set("approved", append(append([]any{}, approved...), tail))
+			changed = true
+		}
+		if hasString(rejected, tail) {
+			kept := make([]any, 0, len(rejected))
+			for _, e := range rejected {
+				if v, ok := e.(string); ok && v == tail {
+					continue
+				}
+				kept = append(kept, e)
+			}
+			responses.Set("rejected", kept)
+			changed = true
+		}
+		if !responses.Has("rejected") {
+			responses.Set("rejected", []any{})
+			changed = true
+		}
+		return changed, nil
+	}, atomicJSON)
+}
+
+// approvalMarker names the file an approval waiting for an open session lives
+// in: beside the profile's other locks, never inside the profile's own dir
+// (a session's private view symlinks every entry of it). It holds no key
+// material — its name is a digest of the key's last 20 characters, the part
+// Claude Code itself stores in plain text (#299, promise 5).
+func approvalMarker(profiles, name, key string) string {
+	sum := sha256.Sum256([]byte(keyTail(key)))
+	return filepath.Join(filepath.Dir(profiles), ".locks", name+".approve-"+hex.EncodeToString(sum[:8]))
+}
+
+// SaveApproval keeps an approval that cannot be recorded now — the profile's
+// config is held by an open session or launch — for the next launch to record
+// before Claude Code starts (#299). The marker is empty and owner-only.
+func SaveApproval(profiles, name, key string) error {
+	if !profile.ValidName(name) {
+		return errors.New("invalid profile name: " + name)
+	}
+	p := approvalMarker(profiles, name, key)
+	if err := os.MkdirAll(filepath.Dir(p), 0o700); err != nil {
+		return err
+	}
+	f, err := os.OpenFile(p, os.O_CREATE|os.O_WRONLY|syscall.O_NOFOLLOW, 0o600)
 	if err != nil {
 		return err
 	}
-	responses := keyResponses(doc)
-	created := false
-	if responses == nil {
-		if _, ok := doc.Get("customApiKeyResponses"); ok {
-			if v, _ := doc.Get("customApiKeyResponses"); v != nil {
-				return errors.New(path + ": customApiKeyResponses is not a JSON object")
-			}
+	return f.Close()
+}
+
+// ApprovalSaved reports whether an approval is saved for key, waiting for the
+// profile's open session or launch to end (#299).
+func ApprovalSaved(profiles, name, key string) bool {
+	if !profile.ValidName(name) {
+		return false
+	}
+	fi, err := os.Lstat(approvalMarker(profiles, name, key))
+	return err == nil && fi.Mode().IsRegular()
+}
+
+// DropApproval forgets a saved approval: it has been recorded, or Claude Code
+// holds the person's own answer (#299).
+func DropApproval(profiles, name, key string) {
+	if !profile.ValidName(name) {
+		return
+	}
+	os.Remove(approvalMarker(profiles, name, key))
+}
+
+// DropApprovals removes every saved approval marker of the profile, whatever
+// key each was saved for — rm's cleanup, which cannot know the key (#299).
+func DropApprovals(profiles, name string) {
+	if !profile.ValidName(name) {
+		return
+	}
+	dir := filepath.Join(filepath.Dir(profiles), ".locks")
+	ents, err := os.ReadDir(dir)
+	if err != nil {
+		return
+	}
+	// ReadDir, not Glob: the state path may hold glob metacharacters.
+	prefix := name + ".approve-"
+	for _, e := range ents {
+		if strings.HasPrefix(e.Name(), prefix) {
+			os.Remove(filepath.Join(dir, e.Name()))
 		}
-		responses = ordjson.New()
-		doc.Set("customApiKeyResponses", responses)
-		created = true
 	}
-	tail := keyTail(key)
-	approved, okA := stringList(responses, "approved")
-	if !okA {
-		return errors.New(path + ": customApiKeyResponses.approved is not a JSON array")
-	}
-	rejected, okR := stringList(responses, "rejected")
-	if !okR {
-		return errors.New(path + ": customApiKeyResponses.rejected is not a JSON array")
-	}
-	changed := created
-	if !hasString(approved, tail) {
-		responses.Set("approved", append(append([]any{}, approved...), tail))
-		changed = true
-	}
-	if hasString(rejected, tail) {
-		kept := make([]any, 0, len(rejected))
-		for _, e := range rejected {
-			if v, ok := e.(string); ok && v == tail {
-				continue
-			}
-			kept = append(kept, e)
-		}
-		responses.Set("rejected", kept)
-		changed = true
-	}
-	if !responses.Has("rejected") {
-		responses.Set("rejected", []any{})
-		changed = true
-	}
-	if !changed {
-		return nil
-	}
-	return atomicJSON(path, doc)
 }
