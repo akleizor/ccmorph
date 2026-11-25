@@ -1475,3 +1475,38 @@ def test_router_on_off_and_status_still_act(box):
     assert off.returncode == 0, off.stderr
     assert json.loads((box.state / 'router.json').read_text())['enabled'] is False
     assert box.run('router').stdout.startswith('Router off (')
+
+
+def test_list_and_inspect_say_where_the_model_came_from_gh_862(box):
+    # GH-862: list and inspect showed a model taken from ~/.claude/settings.json
+    # as the profile's own; both now name where it came from, and saving a model
+    # makes it this profile's. Reading never writes the conf or the shared file.
+    shared = box.home / '.claude/settings.json'
+    shared.write_text('{"model": "opus"}')
+    gw = 'type=apikey\napi_key=k\n'
+    box.conf('gw', gw)
+    box.conf('seeded', gw + 'model=opus\nmodel_source=claude-settings\nmodel_defaults=1\n')
+    conf = box.state / 'gw.conf'
+    before = (conf.read_bytes(), shared.read_bytes())
+
+    def row(out, name):
+        return next(line for line in out.splitlines() if f' {name} (' in line)
+
+    def model_row(out):
+        return next(line.strip() for line in out.splitlines() if line.strip().startswith('model '))
+
+    listed = box.run('list')
+    assert listed.returncode == 0, listed.stderr
+    for name in ('gw', 'seeded'):
+        assert '→ opus, from ~/.claude/settings.json' in row(listed.stdout, name), listed.stdout
+        shown = box.run('inspect', name)
+        assert shown.returncode == 0, shown.stderr
+        assert 'from ~/.claude/settings.json' in model_row(shown.stdout), shown.stdout
+    assert (conf.read_bytes(), shared.read_bytes()) == before
+
+    box.run('set', 'gw', 'model', 'model-a')
+    assert 'model_source=' not in conf.read_text(), conf.read_text()
+    assert 'model=model-a' in conf.read_text(), conf.read_text()
+    assert '→ model-a, saved in this profile' in row(box.run('list').stdout, 'gw')
+    assert 'saved in this profile' in model_row(box.run('inspect', 'gw').stdout)
+    assert shared.read_bytes() == before[1]

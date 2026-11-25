@@ -65,9 +65,9 @@ func (l *launcher) inspect(args []string) int {
 		}
 		model = merged
 	}
-	from := "profile default"
-	if model == "" {
-		from = ""
+	from := ""
+	if model != "" {
+		from = l.modelOrigin(name) // #862: this profile's, or ~/.claude/settings.json's
 	}
 	if model != "" {
 		grid(10, "model", model+"  "+l.dim+from+l.reset)
