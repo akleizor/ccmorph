@@ -25,6 +25,8 @@ from pathlib import Path
 from unittest import mock
 from weakref import WeakKeyDictionary
 
+import pytest
+
 from support import (CORE, FAKE_SERVER_NO_DNS, HANG_TIMEOUT, adapter_cmd,
                      needs_loopback, port_outside_the_ephemeral_pool, wait_until)
 
@@ -1013,6 +1015,14 @@ class AdapterTest(unittest.TestCase):
         return {int(line.split(None, 1)[0]) for line in out.splitlines()
                 if pattern.search(line)}
 
+    # #892: this case keeps an adapter, a stub translator (and a hooks build)
+    # and their tethers alive across waits whose own budgets are HANG_TIMEOUT —
+    # double the suite-wide ceiling — so on a loaded gate a clean run can
+    # legitimately pass the one-minute mark (the 2026-11-25 night gate struck
+    # exactly this test). The marker is its per-test headroom: the ceiling
+    # stays 60 s everywhere else, and a timeout here is still a verdict for
+    # this test alone, never a session killer.
+    @pytest.mark.timeout(300)
     def test_sigkilled_adapter_does_not_leak_its_children(self):
         # SIGKILL skips every handler and atexit in the adapter, which is how 40
         # translator+shim pairs were found reparented to launchd on 2026-10-02.
