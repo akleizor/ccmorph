@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
 from urllib.parse import urlsplit
 
@@ -92,23 +93,46 @@ def inference_target(switch: str | None) -> str:
 
 
 # Claude Code stamps every request with the session it belongs to (X-Claude-Code-Session-Id,
-# the --session-id a Remote Control host gives each phone session: cse_...); a subagent's
-# calls carry their session's id too. Only a plain id names a file: no path reaches it.
+# the same for its subagents). A Remote Control session child is started with
+# `--sdk-url https://api.anthropic.com/v1/code/sessions/<cse_...>`, and Claude Code names
+# its transcript, and so this header, by a UUIDv5 of that URL in its own namespace; the
+# header is never the cse_ id the phone and `--switch --session` know (2026-11-25: a
+# Start UI session set to the account kept running on the shared route).
+# Only a plain id names a file: no path reaches it.
 SESSION_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,127}")
 SESSION_HEADER = "x-claude-code-session-id"
+SDK_SESSION_URL = "https://api.anthropic.com/v1/code/sessions/"
+TRANSCRIPT_NAMESPACE = bytes.fromhex("3ab19d7e9f3545c2926e75e271cc60b3")
+
+
+def header_id(cse: str) -> str:
+    """The X-Claude-Code-Session-Id a Remote Control session `cse` sends: Claude Code's
+    UUIDv5 (SHA-1, namespace above) of its --sdk-url."""
+    d = bytearray(hashlib.sha1(TRANSCRIPT_NAMESPACE + (SDK_SESSION_URL + cse).encode()).digest()[:16])
+    d[6], d[8] = d[6] & 0x0F | 0x50, d[8] & 0x3F | 0x80
+    h = d.hex()
+    return f"{h[:8]}-{h[8:12]}-{h[12:16]}-{h[16:20]}-{h[20:]}"
 
 
 def session_target(sessions: str | None, session: str | None) -> str | None:
     """The target `ccmorph-rc <profile> --switch --session <id>` chose for this one
     session ("account", "route" or a profile), else None: the session follows the
-    switch every host shares. Read on every inference request, like the switch."""
+    switch every host shares. `session` is the request's header; the file is named by
+    the cse_ id, so a header is matched against each file's derived id. Read on every
+    inference request, like the switch."""
     if not sessions or not session or not SESSION_ID.fullmatch(session):
         return None
     try:
-        word = open(f"{sessions}/{session}").read().strip()
+        names = [n for n in os.listdir(sessions) if n == session or header_id(n) == session]
     except OSError:
         return None
-    return word if SWITCH_WORD.fullmatch(word) else None
+    for name in names:
+        try:
+            word = open(f"{sessions}/{name}").read().strip()
+        except OSError:
+            continue
+        return word if SWITCH_WORD.fullmatch(word) else None
+    return None
 
 
 def is_inference(host: str, path: str) -> bool:
