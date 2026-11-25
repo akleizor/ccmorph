@@ -137,6 +137,20 @@ map is applied, so a provider such as codex receives its own models. `inference=
 in `rc-hosts` does the same from the config. A proxy started before this feature needs one
 restart to load it.
 
+```sh
+ccmorph-rc <route-profile> --switch --session cse_...  # only that phone session moves
+ccmorph-rc <route-profile> --unswitch cse_...           # it follows the shared switch again
+```
+
+Every request carries its session's id (`X-Claude-Code-Session-Id`, the same for its
+subagents), so one session can run on its own profile while the rest share the switch.
+A profile already up beside the live edge with the same tiers is reused, not started
+again. A tier the route pinned outside the Claude family (fable on a gateway model)
+reaches another target as that target's own model for the alias. The supervisor lists
+the active sessions and their picks in `sessions.json` beside the switch file and
+removes a session's pick once the session is gone. A conversation that moves between
+providers carries thinking blocks the previous one signed; a provider may refuse them.
+
 `ccmorph-rc-hosts` pins the route profile's tiers (each alias its profile maps outside
 its own Claude family, as `ccmorph get <route> --json` reports them); a
 `tier.<alias>=<model>` line in `rc-hosts` overrides one. A pinned tier names the route's

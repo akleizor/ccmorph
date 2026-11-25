@@ -91,6 +91,26 @@ def inference_target(switch: str | None) -> str:
     return word if SWITCH_WORD.fullmatch(word) else "route"
 
 
+# Claude Code stamps every request with the session it belongs to (X-Claude-Code-Session-Id,
+# the --session-id a Remote Control host gives each phone session: cse_...); a subagent's
+# calls carry their session's id too. Only a plain id names a file: no path reaches it.
+SESSION_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,127}")
+SESSION_HEADER = "x-claude-code-session-id"
+
+
+def session_target(sessions: str | None, session: str | None) -> str | None:
+    """The target `ccmorph-rc <profile> --switch --session <id>` chose for this one
+    session ("account", "route" or a profile), else None: the session follows the
+    switch every host shares. Read on every inference request, like the switch."""
+    if not sessions or not session or not SESSION_ID.fullmatch(session):
+        return None
+    try:
+        word = open(f"{sessions}/{session}").read().strip()
+    except OSError:
+        return None
+    return word if SWITCH_WORD.fullmatch(word) else None
+
+
 def is_inference(host: str, path: str) -> bool:
     if host.lower().rstrip(".") != FIRST_PARTY_HOST:
         return False
@@ -173,14 +193,40 @@ def pinned_model(model: object, tiers: dict[str, str]) -> str | None:
     return pinned[:-4] if pinned and pinned.endswith("[1m]") else pinned
 
 
-def normalize_body(payload: object, tiers: dict[str, str] | None = None) -> bool:
+def served_model(model: object, tiers: dict[str, str], route_tiers: dict[str, str] | None = None,
+                 family: bool = True) -> str | None:
+    """The model a request for `model` is served as under `tiers`, else None.
+
+    A session's env pins the route's out-of-family tiers on the bare alias, so under
+    another target its fable arrives as the route's model (gpt-6-astra): that id is
+    read back to its alias first, then served as the target's own model for it.
+    `family=False` stops there: a real Claude id the phone picked stays as picked.
+    """
+    if isinstance(model, str) and route_tiers and tiers is not route_tiers:
+        alias = next((a for a, m in route_tiers.items() if m == model), None)
+        if alias and (own := pinned_model(alias, tiers)):
+            return own
+    return pinned_model(model, tiers) if family else None
+
+
+def set_model(payload: object, tiers: dict[str, str], route_tiers: dict[str, str] | None = None,
+              family: bool = True) -> bool:
+    """Point the body's model at served_model in place; True if it changed."""
+    if not isinstance(payload, dict):
+        return False
+    served = served_model(payload.get("model"), tiers, route_tiers, family)
+    if served and served != payload.get("model"):
+        payload["model"] = served
+        return True
+    return False
+
+
+def normalize_body(payload: object, tiers: dict[str, str] | None = None,
+                   route_tiers: dict[str, str] | None = None) -> bool:
     """Rewrite first-party-only fields in place; True if anything changed."""
     if not isinstance(payload, dict):
         return False
-    changed = False
-    if (pinned := pinned_model(payload.get("model"), tiers or {})) and pinned != payload["model"]:
-        payload["model"] = pinned
-        changed = True
+    changed = set_model(payload, tiers or {}, route_tiers)
     thinking = payload.get("thinking")
     if isinstance(thinking, dict) and thinking.get("display") in FIRST_PARTY_ONLY_DISPLAY:
         thinking["display"] = FIRST_PARTY_ONLY_DISPLAY[thinking["display"]]

@@ -5337,3 +5337,26 @@ def test_profile_field_reads_an_unreadable_conf_as_no_field(tmp_path, capsys):
     if os.geteuid() != 0:
         assert "mode0.conf" in err and "Permission denied" in err
     assert "missing.conf" not in err               # absent is not a failure
+
+
+def test_the_session_list_names_each_sessions_own_word_and_drops_stale_ones(monkeypatch):
+    """A phone control picks a profile per session from sessions.json. A word whose
+    session is archived and not running is removed; a failed fetch removes nothing."""
+    import json
+    m = load()
+    m.SESSION_WORDS.mkdir(parents=True)
+    (m.SESSION_WORDS / "cse_live").write_text("gpro\n")
+    (m.SESSION_WORDS / "cse_gone").write_text("ds\n")
+    (m.SESSION_WORDS / "cse_running").write_text("ds\n")
+    monkeypatch.setattr(m, "account_name", lambda: "me")
+    monkeypatch.setattr(m, "session_pid", lambda sid: 7 if sid == "cse_running" else None)
+    monkeypatch.setattr(m, "host_sessions", lambda folders, status: ("", []))
+    m.publish_sessions(["repo"])
+    assert sorted(p.name for p in m.SESSION_WORDS.iterdir()) == ["cse_gone", "cse_live", "cse_running"]
+    found = [("repo", {"id": "cse_live", "title": "Fix it"}), ("repo", {"id": "cse_new"})]
+    monkeypatch.setattr(m, "host_sessions", lambda folders, status: ("tok", found))
+    m.publish_sessions(["repo"])
+    assert json.loads(m.SESSION_LIST.read_text()) == {"account": "me", "sessions": [
+        {"id": "cse_live", "title": "Fix it", "folder": "repo", "word": "gpro"},
+        {"id": "cse_new", "title": "", "folder": "repo", "word": None}]}
+    assert sorted(p.name for p in m.SESSION_WORDS.iterdir()) == ["cse_live", "cse_running"]

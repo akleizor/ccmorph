@@ -707,6 +707,35 @@ def test_default_account_names_claude_account_profiles(tmp_path, monkeypatch, ca
     assert "subscription" not in err
 
 
+def test_a_route_pinned_tier_is_served_as_the_targets_own_model():
+    """A session's env pins the route's fable (gpt-6-astra) on the bare alias. Under
+    another target that id is read back to fable and served as the target's fable;
+    the account (family=False) changes nothing else the phone picked."""
+    from rc_route import normalize_body, set_model
+    route = {"fable": "gpt-6-astra", "opus": "claude-opus-5-5"}
+    gpro = {"fable": "claude-opus-4-6-thinking", "opus": "claude-opus-4-6-thinking"}
+    body = {"model": "gpt-6-astra"}
+    assert normalize_body(body, gpro, route) and body["model"] == "claude-opus-4-6-thinking"
+    body = {"model": "gpt-6-astra"}
+    assert set_model(body, {"fable": "claude-fable-5-2"}, route, family=False)
+    assert body["model"] == "claude-fable-5-2"
+    body = {"model": "claude-sonnet-5-5"}
+    assert not set_model(body, {"sonnet": "x"}, route, family=False)
+    body = {"model": "gpt-6-astra"}
+    assert not normalize_body(body, route, route)           # on the route itself nothing moves
+
+
+def test_a_session_word_is_read_only_from_a_plain_id(tmp_path):
+    from rc_route import session_target
+    (tmp_path / "cse_1").write_text("gw\n")
+    (tmp_path / "bad").write_text("not a word!\n")
+    assert session_target(str(tmp_path), "cse_1") == "gw"
+    assert session_target(str(tmp_path), "bad") is None
+    assert session_target(str(tmp_path), "missing") is None
+    assert session_target(str(tmp_path), "../" + tmp_path.name + "/cse_1") is None
+    assert session_target(None, "cse_1") is None
+
+
 def test_inference_switch_is_read_live_and_defaults_to_the_route(tmp_path):
     switch = tmp_path / "inference"
     assert inference_target(None) == "route"
@@ -834,6 +863,7 @@ def _switch_state(tmp_path, monkeypatch):
     monkeypatch.setattr(rc, "retire_route_with", lambda pid, handle: None)
     monkeypatch.setattr(rc, "adapter_env", lambda: {})
     monkeypatch.setattr(rc, "start_adapter", lambda profile, owner, env: "http://127.0.0.1:54505")
+    monkeypatch.setattr(rc, "get_tiers", lambda profile: {"sonnet": "claude-sonnet-5-5"})
     return rc, route_env
 
 
@@ -881,6 +911,79 @@ def test_a_switch_handoff_pins_its_tiers_through_pinned_tiers(tmp_path, monkeypa
     assert hand.stat().st_mode & 0o777 == 0o600
     assert "[1m]" not in hand.read_text()
     assert (rc.STATE / "inference").read_text() == "gw\n"   # the word every host follows next turn
+
+
+def test_a_session_switch_moves_that_session_only(tmp_path, monkeypatch):
+    """--switch --session writes the word for one phone session; every other host
+    keeps the switch they share, and --unswitch hands the session back."""
+    rc, _ = _switch_state(tmp_path, monkeypatch)
+    rc.switch("gw", "me", "cse_01ABC")
+    assert (rc.STATE / "sessions" / "cse_01ABC").read_text() == "gw\n"
+    assert not (rc.STATE / "inference").exists()            # the shared switch is untouched
+    rc.unswitch("cse_01ABC")
+    assert not (rc.STATE / "sessions" / "cse_01ABC").exists()
+
+
+@pytest.mark.parametrize("sid", ["../inference", "a/b", "", "-x"])
+def test_a_session_switch_refuses_an_id_that_is_a_path(tmp_path, monkeypatch, sid):
+    rc, _ = _switch_state(tmp_path, monkeypatch)
+    with pytest.raises(SystemExit):
+        rc.switch("gw", "me", sid)
+    with pytest.raises(SystemExit):
+        rc.unswitch(sid)
+    assert not (rc.STATE / "inference").exists()
+
+
+def test_a_profile_already_up_is_shared_not_brought_up_again(tmp_path, monkeypatch):
+    """Each bring-up starts an adapter that lives as long as the edge: a second
+    session on the same profile reuses the first while it still answers, and only
+    a dead upstream or changed tiers bring it up again."""
+    rc, _ = _switch_state(tmp_path, monkeypatch)
+    started = []
+    with socket.socket() as srv:
+        srv.bind(("127.0.0.1", 0))
+        srv.listen()
+        url = f"http://127.0.0.1:{srv.getsockname()[1]}"
+        monkeypatch.setattr(rc, "start_adapter", lambda p, o, e: started.append(p) or url)
+        rc.switch("gw", "me", "cse_one")
+        rc.switch("gw", "me", "cse_two")
+        assert started == ["gw"]
+        assert (rc.STATE / "sessions" / "cse_two").read_text() == "gw\n"
+        monkeypatch.setattr(rc, "get_tiers", lambda profile: {"sonnet": "other"})
+        rc.switch("gw", "me", "cse_two")                     # tiers changed in Stark
+        assert started == ["gw", "gw"]
+    rc.switch("gw", "me", "cse_three")                       # its adapter is gone
+    assert started == ["gw", "gw", "gw"]
+
+
+def test_an_account_switch_records_the_accounts_own_tiers(tmp_path, monkeypatch):
+    rc, _ = _switch_state(tmp_path, monkeypatch)
+    monkeypatch.setattr(rc, "get_tiers", lambda profile: {"fable": "claude-fable-5-2"} if profile == "me" else None)
+    rc.switch("me", "me", "cse_01ABC")
+    assert (rc.STATE / "sessions" / "cse_01ABC").read_text() == "account\n"
+    assert json.loads((rc.STATE / "account-tiers.json").read_text()) == {"fable": "claude-fable-5-2"}
+
+
+def test_a_session_word_overrides_the_shared_switch_for_its_own_requests(tmp_path, monkeypatch):
+    """The proxy reads X-Claude-Code-Session-Id on every turn: that session's word
+    wins, a session with none (or another) follows the shared switch."""
+    from types import SimpleNamespace
+    state = tmp_path / "state"
+    (state / "sessions").mkdir(parents=True)
+    (state / "inference").write_text("route\n")
+    (state / "sessions" / "cse_mine").write_text("account\n")
+    addon = _switch_addon(monkeypatch, state)
+
+    def flow(sid):
+        f = SimpleNamespace(metadata={}, request=SimpleNamespace(
+            pretty_host="api.anthropic.com", path="/v1/messages", method="POST",
+            headers={"authorization": "Bearer ACCOUNT-SECRET", "x-claude-code-session-id": sid},
+            scheme="https", host="api.anthropic.com", port=443))
+        addon.requestheaders(f)
+        return f
+    assert flow("cse_mine").metadata.get(addon.ACCOUNT_METADATA) is True
+    assert flow("cse_other").metadata["rc_route"] is True
+    assert flow("../inference").metadata["rc_route"] is True
 
 
 def test_the_addon_reads_a_handoff_once_and_keeps_it_thereafter(tmp_path, monkeypatch):

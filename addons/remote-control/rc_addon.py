@@ -9,7 +9,9 @@ table nor any environment:
   RC_LOG          optional path; one line per request, method and path only
   RC_TIERS        optional JSON {alias: model}: tiers the config pinned (rc-hosts)
   RC_INFERENCE    optional path; "account", "route" or a profile name, read on every turn.
-                  A profile's endpoint arrives as <dir>/switch-<profile>.json (0600), deleted on read
+                  A profile's endpoint arrives as <dir>/switch-<profile>.json (0600), deleted on read.
+                  <dir>/sessions/<session id> holds one session's own word (--switch --session),
+                  and <dir>/account-tiers.json the account's {alias: model} for it
 """
 from __future__ import annotations
 
@@ -29,8 +31,9 @@ from pathlib import Path
 from mitmproxy import http
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from rc_route import (ACCOUNT_METADATA, encode_json, inference_target, is_event_upload,  # noqa: E402
-                      is_inference, normalize_body, reroute, slim_events)
+from rc_route import (ACCOUNT_METADATA, SESSION_HEADER, encode_json, inference_target,  # noqa: E402
+                      is_event_upload, is_inference, normalize_body, reroute, session_target,
+                      set_model, slim_events)
 
 UPSTREAM = os.environ["RC_UPSTREAM"]
 _key_file = os.environ.pop("RC_KEY_FILE")
@@ -41,6 +44,16 @@ PARENT = int(os.environ.get("RC_PARENT_PID") or 0)
 TIERS = json.loads(os.environ.get("RC_TIERS") or "{}")
 INFERENCE = os.environ.get("RC_INFERENCE")
 SWITCHED: dict[str, tuple[str, str, dict]] = {}   # profile -> (upstream, key, tiers), handed over by --switch
+SESSIONS = str(Path(INFERENCE).parent / "sessions") if INFERENCE else None
+
+
+def _account_tiers() -> dict:
+    """The account profile's {alias: model}, written beside the switch by --switch; {} when absent."""
+    try:
+        tiers = json.loads((Path(INFERENCE).parent / "account-tiers.json").read_text())
+    except (OSError, ValueError, TypeError):
+        return {}
+    return tiers if isinstance(tiers, dict) else {}
 
 
 def _switched(profile: str) -> tuple[str, str, dict] | None:
@@ -101,14 +114,17 @@ def requestheaders(flow: http.HTTPFlow) -> None:
         flow.metadata["rc_events"] = is_event_upload(req.pretty_host, req.path)
         _log(f"anthropic {req.method} {req.pretty_host}{route}")
         return
-    target = inference_target(INFERENCE)
+    own = session_target(SESSIONS, req.headers.get(SESSION_HEADER))
+    target = own or inference_target(INFERENCE)
+    via = " (session)" if own else ""
     if target == "account":
         # A legitimate first-party call: leave it untouched, but mark it so the
         # launcher's fail-closed block_list tells it from one no addon ever saw.
-        # shortcut: a tier pinned in the session's env (tier.fable=...) still names the route's model on
-        # the bare alias, which the account cannot serve; the phone's full ids are fine.
+        # Only its model may change: a tier the route pinned (fable -> the route's
+        # model) is read back to the account's own model for that alias.
         flow.metadata[ACCOUNT_METADATA] = True
-        _log(f"account   {req.method} {route}")
+        flow.metadata["rc_account_tiers"] = _account_tiers()
+        _log(f"account   {req.method} {route}{via}")
         return
     upstream, key, tiers = UPSTREAM, KEY, TIERS
     if target != "route":
@@ -124,7 +140,7 @@ def requestheaders(flow: http.HTTPFlow) -> None:
         req.headers[k] = v
     req.scheme, req.host, req.port = scheme, host, port
     flow.metadata["rc_route"] = True
-    _log(f"route     {req.method} {route}" + ("" if target == "route" else f" via {target}"))
+    _log(f"route     {req.method} {route}" + ("" if target == "route" else f" via {target}") + via)
 
 
 def _shrink(data: str, media_type: str | None) -> tuple[str, str] | None:
@@ -139,26 +155,32 @@ def _shrink(data: str, media_type: str | None) -> tuple[str, str] | None:
         return base64.b64encode(dst.read_bytes()).decode(), "image/jpeg"
 
 
-def _slim_body(content: bytes, routed: bool, tiers: dict) -> bytes | None:
-    """Parse, lighten and re-encode a request body; None if nothing changed."""
+def _slim_body(content: bytes, routed: bool, tiers: dict, account: dict | None = None) -> bytes | None:
+    """Parse, lighten and re-encode a request body; None if nothing changed. An
+    account call (`account`: its tiers) changes nothing but its model."""
     try:
         payload = json.loads(content)
     except ValueError:
         return None
-    if not (normalize_body(payload, tiers) if routed else slim_events(payload, _shrink)):
-        return None
-    return encode_json(payload)
+    if account is not None:
+        changed = set_model(payload, account, TIERS, family=False)
+    elif routed:
+        changed = normalize_body(payload, tiers, TIERS)
+    else:
+        changed = slim_events(payload, _shrink)
+    return encode_json(payload) if changed else None
 
 
 async def request(flow: http.HTTPFlow) -> None:
     routed, events = flow.metadata.get("rc_route"), flow.metadata.get("rc_events")
-    if not (routed or events) or not flow.request.content:
+    account = flow.metadata.get("rc_account_tiers")
+    if not (routed or events or account) or not flow.request.content:
         return
     content = flow.request.content
     # sips and multi-MB JSON would stall every other flow served by the loop:
     # parse, slim and encode on a worker thread and wait for it here.
     slim = await asyncio.get_running_loop().run_in_executor(
-        None, _slim_body, content, routed, flow.metadata.get("rc_tiers", TIERS))
+        None, _slim_body, content, routed, flow.metadata.get("rc_tiers", TIERS), account)
     if slim is not None:
         flow.request.content = slim
         if events:

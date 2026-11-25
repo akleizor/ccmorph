@@ -54,7 +54,7 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 # the routing decision beside this script, however it was loaded (test, install, exec)
 sys.path.insert(0, str(HERE))
-from rc_route import ACCOUNT_METADATA, edge_name, safe_part  # noqa: E402
+from rc_route import ACCOUNT_METADATA, SESSION_ID, edge_name, safe_part  # noqa: E402
 LIB_DIR = Path(os.environ.get("CCMORPH_LIB_DIR") or HERE.parent.parent / "lib")
 CCMORPH = LIB_DIR / "ccmorph.sh"
 ADAPTER = LIB_DIR.parent / "libexec" / "ccmorph-core"
@@ -607,13 +607,65 @@ def write_inference(word: str, path: Path = INFERENCE) -> None:
         raise
 
 
-def switch(profile: str, account: str) -> None:
-    """Send every host's inference to `profile` from the next turn, with no restart:
-    the account profile (Anthropic on the phone's own login), a profile that has a live
-    edge (that edge's route), or any other route or provider profile, which is brought
-    up beside the edge and handed to its proxy."""
+def get_tiers(profile: str) -> dict[str, str] | None:
+    """The profile's tier map from its owner, `ccmorph get <profile> --json` (no side
+    effect: nothing is started), `[1m]` stripped as pinned_tiers does; None if unread."""
+    try:
+        out = subprocess.run([str(ADAPTER), "cli", "get", profile, "--json"], stdin=subprocess.DEVNULL,
+                             capture_output=True, text=True, timeout=30)
+        tiers = json.loads(out.stdout)["tiers"] if out.returncode == 0 else None
+    except (OSError, subprocess.TimeoutExpired, ValueError, KeyError, TypeError):
+        return None
+    if not isinstance(tiers, dict):
+        return None
+    return {a: (m[:-4] if m.endswith("[1m]") else m) for a, m in tiers.items() if isinstance(m, str) and m}
+
+
+def write_json(path: Path, obj) -> None:
+    """A small non-secret record, replaced atomically through a temp only this write owns."""
+    fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=path.name + ".", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w") as fh:
+            json.dump(obj, fh)
+        os.replace(tmp, path)
+    except OSError:
+        with suppress(OSError):
+            os.unlink(tmp)
+        raise
+
+
+def brought_up(profile: str, owner: int, tiers: dict | None) -> bool:
+    """Whether `profile` is already up beside this edge with these tiers: the proxy
+    then holds its endpoint and key, and a second bring-up would only start a second
+    adapter (and bridge) that lives as long as the edge. Several sessions on one
+    profile share the first bring-up."""
+    try:
+        up = json.loads((STATE / f"up-{safe_part(profile)}.json").read_text())
+        port = urllib.parse.urlsplit(up["upstream"]).port
+    except (OSError, ValueError, KeyError, TypeError):
+        return False
+    if up.get("edge") != owner or up.get("tiers") != tiers or not port:
+        return False
+    with suppress(OSError), socket.create_connection(("127.0.0.1", port), timeout=2):
+        return True
+    return False
+
+
+def switch(profile: str, account: str, session: str | None = None) -> None:
+    """Send inference to `profile` from the next turn, with no restart: every host's,
+    or with `session` that one phone session's only (the rest keep the shared switch).
+    The account profile is Anthropic on the phone's own login, a profile that has a
+    live edge is that edge's route, and any other route or provider profile is brought
+    up beside the edge (once: a live bring-up is shared) and handed to its proxy."""
+    if session is not None and not SESSION_ID.fullmatch(session):
+        die(f"'{session}' is not a session id")
     word = "account" if profile == account else "route" if live_edge(profile) else profile
     hand = payload = None
+    if word == "account":
+        # The account's own model per alias, for a tier the route pinned (fable -> the
+        # route's model): the proxy reads it back to the account's model for that alias.
+        STATE.mkdir(parents=True, exist_ok=True)
+        write_json(STATE / "account-tiers.json", get_tiers(account) or {})
     if word == profile:
         if profile_type(profile) == "sub":
             die(f"'{profile}' is a Claude account profile, but the hosts sign in as '{account}'")
@@ -622,6 +674,8 @@ def switch(profile: str, account: str) -> None:
         if len(live) != 1:
             die(f"--switch needs exactly one live shared edge, found {len(live)}")
         owner = int(live[0]["pid"])          # the profile lives as long as the edge that serves it
+        current = get_tiers(profile)
+    if word == profile and not brought_up(profile, owner, current):
         route_env = resolve_route(profile)
         retire_route_with(owner, route_env.get("CCMORPH_ROUTE_HANDLE", ""))
         key = route_env.get("ANTHROPIC_API_KEY") or die(f"profile '{profile}' has no key")
@@ -631,6 +685,7 @@ def switch(profile: str, account: str) -> None:
         tiers = pinned_tiers(route_env)
         hand = STATE / f"switch-{profile}.json"
         payload = json.dumps({"upstream": upstream, "key": key, "tiers": tiers}).encode()
+        up = {"edge": owner, "upstream": upstream, "tiers": current}
     # From the temp's first byte to the word that makes the next request read it, the
     # handoff is the route key on disk with nothing else to remove it. The cleanup
     # below runs only when Python unwinds: TERM/HUP/QUIT at their default kill without
@@ -657,7 +712,13 @@ def switch(profile: str, account: str) -> None:
                     os.unlink(tmp)    # a temp that never became the handoff still holds the route key
                 raise
         try:
-            write_inference(word)
+            if session is None:
+                write_inference(word)
+            else:
+                (STATE / "sessions").mkdir(parents=True, exist_ok=True)
+                write_inference(word, STATE / "sessions" / session)
+            if hand is not None:
+                write_json(STATE / f"up-{safe_part(profile)}.json", up)
         except BaseException:
             if hand is not None:
                 # The word never landed, so no request reads this handoff: leaving it would
@@ -669,7 +730,17 @@ def switch(profile: str, account: str) -> None:
             raise
     finally:
         signal.pthread_sigmask(signal.SIG_SETMASK, old_mask)
-    print(f"ccmorph-rc: inference now goes to '{profile}' from the next turn", file=sys.stderr)
+    who = f"session {session}'s" if session else "every host's"
+    print(f"ccmorph-rc: {who} inference now goes to '{profile}' from the next turn", file=sys.stderr)
+
+
+def unswitch(session: str) -> None:
+    """Hand one session back to the switch every host shares."""
+    if not SESSION_ID.fullmatch(session):
+        die(f"'{session}' is not a session id")
+    with suppress(FileNotFoundError):
+        (STATE / "sessions" / session).unlink()
+    print(f"ccmorph-rc: session {session} follows every host's inference again", file=sys.stderr)
 
 
 def main(argv: list[str]) -> None:
@@ -679,7 +750,7 @@ def main(argv: list[str]) -> None:
         i = argv.index("--")
         argv, rc_args = argv[:i], argv[i + 1:]
     ap = argparse.ArgumentParser(prog="ccmorph-rc", description=__doc__.split("\n\n")[0])
-    ap.add_argument("route", help="ccmorph profile that serves inference")
+    ap.add_argument("route", nargs="?", help="ccmorph profile that serves inference")
     ap.add_argument("--as", dest="account", help="Claude account profile (default: the only one)")
     ap.add_argument("--debug", action="store_true", help="log method+path per request to the state dir")
     ap.add_argument("--route-models", action="store_true",
@@ -688,14 +759,24 @@ def main(argv: list[str]) -> None:
                     help="run the route's shared adapter+proxy for other bridges to use, and stay up")
     ap.add_argument("--switch", action="store_true",
                     help="send every host's inference to this profile from the next turn, with no restart")
+    ap.add_argument("--session", metavar="ID",
+                    help="with --switch: only this phone session (cse_...) moves; the rest keep theirs")
+    ap.add_argument("--unswitch", metavar="ID",
+                    help="hand session ID back to every host's inference")
     ap.add_argument("--probe", action="store_true",
                     help="send one prompt through the same wiring (claude -p) instead of Remote Control")
     args = ap.parse_args(argv)
+    if args.unswitch:
+        return unswitch(args.unswitch)
+    if args.route is None:
+        ap.error("the route profile is required")
+    if args.session and not args.switch:
+        ap.error("--session goes with --switch")
 
     claude = shutil.which("claude") or die("claude not found on PATH")
     account = args.account or default_account()
     if args.switch:
-        return switch(args.route, account)
+        return switch(args.route, account, args.session)
     if profile_type(account) != "sub":
         die(f"'{account}' is not a Claude account profile")
     if (route_type := profile_type(route := args.route)) == "sub":
