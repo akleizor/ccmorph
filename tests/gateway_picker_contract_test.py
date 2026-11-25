@@ -421,7 +421,6 @@ def refusing_checkout(tmp_path, mkdir_stub=REFUSING_MKDIR, go_body='printf new-c
     runner's sandbox does, with an empty operator ${TMPDIR} beside it."""
     checkout, env = shim_checkout(tmp_path, go_body, 'exit 0\n')
     (checkout / 'libexec/ccmorph-core').write_text('old')
-    (checkout / 'ccmorph-core').mkdir()  # the root file candidate cannot be made
     stubs = Path(env['PATH'].split(os.pathsep)[0])
     (stubs / 'mkdir').write_text(mkdir_stub)
     (stubs / 'mkdir').chmod(0o755)

@@ -145,6 +145,14 @@ def test_the_shim_build_cleans_its_temp_on_a_signal():
     assert re.search(r"trap 'rm -rf \"\$\$made\"' EXIT INT TERM HUP", recipe), recipe
 
 
+def test_the_shim_comment_names_only_what_it_tries():
+    # #636: the comment above `shim:` still named a plain-file candidate no
+    # recipe has tried since #840.
+    comment = re.search(r"((?:^#.*\n)+)^shim:", (ROOT / "Makefile").read_text(), re.M).group(1)
+    assert "plain file" not in comment, comment
+    assert "${TMPDIR}" in comment, comment
+
+
 def test_netroute_pins_no_go_patch_release():
     # #636: the comment named Go 1.27.4 while the code reads golang.org/x/net's
     # httpproxy and go.mod carries no toolchain line.

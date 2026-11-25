@@ -34,10 +34,10 @@ help:
 # answers `mkdir libexec/.shim-build.<pid>`, and the same name in the checkout
 # root, with "Operation not permitted" — still gets the same build: the staging
 # name is tried in libexec/ first (main's, unchanged), then without the leading
-# dot, then in the checkout root, then under ${TMPDIR} (made with mkdir -p, so
-# a temp root that does not exist yet works), then as a plain file named
-# ccmorph-core. Every candidate is on libexec's filesystem (device numbers
-# compared, so a cross-filesystem `mv` — a copy, not a rename — is never used)
+# dot, then in the checkout root, then under ${TMPDIR} (its parent made with
+# mkdir -p, so a temp root that does not exist yet works). Every candidate is
+# on libexec's filesystem (device numbers compared, so a cross-filesystem `mv`
+# — a copy, not a rename — is never used)
 # and the publish is one atomic rename, never a write in place; when no staging
 # name can be made, or the rename is refused, the build fails and the published
 # core is left exactly as it was. A staging name is reserved only by `mkdir`,
