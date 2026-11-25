@@ -14,6 +14,9 @@ import hashlib
 import json
 import os
 import re
+import socket
+import sys
+from pathlib import Path
 from urllib.parse import urlsplit
 
 FIRST_PARTY_HOST = "api.anthropic.com"
@@ -77,6 +80,131 @@ def edge_name(route: str) -> str:
         return route
     part = safe_part(route)[:64].strip("-") or "route"
     return f"{part}-{hashlib.sha256(route.encode('utf-8', 'surrogatepass')).hexdigest()[:32]}"
+
+
+def proc_started(pid: int) -> str | None:
+    """When the process at `pid` started, exactly enough that no later process the
+    OS gives the same number can share it (issue #595); None when no process runs
+    there or this OS has no exact start. Linux: the boot id and the start tick
+    (/proc/<pid>/stat field 22). macOS: the kernel's p_starttime to the microsecond
+    (sysctl kern.proc.pid). Never `ps`: it prints whole seconds."""
+    try:
+        stat = Path(f"/proc/{pid}/stat").read_bytes()
+        ticks = stat[stat.rindex(b")") + 1:].split()[19].decode()   # field 22: starttime
+        boot = Path("/proc/sys/kernel/random/boot_id").read_text().strip()
+        return f"{boot}:{ticks}"
+    except (OSError, ValueError, IndexError, UnicodeDecodeError):
+        pass
+    if sys.platform != "darwin" or pid <= 0:
+        return None
+    import ctypes
+    import struct
+    try:
+        sysctl = ctypes.CDLL(None, use_errno=True).sysctl
+    except (OSError, AttributeError):
+        return None
+    sysctl.argtypes = [ctypes.POINTER(ctypes.c_int), ctypes.c_uint, ctypes.c_void_p,
+                       ctypes.POINTER(ctypes.c_size_t), ctypes.c_void_p, ctypes.c_size_t]
+    sysctl.restype = ctypes.c_int
+    mib = (ctypes.c_int * 4)(1, 14, 1, pid)         # CTL_KERN, KERN_PROC, KERN_PROC_PID
+    buf = ctypes.create_string_buffer(1024)         # struct kinfo_proc: 648 bytes on 64-bit macOS
+    size = ctypes.c_size_t(len(buf))
+    if sysctl(mib, 4, buf, ctypes.byref(size), None, 0) != 0 or size.value < 16:
+        return None                                  # size 0: no process holds the pid
+    sec, usec = struct.unpack_from("=qi", buf.raw, 0)   # kp_proc.p_starttime (struct timeval)
+    return f"darwin:{sec}.{usec:06d}"
+
+
+def start_tag(started: str | None) -> str:
+    """A process start (proc_started) as one file-name part: the first 16 hex digits
+    of its sha256, or "unknown" when the start could not be read. A start itself
+    holds ':' and '.', and a name read by splitting on '.' must keep its pid where
+    it was (issue #595: taken.<proxy pid>.<start tag>.<profile>.json)."""
+    return hashlib.sha256(started.encode()).hexdigest()[:16] if started else "unknown"
+
+
+def edge_serves(record: Path, route: str | None = None) -> dict | None:
+    """The shared edge `record` describes if it can serve right now: its process is
+    alive, its proxy answers on loopback and its CA file is still there. The one
+    rule: ccmorph-rc's live_edge (the count --switch refuses on, and rc-hosts'
+    edge_ready) and the fallback note both call it, so the note can never count an
+    edge --switch would refuse (issue #595: the note skipped the CA).
+
+    With `route`, the record must also be that route's (#846): one naming another
+    route is a case twin's on a case-insensitive volume, and one naming none (from
+    before the field existed) counts only when its directory lists it spelled
+    exactly as `record.name` (the GH-259 rule)."""
+    try:
+        edge = json.loads(record.read_text())
+        if route is not None:
+            if edge.get("route", route) != route:
+                return None
+            if "route" not in edge and record.name not in os.listdir(record.parent):
+                return None
+        os.kill(int(edge["pid"]), 0)
+        with socket.create_connection(("127.0.0.1", int(edge["port"])), timeout=1):
+            pass
+        return edge if Path(edge["ca"]).exists() else None
+    except (OSError, ValueError, KeyError, TypeError, AttributeError):
+        return None
+
+
+def route_edge(edges: Path, route: str) -> dict | None:
+    """`route`'s shared edge under `edges` if it can serve now: its record at
+    <edge_name(route)>.json, read by edge_serves with the #846 ownership check.
+    ccmorph-rc's live_edge is this, and so are the note's and --switch's counts."""
+    return edge_serves(edges / f"{edge_name(route)}.json", route)
+
+
+def switch_edge(edges: Path, serves=None) -> tuple[int, dict | None]:
+    """The shared edge `ccmorph-rc <profile> --switch` hands a profile to: (how many
+    edges under `edges` serve, that edge's record with its "started" added -- or None
+    unless exactly one serves and its start can be read). --switch, the supervisor
+    and the fallback note all ask this, so the note names the command only where it
+    lands (issue #595). `serves` stands in for route_edge (ccmorph-rc passes its
+    live_edge, the supervisor its edge_ready)."""
+    serves = serves or (lambda f: route_edge(edges, f.stem))
+    live = [e for f in (sorted(edges.glob("*.json")) if edges.is_dir() else ()) if (e := serves(f))]
+    if len(live) != 1:
+        return len(live), None
+    started = proc_started(int(live[0]["pid"]))
+    return 1, (dict(live[0], started=started) if started else None)
+
+
+def lost_endpoint_note(target: str, bridge_dir: Path, parent: int, session: str | None = None,
+                       parent_started: str | None = None) -> str:
+    """The per-turn line when the word names profile `target` and this proxy holds
+    no endpoint for it. It names `ccmorph-rc <target> --switch` only where that
+    command hands the endpoint to THIS proxy: switch_edge finds exactly one shared
+    edge, the same rule --switch hands over with, and this proxy is that edge's --
+    `parent` is the pid it follows and `parent_started` that process's start, the
+    pair a handoff must name for this proxy to take it (a pid alone matched the
+    proxy of an edge whose pid went to a replacement, issue #595 review). Every
+    other case says why nothing can be handed here, never a repair that cannot fix
+    it (issue #595)."""
+    edges = bridge_dir / "edges"
+    how = f"ccmorph-rc {target} --switch" + (f" --session {session}" if session else "")
+    if route_edge(edges, target):
+        return (f"switch    {target} has its own live edge, so `{how}` writes the word 'route', which "
+                f"each proxy serves from its own route; on this proxy's route meanwhile")
+    n, edge = switch_edge(edges)
+    if edge is not None and int(edge["pid"]) == parent and edge["started"] == parent_started:
+        return f"switch    {target} has no endpoint in this proxy; `{how}` hands it over; on the route meanwhile"
+    if edge is not None and int(edge["pid"]) == parent and parent_started is None:
+        return (f"switch    {target} has no endpoint in this proxy, which predates handoffs naming their "
+                f"edge's start, so a switch can hand it nothing until edge {parent} restarts; on the route")
+    if edge is not None and int(edge["pid"]) == parent:
+        return (f"switch    {target} has no endpoint in this proxy, which follows an earlier process at "
+                f"pid {parent} than the live shared edge: a switch hands profiles to that edge's own "
+                f"proxy only; on the route")
+    if edge is not None:
+        return (f"switch    {target} has no endpoint in this proxy, which is not the shared edge's: "
+                f"a switch hands profiles to edge {edge['pid']} only; on the route")
+    if n == 1:
+        return (f"switch    {target} has no endpoint in this proxy, and the start of the one live shared "
+                f"edge cannot be read here, so nothing can be handed to it; on the route")
+    return (f"switch    {target} has no endpoint in this proxy and no single live shared edge to hand "
+            f"it to ({n} live); on the route")
 
 
 def inference_target(switch: str | None) -> str:

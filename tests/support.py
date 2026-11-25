@@ -323,6 +323,25 @@ def helper_cmd(name, binary=None):
     return [str(binary or CORE), name]
 
 
+def proxy_took(rc):
+    """ccmorph-rc's handoff_taken as the shared edge's proxy answers it (issue #595):
+    the proxy says it holds the handoff -- held.<edge>.json names its id, as rc_addon
+    writes it -- and the file stays, so a test can read what was handed over."""
+    import json
+
+    def took(hand, payload, *a):
+        rec = json.loads(payload)
+        held = rc.STATE / f"held.{rec['edge']}.json"
+        try:
+            have = json.loads(held.read_text())["profiles"]
+        except (OSError, ValueError, KeyError):
+            have = {}
+        have[hand.name[len("switch-"):-len(".json")]] = rec["id"]
+        held.write_text(json.dumps({"edge": rec["edge"], "edge_started": rec["edge_started"], "profiles": have}))
+        return True
+    return took
+
+
 def __getattr__(name):
     if name == "needs_shim":
         import pytest
