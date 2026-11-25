@@ -401,13 +401,32 @@ def test_a_failed_make_shim_leaves_the_published_core_as_it_was(tmp_path):
 
 # The landing gate's runner refuses every new name inside the checkout; only
 # the caller's ${TMPDIR} takes one (#840, rounds 5 to 8). The recipe reserves a
-# staging name with `mkdir` alone, so an entry already at that name — a file, a
-# FIFO, a symlink — is refused without ever being opened.
+# staging name with a plain `mkdir` of the name (mkdir -p makes only its
+# parent), so an entry already at that name — a file, a FIFO, a directory or a
+# symlink — is refused without ever being opened. The stub decides on the last
+# argument, the name, whatever options come before it.
 REFUSING_MKDIR = (
     '#!/bin/sh\n'
-    'case "$2" in\n'
+    'for a; do last=$a; done\n'
+    'case "$last" in\n'
     '  libexec/.shim-build.*|libexec/shim-build.*|.shim-build.*|shim-build.*)\n'
-    '    echo "mkdir: $2: Operation not permitted" >&2; exit 1;;\n'
+    '    echo "mkdir: $last: Operation not permitted" >&2; exit 1;;\n'
+    'esac\n'
+    'exec /bin/mkdir "$@"\n')
+
+# #636: another user plants an entry at the predictable ${TMPDIR} staging name
+# between the build's choice of it and its mkdir: a directory of theirs, or a
+# symlink to one. The checkout names are refused as above.
+PLANTING_MKDIR = (
+    '#!/bin/sh\n'
+    'for a; do last=$a; done\n'
+    'case "$last" in\n'
+    '  libexec/.shim-build.*|libexec/shim-build.*|.shim-build.*|shim-build.*)\n'
+    '    echo "mkdir: $last: Operation not permitted" >&2; exit 1;;\n'
+    '  */ccmorph-shim.*)\n'
+    '    /bin/mkdir "$last.theirs" && printf theirs > "$last.theirs/mark"\n'
+    '    if [ "$PLANT" = symlink ]; then ln -s "$last.theirs" "$last"\n'
+    '    else /bin/mkdir "$last" && printf theirs > "$last/mark"; fi;;\n'
     'esac\n'
     'exec /bin/mkdir "$@"\n')
 
@@ -436,13 +455,17 @@ def test_make_shim_staged_under_tmpdir_removes_only_what_it_made_issue_840(tmp_p
     a directory under the caller's ${TMPDIR}. Cleanup must remove what the
     build made there — its own staging directory — and never the caller's temp
     directory, which `rmdir "$(dirname "$stage")"` removed."""
-    go_body = 'printf new-core > "$out"\n' if build == 'published' else 'exit 1\n'
+    go_body = ('printf %s "$out" > "$STAGED_AT"; printf new-core > "$out"\n' if build == 'published'
+               else 'exit 1\n')
     checkout, env, operator_tmp = refusing_checkout(tmp_path, go_body=go_body)
+    env['STAGED_AT'] = str(tmp_path / 'staged-at')
     r = make_shim(checkout, env)
     core = (checkout / 'libexec/ccmorph-core').read_text()
     if build == 'published':
         assert r.returncode == 0, r.stdout + r.stderr
         assert core == 'new-core'
+        # #636: staged under ${TMPDIR}, so the stub still refuses every checkout name.
+        assert (tmp_path / 'staged-at').read_text().startswith(str(operator_tmp)), r.stdout + r.stderr
     else:
         assert r.returncode != 0, r.stdout + r.stderr
         assert core == 'old'
@@ -452,8 +475,8 @@ def test_make_shim_staged_under_tmpdir_removes_only_what_it_made_issue_840(tmp_p
 
 @pytest.mark.parametrize('occupied', ['file', 'fifo'])
 def test_make_shim_refuses_an_occupied_staging_name_without_opening_it_issue_840(tmp_path, occupied):
-    """GH-840 gate: a staging name is reserved with `mkdir` only, which refuses
-    an entry already there without opening it. A fixed-name fallback opened
+    """GH-840 gate: a staging name is reserved with a plain `mkdir` of the name,
+    which refuses an entry already there without opening it. A fixed-name fallback opened
     $TMPDIR/ccmorph-core with a redirection, and a FIFO planted there (a shared
     temporary directory is not the build's) made `make shim` wait forever for a
     reader — the REVIEW.md failure kind "a trust boundary crossed on a
@@ -472,6 +495,43 @@ def test_make_shim_refuses_an_occupied_staging_name_without_opening_it_issue_840
     assert 'no staging name' in r.stderr, r.stderr
     assert (theirs.is_fifo() if occupied == 'fifo' else theirs.read_text() == 'theirs')
     assert (checkout / 'libexec/ccmorph-core').read_text() == 'old'
+
+
+@pytest.mark.parametrize('planted', ['directory', 'symlink'])
+def test_make_shim_refuses_a_staging_name_planted_before_its_mkdir_issue_636(tmp_path, planted):
+    """#636: the recipe emptied the name and then ran `mkdir -p` on it, so a
+    directory another user planted at ${TMPDIR}/ccmorph-shim.<pid> in between
+    (or a symlink to theirs) was staged into, and they could swap the core
+    before the rename published it. A plain `mkdir` of the name fails on it:
+    the build stops, their entries stay as they were, and the core is left
+    alone."""
+    checkout, env, operator_tmp = refusing_checkout(tmp_path, mkdir_stub=PLANTING_MKDIR)
+    env['PLANT'] = planted
+    r = make_shim(checkout, env)
+    assert r.returncode != 0, r.stdout + r.stderr
+    assert 'no staging name' in r.stderr, r.stderr
+    assert (checkout / 'libexec/ccmorph-core').read_text() == 'old'
+    theirs = sorted(operator_tmp.glob('ccmorph-shim.*.theirs'))
+    assert theirs, sorted(operator_tmp.iterdir())
+    for d in theirs:
+        assert (d / 'mark').read_text() == 'theirs'
+        name = d.with_name(d.name.removesuffix('.theirs'))
+        assert name.is_symlink() if planted == 'symlink' else name.is_dir(), sorted(operator_tmp.iterdir())
+        if planted == 'directory':
+            assert (name / 'mark').read_text() == 'theirs'
+    assert not list(operator_tmp.rglob('ccmorph-core')), sorted(operator_tmp.rglob('*'))
+
+
+def test_make_shim_stages_under_a_tmpdir_that_does_not_exist_yet(tmp_path):
+    """#636: mkdir -p makes the staging name's parent, so a ${TMPDIR} that does
+    not exist yet still takes the build, and is left empty after it."""
+    checkout, env, operator_tmp = refusing_checkout(tmp_path)
+    env['TMPDIR'] = str(operator_tmp / 'later')
+    r = make_shim(checkout, env)
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert (checkout / 'libexec/ccmorph-core').read_text() == 'new-core'
+    assert (operator_tmp / 'later').is_dir()
+    assert list((operator_tmp / 'later').iterdir()) == []
 
 
 def test_copied_lib_copies_source_not_the_checkouts_incidental_contents_issue_220(tmp_path, monkeypatch):

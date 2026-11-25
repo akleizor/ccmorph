@@ -40,9 +40,10 @@ help:
 # — a copy, not a rename — is never used)
 # and the publish is one atomic rename, never a write in place; when no staging
 # name can be made, or the rename is refused, the build fails and the published
-# core is left exactly as it was. A staging name is reserved only by `mkdir`,
-# which refuses any entry already at that name — a file, a FIFO or a directory
-# — without opening it, so a shared ${TMPDIR} can never make the build write
+# core is left exactly as it was. A staging name is reserved by a plain `mkdir`
+# of the name itself (mkdir -p makes only its parent), which fails on any entry
+# already there — a file, a FIFO, a directory or a symlink to one — without
+# opening it, and an entry the build did not make is never removed, so a shared ${TMPDIR} can never make the build write
 # into or wait on something it did not make. Cleanup removes only the staging
 # directory this run created; the caller's ${TMPDIR} is not this build's to
 # remove.
@@ -63,9 +64,11 @@ shim:
 	stage=; made=; \
 	trap 'rm -rf "$$made"' EXIT INT TERM HUP; \
 	for d in libexec/.shim-build.$$$$ libexec/shim-build.$$$$ .shim-build.$$$$ shim-build.$$$$ "$${TMPDIR:-/tmp}/ccmorph-shim.$$$$"; do \
-	  rm -rf "$$d"; \
-	  if mkdir -p "$$d" 2>/dev/null && same "$$d"; then made="$$d"; stage="$$d/ccmorph-core"; break; fi; \
-	  rm -rf "$$d"; \
+	  mkdir -p "$$(dirname "$$d")" 2>/dev/null; \
+	  if mkdir "$$d" 2>/dev/null; then \
+	    if same "$$d"; then made="$$d"; stage="$$d/ccmorph-core"; break; fi; \
+	    rmdir "$$d"; \
+	  fi; \
 	done; \
 	if [ -z "$$stage" ]; then \
 	  echo "shim: no staging name on libexec's filesystem can be made; libexec/ccmorph-core is untouched" >&2; exit 1; \
