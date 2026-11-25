@@ -13,6 +13,14 @@ which #385/#386 landed. That one costs a whole routed launch; this file pins the
 contract on the fake itself, where a spelling the launcher does not currently
 use is still cheap to check.
 
+GH-850 tells the serve tail's two shapes apart by ancestry, not by output: a
+double the launcher started names one of its own ancestors as `--parent-pid`
+(the launcher, which `util adapter-start` sits under until the ready line), so
+being orphaned at the handoff is not its death -- it serves while that same
+process lives and leaves on TERM. A double whose named parent is a stranger
+keeps GH-434's orphan exit, whatever its output is. Both shapes, and a
+launcher pid that is recycled, are pinned here and in `ccmorph_test.zsh`.
+
 The second half is the guard: the body has one home, so a launch test cannot
 re-introduce a private unbounded loop beside it. Both of GH-330's orphans came
 from a private copy.
@@ -26,12 +34,12 @@ import sys
 import fake_adapter
 import pytest
 
-from support import HANG_TIMEOUT
+from support import HANG_TIMEOUT, wait_until
 
 ROOT = Path(__file__).resolve().parent
 # The argv `_ccm_adapter_start` builds for a selected launch, minus the parent pid.
 LAUNCH_ARGV = ['gw', '--auto', '--model', 'claude-sonnet-4-5']
-SUPPORT = ('fake_adapter.py', 'fake_adapter_serve.sh', Path(__file__).name)
+SUPPORT = ('fake_adapter.py', 'fake_adapter_serve.sh', 'fake_adapter_claim.sh', Path(__file__).name)
 
 
 def _install(tmp_path: Path) -> str:
@@ -140,22 +148,31 @@ def test_reap_without_a_record_does_nothing(tmp_path):
     assert fake_adapter.reap(tmp_path / 'ccmorph-adapter') is False
 
 
-def test_the_fake_ends_when_its_own_launcher_is_gone_gh_434(tmp_path):
-    """An orphaned fake has nothing left to serve, whatever the pid it names.
+@pytest.mark.parametrize('output', ['pipe', 'file'])
+def test_the_fake_ends_when_its_own_launcher_is_gone_gh_434(tmp_path, output):
+    """An orphan no launcher started leaves on its own, whatever its output is.
 
-    GH-434: a launcher killed outright runs no trap, so the only reap is the
-    --parent-pid poll -- and a recycled pid names a live process long after the
-    launcher it belonged to is gone. Orphaned to PID 1 under a parent that
-    never dies, the fake served forever, holding the launcher's fifo write end
-    open so the suite's readiness read waited for an EOF at zero CPU and the
-    whole suite hung. The starter here exits at once, orphaning the fake, and
-    the bystander is the recycled pid the fake keeps trusting.
+    GH-434: the `--parent-pid` here names a live bystander that never started
+    the fake, the shape a recycled pid takes. The starter exits at once,
+    orphaning the fake, and nobody will send it TERM -- so the serve tail must
+    end it, and close the output it inherited. Both output shapes: a pipe (the
+    readiness reader GH-434 hung on, read to EOF here) and a regular file (the
+    shape the launcher also uses, which must not buy a stranger's orphan a
+    pass).
     """
     bystander = subprocess.Popen(['/bin/sleep', '300'])
+    out = tmp_path / 'out'
     try:
-        starter = subprocess.Popen(
-            ['/bin/sh', '-c', '"$1" gw --auto --model claude-sonnet-4-5 --parent-pid "$2" &',
-             '_', _install(tmp_path), str(bystander.pid)])
+        if output == 'pipe':
+            starter = subprocess.Popen(
+                ['/bin/sh', '-c', '"$1" gw --auto --model claude-sonnet-4-5 --parent-pid "$2" &',
+                 '_', _install(tmp_path), str(bystander.pid)],
+                stdout=subprocess.PIPE, text=True)
+        else:
+            starter = subprocess.Popen(
+                ['/bin/sh', '-c',
+                 '"$1" gw --auto --model claude-sonnet-4-5 --parent-pid "$2" >"$3" 2>/dev/null &',
+                 '_', _install(tmp_path), str(bystander.pid), str(out)])
         assert starter.wait(timeout=HANG_TIMEOUT) == 0
         # The record may not exist the instant the starter exits: wait on the
         # event itself, bounded by the shared bound.
@@ -166,9 +183,144 @@ def test_the_fake_ends_when_its_own_launcher_is_gone_gh_434(tmp_path):
             ['/bin/sh', '-c', 'while kill -0 "$1" 2>/dev/null; do sleep 0.2; done', '_',
              str(fake_pid)], timeout=HANG_TIMEOUT)
         assert watcher.returncode == 0, 'the orphaned fake never left'
+        if output == 'pipe':
+            # Death is only half of GH-434: the orphan must have let go of the
+            # inherited output, the EOF the readiness reader was waiting for.
+            assert 'PORT=45999' in starter.stdout.read()
+        else:
+            assert 'PORT=45999' in out.read_text()
     finally:
         fake_adapter.reap(tmp_path / 'ccmorph-adapter')
         _reap(bystander, starter)
+
+
+def _start_like_the_launcher(tmp_path: Path, env: dict) -> subprocess.Popen:
+    """Start the fake the way `util adapter-start` does (util/adapterstart.go).
+
+    The named parent is this test process, an ancestor of the fake, as the
+    launcher is. The starter sends the fake's stdout to a ready file, waits for
+    the ready line in it -- so it is alive while the fake's head looks up its
+    ancestors -- and then exits, orphaning the fake: the launch handoff.
+    """
+    return subprocess.Popen(
+        ['/bin/sh', '-c',
+         '"$1" gw --auto --model claude-sonnet-4-5 --parent-pid "$2" >"$3" 2>/dev/null &\n'
+         'n=0\n'
+         'until grep -q "^PORT=" "$3" 2>/dev/null; do\n'
+         '  n=$((n + 1)); [ "$n" -le "$4" ] || exit 1; /bin/sleep 0.05\n'
+         'done',
+         '_', _install(tmp_path), str(os.getpid()), str(tmp_path / 'ready.out'),
+         str(int(HANG_TIMEOUT * 20))],
+        env=env)
+
+
+def _fake_pid(tmp_path: Path) -> int:
+    subprocess.run(['/bin/sh', '-c', 'while [ ! -s "$1" ]; do sleep 0.05; done', '_',
+                    str(tmp_path / 'ccmorph-adapter.pid')], timeout=HANG_TIMEOUT)
+    return int((tmp_path / 'ccmorph-adapter.pid').read_text().strip())
+
+
+def test_the_fake_keeps_serving_after_the_launch_handoff_gh_850(tmp_path):
+    """Orphaning by the starter is the launch's handoff, not a death.
+
+    The launcher's `util adapter-start` exits once the adapter announces its
+    port, so every launched adapter is reparented the moment it serves
+    (util/hop.go: "util adapter-start exits once it is ready, so the adapter is
+    reparented"). GH-850: the serve tail's GH-434 orphan exit read that
+    handoff as a stray and ended the double on its tenth pass, before the
+    launcher's stop TERM reached it, so the stop record never appeared. The
+    double the launcher started names an ancestor as its parent; it must serve
+    while that process lives and leave on TERM, as `check_parent` does.
+
+    The witness is the double's own serve passes, not the wall clock: a PATH
+    `sleep` counts them, so clearing the tenth pass the old exit died on is an
+    event, and the shared bound is the only budget.
+    """
+    serve_bin = tmp_path / 'servebin'
+    serve_bin.mkdir()
+    counter = serve_bin / 'sleep'
+    counter.write_text('#!/bin/sh\necho x >> "$FAKE_SERVE_PASSES"\nexec /bin/sleep "$@"\n')
+    counter.chmod(0o755)
+    passes = tmp_path / 'passes'
+    starter = _start_like_the_launcher(
+        tmp_path, {**os.environ, 'PATH': f'{serve_bin}:{os.environ["PATH"]}',
+                   'FAKE_SERVE_PASSES': str(passes)})
+    try:
+        assert starter.wait(timeout=HANG_TIMEOUT) == 0, 'the fake never printed its ready line'
+        fake_pid = _fake_pid(tmp_path)
+
+        def state():
+            """'dead', 'serving' past the tenth pass, or None while still earlier."""
+            try:
+                os.kill(fake_pid, 0)
+            except OSError:
+                return 'dead'
+            try:
+                counted = len(passes.read_text().splitlines())
+            except OSError:
+                counted = 0
+            return 'serving' if counted >= 11 else None
+
+        seen = None
+
+        def observe():
+            nonlocal seen
+            seen = state()
+            return seen is not None
+
+        wait_until(observe, HANG_TIMEOUT)
+        assert seen == 'serving', (
+            'the fake left while the launch it watches was alive: a serve loop '
+            'that ends on its own timer, however long, is GH-850 again')
+
+        # And it still answers the launcher's stop: the TERM runs the trap and
+        # the fake leaves, the half the zsh suite's stopped-when-the-session-
+        # ends test reads from its record.
+        ended = subprocess.run(
+            ['/bin/sh', '-c',
+             'kill -TERM "$1"; while kill -0 "$1" 2>/dev/null; do sleep 0.2; done',
+             '_', str(fake_pid)], timeout=HANG_TIMEOUT)
+        assert ended.returncode == 0, 'the fake did not leave on TERM after the handoff'
+    finally:
+        fake_adapter.reap(tmp_path / 'ccmorph-adapter')
+        _reap(starter)
+
+
+def test_the_fake_ends_when_its_launchers_pid_is_recycled_gh_434(tmp_path):
+    """A launched double leaves once its parent pid names another process.
+
+    GH-434's cause: a launcher killed outright runs no trap, and its pid is
+    handed to a new process that never dies, so `kill -0` keeps answering. The
+    head recorded the launcher's start time; once the pid answers with another
+    start time, the tail must leave without TERM. A PATH `ps` stands in for
+    the recycle: after the flag file appears it reports a different start
+    time for every pid.
+    """
+    serve_bin = tmp_path / 'servebin'
+    serve_bin.mkdir()
+    shim = serve_bin / 'ps'
+    shim.write_text('#!/bin/sh\n'
+                    'if [ -e "$FAKE_PS_RECYCLED" ]; then\n'
+                    '  for a do [ "$a" = lstart= ] && { echo "Thu Jan  1 00:00:00 1970"; exit 0; }; done\n'
+                    'fi\n'
+                    'exec /bin/ps "$@"\n')
+    shim.chmod(0o755)
+    recycled = tmp_path / 'recycled'
+    starter = _start_like_the_launcher(
+        tmp_path, {**os.environ, 'PATH': f'{serve_bin}:{os.environ["PATH"]}',
+                   'FAKE_PS_RECYCLED': str(recycled)})
+    try:
+        assert starter.wait(timeout=HANG_TIMEOUT) == 0, 'the fake never printed its ready line'
+        fake_pid = _fake_pid(tmp_path)
+        os.kill(fake_pid, 0)  # serving after the handoff, before the recycle
+        recycled.touch()
+        watcher = subprocess.run(
+            ['/bin/sh', '-c', 'while kill -0 "$1" 2>/dev/null; do sleep 0.2; done', '_',
+             str(fake_pid)], timeout=HANG_TIMEOUT)
+        assert watcher.returncode == 0, 'the fake kept serving a recycled parent pid'
+    finally:
+        fake_adapter.reap(tmp_path / 'ccmorph-adapter')
+        _reap(starter)
 
 
 def _logical_lines(text: str):

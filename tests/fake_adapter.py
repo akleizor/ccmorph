@@ -22,7 +22,10 @@ One body for the long-lived fake, so that contract is stated once. The stubs
 that exit on their own -- `cli_messages_test.py`, `launch_latency_test.py`, the
 `rc_bridge_nested_launch_test.py` pair -- keep their own. `fake_adapter_serve.sh`
 is that one body: the zsh suite appends the same fragment to its own fakes, so
-the loop cannot grow a second copy in either suite (#373).
+the loop cannot grow a second copy in either suite (#373). `fake_adapter_claim.sh`
+is its one head, run before the ready line while the launcher is still an
+ancestor, so the tail can tell the launch it serves from a stranger's pid
+(GH-850).
 """
 
 import os
@@ -33,6 +36,8 @@ import subprocess
 # The tail every long-lived fake ends with: read the --parent-pid it was started
 # with, then serve until that pid is gone, the way `check_parent` does.
 SERVE = Path(__file__).with_name('fake_adapter_serve.sh').read_text()
+# The head that runs before the ready line: is the --parent-pid an ancestor?
+CLAIM = Path(__file__).with_name('fake_adapter_claim.sh').read_text()
 
 # The serve fragment's unconditional loop, in the spelling the guard in
 # fake_adapter_contract_test.py looks for. That guard checks this needle against
@@ -47,7 +52,7 @@ CORE_DISPATCH = ('case "$1" in adapter) shift ;; *) exec "' + str(Path(__file__)
 
 
 def script(ready_line: str, core: bool = False) -> str:
-    """The body: trap, record itself, announce readiness, then the shared tail.
+    """The body: trap, record itself, the shared head, announce readiness, the shared tail.
 
     Readiness comes last, as it does in the real adapter, where the signals are
     registered before `PORT=` is printed: a reader that sees the ready line can
@@ -58,7 +63,7 @@ def script(ready_line: str, core: bool = False) -> str:
     """
     return ('#!/bin/sh\n' + (CORE_DISPATCH if core else '') + 'trap "exit 0" TERM INT\n'
             'echo $$ > "$0.pid"\n'
-            + ready_line + '\n' + SERVE)
+            + CLAIM + '\n' + ready_line + '\n' + SERVE)
 
 
 def reap(adapter: Path) -> bool:

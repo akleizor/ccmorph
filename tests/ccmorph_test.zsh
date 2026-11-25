@@ -342,11 +342,12 @@ bridgeless_path() {
   print -r -- "$REPLY"
 }
 
-# Installs a fake ccmorph-adapter: the given lines, then the shared serve loop,
-# which exits once the launch that passed --parent-pid is gone (#373).
+# Installs a fake ccmorph-adapter: the shared claim head (it must run before
+# any ready line, GH-850), the given lines, then the shared serve loop, which
+# exits once the launch that passed --parent-pid is gone (#373).
 write_fake_adapter() {
   local adapter="$HOME/.config/ccmorph/libexec/ccmorph-adapter"
-  printf '%s\n' '#!/bin/sh' "$@" > "$adapter"
+  printf '%s\n' '#!/bin/sh' "$(<"$SCRIPT_DIR/fake_adapter_claim.sh")" "$@" > "$adapter"
   print -r -- "$(<"$SCRIPT_DIR/fake_adapter_serve.sh")" >> "$adapter"
   chmod +x "$adapter"
 }
@@ -13791,36 +13792,142 @@ test_the_runners_session_env_never_reaches_a_fixture() {
 run_test test_env_scrub_canary
 run_test test_the_runners_session_env_never_reaches_a_fixture
 
-# GH-434: a launcher killed outright runs no trap, so the fake's only reap is
-# the --parent-pid poll -- and a pid is recycled, so the parent it names can be
-# a live process long after the launch is gone. Reparented to PID 1 under a
-# parent that never dies, the fake served forever, holding the launcher's fifo
-# write end open while a test's readiness read waited for an EOF that never
-# came, at zero CPU. The starter here exits at once, so the tail is orphaned,
-# and the bystander is the recycled pid the tail keeps trusting.
-test_the_serve_tail_leaves_when_its_own_launcher_is_gone() {
+# GH-850: orphaning by the launcher's starter is the launch's handoff, not a
+# death. `util adapter-start` exits once the adapter announces its port
+# (util/hop.go: "util adapter-start exits once it is ready, so the adapter is
+# reparented"), and the --parent-pid it hands on names the launcher, one of
+# the double's own ancestors. The serve tail's GH-434 orphan exit read that
+# handoff as a stray and ended launched doubles on their tenth pass, before
+# the launcher's stop TERM arrived, so the stop record never appeared and
+# test_adapter_is_stopped_when_the_session_ends failed under the gate's load.
+# This starts a write_fake_adapter double the way adapter-start does: the
+# parent named is this shell ($$, an ancestor), stdout on a ready file, and
+# the starter leaves once the ready line is in it. The witness is the tail's
+# own serve passes: a PATH sleep counts them, so clearing the tenth pass is an
+# event, and every retry cap is the shared hang bound (#457).
+test_the_serve_tail_serves_on_after_the_launch_handoff() {
+  local test_home; test_home=$(mktemp -d)
+  setup_home "$test_home"
+  write_fake_adapter 'trap "exit 0" TERM INT' 'echo "PORT=45999"'
+  local rc=0 serve_pid passes started=0
+  mkdir -p "$test_home/servebin"
+  printf '%s\n' '#!/bin/sh' 'echo x >> "$SERVE_PASS_FILE"' 'exec /bin/sleep "$@"' \
+    > "$test_home/servebin/sleep"
+  chmod +x "$test_home/servebin/sleep"
+  passes="$test_home/passes"; : > "$passes"
+  PATH="$test_home/servebin:$PATH" SERVE_PASS_FILE="$passes" \
+    /bin/sh -c '"$1" gw --parent-pid "$2" >"$3" 2>/dev/null &
+echo $! > "$4"
+n=0
+until grep -q "^PORT=" "$3" 2>/dev/null; do
+  n=$((n + 1)); [ "$n" -le "$5" ] || exit 1; /bin/sleep 0.05
+done' _ "$HOME/.config/ccmorph/libexec/ccmorph-adapter" "$$" "$test_home/ready.out" \
+    "$test_home/serve.pid" $(( CCMORPH_TEST_HANG_TIMEOUT * 20 )) || started=1
+  serve_pid=$(<"$test_home/serve.pid")
+  if (( started )); then
+    print -u2 -- "the double never printed its ready line"
+    rc=1
+  fi
+  # End on either event -- eleven counted passes (past the tenth the old
+  # exit fired on), or the tail leaving on its own. The retry cap is the
+  # shared hang bound, 0.05s a pass; command sleep, as every wait here (#457,
+  # and tests shadow sleep).
+  local -i i=0
+  while kill -0 "$serve_pid" 2>/dev/null && (( $(wc -l < "$passes") < 11 )); do
+    (( ++i < CCMORPH_TEST_HANG_TIMEOUT * 20 )) || break
+    command sleep 0.05
+  done
+  if ! kill -0 "$serve_pid" 2>/dev/null; then
+    print -u2 -- "the serve tail left while the pid it watches was alive: GH-850 again"
+    rc=1
+  elif (( $(wc -l < "$passes") < 11 )); then
+    print -u2 -- "the serve tail stopped counting serve passes"
+    rc=1
+  fi
+  # And it leaves when the launcher stops it, which is the half the launch's
+  # stopped-when-the-session-ends test reads from its trap.
+  kill -TERM "$serve_pid" 2>/dev/null
+  local -i j=0
+  while kill -0 "$serve_pid" 2>/dev/null; do
+    (( ++j < CCMORPH_TEST_HANG_TIMEOUT * 10 )) || {
+      print -u2 -- "the serve tail ignored the launcher TERM"; rc=1; break
+    }
+    command sleep 0.1
+  done
+  kill -KILL "$serve_pid" 2>/dev/null
+  rm -rf "$test_home"
+  return $rc
+}
+run_test test_the_serve_tail_serves_on_after_the_launch_handoff
+
+# GH-434, the shape GH-850 keeps: a double whose --parent-pid names a live
+# stranger, not one of its ancestors, is claimed by no launcher, and no
+# launcher holds its stop. With that pid never dying, only the serve tail's
+# tenth-pass orphan exit ends it -- and it must, before anything waits on the
+# output it inherited: GH-434's readiness read sat at zero CPU waiting for an
+# EOF such an orphan never let go of, and the suite hung. The old pin of this
+# let the double inherit the suite's stdout, so its shape varied with how the
+# suite was invoked; here the inherited output is an explicit pipe read by a
+# `cat` whose exit is the EOF the real reader waited for. Both witnesses are
+# capped by the shared hang bound (#457): a wait that cannot reach teardown
+# is the very bug, so it must not outlive the bound either.
+test_the_serve_tail_leaves_a_double_no_launcher_claimed() {
+  local test_home; test_home=$(mktemp -d)
+  local rc=0 serve_pid bystander reader
+  mkfifo "$test_home/hold"
+  command cat "$test_home/hold" > "$test_home/held.out" & reader=$!
+  /bin/sleep 300 & bystander=$!
+  /bin/sh -c 'sh "$1" gw --parent-pid "$2" >"$4" 2>/dev/null &
+echo $! > "$3"' _ "$SCRIPT_DIR/fake_adapter_serve.sh" "$bystander" \
+    "$test_home/serve.pid" "$test_home/hold" 2>/dev/null
+  serve_pid=$(<"$test_home/serve.pid")
+  # The starter is gone the moment the record lands, so the orphan is the
+  # pipe's last writer: cat's exit is the EOF, and the tail's own death is
+  # the cleanup-without-TERM GH-434 needed. The cap is the shared hang bound,
+  # 0.1s a pass (#457).
+  local -i i=0
+  while kill -0 "$reader" 2>/dev/null || kill -0 "$serve_pid" 2>/dev/null; do
+    (( ++i < CCMORPH_TEST_HANG_TIMEOUT * 10 )) || break
+    command sleep 0.1
+  done
+  if kill -0 "$reader" 2>/dev/null || kill -0 "$serve_pid" 2>/dev/null; then
+    print -u2 -- "the orphan no launcher claimed held the inherited output past the bound: GH-434 again"
+    rc=1
+  fi
+  kill -KILL "$serve_pid" "$reader" "$bystander" 2>/dev/null
+  wait "$reader" "$bystander" 2>/dev/null
+  rm -rf "$test_home"
+  return $rc
+}
+run_test test_the_serve_tail_leaves_a_double_no_launcher_claimed
+
+# GH-434 with the other output shape: the orphan of a starter that sent its
+# stdout to a regular file -- the shape the launcher uses too -- named a live
+# bystander, not an ancestor, so no launcher holds its stop and it must leave
+# on its own. The cap is the shared hang bound, 0.1s a pass (#457).
+test_the_serve_tail_leaves_an_unclaimed_double_writing_to_a_file() {
   local test_home; test_home=$(mktemp -d)
   local rc=0 serve_pid bystander
   /bin/sleep 300 & bystander=$!
-  /bin/sh -c 'sh "$1" gw --parent-pid "$2" &
-echo $! > "$3"' _ "$SCRIPT_DIR/fake_adapter_serve.sh" "$bystander" "$test_home/serve.pid" 2>/dev/null
+  /bin/sh -c 'sh "$1" gw --parent-pid "$2" >"$4" 2>/dev/null &
+echo $! > "$3"' _ "$SCRIPT_DIR/fake_adapter_serve.sh" "$bystander" \
+    "$test_home/serve.pid" "$test_home/out" 2>/dev/null
   serve_pid=$(<"$test_home/serve.pid")
   local -i i=0
   while kill -0 "$serve_pid" 2>/dev/null; do
-    (( ++i < 100 )) || break
-    sleep 0.1
+    (( ++i < CCMORPH_TEST_HANG_TIMEOUT * 10 )) || break
+    command sleep 0.1
   done
   if kill -0 "$serve_pid" 2>/dev/null; then
-    print -u2 -- "the serve tail outlived its orphaned launcher for 10s while --parent-pid named a live pid"
-    kill -KILL "$serve_pid" 2>/dev/null
+    print -u2 -- "the unclaimed orphan writing to a file served past the bound: GH-434 again"
     rc=1
   fi
-  kill -KILL "$bystander" 2>/dev/null
+  kill -KILL "$serve_pid" "$bystander" 2>/dev/null
   wait "$bystander" 2>/dev/null
   rm -rf "$test_home"
   return $rc
 }
-run_test test_the_serve_tail_leaves_when_its_own_launcher_is_gone
+run_test test_the_serve_tail_leaves_an_unclaimed_double_writing_to_a_file
 
 # GH-434, the other half: the readiness read itself. The launcher's fd 3 is
 # the fifo claude publishes its pid on, and the adapter the launcher
