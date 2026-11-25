@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -16,8 +17,10 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+
 	"syscall"
 	"testing"
+	"testing/iotest"
 	"time"
 )
 
@@ -2584,5 +2587,50 @@ func TestQuotaCacheWriteKeepsTheTempsMode(t *testing.T) {
 	}
 	if r, ok := load("gw"); !ok || r.Plan != "Max" {
 		t.Fatalf("the cache must read back what was saved, got %+v, %v", r, ok)
+	}
+}
+
+// #553 (moved to #636): a umask holding the owner-read bit left the cache 0200,
+// unreadable by its owner, so every read fell back to the whole store.
+func TestQuotaCacheStaysReadableUnderAnOwnerReadUmask(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	if err := os.MkdirAll(cacheDir(), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	old := syscall.Umask(0o477)
+	defer syscall.Umask(old)
+	save("gw", Reading{Plan: "Max", ReadAt: 1})
+	st, err := os.Stat(cachePath("gw"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.Mode().Perm()&0o400 == 0 {
+		t.Fatalf("the cache landed %o, unreadable by its owner", st.Mode().Perm())
+	}
+	if r, ok := load("gw"); !ok || r.Plan != "Max" {
+		t.Fatalf("the cache must read back, got %+v, %v", r, ok)
+	}
+}
+
+// TestQuotaARefusedProfileListIsAnError pins #636: a read error mid-scan left
+// the tail looking like a complete file.
+func TestQuotaARefusedProfileListIsAnError(t *testing.T) {
+	var out, errOut bytes.Buffer
+	code := Main(nil, iotest.ErrReader(errors.New("broken pipe")), &out, &errOut)
+	if code == 0 || !strings.Contains(errOut.String(), "broken pipe") {
+		t.Fatalf("exit %d, stderr %q", code, errOut.String())
+	}
+}
+
+// TestFolderMarksFingerprintAnEmptyFolder pins #636: the empty case was the one
+// live caller of a second fingerprint spelling.
+func TestFolderMarksFingerprintAnEmptyFolder(t *testing.T) {
+	dir := t.TempDir()
+	first, partial, ok := folderMarks(dir)
+	if !ok || partial {
+		t.Fatalf("ok=%v partial=%v", ok, partial)
+	}
+	if again, _, _ := folderMarks(dir); again != first || first != hashKey("") {
+		t.Fatalf("an empty folder fingerprints as %q then %q, want %q", first, again, hashKey(""))
 	}
 }

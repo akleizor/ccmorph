@@ -134,7 +134,9 @@ edge as before; any other route or provider profile is brought up beside the edg
 (its adapter, and a provider's bridge, live as long as the edge does) and handed to the
 proxy through a 0600 file it deletes on read, so its key stays in memory only. Its model
 map is applied, so a provider such as codex receives its own models. `inference=<profile>`
-in `rc-hosts` does the same from the config. A proxy started before this feature needs one
+in `rc-hosts` does the same from the config. `retire=<folder>` stops hosting a folder while
+its own line may stay (the folder keeps its sessions; drop the `retire=` line to host it
+again). A proxy started before this feature needs one
 restart to load it.
 
 `ccmorph-rc-hosts` pins the route profile's tiers (each alias its profile maps outside

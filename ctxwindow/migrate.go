@@ -114,7 +114,7 @@ func MigrationPreview() (string, error) {
 	root := cacheRoot()
 	for _, profile := range names {
 		cache := filepath.Join(root, profile, "cache/context-window")
-		if paths.IsFile(cache) && !paths.IsSymlink(cache) {
+		if paths.IsRegularFile(cache) {
 			text, err := readText(cache)
 			if err != nil {
 				return "", err
@@ -217,7 +217,7 @@ func migrateLocked(state string, stderr io.Writer) (int, error) {
 		expected := ProfileIdentity(profile)
 		cache := filepath.Join(root, profile, "cache/context-window")
 		values := map[string]int64{}
-		if paths.IsFile(cache) && !paths.IsSymlink(cache) {
+		if paths.IsRegularFile(cache) {
 			text, err := readText(cache)
 			if err != nil {
 				return 0, err
@@ -279,7 +279,7 @@ func RecoverCacheBackups(stderr io.Writer) (int, error) {
 			continue
 		}
 		cache := filepath.Join(root, s, "cache/context-window.migrated")
-		if !paths.IsFile(cache) || paths.IsSymlink(cache) {
+		if !paths.IsRegularFile(cache) {
 			continue
 		}
 		text, err := readText(cache)

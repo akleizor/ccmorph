@@ -182,3 +182,171 @@ func TestDispatchRefusesAnUnknownFlagBeforeRouting(t *testing.T) {
 		})
 	}
 }
+
+// TestShowANamedPickHasNoEmptyClass pins #636: a caller-named profile+model
+// fills no Class or Slack, and the old line printed `·  · slack 0.0`, which
+// reads like a real reading.
+func TestShowANamedPickHasNoEmptyClass(t *testing.T) {
+	var b bytes.Buffer
+	show(&b, Decision{Task: Task{Kind: "code", Tier: "mid"}, Pick: &Option{Profile: "demo", Model: "m", Effort: "medium"}}, false)
+	got := b.String()
+	if !strings.Contains(got, "named by the caller") {
+		t.Fatalf("a named pick does not say who chose it: %q", got)
+	}
+	if strings.Contains(got, "· ·") || strings.Contains(got, "slack") {
+		t.Fatalf("an empty class still prints a slack reading: %q", got)
+	}
+	// A routed pick keeps its reading.
+	b.Reset()
+	show(&b, Decision{Task: Task{Kind: "code", Tier: "mid"}, Pick: &Option{Profile: "demo", Model: "m", Effort: "medium", Class: "api", Slack: 12.5}}, false)
+	if !strings.Contains(b.String(), "api · slack 12.5 points") {
+		t.Fatalf("a routed pick lost its class or slack: %q", b.String())
+	}
+}
+
+// TestReportNamesTheEmptyState pins #636: a fresh install's `router report`
+// printed only a header, which reads as a broken command.
+func TestReportNamesTheEmptyState(t *testing.T) {
+	root, state := t.TempDir(), t.TempDir()
+	t.Setenv("CCMORPH_STATE_DIR", root)
+	t.Setenv("XDG_STATE_HOME", state)
+	var out, errOut bytes.Buffer
+	if code := Main([]string{"report"}, strings.NewReader(""), &out, &errOut); code != 0 {
+		t.Fatalf("exit %d: %s", code, errOut.String())
+	}
+	if !strings.Contains(out.String(), "No profiles and no routed calls") || !strings.Contains(out.String(), "ccmorph add <name>") {
+		t.Fatalf("the empty report names no state or next step: %q", out.String())
+	}
+	if strings.Contains(out.String(), "profile      calls") {
+		t.Fatalf("the empty report printed a table header: %q", out.String())
+	}
+	oneProfile(t)
+	out.Reset()
+	if code := Main([]string{"report"}, strings.NewReader(""), &out, io.Discard); code == 0 || !strings.Contains(out.String(), "profile      calls") {
+		t.Fatalf("a profile present must keep the table (and its failures): %q, exit %d", out.String(), code)
+	}
+}
+
+// TestStatusNamesTheLegendAndTheNextStep pins #636: status named pace, class,
+// kind and tier nowhere, and ended with no next step.
+func TestStatusNamesTheLegendAndTheNextStep(t *testing.T) {
+	oneProfile(t)
+	var out bytes.Buffer
+	if code := Main([]string{"status"}, strings.NewReader(""), &out, io.Discard); code != 0 {
+		t.Fatalf("exit %d", code)
+	}
+	for _, want := range []string{"slack = plan time elapsed minus usage", "Next: ccmorph router on"} {
+		if !strings.Contains(out.String(), want) {
+			t.Fatalf("status misses %q: %q", want, out.String())
+		}
+	}
+	if code := Main([]string{"on"}, strings.NewReader(""), io.Discard, io.Discard); code != 0 {
+		t.Fatal("router on failed")
+	}
+	out.Reset()
+	if code := Main([]string{"status"}, strings.NewReader(""), &out, io.Discard); code != 0 {
+		t.Fatalf("exit %d", code)
+	}
+	if !strings.Contains(out.String(), "Next: ccmorph router dispatch --dry-run") {
+		t.Fatalf("status on names no next step: %q", out.String())
+	}
+}
+
+// TestOnNamesThePoolAndThePaidKeys pins #636: `router on` warned about neither
+// eligible profiles nor per-token billing.
+func TestOnNamesThePoolAndThePaidKeys(t *testing.T) {
+	root, state := t.TempDir(), t.TempDir()
+	t.Setenv("CCMORPH_STATE_DIR", root)
+	t.Setenv("XDG_STATE_HOME", state)
+	for name, conf := range map[string]string{
+		"sub": "type=sub\n",
+		"gw":  "type=apikey\nbase_url=https://gw.invalid/v1\napi_key=k\n",
+	} {
+		if err := os.WriteFile(filepath.Join(root, name+".conf"), []byte(conf), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var out bytes.Buffer
+	if code := Main([]string{"on"}, strings.NewReader(""), &out, io.Discard); code != 0 {
+		t.Fatalf("exit %d", code)
+	}
+	got := out.String()
+	if !strings.Contains(got, "Eligible now:") || !strings.Contains(got, "gw") {
+		t.Fatalf("router on names no pool: %q", got)
+	}
+	if !strings.Contains(got, "API-key profiles bill per token: gw") {
+		t.Fatalf("router on hides the paid key: %q", got)
+	}
+	empty := t.TempDir()
+	t.Setenv("CCMORPH_STATE_DIR", empty)
+	out.Reset()
+	if err := os.MkdirAll(empty, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if code := Main([]string{"on"}, strings.NewReader(""), &out, io.Discard); code != 0 {
+		t.Fatalf("exit %d", code)
+	}
+	if !strings.Contains(out.String(), "Eligible now: none") || strings.Contains(out.String(), "bill per token") {
+		t.Fatalf("an empty pool is not named, or a billing line appears with no paid key: %q", out.String())
+	}
+	// #636: the confirmation names its undo, with or without profiles.
+	if !strings.Contains(out.String(), "Undo: ccmorph router off") || !strings.Contains(got, "Undo: ccmorph router off") {
+		t.Fatalf("router on names no undo: %q", out.String())
+	}
+}
+
+// #636: status rows read "no reading" with no header and no reason, so a
+// signed-out account and a dead gateway looked alike.
+func TestStatusHasAHeaderAndSaysWhyARowHasNoReading(t *testing.T) {
+	root, state := t.TempDir(), t.TempDir()
+	t.Setenv("CCMORPH_STATE_DIR", root)
+	t.Setenv("XDG_STATE_HOME", state)
+	for name, conf := range map[string]string{
+		"acct": "type=sub\n",
+		"gw":   "type=apikey\nbase_url=https://gw.invalid/v1\napi_key=k\n",
+	} {
+		if err := os.WriteFile(filepath.Join(root, name+".conf"), []byte(conf), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var out bytes.Buffer
+	if code := Main([]string{"status"}, strings.NewReader(""), &out, io.Discard); code != 0 {
+		t.Fatalf("exit %d", code)
+	}
+	got := out.String()
+	for _, want := range []string{"profile", "class", "pace", "bills per token, no plan to read"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("status misses %q:\n%s", want, got)
+		}
+	}
+	if !strings.Contains(got, "ccmorph quota acct says why") && !strings.Contains(got, "see note") {
+		t.Errorf("the account's empty reading names no reason:\n%s", got)
+	}
+}
+
+// #636: a dispatch with no pick named no next step.
+func TestNoPickNamesANextStep(t *testing.T) {
+	var out bytes.Buffer
+	show(&out, Decision{Task: Task{Kind: "code", Tier: "mid"}}, false)
+	if !strings.Contains(out.String(), "Next: ccmorph router status") || !strings.Contains(out.String(), "ccmorph set <profile> model") {
+		t.Fatalf("no next step: %q", out.String())
+	}
+}
+
+// TestProfileNamesKeepAGlobCharacterInTheRoot pins #636: the routing pool read
+// its confs with a raw glob, so a `[` in the profile root made every profile
+// silently vanish from it.
+func TestProfileNamesKeepAGlobCharacterInTheRoot(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "a[b")
+	if err := os.MkdirAll(root, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("CCMORPH_STATE_DIR", root)
+	if err := os.WriteFile(filepath.Join(root, "work.conf"), []byte("type=sub\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	got := profileNames()
+	if len(got) != 1 || got[0] != "work" {
+		t.Fatalf("profileNames = %v, want [work]", got)
+	}
+}

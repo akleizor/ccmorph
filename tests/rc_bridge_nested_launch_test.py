@@ -13,7 +13,6 @@ re-applies under a loopback proxy. These tests build that environment with the
 add-on's real `resolve_route` and `session_env`, then run the real `ccmorph`
 against an isolated HOME with a stub `claude`. Nothing touches the network.
 """
-import json
 import os
 import stat
 import subprocess
@@ -192,19 +191,3 @@ def test_a_profileless_nested_launch_keeps_the_route_flags(box):
         env=env, input='', capture_output=True, text=True, timeout=HANG_TIMEOUT)
     assert out.returncode == 0, out.stderr
     assert 'DISABLE_ADVISOR=1' in box.log(), (box.log(), out.stderr)
-
-
-def _stub_adapter_lib(tmp_path):
-    """A lib view whose `ccmorph-core` is a stub, so a nested ADAPTER launch
-    starts no real translator; everything else is the real library."""
-    lib = tmp_path / 'lib'
-    lib.mkdir()
-    (tmp_path / 'libexec').mkdir()
-    for sub_dir, target in (('lib', lib), ('libexec', tmp_path / 'libexec')):
-        for entry in (ROOT / sub_dir).iterdir():
-            if entry.name != 'ccmorph-core':
-                (target / entry.name).symlink_to(entry)
-    stub = lib.parent / 'libexec/ccmorph-core'
-    stub.write_text('#!/bin/sh\n' + fake_adapter.CORE_DISPATCH + 'echo PORT=1\nsleep 30\n')
-    stub.chmod(0o755)
-    return lib

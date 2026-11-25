@@ -66,15 +66,17 @@ func wide(r rune) bool {
 	return false
 }
 
-// cells is how many terminal cells s takes: an East Asian wide or fullwidth
-// rune takes two, a combining mark none, every other rune one. The report's
-// wrapping and columns measure this, so a CJK model id keeps them aligned; a
-// rune count made such a line twice as wide as the terminal (#449).
-func cells(s string) int {
+// Cells is how many terminal cells s takes: an East Asian wide or fullwidth
+// rune takes two, a combining mark and the zero-width joiner none, every other
+// rune one. It is the one width rule: the probe report and every cli surface
+// (pickers, receipts, help) measure with it, so a string wraps alike in each;
+// the cli once kept a shortcut table that counted U+200D as one cell (#449,
+// #636).
+func Cells(s string) int {
 	n := 0
 	for _, r := range s {
 		switch {
-		case unicode.Is(unicode.Mn, r) || unicode.Is(unicode.Me, r):
+		case unicode.Is(unicode.Mn, r) || unicode.Is(unicode.Me, r) || r == 0x200d:
 		case wide(r):
 			n += 2
 		default:
@@ -84,25 +86,47 @@ func cells(s string) int {
 	return n
 }
 
-// wrapLine writes text as lines no wider than reportWidth cells. It breaks
-// only at spaces, so no word is split, and starts continuations with cont. A
-// word longer than the line stays whole on a line of its own.
-func wrapLine(w io.Writer, text, first, cont string) {
+// Wrap breaks text into lines no wider than width cells, at spaces only, so
+// no word is split; a word longer than the line stays whole on a line of its
+// own. The one wrap rule, for the probe report and the cli's help (#636).
+// width < 1 returns text as one line.
+func Wrap(text string, width int) []string {
+	if width < 1 {
+		return []string{text}
+	}
 	words := strings.Fields(text)
 	if len(words) == 0 {
-		fmt.Fprintln(w, strings.TrimRight(first, " "))
-		return
+		return []string{""}
 	}
-	line := first + words[0]
+	lines, line := []string{}, words[0]
 	for _, word := range words[1:] {
-		if cells(line)+1+cells(word) <= reportWidth {
+		if Cells(line)+1+Cells(word) <= width {
 			line += " " + word
 			continue
 		}
-		fmt.Fprintln(w, line)
-		line = cont + word
+		lines, line = append(lines, line), word
 	}
-	fmt.Fprintln(w, line)
+	return append(lines, line)
+}
+
+// wrapLine writes text as lines no wider than reportWidth cells through Wrap,
+// starting continuations with cont.
+func wrapLine(w io.Writer, text, first, cont string) {
+	if len(strings.Fields(text)) == 0 {
+		fmt.Fprintln(w, strings.TrimRight(first, " "))
+		return
+	}
+	// The first line's prefix takes cells too: wrap with a stand-in word of its
+	// width, then put the prefix back.
+	marker := strings.Repeat("x", max(Cells(first), 0))
+	lines := Wrap(marker+text, reportWidth)
+	for i, line := range lines {
+		if i == 0 {
+			fmt.Fprintln(w, first+strings.TrimPrefix(line, marker))
+			continue
+		}
+		fmt.Fprintln(w, cont+line)
+	}
 }
 
 // ReportUnresolved says, under the profile's name, what the run looked for and
@@ -122,7 +146,7 @@ func ReportUnresolved(w io.Writer, profile string, models []string) {
 	if len(models) == 1 {
 		free := "    ccmorph context " + profile + " " + models[0] + " <tokens>"
 		paid := "    ccmorph probe " + profile + " --model " + models[0] + " --allow-inference"
-		if cells(free) <= reportWidth && cells(paid) <= reportWidth {
+		if Cells(free) <= reportWidth && Cells(paid) <= reportWidth {
 			model = models[0]
 		}
 	}

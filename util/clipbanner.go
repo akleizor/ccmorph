@@ -18,7 +18,11 @@ var bannerVersion = regexp.MustCompile(`CLIProxyAPI Version: v?(\d+)\.(\d+)\.(\d
 func ClipBanner(path string) string {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	out, _ := exec.CommandContext(ctx, path, "-h").CombinedOutput()
+	cmd := exec.CommandContext(ctx, path, "-h")
+	// WaitDelay makes the bound real: a grandchild that inherited the pipe
+	// would otherwise hold Wait past the deadline (#636).
+	cmd.WaitDelay = time.Second
+	out, _ := cmd.CombinedOutput()
 	return string(out)
 }
 

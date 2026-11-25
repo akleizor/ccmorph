@@ -11,7 +11,9 @@ header is dropped before the route key is set, and OAuth-only beta flags go with
 from __future__ import annotations
 
 import json
+import os
 import re
+from pathlib import Path
 from urllib.parse import urlsplit
 
 FIRST_PARTY_HOST = "api.anthropic.com"
@@ -23,6 +25,35 @@ AUTH_HEADERS = ("authorization", "x-api-key", "cookie", "proxy-authorization")
 # exempts a flow carrying this mark: only the addon can set it, and without an addon
 # no flow has it.
 ACCOUNT_METADATA = "rc_account"
+
+
+def state_root() -> Path:
+    """ccmorph's state root, resolved as the core resolves it: CCMORPH_STATE_DIR,
+    else XDG_CONFIG_HOME/ccmorph, else ~/.config/ccmorph. ccmorph-rc and
+    ccmorph-rc-hosts both read it here, so the ladder is spelled once (#636)."""
+    return Path(os.environ.get("CCMORPH_STATE_DIR") or
+                Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config") / "ccmorph")
+
+
+class BridgeDirs:
+    """The bridge's state under a state root: the one spelling ccmorph-rc and
+    ccmorph-rc-hosts both read, so the supervisor and the launcher cannot name two
+    places for one file (#636)."""
+
+    def __init__(self, root: Path) -> None:
+        self.state = root / "profiles" / ".rc-bridge"
+        self.logs = self.state / "logs"
+        self.edges = self.state / "edges"
+        self.inference = self.state / "inference"
+        self.busy = self.state / "busy.json"
+
+
+def project_slug(folder: str) -> str:
+    """Claude Code's projects/<slug> name for a folder: the resolved path with
+    every character outside [A-Za-z0-9] made '-'. Resolved here, so a folder
+    named through a symlink finds the state Claude keeps under its real path;
+    ccmorph-rc and ccmorph-rc-hosts both use this one rule (#636)."""
+    return re.sub(r"[^A-Za-z0-9]", "-", str(Path(folder).resolve()))
 
 
 SWITCH_WORD = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]*")

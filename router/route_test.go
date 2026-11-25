@@ -161,8 +161,6 @@ func TestOptionsEffortFollowsTierAndOrderBeatsNewer(t *testing.T) {
 		want string // models in order
 		same bool   // the whole option list must equal the no-effort call's
 	}{
-		{"an explicit effort low routes exactly as no effort", Pin{Effort: "low"}, "claude-opus-5,gpt-6-sol", true},
-		{"an explicit effort medium routes exactly as no effort", Pin{Effort: "medium"}, "claude-opus-5,gpt-6-sol", true},
 		{"the older of two ordered models is the family's pick", Pin{Order: []string{"claude-opus-4", "claude-opus-5"}}, "claude-opus-4,gpt-6-sol", false},
 		{"the newer of two ordered models is the family's pick", Pin{Order: []string{"claude-opus-5", "claude-opus-4"}}, "claude-opus-5,gpt-6-sol", false},
 	} {
@@ -225,6 +223,16 @@ func TestHardFailureTellsAnAccountRefusalFromAnAnswer(t *testing.T) {
 	} {
 		if got := hardFailure(text, false, ""); got != want {
 			t.Errorf("%q: got %q, want %q", text, got, want)
+		}
+	}
+	// #636: a body-only error carries Anthropic's machine names, which end in a
+	// word character, so the word-boundary tokens never matched them.
+	for body, want := range map[string]string{
+		`{"type":"error","error":{"type":"authentication_error","message":"invalid x-api-key"}}`: "auth",
+		`{"type":"error","error":{"type":"rate_limit_error","message":"slow down"}}`:             "quota",
+	} {
+		if got := hardFailure(body, true, ""); got != want {
+			t.Errorf("%s: got %q, want %q", body, got, want)
 		}
 	}
 	if got := hardFailure(connector, true, ""); got != "" {

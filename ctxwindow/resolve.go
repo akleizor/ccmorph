@@ -7,6 +7,8 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+
+	"github.com/akleizor/ccmorph/util/paths"
 )
 
 // Limit is a context window derived from a models.dev `limit` object.
@@ -66,8 +68,7 @@ func CanonicalCatalogueWindow(catalogue obj, modelID, ownedBy string) *Limit {
 	if entry == nil {
 		suffix := "/" + modelID
 		var matches []obj
-		for _, k := range slices.Sorted(maps.Keys(catalogue)) {
-			v := catalogue[k]
+		for k, v := range catalogue {
 			if o := asObj(v); o != nil && strings.HasSuffix(k, suffix) {
 				matches = append(matches, o)
 			}
@@ -115,20 +116,12 @@ func CanonicalCatalogueWindow(catalogue obj, modelID, ownedBy string) *Limit {
 	return windowOf(entry)
 }
 
-// ExecDir is the directory of the running binary, symlinks resolved.
-func ExecDir() string {
-	exe, err := os.Executable()
-	if err != nil {
-		return "."
-	}
-	if r, err := filepath.EvalSymlinks(exe); err == nil {
-		exe = r
-	}
-	return filepath.Dir(exe)
-}
-
-// ShareDir holds the bundled catalogue; a var so tests can point it elsewhere.
-var ShareDir = func() string { return filepath.Join(ExecDir(), "..", "share") }
+// ShareDir holds the bundled catalogue and window sources, beside lib/: the one
+// share root the resolver and the probe both read. It follows paths.LibDir, so
+// CCMORPH_LIB_DIR moves both together; the resolver once followed the binary
+// and the probe the library, and they disagreed whenever the two named
+// different trees (#636). A var so tests can point it at a fixture.
+var ShareDir = func() string { return filepath.Join(paths.LibDir(), "..", "share") }
 
 // Inputs is what Resolve reads outside the launched environment and that cannot
 // change while one caller runs: a conf's fields, the endpoint's declared
@@ -149,6 +142,8 @@ type Inputs struct {
 	haveValues    bool
 	sources       map[string]obj
 	haveSources   bool
+	manual        map[string]int64
+	haveManual    bool
 }
 
 // NewInputs is a resolver over conf fields its caller has already read.
@@ -199,6 +194,16 @@ func (in *Inputs) discoveredDoc() obj {
 		in.doc = discoveredDoc(in.fields)
 	}
 	return in.doc
+}
+
+// manualValues is the conf's context_window pins, read once per Inputs: a
+// picker walk over N models rebuilt the same table N times (#636).
+func (in *Inputs) manualValues() map[string]int64 {
+	if !in.haveManual {
+		in.haveManual = true
+		in.manual = ManualValues(in.fields)
+	}
+	return in.manual
 }
 
 // discoveredValues is the route-bound window table, built once from the cached
@@ -340,7 +345,7 @@ func (in *Inputs) Resolve(model string) Record {
 	bare := strings.TrimSuffix(model, "[1m]")
 	// The served id sizes the session; the requested id stays what the client sees.
 	target := in.mappedTarget(bare)
-	manual := ManualValues(fields)
+	manual := in.manualValues()
 	// An explicit pin wins, on the requested id first and then on the served id.
 	window, have := manual[bare]
 	if !have {

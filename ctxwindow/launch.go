@@ -24,7 +24,7 @@ const (
 	sizingWorkers = 8
 )
 
-var validationWindow = regexpMust(`(?i)(?:max_model_len|max_total_tokens|maximum context length is)\D{0,20}(\d[\d,]*)`)
+var validationWindow = regexp.MustCompile(`(?i)(?:max_model_len|max_total_tokens|maximum context length is)\D{0,20}(\d[\d,]*)`)
 
 // retryLater reports an HTTP status that defers a request instead of judging
 // it: a timeout (408, 504), a rate limit (429), or an overloaded or unreachable
@@ -81,8 +81,6 @@ func ValidationWindow(ctx context.Context, base, key, model string, op Opener, t
 	}
 	return 0, answered
 }
-
-func regexpMust(s string) *regexp.Regexp { return regexp.MustCompile(s) }
 
 func parseCount(s string) (int64, bool) {
 	n, err := strconv.ParseInt(strings.ReplaceAll(s, ",", ""), 10, 64)
@@ -174,20 +172,21 @@ func SizeListing(ctx context.Context, profile, body, base, key string, op Opener
 	rows := ListingRows(data)
 	fields := snap.Fields
 	expected := snap.ID
-	known := DiscoveredValues(fields)
+	// One parse of the discovered record serves the sized table and the misses
+	// (GH-561's one-parse rule, carried to the launch read, #636).
+	disc := ParseDiscovered(fields)
+	known := disc.Values
 	for m := range ManualValues(fields) {
 		known[m] = 0
 	}
-	excluded := map[string]bool{}
-	for _, m := range strings.Split(fields["excluded_models"], ",") {
-		excluded[m] = true
-	}
 	today := time.Now().UTC().Format("2006-01-02")
-	misses := DiscoveredMisses(fields)
+	misses := disc.Misses
 	var todo []obj
 	for _, row := range rows {
 		id, _ := asStr(getv(row, "id"))
-		if !ValidModel(id) || excluded[id] {
+		// IsExcluded is the picker's rule: a [1m] variant and a tier alias of an
+		// excluded model are hidden there, so they need no window here (#636).
+		if !ValidModel(id) || IsExcluded(fields, id) {
 			continue
 		}
 		if day, ok := misses[id]; ok && RecentlyMissed(day, today) {
@@ -362,7 +361,7 @@ func Commit(ctx context.Context, values map[string]int64, baseline map[string]in
 				note = "  (catalogue estimate)"
 			}
 			row := fmt.Sprintf("  %s %s%s", pad(model, 30), padLeft(Commas(changed[model]), 11), note)
-			if cells(row) <= reportWidth {
+			if Cells(row) <= reportWidth {
 				fmt.Fprintln(stderr, row)
 				continue
 			}

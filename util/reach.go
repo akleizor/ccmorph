@@ -259,9 +259,9 @@ func ReachListing(base, key, via string, strip []string, progress func()) Reach 
 	// answer is seen before the probe stops curl; real curl holds a short body
 	// until the transfer ends. A proxy's own CONNECT reply is not the gateway's
 	// answer and stays out (--suppress-connect-headers).
-	args := []string{"-K", "-", "-sS", "-f", "-N", "-D", "-", "--suppress-connect-headers",
-		"--connect-timeout", seconds(connect), "--max-time", seconds(bound),
-		listing, "-H", "anthropic-version: 2023-06-01"}
+	args := append([]string{"-K", "-", "-sS", "-f", "-N", "-D", "-", "--suppress-connect-headers"},
+		curlTimeouts(seconds(connect), seconds(bound))...)
+	args = append(args, listing, "-H", "anthropic-version: "+ctxwindow.AnthropicVersion)
 	cmd := exec.Command("curl", args...)
 	config, viaProxy := keyedConfig(key), false
 	if proxy := netroute.Parse(via); proxy != nil {

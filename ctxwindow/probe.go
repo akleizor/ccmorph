@@ -33,7 +33,7 @@ type shape struct {
 
 var shapes = []shape{
 	{"anthropic", "/v1/messages", func(k string) [][2]string {
-		return [][2]string{{"x-api-key", k}, {"anthropic-version", "2023-06-01"}}
+		return [][2]string{{"x-api-key", k}, {"anthropic-version", AnthropicVersion}}
 	}},
 	{"openai", "/v1/chat/completions", func(k string) [][2]string {
 		return [][2]string{{"Authorization", "Bearer " + k}}

@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strconv"
 	"strings"
 	"sync"
@@ -41,8 +42,9 @@ func setup(t *testing.T) env {
 		t.Fatal(err)
 	}
 	write(t, e.b, "type=apikey\nbase_url=https://b.invalid\napi_key=canary-b\n")
+	oldShare := ShareDir
 	ShareDir = func() string { return filepath.Join(root, "share") }
-	t.Cleanup(func() { ShareDir = func() string { return filepath.Join(ExecDir(), "..", "share") } })
+	t.Cleanup(func() { ShareDir = oldShare })
 	return e
 }
 
@@ -593,7 +595,12 @@ func TestGlobMatchesStarAndQuestionMark(t *testing.T) {
 	for _, c := range []struct {
 		name, pat string
 		want      bool
-	}{{"glm-5.2", "glm-*", true}, {"glm", "glm-*", false}, {"q1", "q?", true}, {"a[1m]", "a[1m]", true}, {"org/glm-5", "*glm-?", true}} {
+	}{{"glm-5.2", "glm-*", true}, {"glm", "glm-*", false}, {"q1", "q?", true}, {"a[1m]", "a[1m]", true}, {"org/glm-5", "*glm-?", true},
+		// #636: the rune matcher replaced a compiled regexp; ? is one rune, not
+		// one byte, and the regexp's metacharacters stay literal.
+		{"模型-界", "模型-?", true}, {"模型-界界", "模型-?", false}, {"a.b", "a?b", true}, {"axb", "a.b", false},
+		{"a(1)", "a(?)", true}, {"", "*", true}, {"", "?", false}, {"ab", "*b*", true}, {"aXbYc", "a*b*c", true}, {"abc", "a*d", false},
+		{"line\nbreak", "line*", true}} {
 		if got := glob(c.name, c.pat); got != c.want {
 			t.Errorf("glob(%q,%q)=%v", c.name, c.pat, got)
 		}
@@ -731,7 +738,11 @@ func TestMigrationMovesInlineDiscoveredToModelsJSON(t *testing.T) {
 func TestMigrationKeepsAPinAddedAfterItsReadIssue485(t *testing.T) {
 	e := setup(t)
 	base := read(t, e.a)
-	record := `context_discovered={"route":"` + RouteFingerprint(parseConf(base)) + `","models":{"m":321000}}`
+	baseFields, ferr := parseConf(base)
+	if ferr != nil {
+		t.Fatal(ferr)
+	}
+	record := `context_discovered={"route":"` + RouteFingerprint(baseFields) + `","models":{"m":321000}}`
 	v1 := base + record + "\n"
 	if err := os.Remove(e.a); err != nil {
 		t.Fatal(err)
@@ -892,5 +903,71 @@ func TestLockedTakesTheLegacyNamesRemovalAddresses(t *testing.T) {
 	name := strings.Repeat("n", profile.LegacyMaxNameLen+1)
 	if code, err := windowRun([]string{"--locked", name, child}, io.Discard, io.Discard); err == nil || code != 0 {
 		t.Fatalf("a name past the storable bound must still be refused (exit %d, err %v)", code, err)
+	}
+}
+
+// #636: Resolve read the conf's pins afresh for every model; a picker walk over
+// N models rebuilt the same table N times. One Inputs reads them once.
+func TestResolveReadsThePinsOnce(t *testing.T) {
+	in := NewInputs(map[string]string{"context_window.m": "500000"})
+	if r := in.Resolve("m"); r.Window != 500000 || r.Source != "conf-manual" {
+		t.Fatalf("the pin did not size m: %+v", r)
+	}
+	if !in.haveManual {
+		t.Fatal("the pins were not kept on the Inputs")
+	}
+	first := reflect.ValueOf(in.manual).Pointer()
+	in.Resolve("other")
+	if reflect.ValueOf(in.manual).Pointer() != first {
+		t.Fatal("the second Resolve rebuilt the pin table")
+	}
+}
+
+// #636: launch and the probe walk read the discovered record through one
+// ParseDiscovered; its three tables must be what the three readers return.
+func TestParseDiscoveredMatchesTheThreeReaders(t *testing.T) {
+	fields := map[string]string{"type": "apikey", "base_url": "https://g.invalid", "api_key": "k"}
+	fields["context_discovered"] = `{"route":"` + RouteFingerprint(fields) + `","models":{"a":200000,"b":1000000},` +
+		`"sources":{"a":{"source":"probe"}},"misses":{"c":"2026-11-20"}}`
+	d := ParseDiscovered(fields)
+	if !reflect.DeepEqual(d.Values, DiscoveredValues(fields)) || len(d.Values) != 2 {
+		t.Fatalf("values %v vs %v", d.Values, DiscoveredValues(fields))
+	}
+	if !reflect.DeepEqual(d.Sources, DiscoveredSources(fields)) {
+		t.Fatalf("sources %v vs %v", d.Sources, DiscoveredSources(fields))
+	}
+	if !reflect.DeepEqual(d.Misses, DiscoveredMisses(fields)) {
+		t.Fatalf("misses %v vs %v", d.Misses, DiscoveredMisses(fields))
+	}
+	fields["context_discovered"] = `{"route":"another","models":{"a":1}}`
+	if d := ParseDiscovered(fields); len(d.Values) != 0 || len(DiscoveredValues(fields)) != 0 {
+		t.Fatalf("a record for another route was read: %v", d.Values)
+	}
+}
+
+// #636: the resolver followed the binary and the probe followed the library,
+// so the two read different catalogues whenever CCMORPH_LIB_DIR named another
+// tree. One share root, beside the library.
+func TestOneShareRootFollowsTheLibrary(t *testing.T) {
+	lib := filepath.Join(t.TempDir(), "tree", "lib")
+	t.Setenv("CCMORPH_LIB_DIR", lib)
+	if got, want := filepath.Clean(ShareDir()), filepath.Join(filepath.Dir(lib), "share"); got != want {
+		t.Fatalf("ShareDir = %s, want %s", got, want)
+	}
+}
+
+// #636: two width counters had drifted (U+200D counted 0 in the cli, 1 here);
+// Cells is the one rule, with the full wide table, and Wrap the one wrap.
+func TestCellsAndWrapAreTheOneRule(t *testing.T) {
+	for s, want := range map[string]int{"abc": 3, "模型": 4, "a\u200db": 2, "e\u0301": 1, "🙂": 2, "\U0001F004": 2} {
+		if got := Cells(s); got != want {
+			t.Errorf("Cells(%q) = %d, want %d", s, got, want)
+		}
+	}
+	if got := Wrap("模型 模型 ab", 5); len(got) != 3 || got[0] != "模型" || got[2] != "ab" {
+		t.Errorf("Wrap = %q", got)
+	}
+	if got := Wrap("one-very-long-word x", 4); got[0] != "one-very-long-word" {
+		t.Errorf("a long word must stay whole: %q", got)
 	}
 }

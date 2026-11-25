@@ -31,7 +31,7 @@ help:
 # unsigned file (#714). Same directory, so the rename is atomic; it also gives
 # the new core its own inode, never the bytes of a copy still running.
 shim:
-	@tmp=libexec/.shim-build.$$$$; rm -rf "$$tmp"; mkdir -p "$$tmp" && \
+	@tmp=libexec/.shim-build.$$$$; trap 'rm -rf "$$tmp"' EXIT INT TERM HUP; rm -rf "$$tmp"; mkdir -p "$$tmp" && \
 	go build -trimpath -o "$$tmp/ccmorph-core" ./cmd/ccmorph-core && \
 	if [ -n "$(CCMORPH_CODESIGN_IDENTITY)" ]; then codesign -f -s "$(CCMORPH_CODESIGN_IDENTITY)" -i ccmorph-core "$$tmp/ccmorph-core"; fi && \
 	mv -f "$$tmp/ccmorph-core" libexec/ccmorph-core; rc=$$?; rm -rf "$$tmp"; exit $$rc
@@ -56,7 +56,18 @@ test-go:
 # its own scratch homes and mostly waits on process spawns, so they overlap: 185 s
 # one after another, about a minute at once on a quiet host. Never chain them.
 gate: shim
-	@$(MAKE) -j5 gate-launch gate-install gate-configure gate-py test-go
+	@$(MAKE) -j6 gate-fmt gate-launch gate-install gate-configure gate-py test-go
+
+# CI refuses gofmt drift (ci.yml); the local gate refuses it too, so a builder
+# meets it before a push rather than as a red CI run (#636).
+gate-fmt:
+	@out=$$(gofmt -l $$(git ls-files '*.go')); test -z "$$out" || { echo "gofmt needed:"; echo "$$out"; exit 1; }
+
+# Every add-on Python file byte-compiles: the floor job runs it under 3.8,
+# the syntax job under the runner's python3 (#636).
+PYTHON ?= python3
+py-compile:
+	$(PYTHON) -m py_compile addons/remote-control/ccmorph-rc addons/remote-control/ccmorph-rc-hosts addons/remote-control/*.py
 
 gate-launch:
 	@zsh tests/ccmorph_test.zsh
@@ -68,6 +79,7 @@ gate-configure:
 	@zsh tests/cli_configure_test.zsh
 
 gate-py:
+	@uv run ruff check tests addons share
 	@CCMORPH_LIB_DIR="$$PWD/lib" uv run python -m pytest tests/ -q
 
 # Three places state the version and nothing checked they agree: the assignment

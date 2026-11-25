@@ -12,7 +12,7 @@ prefix; profiles still live in `~/.config/ccmorph`. Prebuilt bottles cover Apple
 silicon on the newest macOS and Linux x86_64; elsewhere Homebrew builds from
 source with Go. The rest of this section is about the clone and one-liner.
 
-From a clone: `git clone https://github.com/akleizor/ccmorph && cd ccmorph && ./install.sh`.
+From a clone: `git clone https://github.com/akleizor/ccmorph && cd ccmorph && make shim && ./install.sh` (a clone has no prebuilt `ccmorph-core`, so `make shim` builds it first).
 
 Or the one-liner:
 
@@ -167,7 +167,11 @@ maps Claude Code's opus, sonnet and haiku tiers to its models; *Custom endpoint*
 asks for the endpoint first (blank = api.anthropic.com), so the key prompt can
 name the service it belongs to. The endpoint is then asked
 whether it accepts the pasted key — in this step, not at first launch — and a
-refused key is asked for again rather than saved. A pasted Claude token is
+refused key is asked for again rather than saved. An endpoint that does not
+answer, or answers with anything but an acceptance or a refusal (a 5xx, say),
+cannot vouch for the key: the profile is saved with the key and a dim line
+saying `<endpoint> did not answer, so the API key was not checked` (or the
+status it did answer with), and `ccmorph doctor <profile>` asks again later. A pasted Claude token is
 judged the same way: a paste without a token's shape is refused at the prompt,
 and a shaped one is offered to Anthropic — Bearer-only, like the launch that
 will spend it — before it is saved. Nothing is written outside
@@ -320,7 +324,7 @@ ccmorph get --json                      # --json may stand before or after the
 `-i` — or simply omitting the value — asks instead of failing. A model id cannot
 be enumerated in advance, since a gateway's listing changes without ccmorph
 knowing, so being asked is the only reliable way to spell one correctly; the
-model list comes from the endpoint itself, and effort from Claude Code's four
+model list comes from the endpoint itself, and effort from Claude Code's five
 levels. `-i` works the same way on `run`, `set`, `get`, `context`, `inspect`,
 `use`, `login`, and `cred`, and picks the profile when none is named. With
 `fzf`, dynamic catalogues support type-to-filter; without it they use numbered
@@ -734,7 +738,35 @@ never sent to any other host.
 `ccmorph quota --json` prints the same data for tools (profile, kind, plan, windows with
 `used` as a fraction and `resets_at` as a Unix second, `read_at`, `age_seconds`, `stale`,
 `error`, `spend`, `balance`, and, on a gateway row, `checked`: `false` when the endpoint
-answered nothing this run, so the spend beside it is local receipts only).
+answered nothing this run, so the spend beside it is local receipts only). Inside `spend`,
+`unpriced_turns` counts this month's turns that carried no price: they are in `month_turns`
+but in no money total, so when it equals `month_turns` the month's cost is unknown.
+
+To read the receipts as a daily report, export them with
+`~/.config/ccmorph/share/usage-export --output ~/.cache/ccmorph-usage` and run
+ccusage over that directory. ccusage is not installed by ccmorph: install it with
+`npm install -g ccusage`. The exporter's last line and its `--help` print the exact
+ccusage command with both paths filled in, ready to copy.
+
+## Model router
+
+`ccmorph router on` sends each subagent a session starts to the profile and model
+best placed to run it; `ccmorph router off` stops it, and new sessions start
+without it. Open sessions keep running as they started.
+
+- **class**: what a profile costs. `subscription` (a Claude account, token, or a
+  plan provider) and `budget` (a key with `monthly_budget_usd`) have a plan to
+  pace; `api` bills per token, so it is used last.
+- **slack**: plan time elapsed minus usage, in points, for the tightest plan
+  window. Above 0 there is room to spend; the router favours the most slack.
+- **no reading**: `router status` shows it when a profile has no plan reading,
+  with the reason: an API key bills per token and has no plan, a note names the
+  cause, or `ccmorph quota <profile>` says it.
+- `ccmorph router dispatch --dry-run "<task>"` shows the pick for a task without
+  running it; with no pick it names the next step (`router status`, or save a
+  model with `ccmorph set <profile> model`).
+- `ccmorph router report` counts the last day's routed calls by profile and
+  outcome.
 
 ## What is isolated, and what is shared
 

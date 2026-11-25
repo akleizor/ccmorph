@@ -211,8 +211,9 @@ def test_price_reads_cached_list_prices(tmp_path):
     cli = str(ROOT / 'bin/ccmorph')
     for args, expected in [
         (['price', '--json', 'example-FP8', 'missing', 'free'],
-         {'example-FP8': {'input': 0.15, 'output': 0.6}, 'free': {'input': 0, 'output': 0}}),
-        (['price', 'missing', '--json'], {}),
+         {'cache': 'ok', 'prices': {'example-FP8': {'input': 0.15, 'output': 0.6},
+                                    'free': {'input': 0, 'output': 0}}}),
+        (['price', 'missing', '--json'], {'cache': 'ok', 'prices': {}}),
     ]:
         result = subprocess.run([cli, *args], env=env, capture_output=True, text=True, timeout=HANG_TIMEOUT)
         assert result.returncode == 0, result.stderr
@@ -232,7 +233,7 @@ def test_price_empty_cache_message_and_json(tmp_path):
            'XDG_STATE_HOME': str(tmp_path / 'xdg'),
            'CCMORPH_LIB_DIR': str(ROOT / 'lib'), 'CCMORPH_STATE_DIR': str(tmp_path / 'config')}
     cli = str(ROOT / 'bin/ccmorph')
-    hint = 'Run a `provider` profile with `ccmorph run PROFILE`; its launch refreshes this cache in the background.'
+    hint = 'Run a provider profile with ccmorph run <profile>; its launch refreshes this cache in the background.'
     (tmp_path / 'xdg' / 'ccmorph').mkdir(parents=True)
     for cache in (None, {'host': 'owned:any', 'fetched': 0, 'models': {}}):
         cache_path = tmp_path / 'xdg' / 'ccmorph' / 'prices-owned-any.json'

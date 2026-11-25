@@ -7,7 +7,9 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/akleizor/ccmorph/ctxwindow"
 	"github.com/akleizor/ccmorph/profile"
+	"github.com/akleizor/ccmorph/util"
 )
 
 // answerRmPrompt holds os.Stdin at a pipe carrying `answer` for a whole rm:
@@ -195,6 +197,40 @@ func TestRmRefusesACaseTwinOfTheLegacyLength(t *testing.T) {
 	}
 }
 
+// #636: `ccmorph rm work` removed the .lock beside the profiles but left the
+// .live marker behind, so the removed profile kept reading as live. rm now
+// removes both.
+func TestRmRemovesTheLiveMarker(t *testing.T) {
+	state, home := t.TempDir(), t.TempDir()
+	t.Setenv("HOME", home)
+	bin := t.TempDir()
+	if err := os.WriteFile(filepath.Join(bin, "security"), []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	l := &launcher{dir: state, profileDirs: filepath.Join(home, ".claude")}
+	name := "oldsess"
+	conf := filepath.Join(state, name+".conf")
+	if err := os.WriteFile(conf, []byte("type=apikey\napi_key=k\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	live := util.LiveLockPath(l.profileDirs, name)
+	if err := os.MkdirAll(filepath.Dir(live), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(live, []byte("1\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("CCMORPH_CONTEXT_LOCKED", name)
+	answerRmPrompt(t, "y\n")
+	if rc := l.rm([]string{name}); rc != 0 {
+		t.Fatalf("rm refused its own profile: rc %d", rc)
+	}
+	if _, err := os.Stat(live); !os.IsNotExist(err) {
+		t.Fatalf("rm left the .live marker behind: %v", err)
+	}
+}
+
 // #562, pinned before cli's sameFile and the shim's merged under util/paths:
 // keepHistory's "a native link to the same file (or a dangling one) gives way"
 // is the one caller that needs the follow — a symlink at the destination is
@@ -293,5 +329,42 @@ func TestRmLeavesAnotherProfilesDefaultAlone(t *testing.T) {
 	}
 	if strings.Contains(msg, "default profile removed") {
 		t.Fatalf("rm must not report clearing a default it left alone: %s", msg)
+	}
+}
+
+// #636: a successful mv left the old name's .locks/<old>.lock and .live marker.
+func TestMvRemovesTheOldNamesLockAndLiveMarker(t *testing.T) {
+	state, home := t.TempDir(), t.TempDir()
+	t.Setenv("HOME", home)
+	bin := t.TempDir()
+	if err := os.WriteFile(filepath.Join(bin, "security"), []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	l := &launcher{dir: state, profileDirs: filepath.Join(home, ".claude")}
+	if err := os.WriteFile(filepath.Join(state, "old.conf"), []byte("type=apikey\napi_key=k\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	live := util.LiveLockPath(l.profileDirs, "old")
+	lock := ctxwindow.LockName(l.conf("old"))
+	for _, p := range []string{live, lock} {
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte("1\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Setenv("CCMORPH_CONTEXT_LOCKED", "old,new")
+	if _, rc := captureStdout(t, func() int { return l.mv([]string{"old", "new"}) }); rc != 0 {
+		t.Fatalf("mv refused: rc %d", rc)
+	}
+	for _, p := range []string{live, lock} {
+		if _, err := os.Stat(p); !os.IsNotExist(err) {
+			t.Errorf("mv left %s behind: %v", p, err)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(state, "new.conf")); err != nil {
+		t.Fatalf("the rename did not happen: %v", err)
 	}
 }

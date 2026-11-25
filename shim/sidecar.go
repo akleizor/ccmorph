@@ -68,7 +68,7 @@ func finiteNumber(raw []byte) (float64, bool) {
 func numbers(b []byte, ms []Member, keys []string) usageRow {
 	var row usageRow
 	for _, k := range keys {
-		if sp, ok := lastMember(ms, k); ok {
+		if sp, ok := LastMember(ms, k); ok {
 			if _, fin := finiteNumber(b[sp.Start:sp.End]); fin {
 				row = append(row, kv{k, append([]byte(nil), b[sp.Start:sp.End]...)})
 			}
@@ -87,12 +87,12 @@ func bucketsOf(b []byte, usage Span, ok bool) usageRow {
 	}
 	ms, _ := Object(b, usage.Start)
 	row := numbers(b, ms, usageBuckets)
-	if sp, ok := lastMember(ms, "cost"); ok {
+	if sp, ok := LastMember(ms, "cost"); ok {
 		if f, fin := finiteNumber(b[sp.Start:sp.End]); fin && f >= 0 && f < costLimit {
 			row = append(row, kv{"cost", append([]byte(nil), b[sp.Start:sp.End]...)})
 		}
 	}
-	if sp, ok := lastMember(ms, "cache_creation"); ok && b[sp.Start] == '{' {
+	if sp, ok := LastMember(ms, "cache_creation"); ok && b[sp.Start] == '{' {
 		cms, _ := Object(b, sp.Start)
 		if nested := numbers(b, cms, creationNames); len(nested) > 0 {
 			row = append(row, kv{"cache_creation", nested.json()})
@@ -484,15 +484,15 @@ func (u *UsageSidecar) observe(d *doc, rec *record, requested *string) *record {
 	case kind == "message_start":
 		if sp, ok := d.last("message"); ok && d.b[sp.Start] == '{' {
 			ms, _ := Object(d.b, sp.Start)
-			if idSpan, ok := lastMember(ms, "id"); ok {
-				if id, isStr := str(d.b, idSpan); isStr {
+			if idSpan, ok := LastMember(ms, "id"); ok {
+				if id, isStr := SpanStr(d.b, idSpan); isStr {
 					var model *string
-					if ms2, ok := lastMember(ms, "model"); ok {
-						if m, isStr := str(d.b, ms2); isStr {
+					if ms2, ok := LastMember(ms, "model"); ok {
+						if m, isStr := SpanStr(d.b, ms2); isStr {
 							model = &m
 						}
 					}
-					us, hasUsage := lastMember(ms, "usage")
+					us, hasUsage := LastMember(ms, "usage")
 					rec = u.start(id, requested, model, bucketsOf(d.b, us, hasUsage))
 					u.write(rec)
 				}

@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Export metadata-only ccmorph receipts for ccusage, one project per profile.
 
-Usage: usage-export --output ROOT [--since YYYYMMDD]
-Then, with ccusage installed:
-CLAUDE_CONFIG_DIR=ROOT ccusage claude daily --instances --config ROOT/ccusage.json
+Usage: usage-export [--output ROOT] [--source ROOT] [--since YYYYMMDD]
+With ccusage installed, the command that reads the result is printed at the end
+of an export, and below with the paths filled in.
 
 A turn the gateway billed carries that cost; a turn the shim priced itself carries
 usage.estimated_cost, a models.dev list price without context tiers, and is marked
@@ -27,6 +27,7 @@ import re
 import shlex
 import shutil
 import stat
+import sys
 import tempfile
 import time
 
@@ -176,15 +177,6 @@ def atomic_write(path, text):
             os.unlink(name)
 
 
-def is_ours(folder):
-    """The marker file, not the folder's name, says a folder is this exporter's: the
-    name is the profile alone (#383), and a config dir may hold a live Claude Code's
-    own project folders, which are never ours to reconcile. A symlinked marker is
-    not read: only a regular file this exporter wrote counts."""
-    marker = folder / MARKER
-    return not marker.is_symlink() and marker.is_file()
-
-
 def own(folder):
     """Mark a profile folder as this exporter's before its first day file lands: the
     marker, not the name, is what a later run reconciles by (#383)."""
@@ -201,8 +193,11 @@ def claimed(folder):
     a run may write into are exactly the folders it would reconcile, so a folder that
     is neither — a live Claude Code's own project folder in the config dir, or anything
     a hand placed there — is never written into either, however much it looks like a
-    destination (#383)."""
-    return folder.name.startswith("ccmorph-") or is_ours(folder)
+    destination (#383). The marker file, not the folder's name, says a folder is this
+    exporter's: the name is the profile alone (#383). A symlinked marker is not read:
+    only a regular file this exporter wrote counts."""
+    marker = folder / MARKER
+    return folder.name.startswith("ccmorph-") or (not marker.is_symlink() and marker.is_file())
 
 
 def owned_days(projects):
@@ -450,6 +445,7 @@ def export(root, output, since=None):
     unpriced = 0
     moved = 0
     unreadable = []
+    unparsed = []   # receipts that are not one JSON object: counted and named (#636)
     # The days this rerun reconciles are the ones already exported when it started, each with
     # the stamp it had then: a day another run writes while this one reads receipts belongs to
     # that run's snapshot, so it is not this run's to remove.
@@ -473,12 +469,16 @@ def export(root, output, since=None):
         try:
             row = json.loads(data, parse_constant=float)
         except ValueError:
-            continue  # truncated, zero-byte or otherwise unparseable: one row, never the run
+            # truncated, zero-byte or otherwise unparseable: one row, never the run,
+            # but counted and named like every other skip (#636)
+            unparsed.append(os.path.relpath(path, root))
+            continue
         if not isinstance(row, dict):
             # A bare scalar is not a receipt either: util/paths.parseDoc's one
             # rule for every Go reader — nil unless the bytes are a JSON object
             # — so it is skipped as the same unparseable row, never read for
             # members it does not have (#804).
+            unparsed.append(os.path.relpath(path, root))
             continue
         try:  # every receipt in range is parsed: its own stamp decides the range
             converted = convert(row)
@@ -521,7 +521,7 @@ def export(root, output, since=None):
     # The three priced kinds are the whole export, so a reader can reconcile the
     # counts: gateway + estimate + list is rows (#382).
     stats = {"rows": len(seen), "days": len({d for _, d in days}), "unpriced": unpriced,
-             "moved": moved, "unreadable": unreadable,
+             "moved": moved, "unreadable": unreadable, "unparsed": unparsed,
              # usd is what a gateway itself billed; an estimate is its own total.
              "usd": sum(r.get("costUSD", 0) for r in rows if r["ccmorph"]["costSource"] == "gateway"),
              "estimated_usd": sum(r.get("costUSD", 0) for r in rows if r["ccmorph"]["costSource"] == "estimate"),
@@ -560,6 +560,32 @@ def export(root, output, since=None):
     return stats
 
 
+# The README's example output, and what an export writes when --output is
+# omitted, so --help can name the command for a real directory (#636).
+DEFAULT_OUTPUT = Path(os.environ.get("XDG_CACHE_HOME") or Path.home() / ".cache") / "ccmorph-usage"
+
+
+def ccusage_command(output):
+    """The exact command that reads an export in output: both paths resolved
+    and shell-quoted once, so --help and the end of a run cannot spell it two
+    ways (#382, #636)."""
+    root = os.path.abspath(output)
+    return (f"CLAUDE_CONFIG_DIR={shlex.quote(root)} ccusage claude daily --instances "
+            f"--config {shlex.quote(os.path.join(root, 'ccusage.json'))}")
+
+
+def help_output(argv):
+    """The --output --help resolves: the one on this command line, else the
+    default. Read before argparse runs, because --help exits during parsing
+    and so never rejects a missing required flag."""
+    for i, arg in enumerate(argv):
+        if arg == "--output" and i + 1 < len(argv):
+            return Path(argv[i + 1])
+        if arg.startswith("--output="):
+            return Path(arg.split("=", 1)[1])
+    return DEFAULT_OUTPUT
+
+
 def report(stats, output, source):
     """The end of an export, for the person who ran it: which folder was read and
     where the files went, every count by a name that adds up, money at cents, and
@@ -594,16 +620,15 @@ def report(stats, output, source):
                 "README's cost-reporting note, and --help prints the command to run"]
     else:
         tail = ["Then, with ccusage installed:",
-                # Both paths shell-quoted, so a folder with spaces in its name does not
-                # tear the command apart at the first space (#382).
-                f"CLAUDE_CONFIG_DIR={shlex.quote(root)} ccusage claude daily --instances "
-                f"--config {shlex.quote(os.path.join(root, 'ccusage.json'))}"]
+                ccusage_command(root)]
     return "\n".join(head + [
         f"{count(stats['gateway_rows'], 'turn')} the gateway billed, ${stats['usd']:.2f}",
         f"{count(stats['estimated_rows'], 'turn')} ccmorph estimated, ${stats['estimated_usd']:.2f}",
         f"{count(stats['list_rows'], 'turn')} left for ccusage to price at its list price",
         f"{count(stats['unpriced'], 'turn')} unpriced (a damaged cost, not exported)",
         f"{count(stats['moved'], 'receipt')} moved by the store mid-run, skipped",
+        f"{count(len(stats['unparsed']), 'receipt')} not parseable, skipped"
+        + (": " + ", ".join(stats["unparsed"]) if stats["unparsed"] else ""),
     ] + tail)
 
 
@@ -623,9 +648,12 @@ def main():
                       / "ccmorph" / "usage")
     parser = argparse.ArgumentParser(
         description=__doc__ + f"\nDefault --source: {default_source}",
+        epilog="Then, with ccusage installed (`npm install -g ccusage`):\n"
+               + ccusage_command(help_output(sys.argv[1:])),
         formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--output", type=Path, required=True, metavar="ROOT",
-                        help="directory the export lands in")
+    parser.add_argument("--output", type=Path, metavar="ROOT", default=DEFAULT_OUTPUT,
+                        help="directory the export lands in; default "
+                             f"{DEFAULT_OUTPUT}")
     # The default is resolved, not argparse's: a --source the person named must
     # exist (GH-843), while the default folder may be absent — before the first
     # session there is no store at all, and that is an empty one, not a mistake (#647).

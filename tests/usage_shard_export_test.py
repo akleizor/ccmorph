@@ -11,17 +11,9 @@ import time
 import pytest
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
-from usage_export_test import local, read_day, receipt, ue, write  # noqa: E402
-
-
-@pytest.fixture(autouse=True)
-def hong_kong(monkeypatch):
-    """Days are local days; pin the zone so the day boundaries below do not move with the host."""
-    monkeypatch.setenv("TZ", "Asia/Hong_Kong")
-    time.tzset()
-    yield
-    monkeypatch.undo()
-    time.tzset()
+# hong_kong is the export suite's autouse TZ fixture: imported, it applies to
+# every test here as well, so the day boundaries are one definition (#636).
+from usage_export_test import hong_kong, local, read_day, receipt, ue, write  # noqa: E402,F401
 
 
 def test_receipts_sharded_by_day_folders_are_read_and_old_folders_skipped(tmp_path):

@@ -1,13 +1,12 @@
 """The rc-hosts LaunchAgent plist, as install.sh generates it, and the install
 claims the add-on's page makes about that installer."""
-import os
 import re
 from pathlib import Path
 import plistlib
 import subprocess
 import tempfile
 
-from support import HANG_TIMEOUT
+from support import HANG_TIMEOUT, isolated_env
 
 INSTALL = Path(__file__).resolve().parent.parent / "addons" / "remote-control" / "install.sh"
 README = INSTALL.parent / "README.md"
@@ -27,9 +26,8 @@ def test_supervisor_plist_is_interactive_and_kept_alive():
         stub.mkdir()
         (stub / "launchctl").write_text("#!/bin/sh\nexit 0\n")
         (stub / "launchctl").chmod(0o755)
-        env = {k: v for k, v in os.environ.items() if not k.startswith(("CCMORPH_", "_CCMORPH_"))}
-        env.update(HOME=td, ZDOTDIR=td, XDG_CONFIG_HOME=str(home / ".config"),
-                   PATH=f"{stub}:/usr/bin:/bin")
+        env = isolated_env(HOME=td, ZDOTDIR=td, XDG_CONFIG_HOME=str(home / ".config"),
+                           PATH=f"{stub}:/usr/bin:/bin")
         done = subprocess.run(["zsh", str(INSTALL)], env=env, text=True,
                               capture_output=True, timeout=HANG_TIMEOUT)
         assert done.returncode == 0, done.stdout + done.stderr
@@ -69,3 +67,46 @@ def test_the_page_opens_with_requirements_and_reach_before_the_first_command():
     for word in ("macOS", "Python", "mitmproxy", "Homebrew", "one-line", "clone"):
         assert word in opening, f"the opening no longer names {word}"
     assert "git clone" in opening and "addons/remote-control/install.sh" in opening
+
+
+def test_isolated_env_drops_every_credential_family(monkeypatch):
+    """#636: the scrub was hand-rolled per file with different filter sets;
+    this installer test kept ANTHROPIC_* and AWS_* while the credential tests
+    dropped them. One list now, and every family goes."""
+    for name in ("CCMORPH_X", "_CCMORPH_X", "CLAUDE_X", "ANTHROPIC_X", "AWS_X"):
+        monkeypatch.setenv(name, "leak")
+    monkeypatch.setenv("KEEP", "1")
+    env = isolated_env(HOME="/h")
+    assert not [k for k in env if k.endswith("_X")], env
+    assert env["KEEP"] == "1"
+    assert env["HOME"] == "/h"
+
+
+def test_a_custom_state_root_reaches_the_supervisor():
+    """#636: the plist passed only PATH, so a CCMORPH_STATE_DIR install started a
+    supervisor that read another rc-hosts, and an absent custom root aborted the
+    install before the plist was written."""
+    for custom in (True, False):
+        with tempfile.TemporaryDirectory() as td:
+            home = Path(td)
+            stub = home / "bin"
+            stub.mkdir()
+            (stub / "launchctl").write_text("#!/bin/sh\nexit 0\n")
+            (stub / "launchctl").chmod(0o755)
+            state = home / "custom & <state>"
+            extra = {"CCMORPH_STATE_DIR": str(state)} if custom else {}
+            if not custom:
+                (home / ".config/ccmorph").mkdir(parents=True)
+            env = isolated_env(HOME=td, ZDOTDIR=td, XDG_CONFIG_HOME=str(home / ".config"),
+                               PATH=f"{stub}:/usr/bin:/bin", **extra)
+            done = subprocess.run(["zsh", str(INSTALL)], env=env, text=True,
+                                  capture_output=True, timeout=HANG_TIMEOUT)
+            assert done.returncode == 0, done.stdout + done.stderr
+            plist = plistlib.loads((home / "Library/LaunchAgents/com.ccmorph.rc-hosts.plist").read_bytes())
+            env_keys = plist["EnvironmentVariables"]
+            if custom:
+                assert env_keys["CCMORPH_STATE_DIR"] == str(state)
+                assert (state / "rc-hosts").is_file()
+            else:
+                assert "CCMORPH_STATE_DIR" not in env_keys
+            assert env_keys["XDG_CONFIG_HOME"] == str(home / ".config")

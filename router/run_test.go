@@ -8,6 +8,8 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"regexp"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -96,8 +98,10 @@ func TestDispatchPassesClaudeFlagsTaskTagAndDeadline(t *testing.T) {
 	fakeWorker(t, `printf '%s\n' "$@" > `+dir+`/argv; echo "task=$CCMORPH_TASK deadline=$CCMORPH_DEADLINE"`)
 	t.Setenv("CCMORPH_TASK", "log-triage")
 	var out, errOut bytes.Buffer
+	started := time.Now().Unix()
 	code := Main([]string{"dispatch", "--kind", "code", "--tier", "small", "--timeout", "60", "brief",
 		"--", "--tools", "Read", "--max-turns", "1"}, strings.NewReader(""), &out, &errOut)
+	finished := time.Now().Unix()
 	if code != 0 {
 		t.Fatalf("exit %d: %s", code, errOut.String())
 	}
@@ -105,8 +109,18 @@ func TestDispatchPassesClaudeFlagsTaskTagAndDeadline(t *testing.T) {
 	if !strings.Contains(string(argv), "--tools\nRead\n--max-turns\n1\n-p\nbrief\n") {
 		t.Fatalf("claude flags did not reach the worker before -p: %q", argv)
 	}
-	if !strings.Contains(out.String(), "task=log-triage deadline=1") {
+	// The deadline is an epoch second: a substring test on "deadline=1" passes
+	// for every epoch beginning with 1, so read the value and check it is the
+	// one --timeout 60 arms (the run takes under a second, and one second of
+	// rounding either side is allowed).
+	m := regexp.MustCompile(`task=log-triage deadline=(\d+)`).FindStringSubmatch(out.String())
+	if m == nil {
 		t.Fatalf("the worker lost the caller's tag or its deadline: %q", out.String())
+	}
+	armed, err := strconv.ParseInt(m[1], 10, 64)
+	if err != nil || armed < started+60 || armed > finished+60 {
+		t.Fatalf("the worker saw deadline %q, want 60 s from the dispatch (%d..%d), out %q",
+			m[1], started+60, finished+60, out.String())
 	}
 	for _, bad := range []string{"--model", "--effort=high", "-p"} {
 		if Main([]string{"dispatch", "x", "--", bad, "y"}, strings.NewReader(""), io.Discard, io.Discard) != 2 {

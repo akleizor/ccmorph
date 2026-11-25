@@ -123,3 +123,89 @@ func TestALockThatCannotBeOpenedRefusesTheWriteInsteadOfRunningItUnlocked(t *tes
 		t.Fatal("withLock ran its write unlocked")
 	}
 }
+
+// TestSetEnabledOverALiteralNull pins #636: a router.json holding `null`
+// decoded to a nil map, and the write panicked.
+func TestSetEnabledOverALiteralNull(t *testing.T) {
+	for _, body := range []string{"null\n", "", "{}\n", "{\"enabled\":false}\n"} {
+		root := t.TempDir()
+		t.Setenv("CCMORPH_STATE_DIR", root)
+		if err := os.MkdirAll(root, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(ConfigPath(), []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := SetEnabled(true); err != nil {
+			t.Fatalf("SetEnabled over %q: %v", body, err)
+		}
+		if c, err := LoadConfig(); err != nil || !c.Enabled {
+			t.Fatalf("SetEnabled over %q left enabled=%v, %v", body, c.Enabled, err)
+		}
+	}
+}
+
+// TestLedgerKeepsTheLastThirtyDays pins #636: neither log was ever capped, and
+// every settle paid a full-file read.
+func TestLedgerKeepsTheLastThirtyDays(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	now := nowSec()
+	appendLine(ledgerPath(), Row{"id": "old", "ts": now - 31*86400})
+	appendLine(ledgerPath(), Row{"id": "new", "ts": now})
+	appendLine(ledgerPath(), Row{"id": "unreadable"})
+	if !ledgerUpdate("new", Row{"outcome": "completed"}) {
+		t.Fatal("the new row was not found")
+	}
+	got := readRows(ledgerPath())
+	var ids []string
+	for _, r := range got {
+		ids = append(ids, fmt.Sprint(r["id"]))
+	}
+	if strings.Join(ids, ",") != "new,unreadable" {
+		t.Fatalf("ledgerUpdate left %v, want [new unreadable]", ids)
+	}
+}
+
+// TestLedgerRowSkipsOtherLines: complete()'s one-row read must not parse the
+// whole ledger, and a miss must answer nil.
+func TestLedgerRowSkipsOtherLines(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	if err := os.MkdirAll(routerDir(), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	body := "not json at all\n" +
+		`{"id":"route-1","ts":1,"profile":"a"}` + "\n" +
+		`{"id":"route-2","ts":2,"profile":"b"}` + "\n"
+	if err := os.WriteFile(ledgerPath(), []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if r := ledgerRow("route-2"); r == nil || r["profile"] != "b" {
+		t.Fatalf("ledgerRow(route-2) = %v", r)
+	}
+	if r := ledgerRow("route-9"); r != nil {
+		t.Fatalf("a miss returned %v", r)
+	}
+}
+
+// TestOutcomesTrimPastTheCap: the outcomes log is pruned only once it passes
+// the cap, and a prune keeps the recent rows.
+func TestOutcomesTrimPastTheCap(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	oldTrim := trimBytes
+	trimBytes = 200
+	t.Cleanup(func() { trimBytes = oldTrim })
+	now := nowSec()
+	appendLine(filepath.Join(routerDir(), "outcomes.jsonl"), Row{"ts": now - 31*86400, "event": "delegate", "result": "old"})
+	for i := 0; i < 5; i++ {
+		outcomeAppend(Row{"ts": now, "event": "delegate", "result": fmt.Sprint("new-", i)})
+	}
+	rows := readRows(filepath.Join(routerDir(), "outcomes.jsonl"))
+	if len(rows) != 5 {
+		t.Fatalf("a prune left %d rows, want the 5 recent ones", len(rows))
+	}
+	for _, r := range rows {
+		if r["result"] == "old" {
+			t.Fatalf("the 31-day-old row survived the prune: %v", rows)
+		}
+	}
+}

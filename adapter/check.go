@@ -72,6 +72,11 @@ func Check(base, secret, model, proxy string, oauth bool, routes []string) Check
 			return tried[i]
 		}
 	}
+	if len(tried) == 0 {
+		// An exported Check asked of no route has nothing to ask: say so, never
+		// index an empty slice (#636).
+		return CheckResult{Note: "no route to check"}
+	}
 	return tried[len(tried)-1]
 }
 
@@ -88,7 +93,7 @@ func checkRoute(base, secret, model, route string, oauth bool) CheckResult {
 	if oauth {
 		// What Claude Code itself sends with a subscription's token.
 		hdr = bearer(secret)
-		hdr["anthropic-version"], hdr["anthropic-beta"] = "2023-06-01", "oauth-2025-04-20"
+		hdr["anthropic-version"], hdr["anthropic-beta"] = ctxwindow.AnthropicVersion, "oauth-2025-04-20"
 		body["system"] = "You are Claude Code, Anthropic's official CLI for Claude."
 	}
 	r := CheckResult{Route: route}

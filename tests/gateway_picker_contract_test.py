@@ -14,7 +14,10 @@ import pytest
 from support import HANG_TIMEOUT, stdin_a_terminal, wait_until
 
 ROOT = Path(__file__).resolve().parents[1]
-FZF = '#!/usr/bin/env python3\nimport sys\nsys.stdout.write(sys.stdin.read())\n'
+# Echoes every catalogue row; the Keep row a model menu opens on (#636) is not
+# a catalogue row, so the stub's "first offered" stays the first served model.
+FZF = ("#!/usr/bin/env python3\nimport sys\n"
+       "sys.stdout.write(''.join(l for l in sys.stdin if not l.startswith('@keep')))\n")
 
 
 # The launch fetches /v1/models through curl; this one serves $LISTING.

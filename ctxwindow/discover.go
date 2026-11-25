@@ -12,7 +12,6 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/akleizor/ccmorph/ordjson"
 	"github.com/akleizor/ccmorph/util/paths"
 )
 
@@ -124,6 +123,19 @@ var routeStop = func(ctx context.Context, handle string) {
 	check(ctx)
 }
 
+// payload is the oversized prompt the discovery probe sends: enough text to
+// make the endpoint state its context limit.
+func payload(nChars int) string {
+	var sb strings.Builder
+	n := 0
+	for i := 0; n < nChars; i++ {
+		s := fmt.Sprintf("The quick brown fox jumps over the lazy dog number %d. ", i)
+		sb.WriteString(s)
+		n += len(s)
+	}
+	return sb.String()
+}
+
 var (
 	listModelsFn = ListModels
 	probeFn      = Probe
@@ -174,11 +186,11 @@ var priorWalk = func(profiles []string) (map[string]int64, map[string]obj) {
 		// twice (#539).
 		doc := discoveredDoc(fields)
 		d, s := valuesOf(doc), sourcesOf(doc)
-		for _, m := range slices.Sorted(maps.Keys(d)) {
-			values[profile+":"+m], _ = d[m]
+		for m, v := range d {
+			values[profile+":"+m] = v
 		}
-		for _, m := range slices.Sorted(maps.Keys(s)) {
-			tags[profile+":"+m], _ = s[m]
+		for m, t := range s {
+			tags[profile+":"+m] = t
 		}
 	}
 	return values, tags
@@ -234,7 +246,10 @@ func DefaultOptions() Options {
 	return Options{Mode: "declared-only", ProbeTimeout: probeTimeout, Deadline: runTimeout}
 }
 
-func pinnedValue(s string) bool { return ordjson.IsDigits(s) && strings.Trim(s, "0") != "" }
+func pinnedValue(s string) bool {
+	n, ok := Positive(s)
+	return ok && n > 0
+}
 
 // ProbeAll discovers windows for profiles (all routed ones when nil).
 func ProbeAll(parent context.Context, profiles []string, o Options) Run {
@@ -244,9 +259,10 @@ func ProbeAll(parent context.Context, profiles []string, o Options) Run {
 	baseline := map[string]int64{}
 	catalogueTags := map[string]obj{}
 	if o.Identities == nil {
-		// The entry sweep reads every profile once up front, both prior maps
-		// from the one walk. The pinned path below reads each profile once
-		// itself, so it skips this sweep (GH-485).
+		// Only tests pass nil Identities: the CLI always sets the map
+		// (probe_main.go). The nil walk is the seam their priorWalk stubs pin
+		// ProbeAll's inputs through; the pinned path below reads each profile
+		// once itself, so it skips this sweep (GH-485, #636).
 		baseline, catalogueTags = priorWalk(profiles)
 	}
 	cache := NewCache(false)
@@ -283,10 +299,11 @@ func ProbeAll(parent context.Context, profiles []string, o Options) Run {
 				} else {
 					o.Identities[profile] = snap.ID
 					fields = snap.Fields
-					for m, v := range DiscoveredValues(fields) {
+					disc := ParseDiscovered(fields) // one parse for both tables (#636)
+					for m, v := range disc.Values {
 						baseline[profile+":"+m] = v
 					}
-					for m, t := range DiscoveredSources(fields) {
+					for m, t := range disc.Sources {
 						catalogueTags[profile+":"+m] = t
 					}
 				}
@@ -325,7 +342,7 @@ func ProbeAll(parent context.Context, profiles []string, o Options) Run {
 				if o.Mode == "declared-only" && o.OnlySet && len(o.Only) > 0 {
 					// Explicit model selection is enough for a catalogue lookup; an
 					// unavailable gateway is not evidence of model absence.
-					models = sortedKeys(o.Only)
+					models = slices.Sorted(maps.Keys(o.Only))
 					declared, listingRows = map[string]int64{}, nil
 					fmt.Fprintf(stderr, "[%s] gateway metadata unavailable; trying catalogue for requested models\n", profile)
 				} else {
@@ -378,13 +395,9 @@ func ProbeAll(parent context.Context, profiles []string, o Options) Run {
 			} else {
 				// The operator already hid these from the picker; a model nobody can
 				// select needs no window, and listing it as unresolved is noise.
-				excluded := map[string]bool{}
-				for _, m := range strings.Split(fields["excluded_models"], ",") {
-					excluded[m] = true
-				}
 				var kept []string
 				for _, m := range models {
-					if !excluded[m] {
+					if !IsExcluded(fields, m) { // the picker's rule (#636)
 						kept = append(kept, m)
 					}
 				}
@@ -512,13 +525,4 @@ func ProbeAll(parent context.Context, profiles []string, o Options) Run {
 		}
 	}
 	return Run{values, notes, sources, baseline}
-}
-
-func sortedKeys(m map[string]bool) []string {
-	out := make([]string, 0, len(m))
-	for k := range m {
-		out = append(out, k)
-	}
-	sort.Strings(out)
-	return out
 }

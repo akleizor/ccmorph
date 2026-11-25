@@ -42,3 +42,30 @@ func TestPluginDirsNeverInheritsTheRouterPlugin(t *testing.T) {
 		t.Fatalf("a second ccmorph run layer must not duplicate the router plugin: got %q", again)
 	}
 }
+
+// TestWithoutOwnDropsAnyInstallsRouterPlugin pins #636: an inherited
+// claude-plugin-router from another install re-added the router hooks to a
+// worker, so the base name is what the guard drops.
+func TestWithoutOwnDropsAnyInstallsRouterPlugin(t *testing.T) {
+	share := "/opt/ccmorph/share"
+	got := withoutOwn("/opt/homebrew/Cellar/ccmorph/0.5.23/share/claude-plugin-router:/opt/other/plugin:"+share+"/claude-plugin", share)
+	if want := "/opt/other/plugin"; got != want {
+		t.Fatalf("withoutOwn = %q, want %q", got, want)
+	}
+}
+
+// #636: Claude's own mcp text sends a person to `claude mcp add`, which writes
+// the host's ~/.claude.json; a profile's run names the profile's own way.
+func TestMcpHintNamesTheProfilesOwnWay(t *testing.T) {
+	if got := mcpHint([]string{"mcp", "list"}, "work"); !strings.Contains(got, "ccmorph run work mcp add") {
+		t.Fatalf("hint %q", got)
+	}
+	for _, c := range []struct {
+		args []string
+		name string
+	}{{[]string{"explain mcp"}, "work"}, {[]string{"doctor"}, "work"}, {[]string{"mcp"}, ""}, {[]string{"mcp", "add", "x", "y"}, "work"}} {
+		if got := mcpHint(c.args, c.name); got != "" {
+			t.Errorf("%+v: unexpected hint %q", c, got)
+		}
+	}
+}

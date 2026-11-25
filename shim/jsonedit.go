@@ -199,9 +199,11 @@ func reparse(out []byte, held ...*doc) *doc {
 }
 
 // last is the value span of the last member named key (JSON's duplicate rule).
-func (d *doc) last(key string) (Span, bool) { return lastMember(d.ms, key) }
+func (d *doc) last(key string) (Span, bool) { return LastMember(d.ms, key) }
 
-func lastMember(ms []Member, key string) (Span, bool) {
+// LastMember is the value span of the last member named key. quirks reads the
+// same duplicate-key rule through it, so the walk has one definition (#636).
+func LastMember(ms []Member, key string) (Span, bool) {
 	for i := len(ms) - 1; i >= 0; i-- {
 		if ms[i].Key == key {
 			return ms[i].Value, true
@@ -219,8 +221,9 @@ func lastIndex(ms []Member, key string) int {
 	return -1
 }
 
-// str is the unescaped string at span s of b, if it is one.
-func str(b []byte, s Span) (string, bool) {
+// SpanStr is the unescaped string at span s of b, if it is one. Exported for
+// quirks' reader, which had the same body (#636).
+func SpanStr(b []byte, s Span) (string, bool) {
 	if b[s.Start] != '"' {
 		return "", false
 	}
@@ -232,7 +235,7 @@ func (d *doc) str(key string) (string, bool) {
 	if !ok {
 		return "", false
 	}
-	return str(d.b, s)
+	return SpanStr(d.b, s)
 }
 
 // canon re-emits JSON the way Python's json.dumps does, with the edits applied:

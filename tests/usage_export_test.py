@@ -5,6 +5,7 @@ import errno
 import json
 import os
 import pathlib
+import shlex
 import shutil
 import subprocess
 import sys
@@ -818,6 +819,7 @@ def test_the_checkout_launcher_runs_the_shipped_exporter(tmp_path, via):
         "0 turns left for ccusage to price at its list price",
         "0 turns unpriced (a damaged cost, not exported)",
         "0 receipts moved by the store mid-run, skipped",
+        "0 receipts not parseable, skipped",
         "Then, with ccusage installed:",
         f"CLAUDE_CONFIG_DIR={root} ccusage claude daily --instances "
         f"--config {root}/ccusage.json",
@@ -1146,6 +1148,7 @@ def test_the_summary_names_where_the_files_went_and_the_command_to_run_next_issu
         "1 turn left for ccusage to price at its list price",
         "1 turn unpriced (a damaged cost, not exported)",
         "0 receipts moved by the store mid-run, skipped",
+        "0 receipts not parseable, skipped",
     ] + tail) + "\n"
 
 
@@ -1187,17 +1190,29 @@ def test_the_printed_command_runs_as_printed_for_a_folder_with_spaces_issue_382(
         str(output / "ccusage.json")]
 
 
-def test_help_prints_the_ccusage_command_that_reads_the_export():
+def test_help_prints_the_ccusage_command_with_the_export_paths_filled_in(tmp_path):
     """#261: no install provides ccusage, so the README prints no ccusage
     command; it points at the exporter's --help, which must give it. #382: the
     parser reflowed the description into one paragraph, gluing the command to
-    the sentence after it so it could not be copied as one line, and --output
-    and --source were bare — a flag and a placeholder, nothing else."""
-    ran = subprocess.run([sys.executable, str(EXPORTER), "--help"],
-                         capture_output=True, text=True, timeout=HANG_TIMEOUT)
-    assert ran.returncode == 0, ran.stderr
-    assert ("CLAUDE_CONFIG_DIR=ROOT ccusage claude daily --instances --config "
-            "ROOT/ccusage.json") in ran.stdout.splitlines()
+    the sentence after it so it could not be copied as one line. #636: the line
+    then carried a ROOT placeholder the reader had to substitute twice, while
+    the end of a run printed both paths resolved — --help now resolves them the
+    same way, for the --output on this command line or the export's default."""
+    home = tmp_path / "home"
+    home.mkdir()
+    output = tmp_path / "out with spaces"
+    cases = [(["--help"], home / ".cache" / "ccmorph-usage"),
+             (["--output", str(output), "--help"], output)]
+    for args, root in cases:
+        ran = subprocess.run(
+            [sys.executable, str(EXPORTER), *args],
+            capture_output=True, text=True, timeout=HANG_TIMEOUT,
+            env=dict(os.environ, HOME=str(home), XDG_CACHE_HOME=""))
+        assert ran.returncode == 0, ran.stderr
+        assert (f"CLAUDE_CONFIG_DIR={shlex.quote(str(root))} ccusage claude daily "
+                f"--instances --config {shlex.quote(str(root / 'ccusage.json'))}"
+                ) in ran.stdout.splitlines()
+        assert "ROOT ccusage" not in ran.stdout
     for flag in ("--output", "--source", "--since"):
         line = next((l for l in ran.stdout.splitlines() if l.lstrip().startswith(flag)), "")
         assert len(line.split()) > 2, f"{flag} is missing or says nothing: {line!r}"
@@ -1249,3 +1264,22 @@ def test_a_date_in_the_wrong_format_names_the_format_and_an_example_issue_382(tm
     assert ran.returncode == 1
     assert since in ran.stderr  # the person's own input, named back
     assert "YYYYMMDD" in ran.stderr and "20261110" in ran.stderr
+
+
+def test_an_unparseable_receipt_is_counted_and_named(tmp_path):
+    """#636: a truncated or non-object receipt was skipped with a bare continue,
+    no count and no name, while every other skip is both: a person could not tell
+    one damaged row from none."""
+    rows, output = tmp_path / "rows", tmp_path / "out"
+    rows.mkdir()
+    write(rows, "a.json", receipt("a", "claude-opus-5-5", "2026-10-16T01:00:00+00:00", cost=1))
+    (rows / "cut.json").write_text('{"ts":')
+    (rows / "scalar.json").write_text("7")
+    stats = ue.export(rows, output)
+    assert stats["rows"] == 1
+    assert sorted(stats["unparsed"]) == ["cut.json", "scalar.json"]
+    ran = subprocess.run([sys.executable, str(EXPORTER), "--output", str(output), "--source", str(rows)],
+                         capture_output=True, text=True, timeout=HANG_TIMEOUT)
+    assert ran.returncode == 0, ran.stderr
+    assert "2 receipts not parseable, skipped: " in ran.stdout, ran.stdout
+    assert "cut.json" in ran.stdout and "scalar.json" in ran.stdout

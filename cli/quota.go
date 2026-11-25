@@ -216,7 +216,7 @@ func warnLines(msg string, width int) []string {
 	if msg == "" {
 		return nil
 	}
-	return wrapWords("ccmorph: warning: "+msg, width)
+	return ctxwindow.Wrap("ccmorph: warning: "+msg, width)
 }
 
 // quota is `ccmorph quota [profile] [--json]`. Each secret reaches the core on

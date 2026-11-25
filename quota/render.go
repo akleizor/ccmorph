@@ -164,7 +164,7 @@ func spendLine(s *Spend) string {
 	}
 	line := fmt.Sprintf("  today $%.2f · month $%.2f", s.TodayUSD, s.MonthUSD)
 	if s.BudgetUSD != nil {
-		line += " of $" + trimFloat(*s.BudgetUSD)
+		line += " of $" + strconv.FormatFloat(*s.BudgetUSD, 'f', -1, 64)
 	}
 	if s.Estimated {
 		line += " (est.)"
@@ -188,10 +188,6 @@ func plural(n int64, word string) string {
 		return word
 	}
 	return word + "s"
-}
-
-func trimFloat(v float64) string {
-	return strconv.FormatFloat(v, 'f', -1, 64)
 }
 
 // bar is barCells cells: rounded, clamped, so a spent window is a full bar.

@@ -97,7 +97,10 @@ func ReadConf(path string) (string, map[string]string, error) {
 	if err != nil {
 		return "", nil, err
 	}
-	fields := parseConf(text)
+	fields, perr := parseConf(text)
+	if perr != nil {
+		return "", nil, perr
+	}
 	// Machine-written windows live beside the profile; a conf that still carries
 	// the old inline record wins until the next save moves it out.
 	if _, inline := fields["context_discovered"]; !inline {
@@ -138,16 +141,12 @@ var textOf = func(b []byte, path string) (string, error) {
 	return text, nil
 }
 
-// parseConf is conf text as key=value fields.
-func parseConf(text string) map[string]string {
-	fields := map[string]string{}
-	for _, line := range strings.Split(text, "\n") {
-		key, value, ok := strings.Cut(strings.Trim(line, " \t\r"), "=")
-		if ok && !strings.HasPrefix(key, "#") {
-			fields[key] = value
-		}
-	}
-	return fields
+// parseConf is conf text as key=value fields, through profile's one strict
+// line rule: a duplicate or malformed line is an error, not a last-wins read
+// (#636).
+func parseConf(text string) (map[string]string, error) {
+	_, fields, err := profile.ParseConf(strings.TrimSuffix(text, "\n"))
+	return fields, err
 }
 
 // DiscoveredPath is where a conf's discovered windows are kept:
@@ -157,28 +156,28 @@ func DiscoveredPath(conf string) string {
 	return filepath.Join(dir, "profiles", strings.TrimSuffix(name, ".conf"), "models.json")
 }
 
-// lockName is the conf's lock file path, kept out of the state root's listing.
-func lockName(conf string) string {
+// LockName is the conf's lock file path, kept out of the state root's listing.
+func LockName(conf string) string {
 	dir, name := filepath.Split(conf)
 	return filepath.Join(dir, ".locks", strings.TrimSuffix(name, ".conf")+".lock")
 }
 
 // lockPath is lockName with the .locks directory made first.
 func lockPath(conf string) (string, error) {
-	lock := lockName(conf)
+	lock := LockName(conf)
 	if err := os.MkdirAll(filepath.Dir(lock), 0o700); err != nil {
 		return "", err
 	}
 	return lock, nil
 }
 
-// heldLock reports whether this process already holds conf's lock: either the
+// HeldLock reports whether this process already holds conf's lock: either the
 // same conf path is named in CCMORPH_PROFILE_LOCK_HELD, or a named conf's lock
 // file and this one are one file on disk (macOS ignores letter case, so
 // work2.conf and Work2.conf can share .locks/work2.lock). Taking that file
 // again would wait forever on ourselves.
-func heldLock(conf string) bool {
-	lock, err := os.Stat(lockName(conf))
+func HeldLock(conf string) bool {
+	lock, err := os.Stat(LockName(conf))
 	for _, held := range strings.Split(os.Getenv("CCMORPH_PROFILE_LOCK_HELD"), ":") {
 		if held == "" {
 			continue
@@ -187,7 +186,7 @@ func heldLock(conf string) bool {
 			return true
 		}
 		if err == nil {
-			if other, err := os.Stat(lockName(held)); err == nil && os.SameFile(lock, other) {
+			if other, err := os.Stat(LockName(held)); err == nil && os.SameFile(lock, other) {
 				return true
 			}
 		}
@@ -245,20 +244,28 @@ func glob(name, pattern string) bool {
 	if !strings.ContainsAny(pattern, "*?") {
 		return name == pattern
 	}
-	var re strings.Builder
-	re.WriteString("(?s)^")
-	for _, r := range pattern {
-		switch r {
-		case '*':
-			re.WriteString(".*")
-		case '?':
-			re.WriteString(".")
+	// A rune matcher, not a regexp compiled per call: launch matches every
+	// listing row against every pattern, hundreds of identical compiles (#636).
+	// * is any run of runes, ? exactly one rune; the last * backtracks.
+	n, p := []rune(name), []rune(pattern)
+	i, j, star, mark := 0, 0, -1, 0
+	for i < len(n) {
+		switch {
+		case j < len(p) && (p[j] == '?' || p[j] == n[i]):
+			i, j = i+1, j+1
+		case j < len(p) && p[j] == '*':
+			star, mark, j = j, i, j+1
+		case star >= 0:
+			mark++
+			i, j = mark, star+1
 		default:
-			re.WriteString(regexp.QuoteMeta(string(r)))
+			return false
 		}
 	}
-	re.WriteString("$")
-	return regexp.MustCompile(re.String()).MatchString(name)
+	for j < len(p) && p[j] == '*' {
+		j++
+	}
+	return j == len(p)
 }
 
 // Identity pins a conf file's inode, mtime and content so a writer can tell
@@ -331,7 +338,10 @@ func snapshotOf(path string) (*Snapshot, error) {
 	if terr != nil {
 		return &Snapshot{ID: id}, terr
 	}
-	fields := parseConf(text)
+	fields, perr := parseConf(text)
+	if perr != nil {
+		return &Snapshot{ID: id}, perr
+	}
 	if _, inline := fields["context_discovered"]; !inline && sidecar != nil {
 		fields["context_discovered"] = string(sidecar)
 	}
@@ -477,8 +487,7 @@ func valuesOf(doc obj) map[string]int64 {
 	if models == nil {
 		return out
 	}
-	for _, k := range slices.Sorted(maps.Keys(models)) {
-		v := models[k]
+	for k, v := range models {
 		if n, ok := asPosInt(v); ok && ValidModel(k) {
 			out[k] = n
 		}
@@ -499,8 +508,7 @@ func sourcesOf(doc obj) map[string]obj {
 	if sources == nil {
 		return out
 	}
-	for _, k := range slices.Sorted(maps.Keys(sources)) {
-		v := sources[k]
+	for k, v := range sources {
 		entry, ok := v.(obj)
 		if !ok || !ValidModel(k) {
 			continue
@@ -526,8 +534,7 @@ func missesOf(doc obj) map[string]string {
 	if misses == nil {
 		return out
 	}
-	for _, k := range slices.Sorted(maps.Keys(misses)) {
-		v := misses[k]
+	for k, v := range misses {
 		if day, ok := v.(string); ok && ValidModel(k) {
 			out[k] = day
 		}
@@ -565,12 +572,6 @@ func ManualValues(fields map[string]string) map[string]int64 {
 	return out
 }
 
-// mappedTargetFromFields is the id the shim serves for bare, or bare when nothing rewrites
-// it: the map's target is final, so it sizes the session.
-func mappedTargetFromFields(fields map[string]string, bare string) string {
-	return mappedTarget(fields, parseModelMap(fields), bare)
-}
-
 // parseModelMap is the conf's model_map as a JSON object; nil when absent or
 // not one, which mappedTarget reads as "no mapping".
 func parseModelMap(fields map[string]string) obj {
@@ -586,7 +587,7 @@ func parseModelMap(fields map[string]string) obj {
 	return mapping
 }
 
-// mappedTarget is mappedTargetFromFields over an already-parsed mapping.
+// mappedTarget is the id the shim serves for bare, from an already-parsed mapping.
 func mappedTarget(fields map[string]string, mapping obj, bare string) string {
 	base := strings.TrimRight(fields["base_url"], "/")
 	if base == "" || base == "https://api.anthropic.com" {
@@ -609,7 +610,7 @@ func mappedTarget(fields map[string]string, mapping obj, bare string) string {
 // readable with the profile's own credentials — the probe that fills this
 // table is the evidence the route offers.
 func RouteKnown(fields map[string]string, model string) bool {
-	target := mappedTargetFromFields(fields, model)
+	target := mappedTarget(fields, parseModelMap(fields), model)
 	discovered := DiscoveredValues(fields)
 	if _, ok := discovered[target]; ok {
 		return true
@@ -660,7 +661,7 @@ func ProfileLockCtx(ctx context.Context, profile string, fn func() error) (bool,
 		}
 		return true, fn()
 	}
-	if heldLock(path) {
+	if HeldLock(path) {
 		return ran()
 	}
 	// The lock holds no configuration data; its inode stays stable across remove/recreate.

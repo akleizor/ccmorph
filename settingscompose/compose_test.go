@@ -11,6 +11,8 @@ import (
 	"strings"
 	"syscall"
 	"testing"
+
+	"github.com/akleizor/ccmorph/ordjson"
 )
 
 func write(t *testing.T, path, text string) {
@@ -750,5 +752,78 @@ func TestADirectoryThatIsNotAProfileNameGetsNoStatusLine(t *testing.T) {
 	f.materialize(t, "")
 	if got := statusLineCommand(t, f); got != "" {
 		t.Fatalf("statusLine.command = %q", got)
+	}
+}
+
+// TestMergeDropsAnItemTheOverrideRepeats pins #636: a deny item the override
+// itself repeats is appended once, as the doc comment promises.
+func TestMergeDropsAnItemTheOverrideRepeats(t *testing.T) {
+	base, override := ordjson.New(), ordjson.New()
+	pb, po := ordjson.New(), ordjson.New()
+	pb.Set("deny", []any{"A"})
+	po.Set("deny", []any{"B", "B", "A"})
+	base.Set("permissions", pb)
+	override.Set("permissions", po)
+	got := merge(base, override, nil)
+	perms, _ := got.Get("permissions")
+	deny, _ := perms.(*obj).Get("deny")
+	list := deny.([]any)
+	if len(list) != 2 || list[0] != "A" || list[1] != "B" {
+		t.Fatalf("deny = %v, want [A B]", list)
+	}
+}
+
+// TestWithoutUsageKeepsASiblingHookInTheSameGroup pins #636: a hand-written
+// command beside ccmorph's usage hook survives the fold.
+func TestWithoutUsageKeepsASiblingHookInTheSameGroup(t *testing.T) {
+	doc := ordjson.New()
+	hooks := ordjson.New()
+	entry := ordjson.New()
+	entry.Set("hooks", []any{
+		mapToObj(t, `{"type":"command","command":"`+usageHook+`"}`),
+		mapToObj(t, `{"type":"command","command":"say mine"}`),
+	})
+	hooks.Set("Stop", []any{entry})
+	doc.Set("hooks", hooks)
+	got := withoutUsage(doc)
+	b := string(ordjson.Marshal(got, false))
+	if strings.Contains(b, "usage-row") || !strings.Contains(b, "say mine") {
+		t.Fatalf("withoutUsage = %s", b)
+	}
+}
+
+// mapToObj reads one JSON object as the *obj a settings document holds.
+func mapToObj(t *testing.T, text string) *obj {
+	t.Helper()
+	v, err := ordjson.Parse([]byte(text))
+	if err != nil {
+		t.Fatal(err)
+	}
+	o, ok := v.(*obj)
+	if !ok {
+		t.Fatalf("%s is not an object", text)
+	}
+	return o
+}
+
+// TestTheSettingsBackupIsPrivateFromItsFirstByte pins #636: the backup of
+// settings.json was world-readable for the moment between write and chmod.
+func TestTheSettingsBackupIsPrivateFromItsFirstByte(t *testing.T) {
+	old := syscall.Umask(0o022)
+	t.Cleanup(func() { syscall.Umask(old) })
+	dir := t.TempDir()
+	backup(dir, []byte("{}\n"))
+	matches, err := filepath.Glob(filepath.Join(dir, "backups", "settings.*.json"))
+	if err != nil || len(matches) == 0 {
+		t.Fatalf("no backup written: %v %v", matches, err)
+	}
+	for _, m := range matches {
+		fi, err := os.Stat(m)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if fi.Mode().Perm() != 0o600 {
+			t.Fatalf("%s = %o, want 600", m, fi.Mode().Perm())
+		}
 	}
 }

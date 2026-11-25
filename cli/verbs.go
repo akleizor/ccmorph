@@ -80,15 +80,40 @@ func (l *launcher) verb(args []string) int {
 	return 2
 }
 
-const priceCacheHint = "Run a `provider` profile with `ccmorph run PROFILE`; its launch refreshes this cache in the background."
+// priceCacheHint is the one repair sentence for an empty price cache: the plain
+// answer, the JSON hint and the help page all print it (#636). No backticks: a
+// help page refuses them.
+const priceCacheHint = "Run a provider profile with ccmorph run <profile>; its launch refreshes this cache in the background."
+
+// priceJSON prints one price answer as JSON, its hint's <profile> as written
+// rather than \u003c-escaped.
+func priceJSON(v any) error {
+	enc := json.NewEncoder(os.Stdout)
+	enc.SetEscapeHTML(false)
+	return enc.Encode(v)
+}
 
 func (l *launcher) price(args []string) int {
 	models := make([]string, 0, len(args))
 	asJSON := false
+	// An option-shaped argument is refused, not looked up: `--jsoon` printed as
+	// an unpriced model a script could not tell from a real answer. After --,
+	// every argument is a model id, dash or not (#636).
+	dashes := false
 	for _, arg := range args {
-		if arg == "--json" {
+		switch {
+		case dashes:
+			models = append(models, arg)
+		case arg == "--":
+			dashes = true
+		case arg == "--json":
 			asJSON = true
-		} else {
+		case strings.HasPrefix(arg, "-") && arg != "-":
+			l.err("unknown option '" + arg + "'")
+			l.err("usage: " + usageLine("price"))
+			fmt.Fprintln(os.Stderr, "  Use -- before a model id that starts with a dash.")
+			return 2
+		default:
 			models = append(models, arg)
 		}
 	}
@@ -103,14 +128,14 @@ func (l *launcher) price(args []string) int {
 	}
 	type jsonPriceResult struct {
 		Cache  string               `json:"cache"`
-		Hint   string               `json:"hint"`
+		Hint   string               `json:"hint,omitempty"`
 		Prices map[string]listPrice `json:"prices"`
 	}
 	prices := map[string]listPrice{}
 	if !book.HasCachedPrices() {
 		if asJSON {
 			result := jsonPriceResult{Cache: "empty", Hint: priceCacheHint, Prices: prices}
-			if err := json.NewEncoder(os.Stdout).Encode(result); err != nil {
+			if err := priceJSON(result); err != nil {
 				l.err(err.Error())
 				return 1
 			}
@@ -135,7 +160,9 @@ func (l *launcher) price(args []string) int {
 		}
 	}
 	if asJSON {
-		if err := json.NewEncoder(os.Stdout).Encode(prices); err != nil {
+		// One shape for both caches: the wrapper says which state it is in,
+		// which a bare price map could not (#636).
+		if err := priceJSON(jsonPriceResult{Cache: "ok", Prices: prices}); err != nil {
 			l.err(err.Error())
 			return 1
 		}
@@ -194,10 +221,35 @@ func (l *launcher) noProfileMsg(name string) string {
 	if twin := l.caseTwin(name); twin != "" {
 		return "no profile '" + name + "'. Did you mean '" + twin + "'? Profile names match letter case exactly."
 	}
-	if names := l.confNames(); len(names) > 0 {
-		return "no profile '" + name + "'. Profiles: " + strings.Join(names, " ")
+	valid, invalid := l.splitProfiles()
+	msg := "no profile '" + name + "'. "
+	switch {
+	case len(valid) > 0:
+		msg += "Profiles: " + strings.Join(valid, " ")
+	case len(invalid) == 0:
+		return msg + noProfilesMsg
+	default:
+		msg += "No valid profiles"
 	}
-	return "no profile '" + name + "'. " + noProfilesMsg
+	// A conf list skips doesn't read as a choice: it is named apart, with the
+	// command that says why (#636).
+	if len(invalid) > 0 {
+		msg += "; not valid: " + strings.Join(invalid, " ") + " (ccmorph doctor " + invalid[0] + " says why)"
+	}
+	return msg
+}
+
+// splitProfiles is every conf, split into those that read as valid and those
+// list would skip, each in name order.
+func (l *launcher) splitProfiles() (valid, invalid []string) {
+	for _, n := range l.confNames() {
+		if _, ok := l.readQuiet(n); ok {
+			valid = append(valid, n)
+		} else {
+			invalid = append(invalid, n)
+		}
+	}
+	return valid, invalid
 }
 
 // caseClashMsg names the profile a new or renamed name collides with on a
@@ -260,6 +312,12 @@ func (l *launcher) rmBadName(verb, name string) int { return l.refuseName(verb, 
 // refuseName prints a name refusal and is the exit it gives.
 func (l *launcher) refuseName(verb, name string, msg func(string) string) int {
 	if name == "" {
+		// With no profile at all, the usage line names an argument there is no
+		// value for: the one first-run sentence is the answer (#636).
+		if len(l.confNames()) == 0 {
+			l.err(noProfilesMsg)
+			return 1
+		}
 		l.err("usage: " + usageLine(verb))
 		return 1
 	}
@@ -309,14 +367,24 @@ func (l *launcher) list(args []string) int {
 	// no saved model says Browser login, and a private one carries the mark.
 	// What stays list's own is the paint, via kindColour below.
 	descs, skipped := l.describeProfiles(l.active(), nil, nil)
+	shown := false
 	for _, d := range descs {
 		marker, nameFmt := " ", d.name
 		if d.active {
 			marker, nameFmt = l.accent+"*"+l.reset, l.bold+d.name+l.reset
+			shown = true
 		}
 		label := l.kindColour(d) + d.kind + l.reset
 		if d.detail != "" {
 			label += l.dim + ": " + d.detail + l.reset
+		}
+		// A saved default the row does not already show is named, so the
+		// overview does not mislead by omission (#636).
+		if m := l.accountModel(d.name); m != "" && !strings.Contains(d.detail, m) {
+			label += l.dim + " · model " + m + l.reset
+		}
+		if e, rc := l.configStoreQ("get", d.name, "effort"); rc == 0 && e != "" && !strings.ContainsAny(e, "\n\r") {
+			label += l.dim + " · effort " + e + l.reset
 		}
 		if d.private {
 			// Marked where profiles are listed; inspect and doctor say what the
@@ -324,6 +392,11 @@ func (l *launcher) list(args []string) int {
 			label += " " + l.yellow + "· private" + l.reset
 		}
 		fmt.Printf(" %s %s (%s)\n", marker, nameFmt, label)
+	}
+	if shown {
+		// #636: the `*` had no legend on first use; a newcomer had to guess
+		// what the star meant. One line, only when a row carries it.
+		fmt.Println(l.dim + "* = default profile (ccmorph use <profile> changes it)" + l.reset)
 	}
 	// A home whose only profile was skipped is not empty: the skip line already
 	// named the fault and its repair, so the empty-home summary would be a
@@ -396,7 +469,13 @@ func credOf(f map[string]string) string {
 func (l *launcher) use(args []string) int {
 	if len(args) == 0 || args[0] == "" {
 		if a := l.active(); a != "" {
-			fmt.Println(l.bold + a + l.reset)
+			// A terminal reads a sentence; a pipe keeps the bare name a
+			// script captures (#636).
+			if isTTY(1) {
+				fmt.Println("Default profile: " + l.bold + a + l.reset)
+			} else {
+				fmt.Println(l.bold + a + l.reset)
+			}
 		} else if names := l.confNames(); len(names) == 0 {
 			// #368: a fresh install hears the one sentence every command gives,
 			// not the command it just typed with no profile to name.
@@ -404,7 +483,14 @@ func (l *launcher) use(args []string) int {
 		} else {
 			// #368: profiles exist but none is the default, so the answer names
 			// the profiles to choose from, never the command just typed.
-			fmt.Println(l.dim + "No default set. Profiles: " + strings.Join(names, " ") + l.reset)
+			// A pipe's stdout is the default's name, and there is none: the
+			// sentence goes to stderr there, so a script reads an empty answer
+			// (#636).
+			if isTTY(1) {
+				fmt.Println(l.dim + "No default set. Profiles: " + strings.Join(names, " ") + l.reset)
+			} else {
+				fmt.Fprintln(os.Stderr, "No default set. Profiles: "+strings.Join(names, " "))
+			}
 		}
 		return 0
 	}

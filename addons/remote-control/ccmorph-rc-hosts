@@ -85,10 +85,10 @@ import os
 import re
 import shutil
 import signal
-import socket
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -97,11 +97,14 @@ from datetime import datetime
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
-STATE_ROOT = Path(os.environ.get("CCMORPH_STATE_DIR") or
-                  Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config") / "ccmorph")
-LOGS = STATE_ROOT / "profiles" / ".rc-bridge" / "logs"
-EDGES = STATE_ROOT / "profiles" / ".rc-bridge" / "edges"
-INFERENCE = STATE_ROOT / "profiles" / ".rc-bridge" / "inference"   # ccmorph-rc reads the same file
+# The state root is ccmorph-rc's own, from the module beside both scripts (#636).
+sys.path.insert(0, str(HERE))
+from rc_route import BridgeDirs, project_slug, state_root  # noqa: E402
+STATE_ROOT = state_root()
+BRIDGE = BridgeDirs(STATE_ROOT)   # ccmorph-rc derives the same dirs from the same class
+LOGS = BRIDGE.logs
+EDGES = BRIDGE.edges
+INFERENCE = BRIDGE.inference
 
 
 _unread_edges: set[str] = set()   # routes whose edge read failed and was logged
@@ -221,7 +224,7 @@ def project_dirs(folder: str) -> list[Path]:
     """Claude Code's per-folder state dirs (transcripts, bridge pointer). History is
     per profile, and a host runs as whichever account its line names, so the
     folder's state is looked up in native history and in every profile's."""
-    slug = re.sub(r"[^A-Za-z0-9]", "-", folder)
+    slug = project_slug(folder)
     roots = [Path.home() / ".claude" / "projects", *sorted((STATE_ROOT / "profiles").glob("*/projects"))]
     return [r / slug for r in roots]
 
@@ -427,7 +430,8 @@ def parse(text: str) -> dict[str, tuple[str, tuple[str, ...]]]:
         if refused:
             log(f"{folder}: refused, {refused}")
             continue
-        own = re.search(r"route=(\S+)", rest)
+        # A word of its own: `myroute=x` in a folder's args is not a route (#636).
+        own = re.search(r"(?:^|\s)route=(\S+)", rest)
         folders[folder] = (own.group(1) if own else None, tuple(argv))
     return {f: (r or route, a) for f, (r, a) in folders.items() if (r or route)}
 
@@ -541,12 +545,12 @@ class Host:
         untracked and untouched.
         """
         git = ["git", "-C", self.folder, "-c", "user.email=rc@local", "-c", "user.name=ccmorph-rc"]
-        if subprocess.run(git + ["rev-parse", "--verify", "-q", "HEAD"], capture_output=True).returncode:
-            r = subprocess.run(git + ["init", "-q"], capture_output=True, text=True)
+        if run_git(git + ["rev-parse", "--verify", "-q", "HEAD"], capture_output=True).returncode:
+            r = run_git(git + ["init", "-q"], capture_output=True, text=True)
             if r.returncode:
                 log(f"{self.folder}: git init failed: {r.stderr.strip()[:120]}")
                 return
-            subprocess.run(git + ["commit", "-q", "--allow-empty", "-m", "Remote Control host base"],
+            run_git(git + ["commit", "-q", "--allow-empty", "-m", "Remote Control host base"],
                            capture_output=True)
             log(f"{self.folder}: initialized a git repo (worktree spawn mode needs one)")
 
@@ -660,15 +664,25 @@ class Host:
         self.started = time.time()
         log(f"{self.folder}: started via {self.route} (pid {self.proc.pid})")
 
-    def deregistered(self, since: float) -> bool:
-        """Whether the host reported deregistering its environment after `since`.
+    def deregistered(self, since: int) -> bool:
+        """Whether the host reported deregistering its environment after `since`,
+        the log's byte size when the stop began: only what was written after it
+        counts, so a release line left by an earlier run cannot answer for this
+        one (#636). A log that shrank since (bound_logs truncated it) is read
+        from its tail.
 
         Only the host can remove its own environment (it holds the credential), so
         the supervisor's job is to give it the chance and then check the log rather
         than assume. A host that merely marked itself offline keeps its row in the
         Claude app -- that is the resume handle, not a leak.
         """
-        text = tail(self.logfile)
+        try:
+            with open(self.logfile, "rb") as f:
+                end = f.seek(0, 2)
+                f.seek(since if since <= end else max(0, end - TAIL))
+                text = f.read().decode("utf-8", "replace")
+        except OSError:
+            return False
         return "Environment deregistered" in text or "Environment marked offline" in text
 
     def stop(self) -> None:
@@ -750,33 +764,36 @@ class Host:
         return False
 
 
-def days_setting(text: str, prefix: str | None, default: float) -> float:
-    """A `<prefix><days>` config line, or its documented default when absent, not
-    a number, or no longer named by the settings registry: `[0-9.]+` matches `.`
-    and `1..0`, which float() rejects, and the idle check must not take the
-    supervisor down for one bad line."""
-    if prefix is None:
-        return default
-    m = re.search(rf"^\s*{re.escape(prefix)}([0-9.]+)", text, re.M)
-    if not m:
+def days_setting(text: str, reader, default: float) -> float:
+    """The number on `reader`'s config line, read through setting_value like every
+    other setting, or its documented default when the line is absent, not a
+    finite number >= 0, or no longer named by the registry. A bad value is logged
+    and never takes the supervisor down: `idle_days=1e9` once read as 1 and
+    `idle_days=abc` fell back with no line, through a second regex of its own
+    (#636)."""
+    raw = setting_value(text, reader)
+    if raw is None:
         return default
     try:
-        return float(m.group(1))
+        value = float(raw)
+        if not (value >= 0 and value != float("inf")):
+            raise ValueError
+        return value
     except ValueError:
-        log(f"config: {prefix}{m.group(1)} is not a number; using the default {default:g}")
+        log(f"config: {settings_key(reader)}{raw} is not a number; using the default {default:g}")
         return default
 
 
 def idle_days(text: str) -> float:
-    return days_setting(text, settings_key(idle_days), 1.0)
+    return days_setting(text, idle_days, 1.0)
 
 
 def purge_days(text: str) -> float:
-    return days_setting(text, settings_key(purge_days), 7.0)
+    return days_setting(text, purge_days, 7.0)
 
 
 def park_hours(text: str) -> float:
-    return days_setting(text, settings_key(park_hours), 6.0)   # 0 keeps every idle session's process
+    return days_setting(text, park_hours, 6.0)   # 0 keeps every idle session's process
 
 
 def archived_set(text: str) -> set[str]:
@@ -858,11 +875,19 @@ LOGIN_ERRORS = (*TRANSIENT, KeyError, SystemExit, subprocess.SubprocessError)
 @functools.lru_cache(maxsize=None)
 def rc_module():
     """The launcher module (ccmorph-rc), loaded once: its pinned_tiers() is the one
-    description of the tier map this supervisor shares with a live edge."""
+    description of the tier map this supervisor shares with a live edge.
+
+    A launcher that is present but does not compile (a half-written upgrade) is
+    raised as OSError, the shape a missing one already takes: every caller
+    survives that one (#845), where a SyntaxError crash-looped the supervisor
+    with no cause line (#636)."""
     loader = importlib.machinery.SourceFileLoader("ccmorph_rc", str(HERE / "ccmorph-rc"))
     spec = importlib.util.spec_from_loader("ccmorph_rc", loader)
     module = importlib.util.module_from_spec(spec)
-    loader.exec_module(module)  # load_module() is gone in 3.15 (GH-812); this is the shape tests/support.py load_script uses
+    try:
+        loader.exec_module(module)  # load_module() is gone in 3.15 (GH-812); this is the shape tests/support.py load_script uses
+    except SyntaxError as e:
+        raise OSError(f"{HERE / 'ccmorph-rc'} does not compile: {e.msg} (line {e.lineno})") from e
     return module
 
 
@@ -899,6 +924,14 @@ def account_name() -> str:
 
 
 @functools.lru_cache(maxsize=None)
+def keychain_service_for(account_dir: str) -> str:
+    """Claude Code's keychain service for a config dir: a hash of the dir names it.
+    util/signin.go's keychainService spells the same rule; this file's
+    test_keychain_service_matches_the_go_golden and Go's TestClaudeCredentialServiceGolden
+    pin both to one value (#636)."""
+    return "Claude Code-credentials-" + hashlib.sha256(account_dir.encode()).hexdigest()[:8]
+
+
 def keychain_service() -> str:
     """Claude Code's keychain entry for the account profile (fixed for this run).
 
@@ -912,9 +945,10 @@ def keychain_service() -> str:
     if not name:
         candidates = rc.account_candidates()
         raise ValueError(f"no unique Claude account profile ({', '.join(candidates)})" if candidates
-                         else "no Claude account profile found — create one with 'ccmorph add <name>'")
+                         else "no Claude account profile found — create one with 'ccmorph add <name>' "
+                              "and choose 'Claude account'")
     account_dir = rc.profile_env(name)["CLAUDE_CONFIG_DIR"]
-    return "Claude Code-credentials-" + hashlib.sha256(account_dir.encode()).hexdigest()[:8]
+    return keychain_service_for(account_dir)
 
 
 def account_login() -> dict:
@@ -1041,15 +1075,52 @@ def host_envs(folders: list[str]) -> dict[str, str]:
     return out
 
 
+# A git that never answers (a hung network filesystem, a credential prompt)
+# must not block the supervisor's loop: every git call is bounded, and a call
+# that runs out reads as a failed one, which each caller already survives (#636).
+EXTERNAL_TIMEOUT = 30
+
+
+def run_git(args: list[str], capture_output: bool = False, text: bool = False,
+            **kw) -> subprocess.CompletedProcess:
+    """subprocess.run for git, bounded by EXTERNAL_TIMEOUT; a timeout returns 124.
+
+    A timer kills the child's whole process group (a helper git spawned would
+    otherwise hold the pipes open), so the wait blocks in waitpid rather than
+    polling with time.sleep as subprocess's own timeout does."""
+    pipe = subprocess.PIPE if capture_output else None
+    proc = subprocess.Popen(args, stdout=pipe, stderr=pipe, text=text, start_new_session=True, **kw)
+    expired = threading.Event()
+
+    def kill() -> None:
+        expired.set()
+        with suppress(OSError):
+            os.killpg(proc.pid, signal.SIGKILL)
+
+    timer = threading.Timer(EXTERNAL_TIMEOUT, kill)
+    timer.daemon = True
+    timer.start()
+    try:
+        out, err = proc.communicate()
+    finally:
+        timer.cancel()
+    if expired.is_set():
+        note = f"git did not answer in {EXTERNAL_TIMEOUT} s"
+        return subprocess.CompletedProcess(args, 124, "" if text else b"", note if text else note.encode())
+    return subprocess.CompletedProcess(args, proc.returncode, out, err)
+
+
 def sessions(token: str, status: str) -> list[dict]:
     """Every session of the account with this status (the list pages by cursor)."""
-    out, cursor = [], None
+    out, cursor, prev = [], None, None
     while True:
         page = api("GET", f"/v1/code/sessions?limit=100&statuses={status}"
                    + (f"&cursor={cursor}" if cursor else ""), token)
         out += page.get("data") or []
-        cursor = page.get("next_cursor")
-        if not cursor or not page.get("data"):
+        prev, cursor = cursor, page.get("next_cursor")
+        # A server that repeats its cursor would page forever and grow the
+        # list without end: the same cursor twice is the end (#636).
+        if not cursor or not page.get("data") or cursor == prev:
             return out
 
 
@@ -1384,7 +1455,7 @@ def recover_processless(folders: list[str], done: dict[tuple[str, int], float],
     return sent
 
 
-BUSY = STATE_ROOT / "profiles" / ".rc-bridge" / "busy.json"
+BUSY = BRIDGE.busy
 
 
 def recover_interrupted(folders: list[str], up: set[str],
@@ -1507,10 +1578,10 @@ def clean_archived(folders: list[str], now: float, limit: float, purge: float,
             # branch, remote-tracking ref or tag holds. Not "ahead of the host's HEAD":
             # bridge worktrees start from origin/<default>, which the host may lag.
             branch = f"refs/heads/worktree-bridge-{sid}"
-            if subprocess.run(git + ["show-ref", "--verify", "--quiet", branch]).returncode:
+            if run_git(git + ["show-ref", "--verify", "--quiet", branch]).returncode:
                 kept_once(f"{folder}: {sid} archived; worktree kept: its branch is missing")
                 continue
-            r = subprocess.run(["git", "-C", str(wt), "rev-list", "--count", "HEAD", branch,
+            r = run_git(["git", "-C", str(wt), "rev-list", "--count", "HEAD", branch,
                                 "--not", f"--exclude=worktree-bridge-{sid}", "--branches", "--remotes", "--tags", "--"],
                                capture_output=True, text=True)
             ahead = r.stdout.strip()
@@ -1522,15 +1593,15 @@ def clean_archived(folders: list[str], now: float, limit: float, purge: float,
                 kept_once(f"{folder}: {sid} archived; worktree kept: "
                     f"{ahead} commit(s) not reachable from any other branch, remote or tag")
                 continue
-            subprocess.run(git + ["worktree", "unlock", str(wt)], capture_output=True)
-            rm = subprocess.run(git + ["worktree", "remove", str(wt)], capture_output=True, text=True)
+            run_git(git + ["worktree", "unlock", str(wt)], capture_output=True)
+            rm = run_git(git + ["worktree", "remove", str(wt)], capture_output=True, text=True)
             if rm.returncode:
-                subprocess.run(git + ["worktree", "lock", str(wt)], capture_output=True)
+                run_git(git + ["worktree", "lock", str(wt)], capture_output=True)
                 kept_once(f"{folder}: {sid} archived; worktree kept: {rm.stderr.strip()[:200]}")
                 continue
             # The guard above counted 0 unique commits; `-d` would still refuse on a
             # lagging host HEAD or a branch with no upstream.
-            br = subprocess.run(git + ["branch", "-D", f"worktree-bridge-{sid}"],
+            br = run_git(git + ["branch", "-D", f"worktree-bridge-{sid}"],
                                 capture_output=True, text=True)
             log(f"{folder}: {sid} archived > {limit / 86400:g} days; worktree removed"
                 + ("" if br.returncode == 0 else f", branch kept: {br.stderr.strip()[:200]}"))
@@ -1694,15 +1765,18 @@ def edit_config(config: Path, folder: str, sid: str | None = None, *,
     try:
         text = config.read_text()
         ack = text == loaded                     # a delta on what the hosts run?
+        # The marker's prefix is the registry's (#636): renaming or dropping the
+        # archived_set entry moves or stops this writer with the reader.
+        prefix = settings_key(archived_set)
         if sid is None:
-            if folder in archived_set(text):
-                return text, None              # already recorded: nothing to write
-            text = text.rstrip() + f"\narchived={folder}\n"
+            if prefix is None or folder in archived_set(text):
+                return text, None              # already recorded, or no reader for it: nothing to write
+            text = text.rstrip() + f"\n{prefix}{folder}\n"
         else:
             out = []
             for raw in text.splitlines():
                 line = raw.split("#", 1)[0].strip()
-                if line.startswith("archived=") and resolve(line[9:]) == folder:
+                if prefix and line.startswith(prefix) and resolve(line[len(prefix):]) == folder:
                     continue
                 # The line to retire is the one whose pin names this sid, read from the
                 # args after ` -- `: one folder's pin ids share prefixes, and a substring

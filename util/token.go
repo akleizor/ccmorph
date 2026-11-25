@@ -65,9 +65,10 @@ func storedSignin(home string) (access, refresh string, known bool) {
 // line; an x-api-key header is never sent, because the launch that spends this
 // token sends none.
 func ProbeToken(token string) (code string) {
-	body, err := curlBearer(token, []string{"-sS", "--connect-timeout", "2", "--max-time", "5",
-		"-w", `\n` + statusMarker + `%{http_code}`, "-H", "anthropic-version: 2023-06-01",
-		ctxwindow.APIURL("https://api.anthropic.com", "/v1/models?limit=1000")}, io.Discard)
+	args := append([]string{"-sS"}, curlBounds(5)...)
+	args = append(args, "-w", `\n`+statusMarker+`%{http_code}`, "-H", "anthropic-version: "+ctxwindow.AnthropicVersion,
+		ctxwindow.APIURL("https://api.anthropic.com", "/v1/models?limit=1000"))
+	body, err := curlBearer(token, args, io.Discard)
 	_, code = splitProbeAnswer(body, err)
 	return code
 }

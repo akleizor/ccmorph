@@ -292,7 +292,7 @@ for layout in $opt_layout; do
   grep -qxF "./.config/ccmorph/$layout" "$clean/tree.fresh" || fail "options: the clean install has no $layout"
 done
 grep -qxF 'Preserved: 1 profile(s)' "$clean/out.update" && ! grep -qxF './.config/ccmorph/libexec/model-window' "$clean/tree.update" \
-  && grep -qF '(1 profiles,' "$clean/out.uninstall" \
+  && grep -qF '(1 profile,' "$clean/out.uninstall" \
   && ok "options: the clean runs count the profile and sweep the legacy helper" \
   || { fail "options: the clean runs did not reach the profile and helper globs"; cat "$clean/out.update" "$clean/out.uninstall" }
 for opt_case opt_line in \
@@ -514,7 +514,7 @@ printf 'type=token\ntoken=canary\n' > "$d/home/.config/ccmorph/work.conf"
 printf '#!/bin/sh\necho Darwin\n' > "$d/bin/uname"; chmod +x "$d/bin/uname"
 env -i HOME="$d/home" ZDOTDIR="$d/home" PATH="$d/bin:/usr/bin:/bin" \
   zsh "$REPO/install.sh" --uninstall >"$d/out" 2>&1; rc=$?
-(( rc == 0 )) && grep -qF 'profiles' "$d/out" && grep -qxF "  rm -rf $d/home/.config/ccmorph" "$d/out" && ! grep -q keychain "$d/out" \
+(( rc == 0 )) && grep -qF '(1 profile,' "$d/out" && grep -qxF "  rm -rf $d/home/.config/ccmorph" "$d/out" && ! grep -q keychain "$d/out" \
   && ok "uninstall: macOS with no keychain refs still reports in full and exits 0" || { fail "uninstall: macOS without keychain refs rc=$rc"; cat "$d/out" }
 fi
 
@@ -750,7 +750,7 @@ for spell in slash link leaf; do
   (( rc == 0 )) && ok "equiv-$spell uninstall: exits 0" || { fail "equiv-$spell uninstall rc=$rc"; cat "$d/out" }
   [[ -f "$cfg/team.conf" ]] \
     && ok "equiv-$spell uninstall: leaves the profile in place" || fail "equiv-$spell uninstall: deleted the profile"
-  grep -qF "$cfg  (1 profiles," "$d/out" \
+  grep -qF "$cfg  (1 profile," "$d/out" \
     && ok "equiv-$spell uninstall: names the one directory once, by its own spelling" \
     || { fail "equiv-$spell uninstall: state root line wrong"; cat "$d/out" }
   grep -qF 'the installed code' "$d/out" \
@@ -805,7 +805,7 @@ for spell in state slash chain config equiv usage; do
     mkdir -p "$real/usage"; label='(usage receipts)'
   else
     printf 'type=apikey\napi_key=keychain:team.api_key\n' > "$real/team.conf"
-    mkdir -p "$real/profiles/team"; label='(1 profiles,'
+    mkdir -p "$real/profiles/team"; label='(1 profile,'
     # A plugin recorded under the TARGET's spelling, from a session that ran on the
     # directory itself: it dangles once the printed rm deletes that directory.
     mkdir -p "$d/home/.claude/plugins/marketplaces/example"
@@ -1370,6 +1370,14 @@ fi
 
 # A missing claude is named with where to get it, never with a command; exit 1;
 # nothing installed.
+# An existing install makes it an update: the banner must not announce one the
+# dependency check is about to stop (#636).
+u=$(pm_env pm_noclaude_update apt-get); rm -f "$u/bin/claude"
+mkdir -p "$u/home/.config/ccmorph"; print 'type=sub' > "$u/home/.config/ccmorph/work.conf"
+pm_run "$u"
+grep -qE 'Updating ccmorph|Re-running ccmorph' "$u/out" \
+  && { fail "no claude: announced an update before stopping on a missing tool"; cat "$u/out"; } \
+  || ok "no claude: no update banner before the dependency check stops it"
 d=$(pm_env pm_noclaude apt-get); rm -f "$d/bin/claude"; pm_run "$d"; rc=$?
 (( rc == 1 )) && ok "no claude: exits 1" || { fail "no claude: rc=$rc (want 1)"; cat "$d/out"; }
 grep -qF -- "$claude_missing" "$d/out" \
@@ -1861,7 +1869,7 @@ d=$(upd_env upd_rm) || fail "upd_rm setup install rc!=0 (output above)"; cmd_run
 [[ ! -e "$d/home/.local/bin/ccmorph" ]] && ok "uninstall: the command is gone from ~/.local/bin" || fail "uninstall: the command is still on PATH"
 cmp -s "$d/work.conf.before" "$d/home/.config/ccmorph/work.conf" \
   && ok "uninstall: the profile is still there, byte-identical" || fail "uninstall: work.conf lost or changed"
-grep -qF 'profiles' "$d/out" && ok "uninstall: says the profiles were kept" || { fail "uninstall: no word about profiles"; cat "$d/out" }
+grep -qF '(1 profile,' "$d/out" && ok "uninstall: says the profiles were kept" || { fail "uninstall: no word about profiles"; cat "$d/out" }
 [[ ! -e "$d/curl.argv" ]] && ok "uninstall: never downloads" || fail "uninstall: called curl"
 
 # 14.7 help: both verbs have their own entry, in the long list only.

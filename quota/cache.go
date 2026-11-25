@@ -41,7 +41,17 @@ func save(name string, r Reading) {
 	// A cache write that cannot happen just does not: the next read re-reads.
 	// NoChmod: the cache keeps the temp's own mode, as this write always did; a
 	// chmod it does not need must not be able to refuse the write (#449).
-	_ = paths.AtomicWrite(paths.WriteIn{Path: cachePath(name), Temp: ".quota-*", Data: b, NoChmod: true, Mkdir: 0o700})
+	path := cachePath(name)
+	if paths.AtomicWrite(paths.WriteIn{Path: path, Temp: ".quota-*", Data: b, NoChmod: true, Mkdir: 0o700}) != nil {
+		return
+	}
+	// A umask holding the owner-read bit (0477) leaves the temp's mode 0200:
+	// a cache its own owner cannot read, so every later read re-read the whole
+	// store. Only then is the owner's read bit added, after the write landed,
+	// so a refused chmod still cannot refuse the write (#553, #636).
+	if fi, err := os.Lstat(path); err == nil && fi.Mode().IsRegular() && fi.Mode().Perm()&0o400 == 0 {
+		_ = os.Chmod(path, fi.Mode().Perm()|0o400)
+	}
 }
 
 func load(name string) (Reading, bool) {

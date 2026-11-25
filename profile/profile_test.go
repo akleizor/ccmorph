@@ -1,7 +1,10 @@
 package profile
 
 import (
+	"errors"
+	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -96,7 +99,7 @@ func TestRepairNamesTheUnknownKeyAndTheRemoval(t *testing.T) {
 // (GH-839).
 func TestRepairKeepsTheRepairTheRefusalAlreadyNames(t *testing.T) {
 	_, _, err := read(t, "type=sub\n")
-	if got := Repair(err, "p"); got != "sign in again: ccmorph login p" {
+	if got := Repair(err, "p"); got != "sign in: ccmorph login p" {
 		t.Fatalf("half-made sign-in repair %q", got)
 	}
 	// No `security` on PATH, so the keychain lookup fails on every host.
@@ -333,7 +336,6 @@ func TestKindLabelNamesEveryProfileKindForPeople(t *testing.T) {
 		{"sub", "", "Claude account"},
 		{"token", "", "Claude token"},
 		{"apikey", "", "API key"},
-		{"proxy", "", "API key"},
 		{"provider", "codex", "Codex"},
 		{"provider", "xai", "xAI"},
 		// #366: the two Kimi logins carry the provider list's names — the
@@ -357,7 +359,6 @@ func TestKindPhraseGivesEveryKindLabelItsArticle(t *testing.T) {
 		{"sub", "", "a Claude account"},
 		{"token", "", "a Claude token"},
 		{"apikey", "", "an API key"},
-		{"proxy", "", "an API key"},
 		{"provider", "codex", "a Codex"},
 		{"provider", "xai", "a xAI"},
 		{"provider", "", "a Provider"},
@@ -366,5 +367,56 @@ func TestKindPhraseGivesEveryKindLabelItsArticle(t *testing.T) {
 		if got := KindPhrase(c.typ, c.provider); got != c.want {
 			t.Errorf("KindPhrase(%q, %q) = %q, want %q", c.typ, c.provider, got, c.want)
 		}
+	}
+}
+
+// TestKeychainRefusalNamesTheCause pins #636: a locked keychain used to read
+// as a missing secret, sending the person to re-enter a key that is there. A
+// missing item, or no security(1) at all, keeps Read's set-it-again refusal
+// (""); the cause is named only when the secret may still be there.
+func TestKeychainRefusalNamesTheCause(t *testing.T) {
+	for _, c := range []struct {
+		err  error
+		want string
+	}{
+		{errors.New("exit status 44: The specified item could not be found in the keychain."), ""},
+		{fmt.Errorf("run: %w", exec.ErrNotFound), ""},
+		{errors.New("exit status 1: The user name or passphrase you entered is not correct. (locked)"), "the login keychain is locked; unlock it"},
+		{errors.New("exit status 51: error -25308"), "the login keychain is locked; unlock it"},
+		{errors.New("exit status 2: security: failed to open the keychain"), "'keychain:p.api_key' could not be read from the login keychain: exit status 2"},
+	} {
+		got := keychainRefusal("keychain:p.api_key", c.err)
+		if (c.want == "") != (got == "") || !strings.Contains(got, c.want) {
+			t.Errorf("keychainRefusal(%v) = %q, want %q", c.err, got, c.want)
+		}
+	}
+}
+
+// TestParseConf pins the one line rule: skip blank and #, split once, keep
+// order, and refuse a CR, a bare line, a spaced key and a repeat (#636).
+func TestParseConf(t *testing.T) {
+	keys, fields, err := ParseConf("# c\n\nb=1\na=x=y\n")
+	if err != nil || strings.Join(keys, ",") != "b,a" || fields["a"] != "x=y" {
+		t.Fatalf("ParseConf: %v %v %v", keys, fields, err)
+	}
+	for conf, want := range map[string]string{
+		"a=1\r\n":    "malformed config",
+		"bare\n":     "malformed config",
+		" =1\n":      "invalid key",
+		"a b=1\n":    "invalid key",
+		"a=1\na=2\n": "duplicate key 'a'",
+	} {
+		if _, _, err := ParseConf(conf); err == nil || !strings.Contains(err.Error(), want) {
+			t.Errorf("ParseConf(%q) = %v, want %q", conf, err, want)
+		}
+	}
+}
+
+// #636: a hand-written Claude account conf with no email was told to "sign in
+// again", though it may never have signed in.
+func TestANoEmailAccountIsToldToSignInNotAgain(t *testing.T) {
+	_, _, err := read(t, "type=sub\n")
+	if err == nil || !strings.Contains(err.Error(), "sign in: ccmorph login p") || strings.Contains(err.Error(), "again") {
+		t.Fatalf("refusal %v", err)
 	}
 }

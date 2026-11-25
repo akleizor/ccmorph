@@ -95,7 +95,7 @@ func TestDoctorCompletionSaysOnlyWhatANewZshStillMisses(t *testing.T) {
 	compinitAnyHost := compinitLine + " -u"
 	// addCompinit is the whole row for a home whose fpath already holds the
 	// directory: the line that starts completions and nothing about fpath.
-	addCompinit := "INFO completion: nothing in ~/.zshrc runs compinit — add:\n" +
+	addCompinit := "INFO completion: off; nothing in ~/.zshrc runs compinit — add:\n" +
 		"INFO   autoload -Uz compinit && compinit\n"
 
 	brew := t.TempDir() // Homebrew's own site-functions, where brew links the file

@@ -24,7 +24,6 @@ _ccm_err() { print -u2 -- "ccmorph: $1"; return 1; }
 _ccm_config_store() { ( _ccm_launch_core --config-store "$1" "$2" "${3:-}" ); }
 
 # Provisioning runs through the public path, which reads and validates the conf.
-_ccm_setup_dir_unlocked() { ccmorph _env "$1" >/dev/null; }
 _ccm_setup_dir() { ccmorph _env "$1" >/dev/null; }
 _ccm_dir_ok() { ( _ccm_launch_core --profile-ok "$1" ); }
 
@@ -68,4 +67,3 @@ _ccm_carry_session() { ( _ccm_launch_core --carry-session "$@" ); }
 _ccm_is_claude_subcommand() { ( _ccm_launch_core --claude-subcommand "$1" ) 2>/dev/null; }
 _ccm_resume_model() { REPLY=$( _ccm_launch_core --resume-model "$1" ) && [[ -n "$REPLY" ]]; }
 _ccm_probe_nudge() { ( _ccm_launch_core --probe-nudge "$@" ); }
-_ccm_pick_value() { ccmorph _ui pick "$@"; }

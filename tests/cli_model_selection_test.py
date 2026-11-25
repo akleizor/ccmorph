@@ -17,7 +17,6 @@ before launch (`ANTHROPIC_MODEL`, the window variables, settings.json), and that
 is what the last test pins.
 """
 import json
-import os
 from pathlib import Path
 import shutil
 import subprocess

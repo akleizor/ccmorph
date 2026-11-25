@@ -16,7 +16,7 @@ import (
 	"github.com/akleizor/ccmorph/util/paths"
 )
 
-func seedOwnedPrices(t *testing.T, usageDir, provider string, models map[string]price) {
+func seedOwnedPrices(t testing.TB, usageDir, provider string, models map[string]price) {
 	t.Helper()
 	root := filepath.Dir(usageDir)
 	if err := os.MkdirAll(root, 0o700); err != nil {
@@ -69,7 +69,7 @@ func blockLine(uuid, id, req, block, usage string, ts ...string) string {
 		`"usage":` + usage + `}}` + "\n"
 }
 
-func writeTranscript(t *testing.T, lines ...string) string {
+func writeTranscript(t testing.TB, lines ...string) string {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "session.jsonl")
 	if err := os.WriteFile(path, []byte(strings.Join(lines, "")), 0o600); err != nil {
@@ -455,6 +455,8 @@ func TestARowAnotherWriterRecordedIsNotDuplicated(t *testing.T) {
 func TestTheHookWritesNothingInsideARemoteControlEdge(t *testing.T) {
 	dir := stateHome(t)
 	t.Setenv("CCMORPH_EDGE_ROUTE_ENV", "CLAUDE_CODE_DISABLE_ADVISOR_TOOL=1")
+	t.Setenv("HTTPS_PROXY", "http://127.0.0.1:47100") // the edge's loopback proxy
+	t.Setenv("https_proxy", "")
 	path := writeTranscript(t, transcriptLine("u1", "msg_1", "claude-opus-5-5", "2026-11-05T10:00:00Z",
 		`{"input_tokens":10,"output_tokens":25}`))
 	stop := `{"session_id":"s1","hook_event_name":"Stop","transcript_path":` + quote(path) + `}`
@@ -463,6 +465,25 @@ func TestTheHookWritesNothingInsideARemoteControlEdge(t *testing.T) {
 	}
 	if all := rows(t, dir); len(all) != 0 {
 		t.Fatalf("an edge session's call was charged to its profile as well: %v", all)
+	}
+}
+
+// #636: the shim skipped on the variable alone while the cli cleared it only
+// beside a loopback proxy, so a launch under its own HTTPS_PROXY kept the
+// variable and its rows vanished. Without the edge's proxy, the rows are kept.
+func TestTheHookKeepsRowsWhenTheVariableHasNoEdgeProxy(t *testing.T) {
+	dir := stateHome(t)
+	t.Setenv("CCMORPH_EDGE_ROUTE_ENV", "CLAUDE_CODE_DISABLE_ADVISOR_TOOL=1")
+	t.Setenv("HTTPS_PROXY", "http://proxy.corp.invalid:8080")
+	t.Setenv("https_proxy", "")
+	path := writeTranscript(t, transcriptLine("u1", "msg_1", "claude-opus-5-5", "2026-11-05T10:00:00Z",
+		`{"input_tokens":10,"output_tokens":25}`))
+	stop := `{"session_id":"s1","hook_event_name":"Stop","transcript_path":` + quote(path) + `}`
+	if rc := UsageRowMain([]string{"--profile", "sub", "--pricing", "anthropic"}, strings.NewReader(stop)); rc != 0 {
+		t.Fatalf("rc %d", rc)
+	}
+	if all := rows(t, dir); len(all) != 1 {
+		t.Fatalf("a session outside an edge lost its usage row: %v", all)
 	}
 }
 
@@ -1722,8 +1743,7 @@ func TestRecordTranscriptCheckpointSkipsWrittenRows(t *testing.T) {
 	calls := 0
 	writeRow = func(p, pr, id, m, ts, s, turn string, u usageRow) (bool, error) {
 		if calls++; calls == 2 { // the hook is stopped while the second row is written
-			cp := progress.Load()
-			writeCursor(cp.path, cp.c)
+			progress.Load().commit() // exactly what onStop does with it
 			panic("stopped")
 		}
 		return writeUsageRow(p, pr, id, m, ts, s, turn, u)
@@ -1856,5 +1876,64 @@ func TestTranscriptRecordHoldsTheCursorWhileTheStoreIsBusy(t *testing.T) {
 	}
 	if got := len(rows(t, base)); got != 1 {
 		t.Fatalf("the held-back row did not land: %d rows", got)
+	}
+}
+
+// dayRowFiles is every row file the day folders of the window [since, now]
+// hold — a zero since reads every day folder, for a task read that has no
+// lower bound. A row always sits in a folder at or after its stamp's UTC day
+// — the writer places it there, and the move by an mtime no row's writer
+// lets run before its stamp — so no folder before the window's first day can
+// hold a row the window counts. The folders come from paths.DayNames, the
+// store's one day walk, which quota's month read takes too. Anything else in
+// the store — a folder for another day, a name that is not a day, the atomic
+// writer's in-flight tmp — is not read. The folders, then each folder's
+// files, keep ReadDir's name order, and a day name is fixed-width, so the
+// rows arrive in name order with no sort of the walk's own (#546).
+//
+// It lives beside its tests, not in the report path: the report reads day rows
+// through paths.DayNames and readUsageDay (report.go:269), so this helper pins
+// the same window order on the path production takes (#636).
+func dayRowFiles(base string, since, now time.Time) []string {
+	first, last := since.UTC().Format(paths.DayLayout), now.UTC().Format(paths.DayLayout)
+	var out []string
+	for _, name := range paths.DayNames(base, first, last) {
+		sub, _ := os.ReadDir(filepath.Join(base, name))
+		for _, f := range sub {
+			if !f.IsDir() && strings.HasSuffix(f.Name(), ".json") {
+				out = append(out, filepath.Join(base, name, f.Name()))
+			}
+		}
+	}
+	return out
+}
+
+// TestRecordTranscriptWritesTheCursorOnlyAtTheEnd pins what the benchmark
+// measured (#636): one checkpoint, committed after the pass. A per-row cursor
+// write would leave the file in place before the last row.
+func TestRecordTranscriptWritesTheCursorOnlyAtTheEnd(t *testing.T) {
+	stateHome(t)
+	path := writeTranscript(t,
+		transcriptLine("u1", "msg_1", "claude-opus-5-5", "2026-11-05T10:00:00Z", `{"input_tokens":1,"output_tokens":2}`),
+		transcriptLine("u2", "msg_2", "claude-opus-5-5", "2026-11-05T10:00:01Z", `{"input_tokens":1,"output_tokens":2}`),
+		transcriptLine("u3", "msg_3", "claude-opus-5-5", "2026-11-05T10:00:02Z", `{"input_tokens":1,"output_tokens":2}`),
+	)
+	if _, err := os.Stat(cursorFile(path)); !os.IsNotExist(err) {
+		t.Fatalf("a cursor exists before the pass: %v", err)
+	}
+	calls := 0
+	writeRow = func(p, pr, id, m, ts, s, turn string, u usageRow) (bool, error) {
+		calls++
+		if _, err := os.Stat(cursorFile(path)); !os.IsNotExist(err) {
+			t.Errorf("the cursor was written before row %d", calls)
+		}
+		return writeUsageRow(p, pr, id, m, ts, s, turn, u)
+	}
+	t.Cleanup(func() { writeRow = writeUsageRow; progress.Store(nil) })
+	if got := RecordTranscript("sub", "anthropic", path); got != 3 {
+		t.Fatalf("wrote %d rows", got)
+	}
+	if c := readCursor(cursorFile(path)); c.Offset == 0 {
+		t.Fatal("the pass left no cursor")
 	}
 }

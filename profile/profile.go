@@ -107,6 +107,10 @@ var (
 	}
 )
 
+// ValidModelID is the one model-id shape: the characters a served id may hold.
+// The conf's model map and the adapter's probe both answer through it (#636).
+func ValidModelID(s string) bool { return modelID.MatchString(s) }
+
 // MaxNameLen is the longest profile name. The longest file a profile makes is
 // ".<name>.bridge.users" (+14), so 200 leaves every derived name far under
 // NAME_MAX while staying past any name a person types.
@@ -185,6 +189,33 @@ func shownName(s string) string {
 	return b.String()
 }
 
+// ParseConf is the one line rule for a conf file: blank and # lines are
+// skipped, "key=value" splits once, and keys keep file order. It refuses a CR,
+// a line without "=", an empty or spaced key, and a repeated key — the strict
+// policy every reader shares (#636).
+func ParseConf(text string) ([]string, map[string]string, error) {
+	var keys []string
+	fields := map[string]string{}
+	for _, line := range strings.Split(text, "\n") {
+		if line == "" || line[0] == '#' {
+			continue
+		}
+		k, v, ok := strings.Cut(line, "=")
+		if strings.Contains(line, "\r") || !ok {
+			return nil, nil, errors.New("malformed config")
+		}
+		if k == "" || strings.ContainsAny(k, " \t\v\f") {
+			return nil, nil, errors.New("invalid key")
+		}
+		if _, dup := fields[k]; dup {
+			return nil, nil, fmt.Errorf("duplicate key '%s'", k)
+		}
+		fields[k] = v
+		keys = append(keys, k)
+	}
+	return keys, fields, nil
+}
+
 // Read loads state/<name>.conf. warn receives one line per removed key. With
 // secure, the file is chmod 600 first, as every writing caller wants.
 func Read(state, name string, secure bool, lists Lists, warn func(string)) (map[string]string, error) {
@@ -216,39 +247,39 @@ func readConf(state, name string, secure bool, lists Lists, warn func(string), c
 	if err != nil {
 		return nil, fail("invalid profile file for '%s'", name)
 	}
-	fields := map[string]string{}
-	text := strings.TrimSuffix(string(data), "\n")
-	for _, line := range strings.Split(text, "\n") {
-		if line == "" || line[0] == '#' {
-			continue
+	keys, fields, perr := ParseConf(strings.TrimSuffix(string(data), "\n"))
+	if perr != nil {
+		reason := perr.Error()
+		if strings.HasPrefix(reason, "duplicate key ") {
+			dup := strings.TrimSuffix(strings.TrimPrefix(reason, "duplicate key '"), "'")
+			return nil, fail("duplicate key '%s' in '%s'", dup, name)
 		}
-		k, v, ok := strings.Cut(line, "=")
-		if strings.Contains(line, "\r") || !ok {
-			return nil, fail("malformed config for '%s'", name)
-		}
-		if k == "" || strings.ContainsAny(k, " \t\v\f") {
+		if reason == "invalid key" {
 			return nil, fail("invalid key in '%s'", name)
 		}
-		if _, dup := fields[k]; dup {
-			return nil, fail("duplicate key '%s' in '%s'", k, name)
-		}
+		return nil, fail("%s for '%s'", reason, name)
+	}
+	for _, k := range keys {
 		if msg, ok := removed[k]; ok {
 			warn("ccmorph: " + msg)
+			delete(fields, k)
 			continue
 		}
-		checkV := v
+		checkV := fields[k]
 		if ov, ok := changes[k]; ok {
 			checkV = ov
 		}
 		if err := checkKey(name, k, checkV, lists); err != nil {
 			return nil, err
 		}
-		fields[k] = v
 	}
 	for _, k := range []string{"api_key", "token"} {
 		if ref := fields[k]; strings.HasPrefix(ref, "keychain:") {
 			secret, err := KeychainGet(ref)
 			if err != nil {
+				if why := keychainRefusal(ref, err); why != "" {
+					return nil, fail("'%s': %s", name, why)
+				}
 				return nil, failRepair("set it again with: ccmorph config "+name,
 					"'%s': %s is not in the login keychain; set it again with: ccmorph config %s", name, ref, name)
 			}
@@ -330,8 +361,10 @@ func checkType(name string, f map[string]string, lists Lists) error {
 			// The same repair `add` gives for a taken name and `doctor` gives
 			// for a signed-out account (GH-649): the sign-in completes the
 			// conf, so nothing else has to be thrown away first.
-			return failRepair("sign in again: ccmorph login "+name,
-				"Claude account profile '%s' has no email — sign in again: ccmorph login %s", name, name)
+			// "sign in", not "again": a hand-written conf without its email may
+			// never have signed in at all (#636).
+			return failRepair("sign in: ccmorph login "+name,
+				"Claude account profile '%s' has no email — sign in: ccmorph login %s", name, name)
 		}
 	case "token":
 		if f["token"] == "" {
@@ -393,11 +426,43 @@ func ValidModelMap(s string) bool {
 // KeychainService is the login-keychain service every profile credential uses.
 const KeychainService = "ccmorph"
 
-// KeychainGet returns the secret behind a keychain:<account> reference.
+// KeychainGet returns the secret behind a keychain:<account> reference. It is
+// a variable so a test can drive the refusal wordings below.
 func KeychainGet(ref string) (string, error) {
 	b, err := exec.Command("security", "find-generic-password", "-s", KeychainService,
 		"-a", strings.TrimPrefix(ref, "keychain:"), "-w").Output()
-	return strings.TrimSuffix(string(b), "\n"), err
+	if err != nil {
+		return strings.TrimSuffix(string(b), "\n"), fmt.Errorf("%w%s", err, keychainStderr(err))
+	}
+	return strings.TrimSuffix(string(b), "\n"), nil
+}
+
+// keychainStderr is the security CLI's own message, so the refusal can name a
+// locked keychain instead of calling the secret missing (#636).
+func keychainStderr(err error) string {
+	var exit *exec.ExitError
+	if errors.As(err, &exit) && len(exit.Stderr) > 0 {
+		return ": " + strings.TrimSpace(string(exit.Stderr))
+	}
+	return ""
+}
+
+// keychainRefusal is why a keychain:<account> read failed when the secret may
+// still be there, in the words the person needs: a locked or unreadable
+// keychain is not a missing secret (#636). It is "" for an item that is not
+// found, which keeps Read's set-it-again refusal and its repair.
+func keychainRefusal(ref string, err error) string {
+	text := err.Error()
+	if strings.Contains(text, "locked") || strings.Contains(text, "-25308") {
+		return "the login keychain is locked; unlock it (security unlock-keychain) and try again"
+	}
+	// No item, or no keychain tool at all (a host without security(1)): the
+	// secret is not reachable, so it is set again.
+	if strings.Contains(text, "could not be found") || strings.Contains(text, "The specified item") ||
+		errors.Is(err, exec.ErrNotFound) {
+		return ""
+	}
+	return fmt.Sprintf("'%s' could not be read from the login keychain: %s", ref, text)
 }
 
 // rawKeyCount counts the members of the top-level object in already-validated JSON.
@@ -521,7 +586,7 @@ func KindLabel(typ, provider string) string {
 		return "Claude account"
 	case "token":
 		return "Claude token"
-	case "apikey", "proxy":
+	case "apikey":
 		return "API key"
 	case "provider":
 		if provider == "" {

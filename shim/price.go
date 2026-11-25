@@ -16,6 +16,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/akleizor/ccmorph/ordjson"
 	"github.com/akleizor/ccmorph/util/modelsdev"
 	"github.com/akleizor/ccmorph/util/paths"
 )
@@ -355,7 +356,7 @@ func lookupIn(table map[string]price, model string) (price, bool) {
 	if p, ok := table[name]; ok {
 		return p, true
 	}
-	if i := strings.LastIndexByte(name, '-'); i > 0 && len(name)-i-1 == 8 && allDigits(name[i+1:]) {
+	if i := strings.LastIndexByte(name, '-'); i > 0 && len(name)-i-1 == 8 && ordjson.IsDigits(name[i+1:]) {
 		p, ok := table[name[:i]]
 		return p, ok
 	}

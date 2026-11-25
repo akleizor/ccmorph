@@ -202,3 +202,46 @@ func TestGCReapsAStaleSessionEndRecord(t *testing.T) {
 		t.Fatalf("%s must go: its launcher died before it could read it", stale)
 	}
 }
+
+// TestGCSweepsOrphanUsageTemps pins #636: the atomic writer's leftovers were
+// never swept from the usage store.
+func TestGCSweepsOrphanUsageTemps(t *testing.T) {
+	state, tmp := t.TempDir(), t.TempDir()
+	t.Setenv("XDG_STATE_HOME", state)
+	usage := filepath.Join(state, "ccmorph", "usage")
+	day := filepath.Join(usage, "2026-11-05")
+	cursors := filepath.Join(state, "ccmorph", "usage-cursors")
+	for _, d := range []string{day, cursors} {
+		if err := os.MkdirAll(d, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	old := time.Now().Add(-2 * time.Hour)
+	files := map[string]bool{ // path: should survive
+		filepath.Join(usage, "old.tmp"):   false,
+		filepath.Join(day, "row.tmp"):     false,
+		filepath.Join(day, "row.json"):    true,
+		filepath.Join(cursors, "c.tmp"):   false,
+		filepath.Join(usage, "fresh.tmp"): true,
+	}
+	for p, keep := range files {
+		if err := os.WriteFile(p, []byte("x"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if !keep {
+			if err := os.Chtimes(p, old, old); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	GCStale(state, t.TempDir(), tmp)
+	for p, keep := range files {
+		_, err := os.Stat(p)
+		if keep && err != nil {
+			t.Errorf("%s was swept, want kept", p)
+		}
+		if !keep && err == nil {
+			t.Errorf("%s survived the sweep", p)
+		}
+	}
+}

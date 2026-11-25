@@ -143,3 +143,28 @@ func TestShownEndpointNeverPrintsACredential(t *testing.T) {
 		})
 	}
 }
+
+// #636: Ctrl-C during browser sign-in — the cancel the product's own prompt
+// advertises — printed `ccmorph: login failed`; everywhere else cancelling
+// prints Cancelled. loginCancelled is the single judge of that difference.
+func TestLoginCancelledIsTheCancelNotAFailure(t *testing.T) {
+	for _, tt := range []struct {
+		name string
+		argv []string
+		want bool
+	}{
+		{"exit 130", []string{"-c", "exit 130"}, true},
+		{"killed by SIGINT", []string{"-c", "kill -INT $$"}, true},
+		{"plain failure", []string{"-c", "exit 1"}, false},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			err := exec.Command("sh", tt.argv...).Run()
+			if got := loginCancelled(err); got != tt.want {
+				t.Errorf("loginCancelled(%v) = %v, want %v", err, got, tt.want)
+			}
+		})
+	}
+	if loginCancelled(nil) {
+		t.Error("loginCancelled(nil) = true, want false")
+	}
+}

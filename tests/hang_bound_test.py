@@ -315,7 +315,7 @@ def zsh_counted_sleep_loops(text):
         events = [(m.start(), m.end(), m.group(1)) for m in ZSH_LOOP_OPEN.finditer(code)]
         events += [(m.start(), m.end(), "done") for m in ZSH_DONE.finditer(code)]
         events += [(m.start(), m.end(), "sleep") for m in ZSH_SLEEP.finditer(code)]
-        for start, end, kind in sorted(events):
+        for _start, end, kind in sorted(events):
             if kind == "done":
                 if loops:
                     loops.pop()

@@ -925,6 +925,26 @@ func captureStdout(t *testing.T, f func() int) (string, int) {
 	return string(b), rc
 }
 
+// captureStderr runs f with os.Stderr swapped for a pipe and returns what it
+// printed there.
+func captureStderr(t *testing.T, f func()) string {
+	t.Helper()
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	old := os.Stderr
+	os.Stderr = w
+	f()
+	os.Stderr = old
+	w.Close()
+	b, err := io.ReadAll(r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(b)
+}
+
 // handleOf is the CCMORPH_ROUTE_HANDLE line a route env printed.
 func handleOf(out string) string {
 	for _, line := range strings.Split(out, "\n") {
@@ -2207,9 +2227,12 @@ func TestReadActiveRescuesOnlyAValidSpelling(t *testing.T) {
 	if name, ok := l.readActiveFile(); name != "\u212A" || !ok {
 		t.Fatalf("readActiveFile = %q, %v; the invalid spelling must come back as written", name, ok)
 	}
-	out, rc := captureStdout(t, func() int { return l.use(nil) })
-	if rc != 0 || !strings.Contains(out, "No default set. Profiles: k") {
-		t.Fatalf("use with an invalid default: rc=%d out=%q", rc, out)
+	// Off a terminal the sentence is on stderr and stdout stays empty (#636).
+	var out string
+	var rc int
+	errOut := captureStderr(t, func() { out, rc = captureStdout(t, func() int { return l.use(nil) }) })
+	if rc != 0 || out != "" || !strings.Contains(errOut, "No default set. Profiles: k") {
+		t.Fatalf("use with an invalid default: rc=%d out=%q err=%q", rc, out, errOut)
 	}
 	if name, ok := l.readActive(); name != "" || ok {
 		t.Fatalf("readActive = %q, %v; an invalid default must be refused", name, ok)

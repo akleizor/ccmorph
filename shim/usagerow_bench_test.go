@@ -27,7 +27,6 @@ func BenchmarkRecordTranscript(b *testing.B) {
 			paths.UsageArchiveLoaded = func(string) { atomic.AddInt64(&loads, 1) }
 			b.Cleanup(func() { paths.UsageArchiveLoaded = loaded })
 
-			t := &testing.T{}
 			dir := b.TempDir()
 			b.Setenv("XDG_STATE_HOME", dir)
 			usage := filepath.Join(dir, "ccmorph", "usage")
@@ -48,27 +47,26 @@ func BenchmarkRecordTranscript(b *testing.B) {
 						b.Fatal(err)
 					}
 				} else {
-					os.MkdirAll(d, 0o700)
+					if err := os.MkdirAll(d, 0o700); err != nil {
+						b.Fatal(err)
+					}
 					for i := 0; i < 20000; i++ {
-						os.WriteFile(filepath.Join(d, rowFileName(fmt.Sprintf("old_%s_%d", day, i))), []byte(`{"schema":1}`), 0o600)
+						if err := os.WriteFile(filepath.Join(d, rowFileName(fmt.Sprintf("old_%s_%d", day, i))), []byte(`{"schema":1}`), 0o600); err != nil {
+							b.Fatal(err)
+						}
 					}
 				}
 			}
-			// The real models.dev slice when this machine has one, so a price read costs what it costs.
-			if real, err := os.ReadFile(os.ExpandEnv("$HOME/.local/state/ccmorph/prices-owned-anthropic.json")); err == nil {
-				os.WriteFile(filepath.Join(dir, "ccmorph", "prices-owned-anthropic.json"), real, 0o600)
-			} else {
-				seedOwnedPrices(t, usage, "anthropic", map[string]price{"claude-opus-5-5": {Input: 4, Output: 20}})
-			}
+			// A seeded cache, never the operator's HOME: the measurement must be
+			// the same on every machine (INTENT.md: suites never touch it).
+			seedOwnedPrices(b, usage, "anthropic", map[string]price{"claude-opus-5-5": {Input: 4, Output: 20}})
 			pass := func(n int) string {
 				var lines []string
 				for i := 0; i < 50; i++ {
 					lines = append(lines, transcriptLine(fmt.Sprintf("u%d", i), fmt.Sprintf("msg_%d_%d", n, i), "claude-opus-5-5",
 						"2026-11-05T10:00:00Z", `{"input_tokens":10,"output_tokens":25}`))
 				}
-				p := filepath.Join(b.TempDir(), "t.jsonl")
-				os.WriteFile(p, []byte(joinLines(lines)), 0o600)
-				dirNames = map[string][]string{}
+				p := writeTranscript(b, lines...)
 				if got := RecordTranscript("sub", "anthropic", p); got != 50 {
 					b.Fatalf("wrote %d", got)
 				}
@@ -79,14 +77,12 @@ func BenchmarkRecordTranscript(b *testing.B) {
 			b.ResetTimer()
 			for n := 0; n < b.N; n++ {
 				b.StopTimer()
-				p := filepath.Join(b.TempDir(), "t.jsonl")
 				var lines []string
 				for i := 0; i < 50; i++ {
 					lines = append(lines, transcriptLine(fmt.Sprintf("u%d", i), fmt.Sprintf("msg_%d_%d", n, i), "claude-opus-5-5",
 						"2026-11-05T10:00:00Z", `{"input_tokens":10,"output_tokens":25}`))
 				}
-				os.WriteFile(p, []byte(joinLines(lines)), 0o600)
-				dirNames = map[string][]string{}
+				p := writeTranscript(b, lines...)
 				b.StartTimer()
 				if got := RecordTranscript("sub", "anthropic", p); got != 50 {
 					b.Fatalf("wrote %d", got)
@@ -95,12 +91,4 @@ func BenchmarkRecordTranscript(b *testing.B) {
 			b.ReportMetric(float64(atomic.LoadInt64(&loads))/float64(b.N), "archive-loads/op")
 		})
 	}
-}
-
-func joinLines(ls []string) string {
-	s := ""
-	for _, l := range ls {
-		s += l
-	}
-	return s
 }

@@ -1,17 +1,13 @@
 """Issue #9: the API key must never appear on a process command line."""
 import http.server
-import os
-import re
-import stat
 import subprocess
-import sys
 import tempfile
 import threading
 import time
 import unittest
 from pathlib import Path
 
-from support import HANG_TIMEOUT, needs_loopback, wait_until
+from support import HANG_TIMEOUT, home_env, needs_loopback, wait_until
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -35,19 +31,6 @@ class Slow(http.server.BaseHTTPRequestHandler):
         pass
 
 
-def home_env(tmp, **extra):
-    home = Path(tmp)
-    state = home / ".config/ccmorph"
-    state.mkdir(parents=True, exist_ok=True)
-    (home / ".claude/projects").mkdir(parents=True, exist_ok=True)
-    env = {k: v for k, v in os.environ.items()
-           if not k.startswith(("CCMORPH", "_CCMORPH", "CLAUDE_", "ANTHROPIC_", "AWS_"))}
-    env.update(HOME=tmp, XDG_CONFIG_HOME=str(home / ".config"), TMPDIR=tmp,
-               CCMORPH_STATE_DIR=str(state), CCMORPH_LIB_DIR=str(ROOT / "lib"),
-               LANG="C.UTF-8", LC_ALL="C.UTF-8", **extra)
-    return env, state
-
-
 @needs_loopback  # the fake gateway is a real listener: #611
 class CredentialArgv(unittest.TestCase):
     def test_key_never_on_a_command_line(self):
@@ -61,19 +44,24 @@ class CredentialArgv(unittest.TestCase):
             for verb in (["models", "gw"], ["doctor", "gw"]):
                 proc = subprocess.Popen([str(ROOT / "bin/ccmorph"), *verb], env=env,
                                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                seen = False
+                seen, samples = False, 0
 
-                def finished():
-                    nonlocal seen
+                def finished(proc=proc):
+                    nonlocal seen, samples
                     if proc.poll() is not None:
                         return True
                     ps = subprocess.run(["ps", "-axo", "args="], capture_output=True, text=True, timeout=HANG_TIMEOUT).stdout
+                    # A sample counts only if the child was still alive when ps
+                    # returned: one taken after it exited proves nothing (#636).
+                    if proc.poll() is None:
+                        samples += 1
                     seen = seen or key in ps
                     return False
                 if not wait_until(finished, HANG_TIMEOUT):
                     proc.kill()
                     proc.wait(timeout=HANG_TIMEOUT)
                     self.fail(f"`ccmorph {verb[0]}` did not exit within the hang bound")
+                self.assertGreater(samples, 0, f"`ccmorph {verb[0]}` exited before ps sampled it")
                 self.assertFalse(seen, f"`ccmorph {verb[0]}` put the API key on a process command line")
         server.shutdown()
 

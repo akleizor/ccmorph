@@ -3,6 +3,7 @@ package cli
 import (
 	"encoding/json"
 	"fmt"
+	"github.com/akleizor/ccmorph/ctxwindow"
 	"github.com/akleizor/ccmorph/util"
 	"os"
 	"slices"
@@ -27,7 +28,7 @@ func sameTerminal(a, b *os.File) bool {
 // valueRows is how many terminal rows a value line took, columns wide: a line
 // that exactly fills a row does not wrap, and the newline moves on (#361).
 func valueRows(value string, columns int) int {
-	return (max(cells(value), 1)-1)/columns + 1
+	return (max(ctxwindow.Cells(value), 1)-1)/columns + 1
 }
 
 // settingWord reports whether word is the model or effort setting, the two the
@@ -251,6 +252,12 @@ func (l *launcher) getSet(verb string, args []string) int {
 	// after the save stands; empty when the save was checked or none was asked
 	// for (the saved model kept, a native route, no key to ask with).
 	unchecked := ""
+	// askedListing records that a model list could actually be asked of this
+	// profile; a save nobody could vouch for without one is noted below (#636).
+	askedListing := false
+	// notChecked is decided before the save: after it, accountModel answers
+	// with the value just written and could never tell the two apart (#636).
+	notChecked := key == "model" && value != l.accountModel(name)
 	if key == "model" {
 		// A gateway that answers its listing knows what it serves: an id it does
 		// not serve is saved only when the person confirms it, because the
@@ -259,7 +266,10 @@ func (l *launcher) getSet(verb string, args []string) int {
 		// but says it went unchecked, the way the add says a key it could not ask
 		// about was not checked (gh728). The model already saved is not judged
 		// again: keeping it changes nothing (#279).
-		if f, ok := l.read(name); ok && value != l.accountModel(name) && f["type"] == "apikey" && !util.NativeBase(f["base_url"]) && strings.TrimSpace(f["api_key"]) != "" {
+		// readQuiet: the guard only decides whether a listing can be asked, so
+		// a conf the save itself accepts must not print a refusal here (#636).
+		if f, ok := l.readQuiet(name); ok && value != l.accountModel(name) && f["type"] == "apikey" && !util.NativeBase(f["base_url"]) && strings.TrimSpace(f["api_key"]) != "" {
+			askedListing = true
 			listing, status, answered := util.ListingReply(f["base_url"], f["api_key"])
 			shown := profile.RedactURL(f["base_url"])
 			switch {
@@ -305,15 +315,22 @@ func (l *launcher) getSet(verb string, args []string) int {
 		_, columns := termSize()
 		eraseLines(valueRows(value, columns))
 	}
-	if isTTY(2) {
-		fmt.Fprintf(os.Stderr, "%sSaved%s %s %s = %s%s%s %s(new sessions)%s\n",
-			l.accent, l.reset, name, key, l.bold, value, l.reset, l.dim, l.reset)
-	}
+	// Piped too, as the guide says: a script's log records what was saved,
+	// while stdout stays the value alone (#636).
+	fmt.Fprintf(os.Stderr, "%sSaved%s %s %s = %s%s%s %s(new sessions)%s\n",
+		l.accent, l.reset, name, key, l.bold, value, l.reset, l.dim, l.reset)
 	if unchecked != "" {
 		// The save stands — custom ids stay allowed — but it says what nobody
 		// could check, on the channel a person reads: stdout kept carrying the
 		// value alone, for the script that captured it (gh728).
 		say(name + ": saved unchecked — " + unchecked)
+	}
+	if notChecked && !askedListing {
+		// #636: the profiles a listing cannot answer — a browser sign-in, a
+		// native base, a save without a key — took any model in silence, so
+		// inspect's launch line was the first hint of a typo. The save
+		// stands; it just says nobody could check it.
+		say(name + ": saved unchecked — '" + value + "' was not checked: no model list answered for " + name + ", so a wrong id fails at the session's first message")
 	}
 	return 0
 }

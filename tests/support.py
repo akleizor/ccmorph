@@ -34,6 +34,34 @@ def stdin_a_terminal():
         os.close(master)
 
 
+# The environment families a credential test must never inherit: the
+# operator's own ccmorph, Claude, Anthropic and AWS settings. One list, so a
+# store-layout move cannot update one copy and leave others proving an old
+# layout (#636).
+CREDENTIAL_PREFIXES = ("CCMORPH", "_CCMORPH", "CLAUDE_", "ANTHROPIC_", "AWS_")
+
+
+def isolated_env(**overrides):
+    """os.environ without the credential families, with overrides applied."""
+    env = {k: v for k, v in os.environ.items() if not k.startswith(CREDENTIAL_PREFIXES)}
+    env.update(overrides)
+    return env
+
+
+def home_env(tmp, **extra):
+    """An isolated HOME under tmp with a ccmorph state root, for a credential
+    test: (env, state)."""
+    home = Path(tmp)
+    state = home / ".config/ccmorph"
+    state.mkdir(parents=True, exist_ok=True)
+    (home / ".claude/projects").mkdir(parents=True, exist_ok=True)
+    env = isolated_env(HOME=tmp, XDG_CONFIG_HOME=str(home / ".config"), TMPDIR=tmp,
+                       CCMORPH_STATE_DIR=str(state),
+                       CCMORPH_LIB_DIR=str(Path(__file__).resolve().parents[1] / "lib"),
+                       LANG="C.UTF-8", LC_ALL="C.UTF-8", **extra)
+    return env, state
+
+
 # A hang detector, not a performance bound: the longest any test waits on a
 # spawned process, sized so only a real hang reaches it. It sits above pytest.ini's
 # 60 s per-test cap so that no site is stricter than the literal it replaced: the

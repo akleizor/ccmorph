@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -29,5 +30,17 @@ func TestCodexExpiredSignInIsRefreshedThenRead(t *testing.T) {
 	readCodex(httpClient(), "cx", dir)
 	if !refreshed || sent != "Bearer new" {
 		t.Fatalf("refreshed=%v sent %q", refreshed, sent)
+	}
+}
+
+// TestRefreshConfigQuotesAuthDirAsYAML pins #636: %q is Go quoting, not YAML
+// quoting, and a control byte made the config unreadable.
+func TestRefreshConfigQuotesAuthDirAsYAML(t *testing.T) {
+	got := string(refreshConfig("/x/\x01\"y"))
+	if !strings.Contains(got, `auth-dir: "/x/\u0001\"y"`) {
+		t.Fatalf("auth-dir is not a YAML double-quoted scalar: %q", got)
+	}
+	if strings.ContainsRune(got, '\x01') {
+		t.Fatalf("a raw control byte reached the YAML: %q", got)
 	}
 }

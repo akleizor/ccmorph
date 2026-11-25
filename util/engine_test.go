@@ -83,3 +83,13 @@ func TestEngineBoolReadsLikeTheEngine(t *testing.T) {
 		}
 	}
 }
+
+// TestDigitsIntReadsThroughTheOneDigitRule pins #636: the guard is
+// ordjson.IsDigits, not a second hand-written scan.
+func TestDigitsIntReadsThroughTheOneDigitRule(t *testing.T) {
+	for in, want := range map[string]int64{"": 0, "12": 12, "1a": 0, "-1": 0} {
+		if got := digitsInt(in); got != want {
+			t.Errorf("digitsInt(%q) = %d, want %d", in, got, want)
+		}
+	}
+}

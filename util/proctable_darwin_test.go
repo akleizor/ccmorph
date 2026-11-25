@@ -5,6 +5,7 @@ package util
 import (
 	"os"
 	"os/exec"
+	"runtime"
 	"testing"
 	"time"
 )
@@ -17,7 +18,17 @@ func TestSysctlProcessTableSeesAChild(t *testing.T) {
 	}
 	defer func() { cmd.Process.Kill(); cmd.Wait() }()
 
-	tab, ok := sysctlProcessTable()
+	// Mid-exec the kernel answers comm "sleep" with empty args; one read straight
+	// after Start failed on a loaded host (#636). Read until the argv is there,
+	// bounded by a count of reads, never a clock.
+	var tab map[int]psRow
+	ok := false
+	for i := 0; i < 2000; i++ {
+		if tab, ok = sysctlProcessTable(); !ok || tab[cmd.Process.Pid].args != "" {
+			break
+		}
+		runtime.Gosched()
+	}
 	if !ok {
 		t.Fatal("the sysctl process table must be readable on darwin")
 	}

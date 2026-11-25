@@ -5,6 +5,7 @@ import (
 	"regexp"
 	"strings"
 
+	"github.com/akleizor/ccmorph/ctxwindow"
 	"github.com/akleizor/ccmorph/ordjson"
 	"github.com/akleizor/ccmorph/profile"
 )
@@ -62,7 +63,7 @@ func DoctorRoute(name, typ, base, model, modelMap string, need func(listing stri
 		case typ == "provider":
 			row("INFO", "endpoint: provider bridge, started by ccmorph run")
 		case typ == "apikey" && key != "":
-			_, code := ProbeListing("https://api.anthropic.com", key, "anthropic-version: 2023-06-01")
+			_, code := ProbeListing("https://api.anthropic.com", key, "anthropic-version: "+ctxwindow.AnthropicVersion)
 			switch ProbeVerdict(code) {
 			case ProbeAccepted:
 				row("OK", "endpoint: Anthropic accepted the API key (HTTP "+code+")")

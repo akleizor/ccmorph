@@ -7,6 +7,7 @@ product/machine-local line (the .gitignore header): a name at the root that is
 not gitignored is product and must be in the list; one that is gitignored
 (`dist/` from `make release`, `rc-hosts`) is this machine's, not the surface.
 """
+import re
 import subprocess
 from pathlib import Path
 
@@ -74,3 +75,150 @@ def test_libexec_tracks_no_build_output():
         ["git", "ls-files", "--", "libexec"], cwd=ROOT,
         capture_output=True, text=True, timeout=HANG_TIMEOUT).stdout.split()
     assert tracked == ["libexec/.gitkeep"], f"libexec/ tracks build output: {tracked}"
+
+
+def test_router_completion_offers_only_router_verbs():
+    import re
+    text = (ROOT / "share/zsh/site-functions/_ccmorph").read_text()
+    m = re.search(r"router\)\n\s*\(\( CURRENT == 3 \)\) && \{ compadd -- ([^;]+);", text)
+    assert m, "the router completion arm moved"
+    assert set(m.group(1).split()) == {"on", "off", "status", "dispatch", "report"}
+
+
+def test_the_guide_counts_five_effort_levels():
+    # #636: the guide said four while the picker and README list five.
+    guide = (ROOT / 'docs' / 'guide.md').read_text()
+    assert re.search(r"five\s+levels", guide)
+    assert not re.search(r"four\s+levels", guide)
+
+
+def test_install_reads_no_colour_variable_nothing_sets():
+    # #636: c_ok/c_y/c_r/c_dim read _ccm_* colour variables no path ever set.
+    text = (ROOT / "install.sh").read_text()
+    for name in set(re.findall(r"\$\{(_ccm_\w+):-", text)):
+        assert re.search(rf"\b{name}=", text), f"install.sh reads {name}, which nothing sets"
+
+
+def test_the_gate_refuses_gofmt_drift():
+    # #636: CI refused gofmt drift while make gate ran no formatter.
+    make = (ROOT / "Makefile").read_text()
+    gate = re.search(r"^gate: .*\n\t(.+)$", make, re.M).group(1)
+    assert "gate-fmt" in gate, gate
+    assert re.search(r"^gate-fmt:\n\t.*gofmt -l", make, re.M)
+
+
+def test_ci_installs_zsh_in_one_place_and_runs_no_duplicate_floor():
+    # #636: the zsh apt block was pasted into five jobs, the add-on compile list
+    # twice, and the floor matrix ran 3.13 again beside the test job's 3.13.
+    ci = (ROOT / ".github/workflows/ci.yml").read_text()
+    action = (ROOT / ".github/actions/install-zsh/action.yml").read_text()
+    assert (ci + action).count("apt-get install -y zsh\n") == 1
+    floor = re.search(r"python: \[([^\]]*)\]", ci).group(1)
+    assert '"3.13"' not in floor and '"3.8"' in floor
+    assert ci.count("addons/remote-control/*.py") == 0
+    assert "py-compile:" in (ROOT / "Makefile").read_text()
+
+
+def test_every_ci_pytest_step_reads_the_checkouts_lib():
+    # #636: the floor job ran pytest without CCMORPH_LIB_DIR, the omission the
+    # test job's line was fixed for (gate-py, CONTRIBUTING and INTENT set it).
+    ci = (ROOT / ".github/workflows/ci.yml").read_text()
+    lines = [l for l in ci.splitlines() if "-m pytest" in l]
+    assert lines and all('CCMORPH_LIB_DIR="$PWD/lib"' in l for l in lines), lines
+
+
+def test_ruff_is_pinned_and_runs_in_the_gate_and_ci():
+    # #636: the static layer had no bug-class lint; ruff is pinned, its rules
+    # live in pyproject.toml, and both the gate and CI run it.
+    py = (ROOT / "pyproject.toml").read_text()
+    assert '"ruff==0.17.5"' in py
+    assert 'select = ["F", "E9", "PLE", "B"]' in py and 'ignore = ["B904", "B905"]' in py
+    gate = re.search(r"^gate-py:\n((?:\t.*\n)+)", (ROOT / "Makefile").read_text(), re.M).group(1)
+    assert "ruff check" in gate
+    assert "ruff==0.17.5 check" in (ROOT / ".github/workflows/ci.yml").read_text()
+
+
+def test_the_shim_build_cleans_its_temp_on_a_signal():
+    # #636: the recipe removed .shim-build.$$ only after its && chain, so a build
+    # killed by a signal left it in libexec/.
+    recipe = re.search(r"^shim:\n\t(.+)$", (ROOT / "Makefile").read_text(), re.M).group(1)
+    assert re.search(r"trap 'rm -rf \"\$\$tmp\"' EXIT INT TERM HUP", recipe), recipe
+
+
+def test_netroute_pins_no_go_patch_release():
+    # #636: the comment named Go 1.27.4 while the code reads golang.org/x/net's
+    # httpproxy and go.mod carries no toolchain line.
+    text = (ROOT / "netroute/netroute.go").read_text()
+    assert not re.search(r"Go 1\.\d+\.\d+", text)
+    assert "golang.org/x/net's httpproxy" in text
+
+
+def test_the_addon_readme_documents_retire():
+    # #636: retire=<folder> lived only in the supervisor's module header.
+    assert "`retire=<folder>`" in (ROOT / "addons/remote-control/README.md").read_text()
+
+
+def test_review_seen_lines_count_their_own_days():
+    # #636: the dates are the count. The supervisor kind listed 2026-11-16 twice
+    # (#596, then #805 and #807 on 2026-11-23); the real-tool kind missed GH-809.
+    review = (ROOT / ".github/REVIEW.md").read_text()
+    assert "Seen 3× (2026-11-16, 2026-11-23, 2026-11-23)." in review
+    assert "Seen 4× (2026-11-10, 2026-11-12, 2026-11-21, 2026-11-23)." in review
+    assert "identity is a tool too" in review
+
+
+def test_the_guide_defines_every_quota_json_count():
+    # #636: quota --json's unpriced_turns was defined nowhere a reader looks.
+    assert "`unpriced_turns`" in (ROOT / "docs/guide.md").read_text()
+
+
+def test_usage_export_docstring_names_every_option():
+    # #636: the Usage line in the docstring --help prints left out --source.
+    text = (ROOT / "share/usage-export").read_text()
+    usage = re.search(r"^Usage: usage-export (.*)$", text, re.M).group(1)
+    parsed = set(re.findall(r'add_argument\("(--[a-z-]+)"', text))
+    assert parsed == set(re.findall(r"--[a-z-]+", usage)), (parsed, usage)
+
+
+def test_the_readme_spells_config_with_an_optional_profile():
+    # #636: help config says [profile]; the README's usage block said <profile>.
+    readme = (ROOT / "README.md").read_text()
+    assert "ccmorph config [profile]" in readme and "ccmorph config <profile>" not in readme
+
+
+def test_the_readme_says_what_happens_with_your_own_status_line():
+    # #393 (moved to #636): a person with their own status line sees the profile
+    # only in the startup message; the README promised the status line.
+    assert "With\nyour own status line, ccmorph keeps yours" in (ROOT / "README.md").read_text()
+
+
+def test_the_conf_template_marks_email_required_for_an_account():
+    # #636: the template did not say a Claude account profile needs its email.
+    text = (ROOT / "share/profile.conf.example").read_text()
+    assert re.search(r"^# email\s+sub:\s+account email \(required", text, re.M)
+
+
+def test_the_core_usage_line_names_every_verb_it_dispatches():
+    # #636: the no-arg usage listed seven verbs while the switch took twelve.
+    main = (ROOT / "cmd/ccmorph-core/main.go").read_text()
+    usage = re.search(r'"usage: ccmorph-core ([^ ]+) \.\.\."', main).group(1)
+    cases = set(re.findall(r'^\tcase "([a-z-]+)":', main, re.M))
+    assert set(usage.split("|")) == cases, (usage, cases)
+
+
+def test_the_guide_explains_the_router_and_the_readme_names_its_undo():
+    # #636: the guide had no router section; the README's usage block listed
+    # only router on.
+    guide = (ROOT / "docs/guide.md").read_text()
+    section = guide.split("## Model router", 1)[1].split("\n## ", 1)[0]
+    for word in ("router off", "**class**", "**slack**", "**no reading**", "dispatch --dry-run", "router report"):
+        assert word in section, word
+    assert "ccmorph router off" in (ROOT / "README.md").read_text()
+
+
+def test_install_checks_dependencies_before_its_update_banner():
+    # #636: `ccmorph update` with claude missing printed Updating x -> y first.
+    text = (ROOT / "install.sh").read_text()
+    assert text.index('missing+=("claude') < text.index('Updating ccmorph')
+    readme = (ROOT / "README.md").read_text()
+    assert "for a missing `claude` the Claude Code setup page" in readme

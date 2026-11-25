@@ -30,7 +30,7 @@ case "${words[2]}" in
     (( CURRENT == 4 )) && { compadd -- model effort; return }
     ;;
   router)
-    (( CURRENT == 3 )) && { compadd -- on off status route dispatch report; return }
+    (( CURRENT == 3 )) && { compadd -- on off status dispatch report; return }
     ;;
 esac
 if (( CURRENT == 3 && ${profile_verbs[(Ie)${words[2]}]} )); then

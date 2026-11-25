@@ -156,3 +156,11 @@ func TestCheckTrustsTheSessionsExtraCA(t *testing.T) {
 		t.Fatalf("the session's CA was not trusted: %+v", r)
 	}
 }
+
+// #636: Check is exported, and with no route it indexed tried[-1] and panicked.
+func TestCheckWithNoRoutesAnswersWithANote(t *testing.T) {
+	r := Check("http://gw.invalid", "k", "m", "", false, nil)
+	if r.OK || r.Status != 0 || r.Note == "" {
+		t.Fatalf("Check with no routes = %+v, want a note and no verdict", r)
+	}
+}

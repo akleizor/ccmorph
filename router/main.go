@@ -74,6 +74,31 @@ func Main(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		}
 		if verb == "on" {
 			fmt.Fprintln(stdout, "Router on. New sessions route subagents; open sessions keep running as they started.")
+			// The undo is named where the change is made (#636).
+			fmt.Fprintln(stdout, "Undo: ccmorph router off")
+			// Name the pool and, when it has paid keys, say what they cost: a
+			// person turning the router on is deciding where their money goes.
+			if c, err := LoadConfig(); err == nil {
+				var names, api []string
+				if ps, _ := Profiles(c, false, false, nil); len(ps) > 0 {
+					for _, p := range ps {
+						if p.Enabled && !p.Reserved {
+							names = append(names, p.Name)
+							if p.Class == "api" {
+								api = append(api, p.Name)
+							}
+						}
+					}
+				}
+				if len(names) == 0 {
+					fmt.Fprintln(stdout, "Eligible now: none. Add a profile: ccmorph add <name>")
+				} else {
+					fmt.Fprintln(stdout, "Eligible now: "+strings.Join(names, ", "))
+				}
+				if len(api) > 0 {
+					fmt.Fprintln(stdout, "API-key profiles bill per token: "+strings.Join(api, ", "))
+				}
+			}
 		} else {
 			fmt.Fprintln(stdout, "Router off. New sessions start without it.")
 		}
@@ -136,6 +161,25 @@ func needsValueNotOption(stderr io.Writer, flag, other string) int {
 	return 2
 }
 
+// noReadingWhy says why a status row has no plan reading, so a signed-out account
+// and a dead gateway no longer look alike: an API key has no plan (it bills
+// per token), a note that names the profile says the cause, and otherwise
+// quota is where the exact reason is (#636).
+func noReadingWhy(p Profile, notes []string) string {
+	switch p.Class {
+	case "api":
+		return "bills per token, no plan to read"
+	case "free":
+		return "free, no plan to read"
+	}
+	for _, n := range notes {
+		if strings.Contains(n, p.Name) {
+			return "see note"
+		}
+	}
+	return "ccmorph quota " + p.Name + " says why"
+}
+
 func status(stdout, stderr io.Writer) int {
 	c, err := LoadConfig()
 	if err != nil {
@@ -149,6 +193,10 @@ func status(stdout, stderr io.Writer) int {
 	fmt.Fprintf(stdout, "Router %s (%s)\n", state, ConfigPath())
 	ps, notes := Profiles(c, false, false, nil)
 	now := nowSec()
+	if len(ps) > 0 {
+		// A header, so each column says what it is (#636).
+		fmt.Fprintf(stdout, "  %-12s %-12s %s\n", "profile", "class", "pace")
+	}
 	for _, p := range ps {
 		mark := ""
 		switch {
@@ -159,7 +207,7 @@ func status(stdout, stderr io.Writer) int {
 		case p.UnavailableUntil > now:
 			mark = " unavailable"
 		}
-		pace := "no reading"
+		pace := "no reading: " + noReadingWhy(p, notes)
 		if len(p.Windows) > 0 {
 			pace = fmt.Sprintf("slack %+.1f points", Slack(p, now, ""))
 		}
@@ -167,6 +215,14 @@ func status(stdout, stderr io.Writer) int {
 	}
 	for _, n := range notes {
 		fmt.Fprintln(stdout, "  note: "+n)
+	}
+	if len(ps) > 0 {
+		fmt.Fprintln(stdout, "  slack = plan time elapsed minus usage, in points; higher means more room")
+	}
+	if c.Enabled {
+		fmt.Fprintln(stdout, `Next: ccmorph router dispatch --dry-run "<task>" shows a pick without running it`)
+	} else {
+		fmt.Fprintln(stdout, "Next: ccmorph router on")
 	}
 	return 0
 }
@@ -298,9 +354,20 @@ func task(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 
 func show(w io.Writer, d Decision, explain bool) {
 	if p := d.Pick; p != nil {
-		fmt.Fprintf(w, "→ %s · %s · effort %s\n  %s / %s · %s · slack %.1f points\n", p.Profile, p.Model, p.Effort, d.Task.Kind, d.Task.Tier, p.Class, p.Slack)
+		fmt.Fprintf(w, "→ %s · %s · effort %s\n", p.Profile, p.Model, p.Effort)
+		// A named profile and model skips every routing filter, so there is no
+		// class or slack to report: an empty segment and "slack 0.0" would read
+		// like real readings (#636).
+		if p.Class == "" {
+			fmt.Fprintf(w, "  %s / %s · named by the caller\n", d.Task.Kind, d.Task.Tier)
+		} else {
+			fmt.Fprintf(w, "  %s / %s · %s · slack %.1f points\n", d.Task.Kind, d.Task.Tier, p.Class, p.Slack)
+		}
 	} else {
 		fmt.Fprintln(w, "no available profile serves this task's family and tier")
+		// The next step, not only the verdict (#636): status names each
+		// profile's state, and a profile with no saved model offers none.
+		fmt.Fprintln(w, "Next: ccmorph router status, or save a model on a profile: ccmorph set <profile> model")
 	}
 	for _, n := range d.Notes {
 		fmt.Fprintln(w, "  note: "+n)
@@ -351,6 +418,10 @@ func report(args []string, stdout, stderr io.Writer) int {
 			rows = append(rows, r)
 			calls[fmt.Sprint(r["profile"])]++
 		}
+	}
+	if len(ps) == 0 && len(rows) == 0 {
+		fmt.Fprintln(stdout, "No profiles and no routed calls in the last "+since+". Add a profile: ccmorph add <name>")
+		return 0
 	}
 	var slacks []float64
 	var failures []string

@@ -15,6 +15,7 @@ import (
 	"unicode"
 	"unicode/utf8"
 
+	"github.com/akleizor/ccmorph/ctxwindow"
 	"github.com/akleizor/ccmorph/util"
 )
 
@@ -26,7 +27,17 @@ const uiGap = 4
 
 type uiTheme struct{ bold, dim, reset, accent, focus, gray, red string }
 
-var fzfTheme = "fg:-1,bg:-1,hl:#b1b9f9,fg+:#b1b9f9,bg+:-1,hl+:#b1b9f9,pointer:#b1b9f9,marker:#b1b9f9,prompt:#d77757,header:#999999,info:#999999,border:#888888"
+// palette is every colour ccmorph paints, in one place: each reads at 4:1 or
+// better on a white and on a black terminal background, so a light theme no
+// longer drops a kind word, a doctor mark or an error prefix to 1.6-3.2:1
+// (#274, #636). TestPaletteReadsOnLightAndDarkTerminals pins the ratios.
+var palette = struct{ accent, yellow, red, cyan, gray string }{
+	accent: "c26242", yellow: "9b7608", red: "f3203e", cyan: "5a6cfb", gray: "7a7a7a",
+}
+
+var fzfTheme = "fg:-1,bg:-1,hl:#" + palette.cyan + ",fg+:#" + palette.cyan + ",bg+:-1,hl+:#" + palette.cyan +
+	",pointer:#" + palette.cyan + ",marker:#" + palette.cyan + ",prompt:#" + palette.accent +
+	",header:#" + palette.gray + ",info:#" + palette.gray + ",border:#" + palette.gray
 
 func rgb(hex string) string {
 	r, _ := strconv.ParseUint(hex[0:2], 16, 8)
@@ -40,28 +51,10 @@ func themeFor(fd int) uiTheme {
 	if !isTTY(fd) || os.Getenv("NO_COLOR") != "" || os.Getenv("TERM") == "dumb" {
 		return uiTheme{}
 	}
-	return uiTheme{"\033[1m", "\033[2m", "\033[0m", rgb("d77757"), rgb("b1b9f9"), rgb("999999"), rgb("ff6b80")}
+	return uiTheme{"\033[1m", "\033[2m", "\033[0m", rgb(palette.accent), rgb(palette.cyan), rgb(palette.gray), rgb(palette.red)}
 }
 
 func uiErr(t uiTheme, msg string) { fmt.Fprintf(os.Stderr, "%sccmorph:%s %s\n", t.red, t.reset, msg) }
-
-// cells is the terminal width of s.
-// shortcut: wide ranges are CJK/Hangul/fullwidth/emoji only, no full East Asian Width table; add one if a picker misaligns.
-func cells(s string) int {
-	n := 0
-	for _, r := range s {
-		switch {
-		case unicode.Is(unicode.Mn, r) || unicode.Is(unicode.Me, r) || r == 0x200d:
-		case r >= 0x1100 && r <= 0x115f, r >= 0x2e80 && r <= 0xa4cf, r >= 0xac00 && r <= 0xd7a3,
-			r >= 0xf900 && r <= 0xfaff, r >= 0xfe30 && r <= 0xfe4f, r >= 0xff00 && r <= 0xff60,
-			r >= 0xffe0 && r <= 0xffe6, r >= 0x1f300 && r <= 0x1faff, r >= 0x20000 && r <= 0x3fffd:
-			n += 2
-		default:
-			n++
-		}
-	}
-	return n
-}
 
 func noCntrl(s string) string {
 	return strings.Map(func(r rune) rune {
@@ -81,12 +74,14 @@ func fit(s string, width int) string {
 	if width < 1 {
 		return ""
 	}
-	if cells(s) <= width {
+	if ctxwindow.Cells(s) <= width {
 		return s
 	}
-	for cells(s) >= width {
-		_, n := utf8.DecodeLastRuneInString(s)
-		s = s[:len(s)-n]
+	n := ctxwindow.Cells(s)
+	for n >= width {
+		r, size := utf8.DecodeLastRuneInString(s)
+		s = s[:len(s)-size]
+		n -= ctxwindow.Cells(string(r))
 	}
 	if i := strings.LastIndexByte(s, ' '); i > 0 {
 		s = strings.TrimRight(s[:i], " ") + " "
@@ -113,7 +108,7 @@ func rowID(row string) string {
 func labelWidth(rows []string, display string) int {
 	w := 0
 	for _, r := range rows {
-		if c := cells(noCntrl(rowID(visible(r, display)))); c > w {
+		if c := ctxwindow.Cells(noCntrl(rowID(visible(r, display)))); c > w {
 			w = c
 		}
 	}
@@ -157,7 +152,7 @@ func (t uiTheme) label(row string, width int, focused bool, rowWidth int) string
 			detail = fit(detail, rowWidth-width-uiGap)
 		}
 		if detail != "" {
-			pad = strings.Repeat(" ", max(0, width-cells(lab)+uiGap))
+			pad = strings.Repeat(" ", max(0, width-ctxwindow.Cells(lab)+uiGap))
 		}
 	}
 	out := lab
@@ -295,10 +290,10 @@ func (t uiTheme) numberList(prompt string, rows []string, display string, mode n
 	extra := 0
 	if more > 0 {
 		if mode == numberFold {
-			fmt.Fprintln(os.Stderr, t.moreLine("↓", len(rows)-len(shown)))
+			fmt.Fprintln(os.Stderr, t.moreLine("↓", len(rows)-len(shown), true))
 		} else {
 			// A dumb terminal sees no cursor codes: the same line, unarmed.
-			fmt.Fprintf(os.Stderr, "%s↓ %d more\n", uiMargin, len(rows)-len(shown))
+			fmt.Fprintln(os.Stderr, t.moreLine("↓", len(rows)-len(shown), false))
 		}
 		extra++
 	}
@@ -318,8 +313,13 @@ func (t uiTheme) numberList(prompt string, rows []string, display string, mode n
 }
 
 // numberPrompt is the numbered menu's question: a row number, or a typed name
-// (#387) — the id, or any part of one — so a long list needs no counting.
-func numberPrompt(n int) string {
+// (#387) — the id, or any part of one — so a long list needs no counting. On a
+// terminal uiInput adds Enter Submit · Esc Cancel, so the question names no
+// second way out; q still cancels there (#636). A pipe sees only this line.
+func numberPrompt(n int, terminal bool) string {
+	if terminal {
+		return fmt.Sprintf("Select [1-%d] or type a name: ", n)
+	}
 	return fmt.Sprintf("Select [1-%d] or type a name (q to cancel): ", n)
 }
 
@@ -360,7 +360,7 @@ func (t uiTheme) numbered(prompt string, rows []string, display string) (string,
 		// A pipe or a dumb terminal keeps the plain loop: no cursor codes, so
 		// nothing folds — a dumb screen repaints the cut list on a miss instead.
 		for {
-			choice, rc := uiInput(numberPrompt(len(rows)), false)
+			choice, rc := uiInput(numberPrompt(len(rows), isTTY(0)), false)
 			if rc != 0 || choice == "q" || choice == "Q" {
 				if rc == 0 {
 					// uiInput has already answered its own cancels; q is a
@@ -398,7 +398,7 @@ func (t uiTheme) numbered(prompt string, rows []string, display string) (string,
 	// above it (#361). Each uiInput round has already folded itself to one
 	// line, so one line per round is what adds to the list.
 	for {
-		choice, rc := uiInput(numberPrompt(len(rows)), false)
+		choice, rc := uiInput(numberPrompt(len(rows), isTTY(0)), false)
 		// uiInput folded its round to the line it left: a cancel leaves the one
 		// Cancelled row, an answer the receipt — which is two rows when the
 		// question and the answer do not share a line. The erase below counts
@@ -605,7 +605,7 @@ func (t uiTheme) native(prompt string, rows []string, display string) (string, i
 			var b bytes.Buffer
 			b.WriteString("\033[2K" + heading + "\n\033[2K\n")
 			if hidden {
-				b.WriteString(t.moreLine("↑", first) + "\n")
+				b.WriteString(t.moreLine("↑", first, true) + "\n")
 			}
 			for i := first; i < last; i++ {
 				ptr := " "
@@ -615,7 +615,7 @@ func (t uiTheme) native(prompt string, rows []string, display string) (string, i
 				b.WriteString("\033[2K" + ptr + " " + t.label(visible(rows[i], display), lw, i == selected, rowWidth) + "\n")
 			}
 			if hidden {
-				b.WriteString(t.moreLine("↓", len(rows)-last) + "\n")
+				b.WriteString(t.moreLine("↓", len(rows)-last, true) + "\n")
 			}
 			foot := "↑/↓ Move · Home/End Jump · Enter Select · Esc Cancel"
 			if cut && !hidden {
@@ -699,11 +699,17 @@ func (t uiTheme) native(prompt string, rows []string, display string) (string, i
 // moreLine is one edge of a native menu's window: how many rows sit beyond it.
 // The line is written even when that side cuts nothing, so the menu keeps one
 // shape while it scrolls.
-func (t uiTheme) moreLine(arrow string, cut int) string {
+func (t uiTheme) moreLine(arrow string, cut int, armed bool) string {
 	if cut < 1 {
 		return "\033[2K"
 	}
-	return "\033[2K" + uiMargin + t.gray + arrow + " " + strconv.Itoa(cut) + " more" + t.reset
+	words := arrow + " " + strconv.Itoa(cut) + " more"
+	if !armed {
+		// A dumb terminal has no cursor codes to clear with: the same line,
+		// plain (#636).
+		return uiMargin + words
+	}
+	return "\033[2K" + uiMargin + t.gray + words + t.reset
 }
 
 // receipt is _ccm_ui_receipt: Title › choice.
@@ -721,7 +727,11 @@ func (t uiTheme) receiptHeight(title, choice string, columns int) int {
 	if choice == "" {
 		return 1
 	}
-	return 1 + strings.Count(t.receiptLine(title, choice, columns), "\n")
+	rows := 0
+	for _, line := range strings.Split(t.receiptLine(title, choice, columns), "\n") {
+		rows += max(1, (ctxwindow.Cells(line)+columns-1)/columns)
+	}
+	return max(1, rows)
 }
 
 // receiptTitleFloor is the least of the question a one-line receipt keeps: an
@@ -740,9 +750,9 @@ const receiptTitleFloor = 12
 func (t uiTheme) receiptLine(title, choice string, columns int) string {
 	choice = noCntrl(choice)
 	title = strings.TrimRight(title, " ")
-	w := columns - cells(choice) - 3
+	w := columns - ctxwindow.Cells(choice) - 3
 	if w-len(uiMargin) < receiptTitleFloor {
-		if len(uiMargin)+cells(choice) <= columns {
+		if len(uiMargin)+ctxwindow.Cells(choice) <= columns {
 			// The choice fits a line of its own: the line breaks before it, so
 			// no line outgrows the terminal and the choice is still whole.
 			return t.heading(title, columns-2) + " " + t.focus + "›" + t.reset + "\n" + uiMargin + t.gray + choice + t.reset
@@ -762,7 +772,7 @@ const fzfChrome = 5
 // An older fzf has neither, so ccmorph sizes its window itself: the whole list
 // when the terminal allows it, otherwise the header says rows are cut. A list
 // never stops silently at the window's edge (#278).
-func fzfArgs(version string, n, lines int, prompt string, theme []string) []string {
+func fzfArgs(version string, n, lines, columns int, prompt string, theme []string) []string {
 	height := "45%"
 	if fzfAtLeast(version, 71) {
 		height = "~-1"
@@ -775,6 +785,16 @@ func fzfArgs(version string, n, lines int, prompt string, theme []string) []stri
 		height = strconv.Itoa(min(n+fzfChrome, room))
 		if n+fzfChrome > room {
 			header = "More rows than fit here: ↑/↓ scroll · Type to filter · Enter Select · Esc Cancel"
+		}
+	}
+	// A terminal too narrow for the whole header keeps the two keys that end
+	// the picker: fzf cut the line from the right, so at 56 columns Esc Cancel
+	// went first (#636). Four columns are fzf's border and padding.
+	if columns > 0 && ctxwindow.Cells(header)+4 > columns {
+		if strings.HasPrefix(header, "More rows") {
+			header = "More rows than fit · Esc Cancel"
+		} else {
+			header = "Enter Select · Esc Cancel"
 		}
 	}
 	args := append([]string{"--height", height, "--reverse", "--border=rounded", "--pointer=❯", "--marker=✓",
@@ -855,8 +875,8 @@ func (t uiTheme) search(prompt string, rows []string) (string, int) {
 		// enough fzf adds the scrollbar and the Home/End jump. Its window also
 		// grows to the list itself, so a list that fits the terminal is never
 		// cut at all (#278).
-		lines, _ := termSize()
-		args := fzfArgs(fzfVersion(fzf), len(rows), lines, prompt, theme)
+		lines, columns := termSize()
+		args := fzfArgs(fzfVersion(fzf), len(rows), lines, columns, prompt, theme)
 		cmd := exec.Command(fzf, args...)
 		cmd.Env = append(os.Environ(), "FZF_DEFAULT_OPTS=", "FZF_DEFAULT_OPTS_FILE=")
 		cmd.Stdin = strings.NewReader(strings.Join(rendered, "\n") + "\n")
@@ -928,9 +948,9 @@ func uiInput(prompt string, secret bool) (string, int) {
 	if !isTTY(0) {
 		fmt.Fprint(w, prompt)
 		line, ok := readLine(os.Stdin)
-		if secret {
-			fmt.Fprintln(w)
-		}
+		// A piped answer is not echoed, so each prompt ends its own line:
+		// otherwise the next prompt or note ran on after this one (#636).
+		fmt.Fprintln(w)
 		if !ok && line == "" {
 			return "", 1
 		}
@@ -966,7 +986,7 @@ func uiInput(prompt string, secret bool) (string, int) {
 		if !secret {
 			echoed = value
 		}
-		eraseLines(2 + typedLines(cells(echoed), columns))
+		eraseLines(2 + typedLines(ctxwindow.Cells(echoed), columns))
 	}
 	if rc != 0 {
 		t.cancelled()
@@ -1005,7 +1025,7 @@ func readKeyLine(k *keys, sigs <-chan os.Signal, secret bool, w *os.File) (strin
 	var value []byte
 	erase := func(removed []byte) {
 		if !secret {
-			fmt.Fprint(w, strings.Repeat("\b \b", cells(string(removed))))
+			fmt.Fprint(w, strings.Repeat("\b \b", ctxwindow.Cells(string(removed))))
 		}
 	}
 	for {

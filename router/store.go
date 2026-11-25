@@ -10,6 +10,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"strconv"
 	"sync/atomic"
 	"syscall"
 	"time"
@@ -97,6 +98,9 @@ func SetEnabled(on bool) error {
 		}
 	} else if err != nil && !os.IsNotExist(err) {
 		return err
+	}
+	if raw == nil { // a literal null decodes to a nil map; writing one panics
+		raw = map[string]any{}
 	}
 	raw["enabled"] = on
 	b, _ := json.MarshalIndent(raw, "", "  ")
@@ -218,9 +222,89 @@ func appendLine(path string, row Row) {
 	_, _ = f.Write(append(b, '\n'))
 }
 
-func ledgerAppend(row Row) { withLock(func() { appendLine(ledgerPath(), row) }) }
+// ledgerKeep is how much routing history both logs carry. A row's cost is paid
+// for on every settle, so the files stay bounded rather than growing forever
+// (#636). trimBytes is the size that triggers a prune, so a rewrite is rare.
+const ledgerKeep = 30 * 86400.0
 
-func outcomeAppend(row Row) { appendLine(filepath.Join(routerDir(), "outcomes.jsonl"), row) }
+var trimBytes int64 = 4 << 20
+
+// keepRecent drops the lines whose own JSON ts is a number before cut, and
+// keeps everything else: a line that does not parse or names no time is kept,
+// because an unreadable row is evidence, not litter.
+func keepRecent(lines [][]byte, cut float64) [][]byte {
+	out := make([][]byte, 0, len(lines))
+	for _, line := range lines {
+		var r Row
+		if json.Unmarshal(line, &r) == nil && r != nil {
+			if ts, ok := r["ts"].(float64); ok && ts < cut {
+				continue
+			}
+		}
+		out = append(out, line)
+	}
+	return out
+}
+
+func trimLog(path string, cut float64) {
+	fi, err := os.Stat(path)
+	if err != nil || fi.Size() <= trimBytes {
+		return
+	}
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return
+	}
+	lines := keepRecent(bytes.SplitAfter(b, []byte("\n")), cut)
+	_ = paths.AtomicWrite(paths.WriteIn{Path: path, Temp: ".ledger-*", Data: bytes.Join(lines, nil), Mode: 0o600, Mkdir: 0o700})
+}
+
+func ledgerAppend(row Row) {
+	withLock(func() {
+		appendLine(ledgerPath(), row)
+		trimLog(ledgerPath(), nowSec()-ledgerKeep)
+	})
+}
+
+// outcomeAppend prefers the lock, so a prune cannot race an append; when the
+// lock cannot be had, the append still lands (as it always did) and the prune
+// waits for a later write.
+func outcomeAppend(row Row) {
+	path := filepath.Join(routerDir(), "outcomes.jsonl")
+	if !withLock(func() {
+		appendLine(path, row)
+		trimLog(path, nowSec()-ledgerKeep)
+	}) {
+		appendLine(path, row)
+	}
+}
+
+// ledgerRow is complete()'s one-row read: the file is scanned once, and only a
+// line that can hold the id is unmarshalled. Rows carry small fields, so the
+// quoted id is a sound prefilter; matches() still decides.
+func ledgerRow(id string) Row {
+	if id == "" {
+		return nil
+	}
+	f, err := os.Open(ledgerPath())
+	if err != nil {
+		return nil
+	}
+	defer f.Close()
+	needle := []byte(strconv.Quote(id))
+	sc := bufio.NewScanner(f)
+	sc.Buffer(make([]byte, 64<<10), 16<<20)
+	for sc.Scan() {
+		if !bytes.Contains(sc.Bytes(), needle) {
+			continue
+		}
+		var r Row
+		if json.Unmarshal(sc.Bytes(), &r) == nil && r != nil && r.matches(id) {
+			return r
+		}
+	}
+	return nil
+}
 
 func readRows(path string) []Row {
 	f, err := os.Open(path)
@@ -266,6 +350,7 @@ func ledgerUpdate(id string, fields Row) bool {
 			found = true
 			break
 		}
+		lines = keepRecent(lines, nowSec()-ledgerKeep)
 		if found {
 			_ = paths.AtomicWrite(paths.WriteIn{Path: ledgerPath(), Temp: ".ledger-*", Data: bytes.Join(lines, nil), Mode: 0o600, Mkdir: 0o700})
 		}

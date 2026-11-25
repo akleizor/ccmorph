@@ -196,4 +196,32 @@ func GCStale(state, profiles, tmp string) {
 			_ = os.RemoveAll(d)
 		}
 	}
+	sweepUsageTemps(old)
+}
+
+// sweepUsageTemps removes the atomic writer's orphan temp files from the usage
+// store: the shim's sidecar and paths.AtomicWrite leave one behind when a pass
+// is stopped mid-write, and nothing else could tell it from a row (#636).
+func sweepUsageTemps(old func(string, time.Duration) bool) {
+	usage := filepath.Join(paths.StateDir(), "usage")
+	dirs := []string{usage, filepath.Join(paths.StateDir(), "usage-cursors")}
+	if days, err := os.ReadDir(usage); err == nil {
+		for _, d := range days {
+			if d.IsDir() {
+				dirs = append(dirs, filepath.Join(usage, d.Name()))
+			}
+		}
+	}
+	for _, dir := range dirs {
+		ents, err := os.ReadDir(dir)
+		if err != nil {
+			continue
+		}
+		for _, e := range ents {
+			p := filepath.Join(dir, e.Name())
+			if !e.IsDir() && strings.HasSuffix(e.Name(), ".tmp") && paths.IsFile(p) && old(p, time.Hour) {
+				_ = os.Remove(p)
+			}
+		}
+	}
 }

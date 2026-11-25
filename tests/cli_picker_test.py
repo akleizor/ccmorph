@@ -474,6 +474,15 @@ class PickerTTYTest(unittest.TestCase):
                 self.assertEqual(rc, headless.returncode, out + headless.stderr)
                 self.assertEqual(last_lines(out, 2), last_lines(headless.stderr, 2), out + headless.stderr)
 
+    def test_bare_use_on_a_terminal_names_the_default(self):
+        # #636: a bare name on a terminal read like a picker waiting for a key.
+        (self.state / 'work.conf').write_text('type=sub\nemail=demo@example.com\n')
+        (self.state / 'active').write_text('work\n')
+        rc, out, missed = run_pty('ccmorph use; print -r -- "RC=$?"', self.env())
+        self.assertIsNone(missed, out)
+        self.assertIn('RC=0', out)
+        self.assertRegex(out, r'Default profile: (\x1b\[[0-9;]*m)*work')
+
     def test_cold_launch_selects_a_model_before_starting_the_adapter(self):
         env = self.env(fzf=True)
         self.profile()
@@ -554,6 +563,20 @@ class PickerTTYTest(unittest.TestCase):
         _, set_rows = self.first_menu()
         self.assertEqual(set_rows[0], rows[0])
         self.assertEqual(self.field('demo', 'model'), 'picker-beta')  # Keep kept it
+
+    def test_set_model_offers_the_keep_row_with_nothing_saved(self):
+        """#636: with no saved model, `set model -i` offered only the custom row
+        while saying "Keep the current default"; config offered Keep none."""
+        env = self.env(fzf=True)
+        self.profile()
+        (self.state / 'profiles/demo/settings.json').write_text('{}')
+        self.spec('Default model=@keep')
+        rc, out, missed = run_pty('ccmorph set demo model -i', env)
+        self.assertIsNone(missed, out)
+        self.assertEqual(rc, 0, out)
+        _, rows = self.first_menu()
+        self.assertTrue(rows[0].startswith('@keep\tKeep none'), rows)
+        self.assertIsNone(self.field('demo', 'model'))  # keeping nothing stores nothing
 
     def test_launch_picker_without_a_saved_model_says_so_issue_377(self):
         """A profile with nothing saved opens without a marker, titled so (#377)."""
@@ -767,7 +790,7 @@ class PickerTTYTest(unittest.TestCase):
         ])
         self.assertIsNone(missed, out)
         self.assertEqual(rc, 0, out)
-        self.assertIn('  1) alpha    \x1b[38;2;153;153;153mfirst choice', out)
+        self.assertIn('  1) alpha    \x1b[38;2;122;122;122mfirst choice', out)
         self.assertTrue(out.rstrip().endswith('beta'), out)
         # The answered list folds (#361): the rows, the Select prompt, its hint
         # and the two reprompts leave the one summary line, and stdout after it.
@@ -1038,13 +1061,14 @@ class PickerTTYTest(unittest.TestCase):
         (#361), so a person reads one confirming line."""
         env = self.env()
         self.profile()
-        # A script capturing set reads the saved value alone; stderr stays empty.
+        # A script capturing set reads the saved value alone; stderr carries the
+        # confirmation the guide promises, so its log says what was saved (#636).
         result = subprocess.run(['zsh', '-fc', 'source "$1"\nccmorph set demo effort high',
                                  'test', str(CCMORPH)], env=env, stdin=subprocess.DEVNULL,
                                 capture_output=True, text=True, timeout=HANG_TIMEOUT)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(result.stdout, 'high\n', result.stderr)
-        self.assertEqual(result.stderr, '', result.stderr)
+        self.assertEqual(result.stderr, 'Saved demo effort = high (new sessions)\n', result.stderr)
         # A typed value: the screen holds the one Saved line, no echo below it.
         for key, value in (('effort', 'high'), ('model', 'picker-alpha')):
             with self.subTest(key=key):
@@ -1221,8 +1245,8 @@ class PickerTTYTest(unittest.TestCase):
         self.assertIsNone(missed, out)
         self.assertEqual(rc, 1, out)
         self.assertIn('Cancelled', out)  # the leave is answered, not silent
-        self.assertIn('\x1b[38;2;215;119;87m\x1b[1mSign-in method — demo\x1b[0m', out)
-        self.assertIn('\x1b[38;2;177;185;249mClaude account\x1b[0m    \x1b[38;2;153;153;153mSign in with your browser\x1b[0m', out)
+        self.assertIn('\x1b[38;2;194;98;66m\x1b[1mSign-in method — demo\x1b[0m', out)
+        self.assertIn('\x1b[38;2;90;108;251mClaude account\x1b[0m    \x1b[38;2;122;122;122mSign in with your browser\x1b[0m', out)
         self.assertIn('Sign in to Mockprov with your browser', out)  # the stub bridge's row
         self.assertNotIn('type to filter', out)
         self.assertNotIn('Select [', out)
@@ -1240,16 +1264,16 @@ class PickerTTYTest(unittest.TestCase):
         self.assertIsNone(missed, out)
         self.assertEqual(rc, 1, out)  # intentional cancellation, before login
         self.assertFalse((self.tmp / 'fzf.log').exists())
-        self.assertIn('\x1b[38;2;177;185;249mClaude account\x1b[0m    \x1b[38;2;153;153;153mSign in with your browser\x1b[0m', out)
-        self.assertIn('API key           \x1b[38;2;153;153;153mAnthropic or a gateway\x1b[0m', out)
+        self.assertIn('\x1b[38;2;90;108;251mClaude account\x1b[0m    \x1b[38;2;122;122;122mSign in with your browser\x1b[0m', out)
+        self.assertIn('API key           \x1b[38;2;122;122;122mAnthropic or a gateway\x1b[0m', out)
         # GH-290: the row must say when a token beats a browser sign-in and what it cannot do.
-        self.assertIn('Claude token      \x1b[38;2;153;153;153mFor scripts/CI; quota cannot read plan usage\x1b[0m', out)
+        self.assertIn('Claude token      \x1b[38;2;122;122;122mFor scripts/CI; quota cannot read plan usage\x1b[0m', out)
         self.assertFalse((self.state / 'demo.conf').exists())
 
     def test_labeled_menu_and_help_remain_plain_when_color_is_disabled(self):
         env = {**self.env(), 'NO_COLOR': '1', 'ROWS': 'internal\tAction\tDescription'}
         rc, out, missed = run_pty('_ccm_ui_numbered Choose "$ROWS" labels; ccmorph --help', env, [
-            (b'(q to cancel):', b'1\n'),
+            (b'or type a name', b'1\n'),
         ])
         self.assertIsNone(missed, out)
         self.assertEqual(rc, 0, out)
@@ -1472,10 +1496,11 @@ class PickerTTYTest(unittest.TestCase):
         self.assertNotIn('nothing removed', out)
         self.assertTrue(leftover.is_dir())
 
-    def test_rm_leftover_confirmation_without_a_terminal_still_says_nothing_was_removed(self):
+    def test_rm_leftover_confirmation_without_a_terminal_names_the_piped_confirmation(self):
         # With no terminal nothing showed the prompt, so rm's own line is the only
-        # answer a script gets that the leftovers were kept (the headless refusal
-        # of issue #280 keeps its words; only a leave at a terminal drops them).
+        # answer a script gets that the leftovers were kept (#280). It is the
+        # main branch's line for the same state, naming both ways through: the
+        # leftover branch answered with a bare "cancelled" (#724, #636).
         env = self.env()
         leftover = self.state / 'profiles' / 'demo'
         leftover.mkdir(parents=True)
@@ -1484,8 +1509,24 @@ class PickerTTYTest(unittest.TestCase):
             env=env, stdin=subprocess.DEVNULL, capture_output=True, text=True,
             timeout=HANG_TIMEOUT)
         self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
-        self.assertEqual(result.stderr.count('cancelled; nothing removed'), 1, result.stderr)
+        self.assertEqual(result.stderr.count("printf 'y' | ccmorph rm demo"), 1, result.stderr)
+        self.assertIn('nothing removed', result.stderr)
+        self.assertNotIn('cancelled; nothing removed', result.stderr)
         self.assertTrue(leftover.is_dir())
+
+    def test_rm_leftover_prompt_lists_only_the_paths_that_exist_issue_636(self):
+        # The leftover prompt named both profiles/<name> and auth/<name> even
+        # when auth/ was absent, so it pointed at a path that was not there.
+        env = self.env()
+        leftover = self.state / 'profiles' / 'demo'
+        leftover.mkdir(parents=True)
+        result = subprocess.run(
+            ['zsh', '-fc', 'source "$1"\nccmorph rm demo', 'test', str(CCMORPH)],
+            env=env, stdin=subprocess.DEVNULL, capture_output=True, text=True,
+            timeout=HANG_TIMEOUT)
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn(str(leftover), result.stderr, result.stderr)
+        self.assertNotIn(str(self.state / 'auth' / 'demo'), result.stderr, result.stderr)
 
     def test_rm_confirms_before_destroying_a_profile_in_a_terminal_issue_652(self):
         # The removal the help page caps with "This cannot be undone" asked of
@@ -1579,7 +1620,7 @@ class PickerTTYTest(unittest.TestCase):
         for settings in ({'NO_COLOR': '1'}, {'TERM': 'dumb'}):
             env = {**self.env(), **settings, 'ROWS': 'a\tFirst\nb\tSecond'}
             rc, out, missed = run_pty('_ccm_ui_numbered choose "$ROWS"', env, [
-                (b'(q to cancel):', b'q\n'),
+                (b'or type a name', b'q\n'),
             ])
             self.assertIsNone(missed, out)
             self.assertNotEqual(rc, 0, out)
@@ -1801,8 +1842,8 @@ class PickerTTYTest(unittest.TestCase):
                       'Kimi For Coding (China)', 'Meta', 'xAI'):
             self.assertIn(label, out)
         self.assertNotIn('Kimi-ai', out)
-        self.assertIn('\x1b[38;2;153;153;153mSign in with your browser', out)
-        self.assertIn('\x1b[38;2;153;153;153mFor scripts/CI; quota cannot read plan usage', out)
+        self.assertIn('\x1b[38;2;122;122;122mSign in with your browser', out)
+        self.assertIn('\x1b[38;2;122;122;122mFor scripts/CI; quota cannot read plan usage', out)
         # Each row says which product or plan it signs in to (issue #283) while
         # the rendered row keeps its browser-and-bridge explanation: the two
         # Kimi logins are kimi.ai and kimi.com, not the same text twice.
@@ -1811,7 +1852,7 @@ class PickerTTYTest(unittest.TestCase):
         self.assertIn('kimi.com account', plain)
         self.assertIn('ChatGPT (Codex)', plain)
         self.assertIn('Browser sign-in to xAI (Grok), through cliproxyapi', out)
-        self.assertIn('\x1b[38;2;153;153;153mBrowser sign-in to a kimi.ai account', out)
+        self.assertIn('\x1b[38;2;122;122;122mBrowser sign-in to a kimi.ai account', out)
         self.assertIn('PROVIDER_ID=xai', out)
         self.assertNotIn('PROVIDER_ID=xAI', out)
         self.assertFalse((self.tmp / 'fzf.log').exists())
@@ -1977,7 +2018,7 @@ fi
         rc, out, missed = run_pty('exec "$CLI_TARGET" run demo', env)
         self.assertIsNone(missed, out)
         self.assertEqual(rc, 0, out)
-        self.assertIn('\x1b[38;2;215;119;87mccmorph:\x1b[0m resuming as', out)
+        self.assertIn('\x1b[38;2;194;98;66mccmorph:\x1b[0m resuming as', out)
         self.assertNotIn('\x1b[32m', out)
         self.assertNotIn('\x1b[38;2;78;186;101m', out)
         self.assertNotIn('synthetic-token', out)
@@ -1989,17 +2030,17 @@ fi
                                   [(b'Esc Cancel', b'\x1b')])
         self.assertIsNone(missed, out)
         self.assertEqual(rc, 1, out)
-        self.assertIn('\x1b[38;2;215;119;87m\x1b[1mTheme', out)
-        self.assertIn('\x1b[38;2;177;185;249m❯', out)
-        self.assertIn('\x1b[38;2;153;153;153mDescription', out)
+        self.assertIn('\x1b[38;2;194;98;66m\x1b[1mTheme', out)
+        self.assertIn('\x1b[38;2;90;108;251m❯', out)
+        self.assertIn('\x1b[38;2;122;122;122mDescription', out)
         for retired in ('◆', '◇', '●', '○', '│', '└', '\x1b[36m'):
             self.assertNotIn(retired, out)
         rc, out, missed = run_pty('ccm_ui_select search Theme "$ROWS"', env)
         self.assertEqual(rc, 0, out)
         log = (self.tmp / 'fzf.log').read_text()
-        self.assertIn('prompt:#d77757', log)
-        self.assertIn('pointer:#b1b9f9', log)
-        self.assertIn('header:#999999', log)
+        self.assertIn('prompt:#c26242', log)
+        self.assertIn('pointer:#5a6cfb', log)
+        self.assertIn('header:#7a7a7a', log)
 
     def test_shared_input_escape_cancels_text_and_secret(self):
         for mode in ('text', 'secret'):
@@ -2254,7 +2295,7 @@ fi
         ])
         self.assertIsNone(missed, out)
         self.assertEqual(rc, 1, out)
-        self.assertIn('\x1b[38;2;215;119;87m', out)
+        self.assertIn('\x1b[38;2;194;98;66m', out)
         self.assertIn('❯', out)
         self.assertNotIn('◆', out)
         self.assertIn('Default model', out)

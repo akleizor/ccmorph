@@ -244,7 +244,7 @@ class ReportTest(unittest.TestCase):
 
     def test_invalid_days_are_bounded_cli_errors(self):
         env = {"PATH": os.environ["PATH"], "XDG_STATE_HOME": str(self.state)}
-        for days in ("inf", "1000000000", "999999999", "1000000", "nan", "-1", "0"):
+        for days in ("inf", "1000000000", "999999999", "1000000", "200000", "nan", "-1", "0"):
             with self.subTest(days=days):
                 done = subprocess.run([*SHIM, "report", "--days", days],
                                       env=env, capture_output=True, text=True, timeout=HANG_TIMEOUT)

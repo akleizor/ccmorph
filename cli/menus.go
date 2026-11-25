@@ -104,9 +104,24 @@ func (l *launcher) profileRows(active string, types []string, accept func(map[st
 	return rows
 }
 
+// defaultFirst opens the profile picker on the default, its tag beside the
+// kind, where a narrow terminal does not cut it (#636): Enter on a fresh
+// picker must not start another account than the one a bare run uses.
+func defaultFirst(rows []string) []string {
+	for i, r := range rows {
+		f := strings.Split(r, "\t")
+		if len(f) == 4 && f[3] == "default" {
+			f[1], f[3] = f[1]+" · default", ""
+			out := append([]string{strings.Join(f, "\t")}, rows[:i]...)
+			return append(out, rows[i+1:]...)
+		}
+	}
+	return rows
+}
+
 // menuProfile is _ccm_menu_profile: the profile chooser, limited to types when given.
 func (l *launcher) menuProfile(types ...string) (string, bool) {
-	rows := l.profileRows(l.active(), types, nil)
+	rows := defaultFirst(l.profileRows(l.active(), types, nil))
 	if len(rows) == 0 {
 		switch {
 		case len(l.confNames()) == 0:
@@ -377,7 +392,10 @@ func (l *launcher) pickModelDefault(name string) (string, bool) {
 	}
 	current := l.accountModel(name)
 	// A leave is answered by the picker's own Cancelled line (#280): no usage line here.
-	return l.valueMenu("model", name, current, f["type"], f["base_url"], l.defaultRows("model", name, f["type"]), current != "")
+	// The Keep row is offered as config offers it, even with nothing saved
+	// ("Keep none — …"): the list-unavailable sentence promises it, and
+	// keeping an unset default stores nothing (#636).
+	return l.valueMenu("model", name, current, f["type"], f["base_url"], l.defaultRows("model", name, f["type"]), true)
 }
 
 func say(msg string) { fmt.Fprintln(os.Stderr, msg) }

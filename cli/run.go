@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"slices"
 	"strconv"
 	"strings"
@@ -153,6 +154,11 @@ func (l *launcher) resolveLaunch(name string, interactive, native bool, argv []s
 		args = parsed.Forward
 	}
 
+	// -i asks when needed: one profile is the only answer, so it is taken
+	// without a picker; the model and effort questions still follow (#636).
+	if names := l.confNames(); interactive && name == "" && len(names) == 1 {
+		name = names[0]
+	}
 	if interactive && name == "" {
 		picked, ok := l.menuProfile()
 		if !ok {
@@ -384,7 +390,7 @@ func (l *launcher) resolveLaunch(name string, interactive, native bool, argv []s
 	if name != "" {
 		// A named profile runs on its own route and credential: nothing the Remote
 		// Control edge set up for its own route reaches it, or its adapter, or claude.
-		if l.inEdge() {
+		if util.InEdge() {
 			for _, k := range edgeEnv {
 				os.Unsetenv(k)
 			}
@@ -420,7 +426,7 @@ func (l *launcher) resolveLaunch(name string, interactive, native bool, argv []s
 					base, _ := envGet(penv, "ANTHROPIC_BASE_URL")
 					if !needsAdapter {
 						base, _ = nativeBase(base)
-						if _, code := probeListing(base, k, "anthropic-version: 2023-06-01"); probeVerdict(code) == probeRejected {
+						if _, code := probeListing(base, k, "anthropic-version: "+ctxwindow.AnthropicVersion); probeVerdict(code) == probeRejected {
 							rejected, _ := strconv.Atoi(code)
 							l.err(listingFailure(name, profile.RedactURL(base), rejected))
 							return fail()
@@ -616,6 +622,9 @@ func (l *launcher) runLaunch(p *launchPlan) (*relayNext, int) {
 			}
 		}
 		rcClaude = l.runClaude(env, args)
+		if hint := mcpHint(args, name); hint != "" {
+			say(hint)
+		}
 		if l.forwardedSig() != 0 {
 			os.Remove(relayFile)
 			l.log(fmt.Sprintf("signal %d forwarded to claude; no relay", l.forwardedSig()))
@@ -754,7 +763,10 @@ func withoutOwn(value, share string) string {
 	own := map[string]bool{filepath.Join(share, "claude-plugin"): true, filepath.Join(share, "claude-plugin-router"): true}
 	kept := []string{}
 	for _, d := range strings.Split(value, ":") {
-		if d != "" && !own[d] {
+		// A router entry from another install (a brew upgrade leaves the old
+		// Cellar path) is the guard's too: match the base name, not the path
+		// (#636).
+		if d != "" && !own[d] && filepath.Base(d) != "claude-plugin-router" {
 			kept = append(kept, d)
 		}
 	}
@@ -1125,7 +1137,7 @@ func (l *launcher) migrateContextPaths(legacy []string) bool {
 	return true
 }
 
-func isDarwin() bool { return strings.HasPrefix(goos, "darwin") }
+func isDarwin() bool { return strings.HasPrefix(runtime.GOOS, "darwin") }
 
 func (l *launcher) windowEnv(name string) []string {
 	return []string{"CCMORPH_STATE_DIR=" + l.dir, "MODEL_WINDOW_PROFILE_CONF=" + l.conf(name)}
@@ -1526,15 +1538,22 @@ func loopbackHTTPSProxy() bool {
 	return ok
 }
 
-// inEdge: this process runs inside a Remote Control bridge session, whose add-on
-// sets CCMORPH_EDGE_ROUTE_ENV beside its loopback proxy. A loopback proxy alone may
-// be the user's own, which a launch must keep.
-func (l *launcher) inEdge() bool {
-	return os.Getenv("CCMORPH_EDGE_ROUTE_ENV") != "" && loopbackHTTPSProxy()
+// mcpHint is the profile's own way to add an MCP server, said after `ccmorph run
+// <p> mcp …`: Claude's own text names `claude mcp add`, which writes the host's
+// ~/.claude.json and is invisible to this profile (#636). Empty otherwise.
+func mcpHint(args []string, name string) string {
+	// The verb is the first word, as claude reads its own subcommands; a
+	// prompt that merely mentions mcp is not it.
+	if name == "" || len(args) == 0 || args[0] != "mcp" || slices.Contains(args, "add") {
+		return ""
+	}
+	return "In profile '" + name + "', add a server with: ccmorph run " + name + " mcp add <name> <command> (a plain claude mcp add writes ~/.claude.json, which this profile does not read)"
 }
 
-// nestedEdgeEnv is _ccm_nested_edge_env: inside the Remote Control edge, the
-// route keys it named for a native launch.
+// nestedEdgeEnv re-applies the lines ccmorph-rc's ROUTE_ENV writes into
+// CCMORPH_EDGE_ROUTE_ENV: inside the Remote Control edge, the route keys it
+// named for a native launch. The caller's key list must equal ROUTE_ENV; a
+// test pins the two (tests/rc_bridge_test.py).
 func (l *launcher) nestedEdgeEnv(keys ...string) []string {
 	if !loopbackHTTPSProxy() {
 		return nil
@@ -1703,7 +1722,7 @@ func (l *launcher) routeRefusal(name string) string {
 		// the same header, before it ends one (#286). Only a rejection refuses:
 		// silence keeps out of the way, exactly as at launch.
 		base, _ = nativeBase(base)
-		if _, code := util.ProbeListing(base, authKey(env), "anthropic-version: 2023-06-01"); probeVerdict(code) == probeRejected {
+		if _, code := util.ProbeListing(base, authKey(env), "anthropic-version: "+ctxwindow.AnthropicVersion); probeVerdict(code) == probeRejected {
 			return "Anthropic rejected the API key (HTTP " + code + ")"
 		}
 		return ""
@@ -1741,7 +1760,7 @@ func (l *launcher) reachGateway(name, base, key, via string) (why string, down b
 		return "", false
 	}
 	var strip []string
-	if l.inEdge() {
+	if util.InEdge() {
 		strip = edgeEnv // a named profile never dials through the edge (see resolveLaunch)
 	}
 	progress := func() {

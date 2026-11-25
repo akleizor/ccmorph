@@ -194,17 +194,20 @@ class ReadmeInstallTest(unittest.TestCase):
 
     def _homebrew_formula_prefix(self):
         """The real prefix `brew --prefix ccmorph` prints on a host whose
-        Homebrew installed ccmorph, or None. Homebrew's prefix is the parent
-        of the first HOMEBREW_BIN dir holding an executable brew, and it
-        keeps the formula's stable prefix at `<prefix>/opt/ccmorph` — the
-        link cli/run.go's stableCore already names. Read from the disk, so
-        that brew is never executed; a Homebrew with no ccmorph formula
-        installed has no real prefix to verify (#717)."""
+        Homebrew installed ccmorph, or None. A Homebrew's prefix is the parent
+        of a HOMEBREW_BIN dir holding an executable brew, and it keeps the
+        formula's stable prefix at `<prefix>/opt/ccmorph` — the link
+        cli/run.go's stableCore already names. The first Homebrew that holds
+        the formula answers: a host with two (an Intel Homebrew left beside
+        the Apple Silicon one) must not stop at one without ccmorph (#636).
+        Read from the disk, so that brew is never executed; a Homebrew with no
+        ccmorph formula installed has no real prefix to verify (#717)."""
         for bin_dir in HOMEBREW_BIN:
             brew = Path(bin_dir) / "brew"
             if brew.is_file() and os.access(brew, os.X_OK):
                 formula = Path(bin_dir).parent / "opt" / "ccmorph"
-                return formula if formula.is_dir() else None
+                if formula.is_dir():
+                    return formula
         return None
 
     def _problems(self, text):
@@ -450,6 +453,23 @@ class ReadmeInstallTest(unittest.TestCase):
         self.assertIn("a fresh install has no executable", problems[1])
         self.assertFalse(ran.exists(), "the check ran the host's brew")
         self.assertFalse((self.home / "brew-stub").exists())
+
+    def test_the_formula_prefix_is_found_past_a_homebrew_without_it(self):
+        """#636: the lookup returned None at the first brew whose prefix lacked
+        the formula, so a second Homebrew that holds ccmorph went unverified."""
+        bins = []
+        for name in ("first-homebrew", "second-homebrew"):
+            b = self.home / name / "bin"
+            b.mkdir(parents=True, exist_ok=True)
+            (b / "brew").write_text("#!/bin/sh\nexit 1\n")
+            (b / "brew").chmod(0o755)
+            bins.append(str(b))
+        formula = self.home / "second-homebrew" / "opt" / "ccmorph"
+        formula.mkdir(parents=True, exist_ok=True)
+        with mock.patch.dict(globals(), {"HOMEBREW_BIN": tuple(bins)}):
+            self.assertEqual(self._homebrew_formula_prefix(), formula)
+            shutil.rmtree(formula)
+            self.assertIsNone(self._homebrew_formula_prefix())
 
     def test_a_ccusage_command_is_reported_though_the_requirements_name_it(self):
         """No install route and no system directory provides ccusage: naming it

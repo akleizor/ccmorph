@@ -36,8 +36,9 @@ func readAntigravity(client *http.Client, name, dir string) Entry {
 	}
 	ws, perr := antigravityReading(body)
 	if perr != nil {
-		e.Error = perr.Error()
-		return e
+		// A reply that cannot be read is not "no plan windows": it keeps the
+		// last good windows and says what happened (#636).
+		return stale(name, e.Kind, "", perr.Error(), perr.Error())
 	}
 	e.Windows = ws
 	save(name, Reading{Windows: ws, ReadAt: now().Unix()})
@@ -59,7 +60,9 @@ func antigravityReading(body []byte) ([]Window, error) {
 			} `json:"quotaInfo"`
 		} `json:"models"`
 	}
-	if json.Unmarshal(body, &u) != nil {
+	if json.Unmarshal(body, &u) != nil || u.Models == nil {
+		// A 200 error object has no models key and would otherwise unmarshal
+		// clean, and the person would read "no plan windows reported" (#636).
 		return nil, errors.New("unreadable usage reply")
 	}
 	type pool struct {

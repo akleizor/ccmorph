@@ -15,6 +15,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/akleizor/ccmorph/util/paths"
 )
@@ -38,8 +39,8 @@ func maskOne(t *testing.T, m *masker, text string) string {
 	msgs, _ := d.last("messages")
 	turns, _ := Array(out, msgs.Start)
 	ms, _ := Object(out, turns[0].Start)
-	c, _ := lastMember(ms, "content")
-	got, _ := str(out, c)
+	c, _ := LastMember(ms, "content")
+	got, _ := SpanStr(out, c)
 	return got
 }
 
@@ -611,5 +612,18 @@ func TestMaskPassKeepsReplacerOrder(t *testing.T) {
 	in := "k " + sec + " and " + card + " end"
 	if got, want := maskOne(t, m, in), "k "+m.known[sec]+" and "+m.known[card]+" end"; got != want {
 		t.Errorf("longer secret split by its card: %q -> %q, want %q", in, got, want)
+	}
+}
+
+// TestMaskPassKeepsMultibyteTextAroundALearnedCard pins #636: the hand scan
+// indexes bytes, and a CJK or emoji neighbour must come through whole.
+func TestMaskPassKeepsMultibyteTextAroundALearnedCard(t *testing.T) {
+	card := "4571" + "2345" + "6789" + "0120" // Visa BIN, passes Luhn
+	m := testMasker(t, "")
+	if got := maskOne(t, m, "漢字 "+card+" 🙂"); strings.Contains(got, card) || !strings.HasPrefix(got, "漢字 ") || !strings.HasSuffix(got, " 🙂") {
+		t.Fatalf("multibyte neighbours were cut or the card survived: %q", got)
+	}
+	if got := maskOne(t, m, "日本語の前に"+card+"と絵文字🙂の後"); !utf8.ValidString(got) || strings.Contains(got, card) {
+		t.Fatalf("a multibyte run was split, or the card survived: %q", got)
 	}
 }

@@ -44,7 +44,7 @@ func TestProjectPickerReadsTheCatalogueOnceForEveryClaudeModel(t *testing.T) {
 		t.Fatal(err)
 	}
 	conf := filepath.Join(root, "gw.conf")
-	confText := "type=apikey\nbase_url=http://gw.invalid\napi_key=k\ncontext_window.sized-elsewhere=1000\n\ncontext_window.sized-elsewhere=1000\n\n" +
+	confText := "type=apikey\nbase_url=http://gw.invalid\napi_key=sk-test-636\n" +
 		"context_window.sized-elsewhere=1000\n"
 	if err := os.WriteFile(conf, []byte(confText), 0o600); err != nil {
 		t.Fatal(err)
@@ -128,7 +128,7 @@ func TestProjectPickerTreatsA200ThatIsNotAListingAsNoListing(t *testing.T) {
 			}
 			conf := filepath.Join(root, "gw.conf")
 			if err := os.WriteFile(conf, []byte(
-				"type=apikey\nbase_url=http://gw.invalid\napi_key=k\nexcluded_models=blocked\n\nexcluded_models=blocked\n\nexcluded_models=blocked\n"+
+				"type=apikey\nbase_url=http://gw.invalid\napi_key=sk-test-636\n"+
 					"\nexcluded_models=blocked\n"), 0o600); err != nil {
 				t.Fatal(err)
 			}

@@ -149,8 +149,8 @@ func Exempt(u *url.URL) bool {
 	cfg := &httpproxy.Config{
 		HTTPProxy:  exemptConfig,
 		HTTPSProxy: exemptConfig,
-		// The shipped toolchain's reader (net/http's httpproxy, Go 1.27.4)
-		// takes NO_PROXY before no_proxy: the first non-empty spelling decides.
+		// golang.org/x/net's httpproxy (the reader net/http vendors) takes
+		// NO_PROXY before no_proxy: the first non-empty spelling decides.
 		NoProxy: envAny("NO_PROXY", "no_proxy"),
 	}
 	proxy, err := cfg.ProxyFunc()(u)
