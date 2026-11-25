@@ -129,13 +129,25 @@ ccmorph-rc <route-profile> --switch  # back to the edge's route
 ```
 
 No host restarts and no session is interrupted: each proxy reads the switch on every
-turn. The account profile sends calls to Anthropic untouched; the edge's route uses the
-edge as before; any other route or provider profile is brought up beside the edge
-(its adapter, and a provider's bridge, live as long as the edge does) and handed to the
-proxy through a 0600 file it deletes on read, so its key stays in memory only. Its model
-map is applied, so a provider such as codex receives its own models. `inference=<profile>`
-in `rc-hosts` does the same from the config. A proxy started before this feature needs one
-restart to load it.
+turn. The account profile sends calls to Anthropic untouched; a profile whose own edge
+is live is that edge's route (`route`); any other route or provider profile is brought
+up beside the one live shared edge and handed to that edge's proxy through a 0600 file
+it deletes on read, so its key stays in memory only. A key profile gets one adapter per
+edge (`sidecar-<profile>.json`): a repeat `--switch` reuses it while it answers, or
+stops it and confirms it gone before starting its replacement. Its model map is
+applied, so a provider such as codex receives its own models. When two switches
+overlap, the one started last wins: an older one that finishes after it writes
+nothing, and says which profile is live.
+
+`inference=<profile>` in `rc-hosts` does the same from the config: the supervisor
+brings the profile up once exactly one shared edge is live, retries until it lands,
+and writes the switch only when the `inference=` value itself changes, so a manual
+`--switch` stays until that line is edited. A proxy holds a handoff in memory only,
+so an edge or proxy restart loses it; the choice is to hand it again, never to keep
+the key on disk. Each proxy says what it holds in `held.<edge pid>.json` (profile
+names and handoff ids, no key), and the supervisor re-runs `--switch` for the live
+profile whenever the live edge's proxy does not hold it. A proxy started before this
+feature needs one restart to load it.
 
 ```sh
 ccmorph-rc <route-profile> --switch --session cse_...  # only that phone session moves
@@ -153,9 +165,10 @@ reaches another target as that target's own model for the alias.
 JSON, and removes a pick whose session is gone. A conversation that moves between
 providers carries thinking blocks the previous one signed; a provider may refuse them.
 
-The proxy takes a handoff within a second, not on the next request for that profile:
-`--switch` waits for it, and removes the handoff and leaves the word as it was when no
-proxy takes it. What the proxy does with each request (`rc_flow.py`, `rc_route.py`)
+The proxy takes a handoff within a second, not on the next request for that profile,
+and only the proxy of the edge it names takes it: `--switch` waits until that proxy
+says it holds it, and removes the handoff and leaves the word as it was when it does
+not. What the proxy does with each request (`rc_flow.py`, `rc_route.py`)
 reloads from the install when either file changes, on the next request, with no
 restart; a file that does not load leaves the running code in place. The key and the
 endpoints live in `rc_addon.py`, and a change to it, or to the launcher, still needs
