@@ -279,23 +279,56 @@ def settings_key(reader) -> str | None:
     return next((prefix for prefix, r in SETTINGS_READERS.items() if r is reader), None)
 
 
+def config_lines(text: str):
+    """Every config line under the one line rule: cut at the first `#`, strip.
+
+    parse(), session_entries(), edit_config() and every settings reader below
+    read through this, so a line means the same to all of them. Read separately,
+    the settings readers matched the raw text: `retire=<folder>#done` retired a
+    folder spelled with the note while the one the operator named stayed hosted,
+    `inference=oli#x` named a profile `oli#x`, and a space after `=`, which the
+    folder lines accept, made a setting read as absent (GH-847). Yields
+    (raw, line): the raw text stays available to a writer that keeps what it did
+    not author."""
+    for raw in text.splitlines():
+        yield raw, raw.split("#", 1)[0].strip()
+
+
 def setting_value(text: str, reader) -> str | None:
     """The value of the one line `reader` reads, under the prefix the registry
-    registers it with, or None when the line (or the registry entry) is absent."""
-    prefix = settings_key(reader)
-    if prefix is None:
-        return None
-    m = re.search(rf"^\s*{re.escape(prefix)}(\S+)", text, re.M)
-    return m.group(1) if m else None
+    registers it with, or None when the line (or the registry entry) is absent.
+    The line is the cut, stripped one every reader gets (config_lines), and its
+    value is the rest of that line, stripped: a folder retires with its spaces,
+    and `key= value` reads the same as `key=value`. An empty value is no line."""
+    values = setting_values(text, reader)
+    return values[0] if values else None
+
+
+def setting_text(line: str, prefix: str) -> str:
+    """The value a config line already under the one line rule names for
+    `prefix`: what follows it, stripped, or "" when the line carries none.
+
+    setting_values() reads every reader's value here, and edit_config() reads the
+    archived marker it removes here too, so the writer and the reader agree on a
+    value's whitespace. With `line[9:]` the writer resolved " <folder>" from
+    `archived= <folder> # note`, kept a marker the reader had already consumed,
+    and left the folder and its sibling pins dormant (GH-847 review)."""
+    return line[len(prefix):].strip() if line.startswith(prefix) else ""
 
 
 def setting_values(text: str, reader) -> list[str]:
-    """Every value of the lines `reader` reads, under its registry prefix; none
+    """Every value of the lines `reader` reads, under its registry prefix, on the
+    same cut, stripped lines and the same value rule as setting_value(); none
     when the registry does not name it."""
     prefix = settings_key(reader)
     if prefix is None:
         return []
-    return re.findall(rf"^\s*{re.escape(prefix)}(\S+)", text, re.M)
+    values = []
+    for _, line in config_lines(text):
+        value = setting_text(line, prefix)
+        if value:
+            values.append(value)
+    return values
 
 
 def permission_mode(text: str) -> str | None:
@@ -305,9 +338,16 @@ def permission_mode(text: str) -> str | None:
     step from the device. bypassPermissions runs them without asking; that is a
     deliberate choice about sessions reachable from any signed-in device, so it
     belongs in the config where it is visible and reversible, not in a default.
+
+    A line whose value no mode names is refused on one line: parse() skips it as
+    a setting, so silence would leave the operator believing a mode is in force.
     """
     value = setting_value(text, permission_mode)
-    return value if value in PERMISSION_MODES else None
+    if value is None or value in PERMISSION_MODES:
+        return value
+    log(f"config: {settings_key(permission_mode)}{value} is not one of "
+        f"{', '.join(PERMISSION_MODES)}; ignoring the line")
+    return None
 
 
 def inference_name(text: str) -> str | None:
@@ -358,14 +398,10 @@ def tier_map(text: str, profile: dict[str, str] | None = None) -> dict[str, str]
     """
     out = {a: m for a, m in (profile or {}).items()
            if isinstance(m, str) and m and not m.lower().startswith(f"claude-{a}")}
-    prefix = settings_key(tier_map)
-    if prefix is not None:
-        for raw in text.splitlines():
-            line = raw.split("#", 1)[0].strip()
-            if line.startswith(prefix) and "=" in line:
-                alias, _, model = line[len(prefix):].partition("=")
-                if alias.strip() and model.strip():
-                    out[alias.strip()] = model.strip()
+    for pin in setting_values(text, tier_map):
+        alias, _, model = pin.partition("=")
+        if alias.strip() and model.strip():
+            out[alias.strip()] = model.strip()
     return out
 
 
@@ -437,8 +473,7 @@ def parse(text: str) -> dict[str, tuple[str, tuple[str, ...]]]:
     route, folders = None, {}
     archived = archived_set(text)
     retired = retire_set(text)
-    for raw in text.splitlines():
-        line = raw.split("#", 1)[0].strip()
+    for _, line in config_lines(text):
         if not line:
             continue
         if line.startswith("route="):
@@ -781,33 +816,32 @@ class Host:
         return False
 
 
-def days_setting(text: str, prefix: str | None, default: float) -> float:
-    """A `<prefix><days>` config line, or its documented default when absent, not
-    a number, or no longer named by the settings registry: `[0-9.]+` matches `.`
-    and `1..0`, which float() rejects, and the idle check must not take the
-    supervisor down for one bad line."""
-    if prefix is None:
-        return default
-    m = re.search(rf"^\s*{re.escape(prefix)}([0-9.]+)", text, re.M)
-    if not m:
-        return default
-    try:
-        return float(m.group(1))
-    except ValueError:
-        log(f"config: {prefix}{m.group(1)} is not a number; using the default {default:g}")
-        return default
+def days_setting(text: str, reader, default: float) -> float:
+    """A `<prefix><days>` config line, read under the one line rule, or its
+    documented default when absent, not a number, or no longer named by the
+    settings registry: `[0-9.]+` matches `.` and `1..0`, which float() rejects,
+    and the idle check must not take the supervisor down for one bad line."""
+    value = setting_value(text, reader)
+    if value is not None:
+        try:
+            if re.fullmatch(r"[0-9.]+", value):
+                return float(value)
+        except ValueError:
+            pass
+        log(f"config: {settings_key(reader)}{value} is not a number; using the default {default:g}")
+    return default
 
 
 def idle_days(text: str) -> float:
-    return days_setting(text, settings_key(idle_days), 1.0)
+    return days_setting(text, idle_days, 1.0)
 
 
 def purge_days(text: str) -> float:
-    return days_setting(text, settings_key(purge_days), 7.0)
+    return days_setting(text, purge_days, 7.0)
 
 
 def park_hours(text: str) -> float:
-    return days_setting(text, settings_key(park_hours), 6.0)   # 0 keeps every idle session's process
+    return days_setting(text, park_hours, 6.0)   # 0 keeps every idle session's process
 
 
 def archived_set(text: str) -> set[str]:
@@ -854,8 +888,7 @@ def session_entries(text: str):
     An archived pin is still listed, unlike in parse(): skipping it there
     keeps its bridge from being reattached, while this list is what retires
     it once idle."""
-    for raw in text.splitlines():
-        line = raw.split("#", 1)[0].strip()
+    for _, line in config_lines(text):
         head, _, args = line.partition(" -- ")
         argv = args.split()
         if "--session-id" not in argv:        # no separator, or no pin asked for
@@ -2079,9 +2112,9 @@ def edit_config(config: Path, folder: str, sid: str | None = None, *,
             text = text.rstrip() + f"\narchived={folder}\n"
         else:
             out = []
-            for raw in text.splitlines():
-                line = raw.split("#", 1)[0].strip()
-                if line.startswith("archived=") and resolve(line[9:]) == folder:
+            for raw, line in config_lines(text):
+                marker = setting_text(line, "archived=")
+                if marker and resolve(marker) == folder:
                     continue
                 # The line to retire is the one whose pin names this sid, read from the
                 # args after ` -- `: one folder's pin ids share prefixes, and a substring
