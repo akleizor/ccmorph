@@ -171,11 +171,7 @@ def done() -> None:
         shutil.rmtree(HERE, ignore_errors=True)
 
 
-# Destination is decided in requestheaders, the earliest hook: if request bodies
-# were ever streamed, mitmproxy would open the upstream connection right after the
-# headers, and a reroute in `request` would arrive after the call had already gone
-# to api.anthropic.com on the account's credential. Request bodies are buffered
-# (the launcher sets no stream_large_bodies) so `request` can still normalize them.
+# rc_flow.requestheaders decides the destination; its comment says why that hook.
 def requestheaders(flow) -> None:
     _load().requestheaders(flow, S)
 

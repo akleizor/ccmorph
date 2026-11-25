@@ -230,3 +230,13 @@ def test_install_checks_dependencies_before_its_update_banner():
     assert text.index('missing+=("claude') < text.index('Updating ccmorph')
     readme = (ROOT / "README.md").read_text()
     assert "for a missing `claude` the Claude Code setup page" in readme
+
+
+def test_the_destination_paragraph_is_written_once():
+    """#636: why the destination is decided in requestheaders was written out in
+    both add-on modules; rc_flow.py holds it and rc_addon.py points there."""
+    addon = ROOT / "addons/remote-control"
+    holders = [f.name for f in sorted(addon.iterdir()) if f.is_file() and f.suffix != ".md"
+               for _ in range(f.read_text(errors="ignore").count("Destination is decided in requestheaders"))]
+    assert holders == ["rc_flow.py"]
+    assert "rc_flow.requestheaders" in (addon / "rc_addon.py").read_text()
