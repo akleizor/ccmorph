@@ -410,9 +410,35 @@ FAIL_CLOSED = (rf"|(~d ^api\.anthropic\.com$ & ~u /v1/messages & !~meta {ACCOUNT
                "|502")
 
 
+def owned_prefix(kind: str) -> str:
+    """A per-launch file's prefix names its launcher, so a later start can tell it is orphaned."""
+    return f"{kind}.{os.getpid()}."
+
+
+def sweep_orphans(parent: Path) -> None:
+    """Remove the route keys and addon copies of launchers that are gone. Every exit
+    removes its own, but a SIGKILL or a power cut cannot, and a key must not linger."""
+    for path in [*parent.glob("route-key.*"), *parent.glob("addon.*")]:
+        pid = path.name.split(".")[1]
+        if not pid.isdigit():
+            continue
+        try:
+            os.kill(int(pid), 0)
+            continue
+        except PermissionError:
+            continue
+        except ProcessLookupError:
+            pass
+        if path.is_dir():
+            shutil.rmtree(path, ignore_errors=True)
+        else:
+            with suppress(OSError):
+                path.unlink()
+
+
 def private_addon(parent: Path) -> Path:
     """Copy the addon and its module into a fresh 0700 directory; return the script."""
-    run = Path(tempfile.mkdtemp(prefix="addon.", dir=parent))
+    run = Path(tempfile.mkdtemp(prefix=owned_prefix("addon"), dir=parent))
     for name in ("rc_addon.py", "rc_flow.py", "rc_route.py"):
         # copy, not copy2: mitmproxy loads a -s script only if its mtime beats its
         # last load (0), so a source delivered with epoch timestamps never loads.
@@ -452,6 +478,7 @@ def own_edge(route: str, me: int, args, fixed_port: int | None):
 
     STATE.mkdir(parents=True, exist_ok=True)
     STATE.chmod(0o700)
+    sweep_orphans(STATE)
     confdir = STATE / "mitm"
     confdir.mkdir(exist_ok=True)
     confdir.chmod(0o700)
@@ -482,7 +509,7 @@ def own_edge(route: str, me: int, args, fixed_port: int | None):
     try:
         for sig in taken:
             signal.signal(sig, interrupted)
-        fd, key_file = tempfile.mkstemp(prefix="route-key.", dir=STATE)
+        fd, key_file = tempfile.mkstemp(prefix=owned_prefix("route-key"), dir=STATE)
         # README: the route key is in no argv, environment, or lingering file.
         # Exceptions use finally; TERM/HUP use interrupted and then finally.
         signal.pthread_sigmask(signal.SIG_SETMASK, old_mask)
