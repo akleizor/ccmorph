@@ -525,16 +525,27 @@ mkdir -p "$CONFIG_DIR" "$BIN_DIR"
 # CONFIG_DIR is what gets written into the rc, where a readable ~ path matters.
 CONFIG_REAL="${CONFIG_DIR:A}"
 
+# _replace SRC DST: put SRC at DST by a rename, never by writing over DST.
+# `ccmorph update` runs from the launcher and library it replaces, and zsh
+# reads a running script as it goes, so bytes rewritten under it ended the
+# update with a parse error at exit 1; the rename leaves the running shell its
+# old file. A symlinked DST keeps its link and its target is replaced; an
+# existing DST keeps its mode (the copy starts from it); a failed step leaves
+# no temp file and fails the install.
+_replace() {
+  local src="$1" dst="$2" tmp
+  [[ -L "$dst" ]] && dst="${dst:A}"
+  tmp="${dst:h}/.${dst:t}.new.$$"
+  { { [[ ! -e "$dst" ]] || cp "$dst" "$tmp"; } && cp "$src" "$tmp" && mv -f "$tmp" "$dst"; } \
+    || { rm -f "$tmp"; print -u2 -- "ccmorph install: could not place $dst"; return 1; }
+}
+
 # If running from inside the target dir, files are already home; otherwise copy.
 if [[ "$SRC" != "$CONFIG_REAL" ]]; then
   mkdir -p "$CONFIG_DIR"/{bin,lib,libexec,share/claude-plugin/{.claude-plugin,commands,hooks},share/claude-plugin-router/{.claude-plugin,hooks,skills/router},share/zsh/site-functions}
-  for _f in "${COMPONENTS[@]}"; do cp "$SRC/$_f" "$CONFIG_DIR/$_f"; done
+  for _f in "${COMPONENTS[@]}"; do _replace "$SRC/$_f" "$CONFIG_DIR/$_f"; done
 fi
-# A rename, not a copy over it: `ccmorph update` runs this from the launcher
-# it replaces, and zsh reads a running script as it goes, so bytes rewritten
-# under it ended the update with a parse error at exit 1. The rename leaves
-# the running shell its old file.
-cp "$SRC/bin/ccmorph" "$BIN_DIR/.ccmorph.new.$$" && mv -f "$BIN_DIR/.ccmorph.new.$$" "$BIN_DIR/ccmorph"
+_replace "$SRC/bin/ccmorph" "$BIN_DIR/ccmorph"
 # The opt-in reference, so a host can see every seam without reading the source.
 # Copied, never activated: local.sh itself stays absent until someone writes it.
 # Same directory guard as above: in-place, this is a copy onto itself.

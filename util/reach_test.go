@@ -177,7 +177,9 @@ func TestReachListingNamesAnInstantFailureWithoutProgress(t *testing.T) {
 	noProxy(t)
 	stubConnect(t, nil)
 	// The product's own one-second bound: a stub that exits at once must beat
-	// it, and a shorter one only raced a loaded machine's fork (#902).
+	// it, and a shorter one only raced a loaded machine's fork (#902). Cleared,
+	// so a bound the caller's environment exports cannot stand in for it.
+	t.Setenv("CCMORPH_REACH_PROGRESS", "")
 	for _, c := range []struct{ name, body, want string }{
 		{"refused", "printf '%s\\n' 'curl: (7) Failed to connect to 127.0.0.1 port 9: Connection refused' >&2; exit 7",
 			"connection refused: 127.0.0.1 port 9"},

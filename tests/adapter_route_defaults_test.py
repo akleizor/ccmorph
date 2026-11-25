@@ -321,7 +321,7 @@ def _gh433_arrange(launch, case):
         assert case == 'gateway'
 
 
-def _gh433_record(launch, row):
+def _gh433_record(launch, row, case):
     """What one launch left behind: the files it wrote, and how it called claude.
 
     The environment and the stderr carry the launcher's own absolute paths, which
@@ -349,14 +349,16 @@ def _gh433_record(launch, row):
             'env': {k: ('<minted per launch>' if k in GH433_MINTED else scrub(v))
                     for k, v in sorted(env.items()) if k not in GH433_VOLATILE},
             'files': files,
-            'stderr': scrub(_without_readiness(launch.last.stderr))}
+            'stderr': scrub(launch.last.stderr if case == 'token'
+                            else _without_readiness(launch.last.stderr))}
 
 
 # The adapter's progress lines speak only when its start passes a second
 # (util/adapterstart.go), so they say how loaded the machine is, not what the
 # launch wrote; the snapshot pins the rest (#902).
-_READINESS = re.compile(r"ccmorph: (Starting adapter for '[^\n]*'…"
-                        r"|Waiting for '[^\n]*' adapter \(\d+s\); Ctrl-C to cancel\.)\n")
+_READINESS = re.compile(r"^ccmorph: (Starting adapter for '[^\n]*'…"
+                        r"|Waiting for '[^\n]*' adapter \(\d+s\); Ctrl-C to cancel\.)\n",
+                        re.MULTILINE)
 
 
 def _without_readiness(text):
@@ -385,7 +387,7 @@ def test_a_launch_writes_what_it_wrote_before_gh433(launch, case):
     _gh433_arrange(launch, case)
     launch.run()                                   # the first launch provisions
     (launch.home / 'launches.jsonl').unlink()
-    got = _gh433_record(launch, launch.run())
+    got = _gh433_record(launch, launch.run(), case)
 
     # A golden that recorded "no advisory" as "no advisory" would pass for the
     # wrong reason, so the two cases that must carry one say what it has to say.
