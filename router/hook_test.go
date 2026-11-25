@@ -375,3 +375,24 @@ func TestPreToolUseInAnEdgeSessionRunsTheRoutesClaudeIdAsItsAlias(t *testing.T) 
 		t.Fatalf("the edge route's sonnet runs the call: %q", out.String())
 	}
 }
+
+// #852 (residual site from the merge gate): the edge-record scan globs
+// .rc-bridge/edges under the user-settable state root, which must stay
+// literal. A root with an unclosed `[` made the joined pattern invalid, the
+// ignored error enumerated no records, and SessionProfile failed to find the
+// matching edge profile for an edge session.
+func TestEdgeInferenceProfileReadsEdgesUnderABracketedRoot(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "state[6")
+	bridge := filepath.Join(root, "profiles", ".rc-bridge")
+	if err := os.MkdirAll(filepath.Join(bridge, "edges"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(bridge, "edges", "llmgate.json"),
+		[]byte(`{"pid":1,"port":47670}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("CCMORPH_STATE_DIR", root)
+	if got := edgeInferenceProfile("here", 47670); got != "llmgate" {
+		t.Fatalf("edge record under a root holding `[`: got %q, want llmgate", got)
+	}
+}

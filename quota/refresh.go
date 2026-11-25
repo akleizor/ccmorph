@@ -9,6 +9,8 @@ import (
 	"os/exec"
 	"path/filepath"
 	"time"
+
+	"github.com/akleizor/ccmorph/util/paths"
 )
 
 // refreshAuthDir runs cliproxyapi's one-shot refresh on a profile's auth dir:
@@ -60,12 +62,13 @@ func clipAuthFile(dir, kind string) (clipAuth, error) {
 // findClipAuth reads the sign-in from the auth dir. Symlinks are not followed: a
 // credential outside the 0700 auth root is not this profile's.
 func findClipAuth(dir, kind string) (clipAuth, error) {
-	paths := []string{}
-	for _, pattern := range []string{filepath.Join(dir, "*.json"), filepath.Join(dir, "*", "*.json")} {
+	qdir := paths.GlobQuote(dir)
+	files := []string{}
+	for _, pattern := range []string{filepath.Join(qdir, "*.json"), filepath.Join(qdir, "*", "*.json")} {
 		m, _ := filepath.Glob(pattern)
-		paths = append(paths, m...)
+		files = append(files, m...)
 	}
-	for _, p := range paths {
+	for _, p := range files {
 		if fi, err := os.Lstat(p); err != nil || !fi.Mode().IsRegular() {
 			continue
 		}

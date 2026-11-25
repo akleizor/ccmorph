@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io/fs"
 	"os"
 	"os/exec"
@@ -750,5 +751,40 @@ func TestADirectoryThatIsNotAProfileNameGetsNoStatusLine(t *testing.T) {
 	f.materialize(t, "")
 	if got := statusLineCommand(t, f); got != "" {
 		t.Fatalf("statusLine.command = %q", got)
+	}
+}
+
+// #852: the backup prune globs the profile's backups dir, under the
+// user-settable profile root, which must stay literal. A root with an
+// unclosed `[` made the joined pattern invalid, the ignored error listed
+// nothing, and old settings.*.json backups accumulated instead of going.
+func TestBackupPruneKeepsExactlyKeepBackupsUnderABracketedProfileDir(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "prof[ile")
+	folder := join(root, backupsDir)
+	if err := os.MkdirAll(folder, 0o777); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < keepBackups+3; i++ { // older than any new stamp, so they prune first
+		name := "settings.20200101T000000." + fmt.Sprintf("%06d", i) + ".json"
+		if err := os.WriteFile(join(folder, name), []byte("{}"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	backup(root, []byte("{}"))
+	ents, err := os.ReadDir(folder)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ents) != keepBackups {
+		t.Fatalf("the prune left %d backups under a profile dir holding `[`, want exactly %d", len(ents), keepBackups)
+	}
+	fresh := 0
+	for _, e := range ents {
+		if !strings.HasPrefix(e.Name(), "settings.2020") {
+			fresh++ // the just-written backup, stamped now, is the only non-seeded name
+		}
+	}
+	if fresh != 1 {
+		t.Fatalf("the prune left %d just-written backups, want the one it just made", fresh)
 	}
 }

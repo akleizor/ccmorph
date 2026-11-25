@@ -202,3 +202,49 @@ func TestGCReapsAStaleSessionEndRecord(t *testing.T) {
 		t.Fatalf("%s must go: its launcher died before it could read it", stale)
 	}
 }
+
+// #852: GCStale's relay and overlay sweeps glob the state and profiles roots,
+// which are user-settable (CCMORPH_STATE_DIR, XDG_CONFIG_HOME) and must stay
+// literal. A root with an unclosed `[` made both joined patterns invalid, the
+// ignored errors enumerated nothing, and the credential-carrying overlays the
+// comment says go after 12h were kept indefinitely.
+func TestGCStaleSweepsUnderABracketedRoot(t *testing.T) {
+	root := t.TempDir()
+	state := filepath.Join(root, "state[6")
+	profiles := filepath.Join(root, "profiles[6")
+	tmp := filepath.Join(root, "tmp")
+	for _, d := range []string{state, tmp, filepath.Join(profiles, "demo", "cache")} {
+		if err := os.MkdirAll(d, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	deadRelay := filepath.Join(state, ".reswitch.999999.1.2") // launcher pid long gone
+	youngRelay := filepath.Join(state, ".reswitch.999998.1.2")
+	staleOverlay := filepath.Join(profiles, "demo", "cache", "launch-settings.dead")
+	freshOverlay := filepath.Join(profiles, "demo", "cache", "launch-settings.live")
+	for _, f := range []string{deadRelay, youngRelay, staleOverlay, freshOverlay} {
+		if err := os.WriteFile(f, nil, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	past := time.Now().Add(-2 * time.Minute)
+	if err := os.Chtimes(deadRelay, past, past); err != nil {
+		t.Fatal(err)
+	}
+	longAgo := time.Now().Add(-13 * time.Hour)
+	if err := os.Chtimes(staleOverlay, longAgo, longAgo); err != nil {
+		t.Fatal(err)
+	}
+	GCStale(state, profiles, tmp)
+	if _, err := os.Stat(deadRelay); err == nil {
+		t.Error("the dead launcher's relay survived under a root holding `[`")
+	}
+	if _, err := os.Stat(staleOverlay); err == nil {
+		t.Error("the 13h-old overlay survived under a root holding `[`")
+	}
+	for _, keep := range []string{youngRelay, freshOverlay} {
+		if _, err := os.Stat(keep); err != nil {
+			t.Errorf("live state was reaped: %s", keep)
+		}
+	}
+}

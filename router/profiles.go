@@ -301,7 +301,7 @@ func edgeInferenceProfile(account string, port int) string {
 	case word != "route" && profile.ValidName(word):
 		return word
 	}
-	records, _ := filepath.Glob(filepath.Join(bridge, "edges", "*.json"))
+	records, _ := filepath.Glob(filepath.Join(paths.GlobQuote(bridge), "edges", "*.json"))
 	for _, f := range records {
 		var rec struct{ Port int }
 		if b, err := os.ReadFile(f); err == nil && json.Unmarshal(b, &rec) == nil && rec.Port == port {

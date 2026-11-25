@@ -63,7 +63,7 @@ func GCStale(state, profiles, tmp string) {
 		return !ok || r.start.IsZero() || !r.start.After(since.Add(time.Minute))
 	}
 
-	relays, _ := filepath.Glob(filepath.Join(state, ".reswitch.*"))
+	relays, _ := filepath.Glob(filepath.Join(paths.GlobQuote(state), ".reswitch.*"))
 	for _, f := range relays {
 		// The name is <launcher pid>.<launch seconds>_<microseconds>.<random>
 		// (cli/run.go): the launch's own clock, so the launcher that queued it
@@ -91,7 +91,7 @@ func GCStale(state, profiles, tmp string) {
 		_ = os.Remove(f)
 	}
 
-	overlays, _ := filepath.Glob(filepath.Join(profiles, "*", "cache", "launch-settings.*"))
+	overlays, _ := filepath.Glob(filepath.Join(paths.GlobQuote(profiles), "*", "cache", "launch-settings.*"))
 	var bridges, envs, ends, views []string
 	ents, _ := os.ReadDir(tmp)
 	bridgePrefix := "ccmorph-bridge-" + strconv.Itoa(os.Getuid()) + "-"

@@ -1029,7 +1029,7 @@ func backup(profileDir string, content []byte) {
 	if err := os.Chmod(target, 0o600); err != nil {
 		osFail(err)
 	}
-	old, _ := filepath.Glob(join(folder, "settings.*.json"))
+	old, _ := filepath.Glob(join(paths.GlobQuote(folder), "settings.*.json"))
 	sort.Strings(old)
 	if len(old) > keepBackups {
 		for _, stale := range old[:len(old)-keepBackups] {
