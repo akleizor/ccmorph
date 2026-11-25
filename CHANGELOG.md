@@ -10,6 +10,8 @@
 ### Fixed
 
 - **`ccmorph update` no longer ends with a parse error.** The installer rewrote the launcher while `update` was still running from it, so zsh read the new file at the old offsets and the update exited 1 after it had already finished. The launcher is now replaced by a rename, and the running update keeps its own file.
+- **An install or update replaces every file by a rename and keeps what was there.** A symlinked file keeps its link, an existing file keeps its exact mode, and no installed path is ever empty or half written while a launch reads it.
+- **A `router.json` with its own `kinds` no longer turns image generation on**, and a top-tier mechanical task on a profile without Qwen or DeepSeek still gets a model.
 
 ### Added
 
