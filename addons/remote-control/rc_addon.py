@@ -10,12 +10,18 @@ table nor any environment:
   RC_UPSTREAM     route endpoint (the adapter's loopback URL or the profile's base_url)
   RC_KEY_FILE     route credential file, removed once read
   RC_PARENT_PID   pid to follow; the proxy shuts down when it disappears
+  RC_PARENT_STARTED  that process's start (rc_route.proc_started): which edge a handoff is for
   RC_LOG          optional path; one line per request, method and path only
   RC_TIERS        optional JSON {alias: model}: tiers the config pinned (rc-hosts)
   RC_SOURCE       optional folder rc_flow.py and rc_route.py are reloaded from (the install's)
   RC_INFERENCE    optional path; "account", "route" or a profile name, read on every turn.
                   A profile's endpoint arrives as <dir>/switch-<profile>.json (0600), taken
-                  within a second and deleted on read. <dir>/sessions/<session id> holds one
+                  within a second and deleted on read, by the proxy of the edge it names
+                  only. What this proxy holds is <dir>/held.<parent pid>.json ({profile:
+                  handoff id}, no key): --switch lands its word only once that names its
+                  handoff, and a restarted proxy starts it empty, so rc-hosts re-hands the
+                  live profile instead of leaving the phone on the route (issue #595).
+                  <dir>/sessions/<session id> holds one
                   session's own word (--switch --session), <dir>/account-tiers.json the
                   account's {alias: model} for it
 """
@@ -27,6 +33,7 @@ import os
 import shutil
 import signal
 import sys
+import tempfile
 import threading
 import time
 from pathlib import Path
@@ -39,10 +46,13 @@ KEY = Path(_key_file).read_text().strip()
 os.unlink(_key_file)
 LOG = os.environ.get("RC_LOG")
 PARENT = int(os.environ.get("RC_PARENT_PID") or 0)
+PARENT_STARTED = os.environ.get("RC_PARENT_STARTED") or None
 TIERS = json.loads(os.environ.get("RC_TIERS") or "{}")
 INFERENCE = os.environ.get("RC_INFERENCE")
 SOURCE = os.environ.get("RC_SOURCE")
 SWITCHED: dict[str, tuple[str, str, dict]] = {}   # profile -> (upstream, key, tiers), handed over by --switch
+HELD: dict[str, str] = {}                          # profile -> the id of the handoff SWITCHED holds
+_TAKE = threading.Lock()                           # the poller and a request both take handoffs
 MODULES = ("rc_route", "rc_flow")                  # in import order: rc_flow imports rc_route
 RECHECK = 1.0                                      # seconds between looks at the source files
 
@@ -54,23 +64,85 @@ def _log(line: str) -> None:
         _LOG.write(f"{time.strftime('%H:%M:%S')} {line}\n")
 
 
+def _held_path() -> Path:
+    return Path(INFERENCE).parent / f"held.{PARENT}.json"
+
+
+def _publish_held() -> None:
+    """Say which handoffs this proxy holds (no key): held.<parent pid>.json, replaced
+    whole. --switch waits for its handoff's id here, and rc-hosts reads it to see a
+    proxy that restarted and holds nothing (issue #595)."""
+    if not (INFERENCE and PARENT):
+        return
+    path = _held_path()
+    fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=path.name + ".", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w") as fh:
+            json.dump({"edge": PARENT, "edge_started": PARENT_STARTED, "profiles": dict(HELD)}, fh)
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+
+
+def _mine(h: dict) -> bool:
+    """Whether handoff `h` is for this proxy's own edge: that pid and that start."""
+    return not PARENT or (h.get("edge", PARENT) == PARENT
+                          and h.get("edge_started", PARENT_STARTED) == PARENT_STARTED)
+
+
 def _switched(profile: str) -> tuple[str, str, dict] | None:
-    """A profile's endpoint: a new handoff file replaces the one in memory (it was brought up again)."""
+    """A profile's endpoint: a new handoff file replaces the one in memory (it was
+    brought up again). Only a handoff for this proxy's own edge is taken: another
+    edge's proxy is the one --switch waits for.
+
+    The take is a rename of the handoff to taken.<this pid>.<profile>.json, so what
+    this proxy reads, holds and removes is the one publication it took. Reading the
+    path and unlinking it later removed whatever stood there by then: a replacement
+    edge's handoff, published meanwhile, that its own proxy never got (issue #595
+    review). A gone handoff alone proves nothing; --switch waits for held.<pid>.json
+    to name it."""
     if not INFERENCE:
         return SWITCHED.get(profile)
     hand = Path(INFERENCE).parent / f"switch-{profile}.json"
-    try:
-        h = json.loads(hand.read_text())
-        hand.unlink()
-        SWITCHED[profile] = (h["upstream"], h["key"], h.get("tiers") or {})
-    except (OSError, ValueError, KeyError):
-        pass
+    taken = hand.with_name(f"taken.{os.getpid()}.{profile}.json")
+    with _TAKE:                  # one take at a time, so held.<pid>.json never loses one
+        try:
+            if not _mine(json.loads(hand.read_text())):
+                return SWITCHED.get(profile)     # another edge's: never touched, not even moved
+            os.rename(hand, taken)               # from here, only this publication is ours
+        except (OSError, ValueError, TypeError, AttributeError):
+            return SWITCHED.get(profile)
+        try:
+            h = json.loads(taken.read_text())
+            if not _mine(h):
+                # Another edge's publication replaced ours between the look and the
+                # rename: put it back unless a newer one stands there already.
+                try:
+                    os.link(taken, hand)
+                except OSError:
+                    pass
+                return SWITCHED.get(profile)
+            SWITCHED[profile] = (h["upstream"], h["key"], h.get("tiers") or {})
+            HELD[profile] = h.get("id")
+            _publish_held()
+        except (OSError, ValueError, KeyError, TypeError, AttributeError):
+            pass
+        finally:
+            try:
+                taken.unlink()                   # the key lives in memory only now
+            except OSError:
+                pass
     return SWITCHED.get(profile)
 
 
 # What rc_flow reads; the key and endpoints never leave this module's lifetime.
 S = SimpleNamespace(upstream=UPSTREAM, key=KEY, tiers=TIERS, inference=INFERENCE,
-                    switched=_switched, log=_log)
+                    switched=_switched, log=_log, logs=_LOG is not None, parent=PARENT,
+                    parent_started=PARENT_STARTED)
 
 _flow = None
 _stamp: tuple | None = None
@@ -158,6 +230,7 @@ def _watch_parent() -> None:
 
 def running() -> None:
     _load()                      # a module that does not load fails the start, not a request
+    _publish_held()              # this proxy holds nothing yet, whatever one before it held
     if PARENT:
         threading.Thread(target=_watch_parent, daemon=True).start()
     if INFERENCE:
@@ -169,6 +242,14 @@ def done() -> None:
     # state dir); remove it with the proxy. Never touch the source directory.
     if HERE.name.startswith("addon."):
         shutil.rmtree(HERE, ignore_errors=True)
+    if INFERENCE and PARENT:
+        try:
+            # What it holds goes with it -- but only its own record: a proxy whose edge
+            # pid went to a replacement edge shares the name with that edge's proxy.
+            if json.loads(_held_path().read_text()).get("edge_started") == PARENT_STARTED:
+                _held_path().unlink()
+        except (OSError, ValueError, AttributeError):
+            pass
 
 
 # Destination is decided in requestheaders, the earliest hook: if request bodies
