@@ -1193,6 +1193,96 @@ def test_a_start_removes_what_a_killed_launcher_left_and_keeps_live_ones(tmp_pat
     assert live.exists()
 
 
+def _pre_898_pair(state, name, when=None):
+    import os
+    key = state / f"route-key.{name}"
+    key.write_text("secret")
+    addon = state / f"addon.{name}"
+    addon.mkdir()
+    (addon / "rc_addon.py").write_text("")
+    if when is not None:
+        os.utime(key, (when, when))
+        os.utime(addon, (when, when))
+    return key, addon
+
+
+def test_a_start_removes_a_pre_898_launchers_files_after_a_restart(tmp_path, monkeypatch):
+    """#636: a launcher from before #898 named its route key and addon copy with no
+    pid, so the sweep skipped them for good and the key lingered. Once the machine
+    has restarted since they were written, no running proxy can own them, and they
+    go; newer ones may belong to a live proxy and stay, as do all of them when the
+    boot time cannot be read."""
+    rc = _edge_spawn_state(tmp_path, monkeypatch)
+    rc.STATE.mkdir(parents=True, exist_ok=True)
+    old_key, old_addon = _pre_898_pair(rc.STATE, "abc12xy", when=1000)
+    new_key, new_addon = _pre_898_pair(rc.STATE, "zz9new")
+    monkeypatch.setattr(rc, "boot_time", lambda: 2000.0)
+    rc.sweep_orphans(rc.STATE)
+    assert not old_key.exists() and not old_addon.exists()
+    assert new_key.read_text() == "secret" and (new_addon / "rc_addon.py").exists()
+
+    kept_key, kept_addon = _pre_898_pair(rc.STATE, "q9_ab", when=1000)
+    monkeypatch.setattr(rc, "boot_time", lambda: None)
+    rc.sweep_orphans(rc.STATE)
+    assert kept_key.read_text() == "secret" and (kept_addon / "rc_addon.py").exists()
+    assert new_key.exists() and new_addon.exists()
+
+
+def test_the_sweep_reads_no_boot_time_when_every_name_carries_a_pid(tmp_path, monkeypatch):
+    """#636: the boot time is read only for a pid-less name; a sweep of #898's
+    pid-named files removes the gone launcher's and keeps the live one's as before."""
+    import subprocess
+    rc = _edge_spawn_state(tmp_path, monkeypatch)
+    rc.STATE.mkdir(parents=True, exist_ok=True)
+
+    def no_boot_time():
+        raise AssertionError("boot_time read for pid-named files")
+    monkeypatch.setattr(rc, "boot_time", no_boot_time)
+    gone = subprocess.Popen([sys.executable, "-c", ""])
+    gone.wait()
+    dead_key = rc.STATE / f"route-key.{gone.pid}.abc"
+    dead_key.write_text("secret")
+    dead_addon = rc.STATE / f"addon.{gone.pid}.abc"
+    dead_addon.mkdir()
+    live = rc.STATE / f"{rc.owned_prefix('route-key')}abc"
+    live.write_text("in use")
+    rc.sweep_orphans(rc.STATE)
+    assert not dead_key.exists() and not dead_addon.exists()
+    assert live.exists()
+
+
+def test_boot_time_reads_proc_stat_then_sysctl(tmp_path, monkeypatch):
+    """#636: Linux's /proc/stat btime first, then macOS's kern.boottime, bounded by
+    the launcher's external timeout; None when neither answers."""
+    import subprocess
+    rc = _launcher()
+    stat_file = tmp_path / "stat"
+    stat_file.write_text("cpu 1\nbtime 1764000000\n")
+    monkeypatch.setattr(rc, "PROC_STAT", stat_file)
+    assert rc.boot_time() == 1764000000.0
+
+    monkeypatch.setattr(rc, "PROC_STAT", tmp_path / "missing")
+    seen = {}
+    answer = {"out": "{ sec = 1764000001, usec = 5 } Tue"}
+
+    def fake_run(argv, **kw):
+        seen.update(kw, argv=argv)
+        if answer["out"] is None:
+            raise subprocess.TimeoutExpired(argv, kw.get("timeout"))
+        return subprocess.CompletedProcess(argv, 0, stdout=answer["out"], stderr="")
+    monkeypatch.setattr(rc.subprocess, "run", fake_run)
+    assert rc.boot_time() == 1764000001.0
+    assert seen["argv"] == ["sysctl", "-n", "kern.boottime"]
+
+    answer["out"] = None
+    seen.clear()
+    assert rc.boot_time() is None
+    assert seen["timeout"] == rc.EXTERNAL_TIMEOUT
+
+    answer["out"] = ""
+    assert rc.boot_time() is None
+
+
 @pytest.mark.parametrize("spawn_mode", ["child", "object"], ids=["spawned-child", "handle-with-no-stop-api"])
 @pytest.mark.parametrize("sig,expected", [
     (signal.SIGTERM, str(128 + signal.SIGTERM)),

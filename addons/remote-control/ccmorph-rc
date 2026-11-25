@@ -431,20 +431,53 @@ def owned_prefix(kind: str) -> str:
     return f"{kind}.{os.getpid()}."
 
 
+# Linux's boot record; a module seam so a test can point it elsewhere.
+PROC_STAT = Path("/proc/stat")
+
+
+def boot_time() -> float | None:
+    """When this machine last started, in epoch seconds, or None when it cannot
+    be read: Linux's /proc/stat btime, else macOS's `sysctl -n kern.boottime`."""
+    with suppress(OSError, ValueError):
+        for line in PROC_STAT.read_text().splitlines():
+            if line.startswith("btime "):
+                return float(line.split()[1])
+    try:
+        out = subprocess.run(["sysctl", "-n", "kern.boottime"], capture_output=True, text=True,
+                             timeout=EXTERNAL_TIMEOUT).stdout
+    except (OSError, subprocess.SubprocessError):
+        return None
+    found = re.search(r"\bsec = (\d+)", out or "")
+    return float(found.group(1)) if found else None
+
+
 def sweep_orphans(parent: Path) -> None:
     """Remove the route keys and addon copies of launchers that are gone. Every exit
-    removes its own, but a SIGKILL or a power cut cannot, and a key must not linger."""
+    removes its own, but a SIGKILL or a power cut cannot, and a key must not linger.
+    A name with no pid (a launcher from before #898) goes only once it predates the
+    machine's last start, since no process still running can own it then."""
+    booted: float | None = -1.0
     for path in [*parent.glob("route-key.*"), *parent.glob("addon.*")]:
         pid = path.name.split(".")[1]
         if not pid.isdigit():
-            continue
-        try:
-            os.kill(int(pid), 0)
-            continue
-        except PermissionError:
-            continue
-        except ProcessLookupError:
-            pass
+            # A launcher from before #898 named its files with no pid; none can
+            # still run once the machine restarted after it wrote them (#636).
+            if booted == -1.0:
+                booted = boot_time()
+            try:
+                stale = booted is not None and path.lstat().st_mtime < booted
+            except OSError:
+                stale = False
+            if not stale:
+                continue
+        else:
+            try:
+                os.kill(int(pid), 0)
+                continue
+            except PermissionError:
+                continue
+            except ProcessLookupError:
+                pass
         if path.is_dir():
             shutil.rmtree(path, ignore_errors=True)
         else:
