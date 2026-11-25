@@ -296,33 +296,36 @@ func TestRunWithoutATerminalNamesAnUnservedAliasIssue862(t *testing.T) {
 	})
 }
 
+// fakeFzf862 puts first on PATH an fzf that writes its arguments to argsFile
+// and its input rows to sawFile, then cancels (exit 130). GH-862.
+func fakeFzf862(t *testing.T) (argsFile, sawFile string) {
+	t.Helper()
+	dir := t.TempDir()
+	argsFile, sawFile = filepath.Join(dir, "args"), filepath.Join(dir, "saw")
+	body := "#!/bin/sh\n" +
+		"[ \"$1\" = --version ] && { echo 0.50.0; exit 0; }\n" +
+		"printf '%s\\n' \"$@\" > \"$FZF_ARGS\"\n" +
+		"cat > \"$FZF_SAW\"\n" +
+		"exit 130\n"
+	if err := os.WriteFile(filepath.Join(dir, "fzf"), []byte(body), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("FZF_ARGS", argsFile)
+	t.Setenv("FZF_SAW", sawFile)
+	t.Setenv("PATH", dir+":"+os.Getenv("PATH"))
+	return argsFile, sawFile
+}
+
 // GH-862: in a terminal the launch says why the saved alias cannot start, then
 // opens the picker on the served ids — no Keep row for the alias, the heading
 // naming it — and the pick, or its cancel, changes nothing on disk.
 func TestRunInATerminalOffersThePickerForAnUnservedAliasIssue862(t *testing.T) {
-	fakeFzf := func(t *testing.T) (argsFile, sawFile string) {
-		t.Helper()
-		dir := t.TempDir()
-		argsFile, sawFile = filepath.Join(dir, "args"), filepath.Join(dir, "saw")
-		body := "#!/bin/sh\n" +
-			"[ \"$1\" = --version ] && { echo 0.50.0; exit 0; }\n" +
-			"printf '%s\\n' \"$@\" > \"$FZF_ARGS\"\n" +
-			"cat > \"$FZF_SAW\"\n" +
-			"exit 130\n"
-		if err := os.WriteFile(filepath.Join(dir, "fzf"), []byte(body), 0o755); err != nil {
-			t.Fatal(err)
-		}
-		t.Setenv("FZF_ARGS", argsFile)
-		t.Setenv("FZF_SAW", sawFile)
-		t.Setenv("PATH", dir+":"+os.Getenv("PATH"))
-		return argsFile, sawFile
-	}
 	t.Run("cancelled", func(t *testing.T) {
 		state, profiles, libexec, calls := gw862(t, "", `{"model":"opus"}`)
 		t.Setenv("TERM", "xterm-256color")
 		sharedPath := filepath.Join(os.Getenv("HOME"), ".claude", "settings.json")
 		sharedBefore := readBack(t, sharedPath)
-		argsFile, sawFile := fakeFzf(t)
+		argsFile, sawFile := fakeFzf862(t)
 		rc, out := launchAs(t, true, state, profiles, libexec, "gw862", nil)
 		if rc != 1 {
 			t.Fatalf("rc %d, want 1:\n%s", rc, out)
@@ -360,10 +363,120 @@ func TestRunInATerminalOffersThePickerForAnUnservedAliasIssue862(t *testing.T) {
 	t.Run("a served saved model opens no picker", func(t *testing.T) {
 		state, profiles, libexec, _ := gw862(t, "\nmodel=model-a\nmodel_defaults=1\n", "")
 		t.Setenv("TERM", "xterm-256color")
-		_, sawFile := fakeFzf(t)
+		_, sawFile := fakeFzf862(t)
 		launchAs(t, true, state, profiles, libexec, "gw862", nil)
 		if paths.Exists(sawFile) {
 			t.Fatal("the picker opened although the saved model is served")
+		}
+	})
+	t.Run("a mapped tier opens no picker", func(t *testing.T) {
+		state, profiles, libexec, calls := gw862(t, "\nenv.ANTHROPIC_DEFAULT_OPUS_MODEL=model-a\n", `{"model":"opus"}`)
+		t.Setenv("TERM", "xterm-256color")
+		_, sawFile := fakeFzf862(t)
+		_, out := launchAs(t, true, state, profiles, libexec, "gw862", nil)
+		if paths.Exists(sawFile) {
+			t.Fatal("the picker opened although the profile maps opus")
+		}
+		if strings.Contains(out, "is a Claude model alias") {
+			t.Fatalf("a mapped tier was refused:\n%s", out)
+		}
+		if c := calls(); !strings.Contains(c, "adapter-start") || !strings.Contains(c, "model-a") {
+			t.Fatalf("the launch did not start the adapter with the mapped id:\n%s", c)
+		}
+	})
+}
+
+// countingCurl puts first on PATH a curl that answers like gw862's and logs one
+// line per call; the func it returns counts the calls so far. GH-862.
+func countingCurl(t *testing.T) func() int {
+	t.Helper()
+	bin := t.TempDir()
+	log := filepath.Join(bin, "curl.log")
+	body := "#!/bin/sh\necho call >> '" + log + "'\n" +
+		"for a do case $a in -K) cat >/dev/null ;; esac; done\n" +
+		"printf '%s' \"$LISTING\"\n" +
+		"for a do case $a in -w) printf '\\n__CCMORPH_STATUS__200' ;; esac; done\n" +
+		"printf '\\n'\n"
+	if err := os.WriteFile(filepath.Join(bin, "curl"), []byte(body), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+":"+os.Getenv("PATH"))
+	return func() int {
+		b, _ := os.ReadFile(log)
+		return strings.Count(string(b), "call\n")
+	}
+}
+
+// GH-862: the served ids come from the listing the launch already holds. A body
+// that is not a listing, or an empty one, names no ids, and the refusal never
+// sends a request of its own.
+func TestTheAliasRefusalSendsNoRequestOfItsOwnIssue862(t *testing.T) {
+	state, profiles, libexec, _ := gw862(t, "", `{"model":"opus"}`)
+	count := countingCurl(t)
+	_, out := launchAs(t, false, state, profiles, libexec, "gw862", nil)
+	if !strings.Contains(out, "(it serves model-a, model-b)") {
+		t.Fatalf("a good listing names no served ids:\n%s", out)
+	}
+	good := count()
+	for _, listing := range []string{`{"error":"x"}`, `{"data":[]}`, "garbage"} {
+		t.Run(listing, func(t *testing.T) {
+			state, profiles, libexec, calls := gw862(t, "", `{"model":"opus"}`)
+			t.Setenv("LISTING", listing)
+			count := countingCurl(t)
+			rc, out := launchAs(t, false, state, profiles, libexec, "gw862", nil)
+			want := "ccmorph: " + util.UnservedTier("gw862", "opus", "from ~/.claude/settings.json", nil)
+			if rc != 1 || !strings.Contains(out, want) {
+				t.Fatalf("rc %d, want 1 with %q:\n%s", rc, want, out)
+			}
+			if strings.Contains(out, "(it serves") {
+				t.Fatalf("ids were named from a listing that gives none:\n%s", out)
+			}
+			if got := count(); got != good {
+				t.Fatalf("the refusal sent its own request: %d curl calls, %d with a good listing", got, good)
+			}
+			if strings.Contains(calls(), "adapter-start") {
+				t.Fatalf("the adapter started after the refusal:\n%s", calls())
+			}
+		})
+	}
+}
+
+// GH-862: one model left after excluded_models is no refusal, with or without a
+// terminal; an empty listing with exclusions is refused in both, in one sentence.
+func TestRunWithExclusionsThatLeaveAModelOrMeetAnEmptyListingIssue862(t *testing.T) {
+	t.Run("one model left", func(t *testing.T) {
+		state, profiles, libexec, calls := gw862(t, "\nexcluded_models=model-a\n", "")
+		_, out := launchAs(t, false, state, profiles, libexec, "gw862", nil)
+		if strings.Contains(out, "no cached or served picker models remain") {
+			t.Fatalf("no terminal: one model left was refused:\n%s", out)
+		}
+		if !strings.Contains(calls(), "adapter-start") {
+			t.Fatalf("no terminal: the launch stopped before the adapter:\n%s\n%s", out, calls())
+		}
+		t.Setenv("TERM", "xterm-256color")
+		_, sawFile := fakeFzf862(t)
+		_, out = launchAs(t, true, state, profiles, libexec, "gw862", nil)
+		if strings.Contains(out, "no cached or served picker models remain") {
+			t.Fatalf("terminal: one model left was refused:\n%s", out)
+		}
+		if !paths.Exists(sawFile) {
+			t.Fatalf("terminal: the picker did not open on the model left:\n%s", out)
+		}
+	})
+	t.Run("an empty listing", func(t *testing.T) {
+		state, profiles, libexec, calls := gw862(t, "\nexcluded_models=model-a,model-b\n", "")
+		t.Setenv("LISTING", `{"data":[]}`)
+		for _, terminal := range []bool{false, true} {
+			if terminal {
+				t.Setenv("TERM", "xterm-256color")
+			}
+			rc, out := launchAs(t, terminal, state, profiles, libexec, "gw862", nil)
+			if rc != 1 || !strings.Contains(out, "ccmorph: "+exclusionsRefusal(state)) {
+				t.Fatalf("terminal=%v: rc %d, want 1 with the exclusions refusal:\n%s", terminal, rc, out)
+			}
+		}
+		if strings.Contains(calls(), "adapter-start") {
+			t.Fatalf("the adapter started after a refusal:\n%s", calls())
 		}
 	})
 }
