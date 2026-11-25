@@ -320,4 +320,18 @@ func TestConfigKindsOverrideOnlyTheKindsTheyName(t *testing.T) {
 	if !slices.Equal(c.Kinds["writing"], []string{"gpt"}) || !slices.Equal(c.Kinds["mechanical"], defaultKinds["mechanical"]) {
 		t.Fatalf("kinds %v", c.Kinds)
 	}
+	// A kinds map that leaves image_gen out kept image generation off before
+	// the merge, and still does: no config edit starts billing images.
+	if _, on := c.Kinds["image_gen"]; on {
+		t.Fatalf("image_gen turned on by the merge: %v", c.Kinds)
+	}
+}
+
+func TestMechanicalTopKeepsAProfileWithoutItsFamilies(t *testing.T) {
+	labels := func(_, m string) (Label, bool) { return HeuristicLabel(m), true }
+	ps := []Profile{{Name: "paid", Class: "api", Models: []string{"claude-opus-5"}, Enabled: true}}
+	opts, dropped, err := Options(Task{Kind: "mechanical", Tier: "top"}, ps, labels, defaultKinds, 0, Pin{})
+	if err != nil || len(opts) != 1 {
+		t.Fatalf("options %v, dropped %v, err %v: a top pick must not need a qwen or deepseek model", opts, dropped, err)
+	}
 }

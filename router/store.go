@@ -71,8 +71,15 @@ func LoadConfig() (Config, error) {
 			return c, err
 		}
 	}
-	// A kind router.json names replaces that kind's default; a kind it omits keeps it.
+	// A kind router.json names replaces that kind's default; a kind it omits
+	// keeps it, except image_gen: its families are the only ones allowed to
+	// generate (and bill) images, so a config that names kinds without it
+	// keeps image generation off as before.
+	_, named := c.Kinds["image_gen"]
 	kinds := maps.Clone(defaultKinds)
+	if c.Kinds != nil && !named {
+		delete(kinds, "image_gen")
+	}
 	maps.Copy(kinds, c.Kinds)
 	c.Kinds = kinds
 	if c.TierCap == nil {

@@ -188,7 +188,9 @@ func Options(t Task, profiles []Profile, labels func(profile, model string) (Lab
 				reason = "cannot generate images"
 			case t.Kind == "vision" && !visionCapable(m, l):
 				reason = "cannot read images"
-			case t.Tier == "top" && len(order) > 0 && !slices.Contains(order[:min(2, len(order))], l.Family):
+			// Mechanical work wants the cheapest families, which many profiles
+			// do not serve at all: its order ranks a top pick, never empties it.
+			case t.Tier == "top" && t.Kind != "mechanical" && len(order) > 0 && !slices.Contains(order[:min(2, len(order))], l.Family):
 				reason = "outside the kind's top two families"
 			case poolSpent(p, m, now):
 				reason = "its quota pool is used up"
