@@ -21,7 +21,8 @@ from support import CLAUDE_MISSING, FAKE_SERVER_NO_DNS, HANG_TIMEOUT, needs_loop
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def run_doctor(tmp_path, conf, curl=None, args=(), claude=None, home=True, env_extra=None, profile="demo"):
+def run_doctor(tmp_path, conf, curl=None, args=(), claude=None, home=True, env_extra=None, profile="demo",
+               setup=None):
     state = tmp_path / "state"
     home_dir = tmp_path / "home"
     bindir = tmp_path / "bin"
@@ -69,6 +70,8 @@ def run_doctor(tmp_path, conf, curl=None, args=(), claude=None, home=True, env_e
                 "DOCTOR_MARKER": str(bindir / "doctor.marker")})
     if env_extra:
         env.update(env_extra)
+    if setup:
+        setup(state)   # the person's own files the report reads (GH-881: rc-hosts, an edge record)
     result = subprocess.run([str(ROOT / "bin/ccmorph"), "doctor", *args, profile], env=env,
                             capture_output=True, text=True, timeout=HANG_TIMEOUT)
     return result, state / f"{profile}.conf", bindir
@@ -1172,6 +1175,85 @@ def test_doctor_fails_a_mask_value_the_shim_refuses_issue_411(tmp_path):
     assert result.returncode == 1, result.stdout
     assert "FAIL masking: env.CCMORPH_MASK=yes is refused" in result.stdout, result.stdout
     assert result.stdout.splitlines()[-1].startswith("FAIL not ready"), result.stdout
+
+
+# GH-881: the Remote Control hosts kept a second, hand-kept copy of the route
+# profile's tier map; when it drifted, phone sessions started on the old map —
+# the gateway 400 Alex met on his phone — and nothing upstream of the phone
+# said so. The doctor row is that machine signal: what the hosted edge
+# published it pins (served) against what this profile itself maps (requested).
+RC_GATEWAY_CONF = ("type=apikey\nbase_url=https://example.test\napi_key=k\n"
+                   "env.ANTHROPIC_DEFAULT_HAIKU_MODEL=deepseek-v4.1-flash\n"
+                   "env.ANTHROPIC_DEFAULT_FABLE_MODEL=gpt-6-astra\n")
+
+
+def rc_state(hosts="route=demo\npermission=bypassPermissions\n", tiers=None, route="demo"):
+    """A setup callback for run_doctor: an rc-hosts config hosting demo, and
+    the edge record its launcher published pinning `tiers` (None: none yet)."""
+    def setup(state):
+        if hosts is not None:
+            (state / "rc-hosts").write_text(hosts)
+        if tiers is not None:
+            edges = state / "profiles" / ".rc-bridge" / "edges"
+            edges.mkdir(parents=True, exist_ok=True)
+            (edges / "demo.json").write_text(
+                json.dumps({"pid": 4242, "port": 8443, "route": route, "tiers": tiers}))
+    return setup
+
+
+@pytest.mark.parametrize("tiers, named", [
+    ({"fable": "gpt-6-astra", "haiku": "claude-haiku-5-5"},
+     "WARN remote control: the hosted edge pins haiku=claude-haiku-5-5; "
+     "this profile maps haiku=deepseek-v4.1-flash"),
+    ({"fable": "gpt-6-astra"},
+     "WARN remote control: the hosted edge pins no haiku model; "
+     "this profile maps haiku=deepseek-v4.1-flash"),
+    ({"fable": "gpt-6-astra", "haiku": "deepseek-v4.1-flash", "sonnet": "gemini-3.5-pro"},
+     "WARN remote control: the hosted edge pins sonnet=gemini-3.5-pro; "
+     "this profile maps no sonnet model"),
+])
+def test_doctor_names_the_tiers_a_hosted_edge_pins_wrong_gh_881(tmp_path, tiers, named):
+    """A hosted edge whose pins drift from the profile is named alias by alias,
+    with the one repair that repins; the profile itself still starts, so the
+    row warns without weighing on the verdict (the masking rule of GH-293)."""
+    result, _, _ = run_doctor(tmp_path, RC_GATEWAY_CONF, OK_CURL, setup=rc_state(tiers=tiers))
+    assert result.returncode == 0, result.stdout
+    assert named in result.stdout, result.stdout
+    assert "launchctl kickstart -k gui/$(id -u)/com.ccmorph.rc-hosts" in result.stdout, result.stdout
+    assert result.stdout.splitlines()[-1] == "OK ready: start it with ccmorph run demo"
+
+
+@pytest.mark.parametrize("case", [
+    "not-hosted",           # nothing hosts this profile: the row stays out of the report
+    "no-config",            # the add-on is not configured at all
+    "twin-record",          # #846: a record naming another route is not this edge
+    "matching-pins",        # lines override, [1m] spells one model: nothing to say
+])
+def test_doctor_reports_a_hosted_edge_only_when_its_pins_are_the_question_gh_881(tmp_path, case):
+    conf = RC_GATEWAY_CONF + "env.ANTHROPIC_DEFAULT_OPUS_MODEL=claude-opus-5-5\n"
+    hosts = "route=demo\n"
+    tiers = {"fable": "gpt-6-astra", "haiku": "deepseek-v4.1-flash[1m]"}
+    setup = rc_state(hosts=hosts, tiers=tiers)
+    if case == "not-hosted":
+        setup = rc_state(hosts="route=other\n", tiers=tiers)
+    elif case == "no-config":
+        setup = rc_state(hosts=None, tiers=None)
+    elif case == "twin-record":
+        setup = rc_state(hosts=hosts, tiers=tiers, route="other")
+    elif case == "matching-pins":
+        hosts = "route=demo\ntier.opus=gpt-6-astra\n"
+        tiers = {"fable": "gpt-6-astra", "haiku": "deepseek-v4.1-flash", "opus": "gpt-6-astra"}
+        setup = rc_state(hosts=hosts, tiers=tiers)
+    result, _, _ = run_doctor(tmp_path, conf, OK_CURL, setup=setup)
+    assert result.returncode == 0, result.stdout
+    rows = [line for line in result.stdout.splitlines() if "remote control:" in line]
+    if case == "matching-pins":
+        assert rows == ["OK remote control: hosted; the edge pins the tiers this profile maps"], rows
+    elif case == "twin-record":
+        assert rows == ["INFO remote control: hosted; no edge record to compare "
+                        "(a running edge publishes one)"], rows
+    else:
+        assert rows == [], result.stdout
 
 
 @pytest.mark.parametrize("case", ["gateway-ok", "missing-credential", "malformed-listing"])
