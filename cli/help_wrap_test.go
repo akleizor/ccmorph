@@ -58,8 +58,8 @@ func TestEveryHelpPageFitsEightyColumnsWithoutCuttingAWord(t *testing.T) {
 			if topic == "router" && i == len(lines)-1 {
 				continue
 			}
-			if cells(line) > 80 {
-				t.Errorf("help %q at 80 columns: line of %d cells: %q", topic, cells(line), line)
+			if ctxwindow.Cells(line) > 80 {
+				t.Errorf("help %q at 80 columns: line of %d cells: %q", topic, ctxwindow.Cells(line), line)
 			}
 		}
 		if got, want := strings.Join(strings.Fields(wide), " "), strings.Join(strings.Fields(piped), " "); got != want {
@@ -311,6 +311,23 @@ func TestHelpAllCarriesTheRouterSynopsis(t *testing.T) {
 	}
 }
 
+// GH-636: help all listed get and set with required-looking angle brackets,
+// contradicting their own pages and the picker: every argument may be omitted.
+// Both rows carry usageLine's spelling, so the two pages cannot drift.
+func TestHelpAllSpellsGetAndSetAsOptional(t *testing.T) {
+	t.Setenv("PATH", t.TempDir())
+	page := helpPage(t, "all", 0)
+	for _, topic := range []string{"get", "set"} {
+		want := usageLine(topic)
+		if !strings.Contains(page, "\n  "+want+"\n") {
+			t.Errorf("help all does not carry %q:\n%s", want, page)
+		}
+		if own := helpPage(t, topic, 0); !strings.Contains(own, "Usage: "+want+"\n") {
+			t.Errorf("help %s does not carry %q:\n%s", topic, want, own)
+		}
+	}
+}
+
 // GH-364: a description longer than the width left after its label column
 // wraps under that column, the way the doctor row's description already sits
 // under the column its long usage line opens.
@@ -330,5 +347,69 @@ func TestHelpAllWrapsALongDescriptionUnderItsOwnColumn(t *testing.T) {
 	col := strings.Index(lines[row], "Delete")
 	if want := strings.Repeat(" ", col) + "state"; lines[row+1] != want {
 		t.Errorf("rm row continues with %q, want %q", lines[row+1], want)
+	}
+}
+
+func TestHelpRouterDefinesItsWords(t *testing.T) {
+	t.Setenv("PATH", t.TempDir())
+	page := helpPage(t, "router", 80)
+	for _, want := range []string{"class is", "slack (pace)", "kind is", "tier is"} {
+		if !strings.Contains(page, want) {
+			t.Errorf("help router does not define %q:\n%s", want, page)
+		}
+	}
+}
+
+// #636: the picker note promised arrow keys everywhere, but the numbered menu
+// without fzf ignores them; the note names fzf as what the arrows need.
+func TestPickerNoteTiesTheArrowKeysToFzf(t *testing.T) {
+	page := helpPage(t, "run", 80)
+	if !strings.Contains(page, "With fzf installed, the arrow keys move") ||
+		!strings.Contains(page, "without fzf, type the number or part of the name") {
+		t.Fatalf("the picker note does not say which keys need fzf:\n%s", page)
+	}
+	if strings.Contains(page, "Pickers: move with the arrow keys") {
+		t.Fatalf("the note still promises arrows without fzf:\n%s", page)
+	}
+}
+
+// #636: help uninstall said `in ~/.config/ccmorph;` with no trailing slash,
+// which the rewrite missed, so a CCMORPH_STATE_DIR user read the default root.
+func TestHelpUninstallNamesTheRedirectedRoot(t *testing.T) {
+	l := &launcher{dir: filepath.Join(t.TempDir(), "st")}
+	page := helpPageFrom(t, l, "uninstall", 0)
+	if !strings.Contains(page, l.dir) || strings.Contains(page, "~/.config/ccmorph") {
+		t.Fatalf("help uninstall does not name the redirected root %s:\n%s", l.dir, page)
+	}
+	if page := helpPageFrom(t, l, "config", 0); strings.Contains(page, "~/.config/ccmorph") {
+		t.Fatalf("help config still names the default root:\n%s", page)
+	}
+}
+
+// #636: the price page spelled its own repair sentence, which had already
+// drifted from priceCacheHint; it prints the hint itself now.
+func TestHelpPriceCarriesTheCacheHint(t *testing.T) {
+	if page := helpPage(t, "price", 0); !strings.Contains(page, priceCacheHint) {
+		t.Fatalf("help price lacks priceCacheHint:\n%s", page)
+	}
+}
+
+// #636: router was listed only under help all, while the README leads with it.
+func TestTheShortHelpNamesTheRouterOnce(t *testing.T) {
+	for _, topic := range []string{"", "all"} {
+		if n := strings.Count(helpPage(t, topic, 0), router.Usage); n != 1 {
+			t.Errorf("help %q lists the router %d times, want 1", topic, n)
+		}
+	}
+}
+
+// #636: help all marked models, login and cred's profile required while their
+// own pages show [profile] and choose one when it is omitted.
+func TestHelpAllSpellsAnOptionalProfileAsItsPageDoes(t *testing.T) {
+	page := helpPage(t, "all", 0)
+	for _, verb := range []string{"models", "login", "cred"} {
+		if !strings.Contains(page, "ccmorph "+verb+" [profile]") || strings.Contains(page, "ccmorph "+verb+" <profile>") {
+			t.Errorf("help all does not spell %s's profile as optional:\n%s", verb, page)
+		}
 	}
 }

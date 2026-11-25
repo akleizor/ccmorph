@@ -118,7 +118,7 @@ type Catalogue struct {
 func newCatalogue(upstream, modelsURL string, client *http.Client) *Catalogue {
 	upstream = strings.TrimRight(upstream, "/")
 	if modelsURL == "" {
-		modelsURL = upstream + "/v1/models"
+		modelsURL = ctxwindow.APIURL(upstream, "/v1/models")
 	}
 	return &Catalogue{upstream: upstream, modelsURL: modelsURL, client: client, ids: map[string]bool{}, endpoints: map[string][]string{}}
 }

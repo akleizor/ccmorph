@@ -495,7 +495,7 @@ type requestTargets struct {
 }
 
 func (t *requestTargets) addString(sp Span, fetched bool) {
-	if s, ok := str(t.b, sp); ok && s != "" {
+	if s, ok := SpanStr(t.b, sp); ok && s != "" {
 		t.out = append(t.out, target{sp, s, fetched})
 	}
 }
@@ -544,30 +544,30 @@ func (t *requestTargets) content(sp Span, fetched bool, depth int) {
 func (t *requestTargets) block(sp Span, fetched bool, depth int) {
 	ms, _ := Object(t.b, sp.Start)
 	typ := ""
-	if v, ok := lastMember(ms, "type"); ok {
-		typ, _ = str(t.b, v)
+	if v, ok := LastMember(ms, "type"); ok {
+		typ, _ = SpanStr(t.b, v)
 	}
 	switch typ {
 	case "text":
-		if v, ok := lastMember(ms, "text"); ok {
+		if v, ok := LastMember(ms, "text"); ok {
 			t.addString(v, fetched)
 		}
 	case "tool_use", "server_tool_use":
-		if v, ok := lastMember(ms, "input"); ok {
+		if v, ok := LastMember(ms, "input"); ok {
 			t.leaves(v, depth+1)
 		}
 	case "tool_result":
-		v, ok := lastMember(ms, "content")
+		v, ok := LastMember(ms, "content")
 		if !ok {
 			return
 		}
 		id := ""
-		if idv, ok := lastMember(ms, "tool_use_id"); ok {
-			id, _ = str(t.b, idv)
+		if idv, ok := LastMember(ms, "tool_use_id"); ok {
+			id, _ = SpanStr(t.b, idv)
 		}
 		// a failed fetch prints an error, not a password
 		failed := false
-		if e, ok := lastMember(ms, "is_error"); ok {
+		if e, ok := LastMember(ms, "is_error"); ok {
 			failed = string(t.b[e.Start:e.End]) == "true"
 		}
 		t.content(v, t.fetches[id] && !failed, depth+1)
@@ -577,21 +577,21 @@ func (t *requestTargets) block(sp Span, fetched bool, depth int) {
 // commandOf is a tool_use block's input.command, if it has one.
 func commandOf(b []byte, sp Span) (id, command string) {
 	ms, _ := Object(b, sp.Start)
-	if v, ok := lastMember(ms, "type"); !ok {
+	if v, ok := LastMember(ms, "type"); !ok {
 		return "", ""
-	} else if typ, _ := str(b, v); typ != "tool_use" {
+	} else if typ, _ := SpanStr(b, v); typ != "tool_use" {
 		return "", ""
 	}
-	if v, ok := lastMember(ms, "id"); ok {
-		id, _ = str(b, v)
+	if v, ok := LastMember(ms, "id"); ok {
+		id, _ = SpanStr(b, v)
 	}
-	in, ok := lastMember(ms, "input")
+	in, ok := LastMember(ms, "input")
 	if !ok || b[in.Start] != '{' {
 		return id, ""
 	}
 	ims, _ := Object(b, in.Start)
-	if v, ok := lastMember(ims, "command"); ok {
-		command, _ = str(b, v)
+	if v, ok := LastMember(ims, "command"); ok {
+		command, _ = SpanStr(b, v)
 	}
 	return id, command
 }
@@ -620,7 +620,7 @@ func (m *masker) maskRequest(d *doc) (out []byte, masked map[string]int, ok bool
 			continue
 		}
 		tms, _ := Object(body, turn.Start)
-		if c, ok := lastMember(tms, "content"); ok && body[c.Start] == '[' {
+		if c, ok := LastMember(tms, "content"); ok && body[c.Start] == '[' {
 			blocks, _ := Array(body, c.Start)
 			for _, bl := range blocks {
 				if body[bl.Start] != '{' {
@@ -638,7 +638,7 @@ func (m *masker) maskRequest(d *doc) (out []byte, masked map[string]int, ok bool
 	for _, turn := range turns {
 		if body[turn.Start] == '{' {
 			tms, _ := Object(body, turn.Start)
-			if c, ok := lastMember(tms, "content"); ok {
+			if c, ok := LastMember(tms, "content"); ok {
 				t.content(c, false, 2)
 			}
 		}
@@ -715,7 +715,7 @@ func (m *masker) restoreBody(b []byte, spaced bool) []byte {
 		switch b[i] {
 		case '"':
 			end := scanString(b, i)
-			if s, _ := str(b, Span{i, end}); strings.Contains(s, "{{") {
+			if s, _ := SpanStr(b, Span{i, end}); strings.Contains(s, "{{") {
 				if ns := m.restore(s, false); ns != s {
 					edits = append(edits, Edit{Start: i, End: end, IsText: true, Text: []byte(ns)})
 				}
@@ -723,8 +723,8 @@ func (m *masker) restoreBody(b []byte, spaced bool) []byte {
 		case '{':
 			ms, _ := Object(b, i)
 			typ := ""
-			if v, ok := lastMember(ms, "type"); ok {
-				typ, _ = str(b, v)
+			if v, ok := LastMember(ms, "type"); ok {
+				typ, _ = SpanStr(b, v)
 			}
 			// Outside tool input a thinking block keeps its placeholders, so
 			// a replayed block still matches its signature. Inside tool input
@@ -886,8 +886,8 @@ func deltaOf(ev [][]byte) (line int, d *doc, index int, field, text string, ok b
 		}
 		dms, _ := Object(d.b, ds.Start)
 		for _, f := range []string{"text", "partial_json"} {
-			if v, has := lastMember(dms, f); has {
-				if s, isStr := str(d.b, v); isStr {
+			if v, has := LastMember(dms, f); has {
+				if s, isStr := SpanStr(d.b, v); isStr {
 					return i, d, index, f, s, true
 				}
 			}
@@ -962,8 +962,8 @@ func (u *unmaskStream) emit(ev [][]byte, text, field string, quoted bool, at int
 	}
 	ds, _ := d.last("delta")
 	dms, _ := Object(d.b, ds.Start)
-	sp, _ := lastMember(dms, field)
-	orig, _ := str(d.b, sp)
+	sp, _ := LastMember(dms, field)
+	orig, _ := SpanStr(d.b, sp)
 	text = u.m.restore(text, quoted)
 	if text == orig {
 		u.out = append(u.out, ev...)

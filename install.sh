@@ -350,7 +350,8 @@ if [[ "${1:-}" == "--uninstall" ]]; then
   # The profile count is a fact only when the root could be read. A link whose
   # target could not be asked has an unknown count: printing 0 as fact is how the
   # profiles were detached and named nowhere before (#219).
-  _un_root_label="${#_un_profiles} profiles, their credentials and session history"
+  _un_noun=profiles; (( ${#_un_profiles} == 1 )) && _un_noun=profile   # 1 profile, not 1 profiles (#636)
+  _un_root_label="${#_un_profiles} $_un_noun, their credentials and session history"
   (( ${_un_unread[(Ie)$_un_named]:-0} )) && _un_root_label="not read, so its profiles, credentials and session history are not counted"
   print -r -- "Kept, because they are yours:"
   print -r -- "  $_un_named  ($_un_root_label)"
@@ -374,10 +375,12 @@ if [[ "${1:-}" == "--uninstall" ]]; then
 fi
 
 
-c_ok() { print -r -- "${_ccm_accent:-}$*${_ccm_reset:-}"; }
-c_y()  { print -r -- "${_ccm_yellow:-}$*${_ccm_reset:-}"; }
-c_r()  { print -r -- "${_ccm_red:-}$*${_ccm_reset:-}"; }
-c_dim(){ print -r -- "${_ccm_gray:-}$*${_ccm_reset:-}"; }
+# Plain lines: the colour variables these once read were never set by any
+# path, so every one expanded empty (#636).
+c_ok() { print -r -- "$*"; }
+c_y()  { print -r -- "$*"; }
+c_r()  { print -r -- "$*"; }
+c_dim(){ print -r -- "$*"; }
 
 # ---- prior state, read BEFORE anything is written -------------------------
 # An update must be able to SAY it is an update. Every fact below describes the
@@ -400,14 +403,6 @@ PRIOR_PROFILES=("$CONFIG_DIR"/*.conf(N))
 IS_UPDATE=0
 [[ -n "$PRIOR_VERSION" || ${#PRIOR_PROFILES} -gt 0 ]] && IS_UPDATE=1
 
-if (( IS_UPDATE )); then
-  if [[ -n "$PRIOR_VERSION" && "$PRIOR_VERSION" != "$NEW_VERSION" ]]; then
-    c_dim "Updating ccmorph ${PRIOR_VERSION} -> ${NEW_VERSION}"
-  else
-    c_dim "Re-running ccmorph ${NEW_VERSION} installer (update in place)"
-  fi
-fi
-
 # ---- dependency checks ----------------------------------------------------
 missing=()
 command -v zsh     >/dev/null 2>&1 || missing+=("zsh")
@@ -427,6 +422,16 @@ if (( ${#missing} )); then
   (( ${missing[(I)claude*]} )) && print "Claude Code is not installed or not on the PATH — install it: https://docs.anthropic.com/en/docs/claude-code/setup"
   print "Install those first, then re-run."
   exit 1
+fi
+
+# The update banner follows the dependency check: an update that stops on a
+# missing tool must not first announce a version change it never made (#636).
+if (( IS_UPDATE )); then
+  if [[ -n "$PRIOR_VERSION" && "$PRIOR_VERSION" != "$NEW_VERSION" ]]; then
+    c_dim "Updating ccmorph ${PRIOR_VERSION} -> ${NEW_VERSION}"
+  else
+    c_dim "Re-running ccmorph ${NEW_VERSION} installer (update in place)"
+  fi
 fi
 
 # Optional dependencies are OFFERED, never installed silently. Both are real

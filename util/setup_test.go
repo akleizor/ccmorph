@@ -710,3 +710,36 @@ func TestSetupKeepsHistoryWhoseStoreLinksAtIt(t *testing.T) {
 		t.Error("a profile sharing its prompt history must pass the fast path")
 	}
 }
+
+// TestSetupSerializePassesThroughItsLockNamedThroughALink pins #636: a conf
+// reached through a link is the same lock file, and taking it again would wait
+// on ourselves. The string compare here drifted from ctxwindow's SameFile rule.
+func TestSetupSerializePassesThroughItsLockNamedThroughALink(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, ".locks"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(root, "profiles"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	lock := filepath.Join(root, ".locks", "work.lock")
+	f, err := os.OpenFile(lock, os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX); err != nil {
+		t.Fatal(err)
+	}
+	defer syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
+	link := filepath.Join(t.TempDir(), "state")
+	if err := os.Symlink(root, link); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("CCMORPH_PROFILE_LOCK_HELD", filepath.Join(link, "work.conf"))
+	release, ok := setupSerialize(filepath.Join(link, "profiles"), "work")
+	if !ok {
+		t.Fatal("a conf reached through a link did not count as held: the setup would block on its own lock")
+	}
+	release()
+}

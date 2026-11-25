@@ -17,8 +17,9 @@ import (
 // undisguised. ok is false on a non-2xx answer or nothing. The ambient HTTPS_PROXY
 // is honoured: it is how a bridge reaches a private endpoint.
 func LaunchListing(base, key string, maxSeconds int) (body string, ok bool) {
-	return fetchModels(key, io.Discard, "-sS", "-f", "--connect-timeout", "2", "--max-time", strconv.Itoa(maxSeconds),
-		ctxwindow.APIURL(base, "/v1/models?limit=1000"), "-H", "anthropic-version: 2023-06-01")
+	args := append([]string{"-sS", "-f"}, curlBounds(maxSeconds)...)
+	return fetchModels(key, io.Discard, append(args,
+		ctxwindow.APIURL(base, "/v1/models?limit=1000"), "-H", "anthropic-version: "+ctxwindow.AnthropicVersion)...)
 }
 
 // listingArgs is the one curl line every listing fetch asks with: silent, failing
@@ -121,6 +122,18 @@ func fetchModels(key string, errw io.Writer, curlArgs ...string) (string, bool) 
 	return undisguise(body), true
 }
 
+// curlBounds is the one pair of probe bounds: 2 s to connect, maxSeconds whole.
+// A bound spelled at each call site drifted; every probe asks here (#636).
+func curlBounds(maxSeconds int) []string {
+	return curlTimeouts("2", strconv.Itoa(maxSeconds))
+}
+
+// curlTimeouts is curl's two bound flags, spelled once: the probe bounds above
+// and the reach check's own (#260) both build on it (#636).
+func curlTimeouts(connect, max string) []string {
+	return []string{"--connect-timeout", connect, "--max-time", max}
+}
+
 // ProbeListing is the never-failing probe behind doctor's route checks and the
 // launch's native key check (#255): the body and the HTTP status, 000 when
 // nothing answered. Each header is sent as a curl -H argument, so a native
@@ -138,7 +151,8 @@ func ProbeListingWhy(base, key string, headers ...string) (body, code, why strin
 }
 
 func probeListing(base, key string, name bool, headers []string) (body, code, why string) {
-	args := []string{"-sS", "--connect-timeout", "2", "--max-time", "5", "-w", `\n` + statusMarker + `%{http_code}`}
+	args := append([]string{"-sS"}, curlBounds(5)...)
+	args = append(args, "-w", `\n`+statusMarker+`%{http_code}`)
 	for _, h := range headers {
 		args = append(args, "-H", h)
 	}
@@ -313,7 +327,7 @@ func modelsListingFetch(base, key string) (string, bool) {
 // reader to judge; the probe's own marker shape is not used here: it asks for a
 // status, and a status-only answer is not a listing.
 func boundedListingFetch(base, key string) (string, bool) {
-	return fetchModels(key, io.Discard, listingArgs(base, "--connect-timeout", "2", "--max-time", "5")...)
+	return fetchModels(key, io.Discard, listingArgs(base, curlBounds(5)...)...)
 }
 
 // servedProbe is the shared prologue of the two served judgements: the

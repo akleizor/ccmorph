@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/akleizor/ccmorph/ctxwindow"
 	"github.com/akleizor/ccmorph/profile"
 )
 
@@ -24,6 +25,12 @@ func (l *launcher) locked(key string, args []string) (int, bool) {
 	cmd.Env = append(append(os.Environ(), l.handoff()...), "CCMORPH_STATE_DIR="+l.dir, "CCMORPH_CONTEXT_LOCKED="+key)
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
 	return runRC(cmd), true
+}
+
+// rmConfirmHint is rm's answer when stdin closed with no answer and no terminal
+// showed the question: both ways through (#724, #636).
+func rmConfirmHint(name string) string {
+	return "no answer to confirm; nothing removed — confirm in a terminal, or pipe the answer: printf 'y' | ccmorph rm " + name
 }
 
 // rm is `ccmorph rm <profile>`: conf, private state, keychain item and lock.
@@ -44,22 +51,40 @@ func (l *launcher) rm(args []string) int {
 		l.noProfile(name)
 		return 1
 	}
+	pdir, auth := filepath.Join(l.profileDirs, name), filepath.Join(l.dir, "auth", name)
+	// A name with nothing to remove is refused before the lock: taking it made
+	// .locks/<name>.lock for every typo (#636).
+	if !l.exists(name) && !paths.Lexists(pdir) && !paths.Lexists(auth) {
+		l.noProfile(name)
+		return 1
+	}
 	if rc, done := l.locked(name, append([]string{"rm"}, args...)); done {
 		return rc
 	}
-	pdir, auth := filepath.Join(l.profileDirs, name), filepath.Join(l.dir, "auth", name)
 	if !l.exists(name) {
-		if !paths.Lexists(pdir) && !paths.Lexists(auth) {
-			l.noProfile(name)
-			return 1
+		// Name only the leftovers that are actually there: the prompt once
+		// listed auth/<name> even when auth/ was absent (#636).
+		var left []string
+		for _, p := range []string{pdir, auth} {
+			if paths.Lexists(p) {
+				left = append(left, p)
+			}
 		}
-		fmt.Fprintf(os.Stderr, "Profile '%s' has no .conf. Remove leftover private state?\n  %s\n  %s\nShared conversation history will be kept.\n", name, pdir, auth)
+		fmt.Fprintf(os.Stderr, "Profile '%s' has no .conf. Remove leftover private state?\n", name)
+		for _, p := range left {
+			fmt.Fprintf(os.Stderr, "  %s\n", p)
+		}
+		fmt.Fprint(os.Stderr, "Shared conversation history will be kept.\n")
 		if rc := uiConfirm("Remove these leftovers?"); rc != 0 {
 			// Esc at a terminal is already answered by the picker's own Cancelled
 			// line (rc 2), and a second line would make rm the one command that
 			// answers a leave twice. Answering No, or having no terminal to show
 			// the prompt on, still needs this line to say nothing was removed.
-			if rc != 2 || !isTTY(0) {
+			switch {
+			case rc == 2 && !isTTY(0):
+				// The same answer the main branch gives the same state (#636).
+				l.err(rmConfirmHint(name))
+			case rc != 2:
 				l.err("cancelled; nothing removed")
 			}
 			return 1
@@ -79,13 +104,21 @@ func (l *launcher) rm(args []string) int {
 		if paths.Lexists(auth) {
 			detail += "\n  " + auth
 		}
-		fmt.Fprintf(os.Stderr, "Remove profile '%s', its saved credential and private sign-in state?\n%s\nShared conversation history will be kept. This cannot be undone.\n", name, detail)
+		// Said before Yes/No, not after: removing the default leaves no
+		// default (#652), so the question names it (#636).
+		isDefault := ""
+		// The active file's own content, as the clear below reads it: l.active()
+		// refuses a pre-limit name aloud (#551).
+		if active, _ := l.readActiveFile(); active == name {
+			isDefault = " (the default profile)"
+		}
+		fmt.Fprintf(os.Stderr, "Remove profile '%s'%s, its saved credential and private sign-in state?\n%s\nShared conversation history will be kept. This cannot be undone.\n", name, isDefault, detail)
 		if rc := uiConfirm("Remove this profile?"); rc != 0 {
 			switch {
 			case rc == 2 && !isTTY(0):
 				// The stdin closed without an answer and no terminal was
 				// there to show the prompt on: name both ways through (#724).
-				l.err("no answer to confirm; nothing removed — confirm in a terminal, or pipe the answer: printf 'y' | ccmorph rm " + name)
+				l.err(rmConfirmHint(name))
 			case rc != 2:
 				// A leave (rc 2) is already answered by the picker's own
 				// Cancelled line, as in the leftover branch; there is no
@@ -105,7 +138,10 @@ func (l *launcher) rm(args []string) int {
 	}
 	delete(l.confReads, name) // what was removed must not be read back (GH-561)
 	util.KeychainDelete(name)
-	os.Remove(filepath.Join(l.profileDirs, "..", ".locks", name+".lock"))
+	os.Remove(ctxwindow.LockName(l.conf(name)))
+	// The live marker lived one removal past the profile, so a removed profile
+	// kept reading as live (#636).
+	os.Remove(util.LiveLockPath(l.profileDirs, name))
 	for _, p := range util.BridgeFiles(filepath.Join(l.dir, "auth"), name) {
 		os.Remove(p)
 	}
@@ -338,6 +374,11 @@ func (l *launcher) mv(args []string) int {
 	// a read of either name must see what mv left (GH-561).
 	delete(l.confReads, from)
 	delete(l.confReads, to)
+	// The old name's lock and live marker name a profile that no longer
+	// exists: left behind, they were debris per rename, and a stale .live read
+	// the old name as running (#636).
+	os.Remove(ctxwindow.LockName(l.conf(from)))
+	os.Remove(util.LiveLockPath(l.profileDirs, from))
 	fmt.Println(l.accent + "Renamed" + l.reset + " " + l.bold + from + l.reset + " → " + l.bold + to + l.reset)
 	return 0
 }

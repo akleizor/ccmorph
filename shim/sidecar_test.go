@@ -23,13 +23,19 @@ func turn(u *UsageSidecar, id string, cost int) *record {
 	return u.start(id, strp("m"), strp("m"), usageRow{{"cost", []byte(strconv.Itoa(cost))}})
 }
 
-// nameOf is the file a row key lands in: a bare response id is a primary, an
-// "<id>.<turn>[.<n>]" key is that id's spill.
-func nameOf(key string) string {
-	if id, _, ok := strings.Cut(key, "."); ok {
-		return spillFileName(id, key)
-	}
-	return rowFileName(key)
+// rowName and spillName name the primary and the first spill of a response id
+// (and of that id's turn). They go through rowNames — the one definition the
+// sidecar's writer shares (sidecar.go) — so a dotted gateway id, which the old
+// "first dot means spill" rule here mis-named, gets the name production gives
+// it (issue 636).
+func rowName(id string) string {
+	primary, _ := rowNames("", id, "")
+	return primary
+}
+
+func spillName(id, turnID string) string {
+	_, spills := rowNames("", id, turnID)
+	return spills[0]
 }
 
 // byName is every row in dir, keyed by file name, as written.
@@ -122,18 +128,26 @@ func TestSSEBilledCostIsKeptFromEachUsageEvent(t *testing.T) {
 }
 
 func TestRecycledResponseIDSpillsAndRewritesStayPut(t *testing.T) {
-	dir := stateHome(t)
-	u := newSidecar("p", "identity")
-	first, second := turn(u, "msg_dup", 1), turn(u, "msg_dup", 2)
-	u.write(first)
-	u.write(second)
-	first.complete = true // a same-record rewrite keeps its path
-	u.write(first)
-	got := byName(t, dir)
-	spill := nameOf("msg_dup." + second.turnID)
-	if len(got) != 2 || !hasTurn(got[nameOf("msg_dup")], first) || !strings.Contains(got[nameOf("msg_dup")], `"complete":true`) ||
-		!hasTurn(got[spill], second) {
-		t.Fatal(got)
+	// A gateway may recycle ids that themselves contain dots: every name must
+	// come from the whole id, never from a key cut at its first dot (issue 636).
+	for _, tc := range []struct{ name, id string }{
+		{"plain", "msg_dup"},
+		{"dotted_id_issue_636", "msg.dotted.1"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := stateHome(t)
+			u := newSidecar("p", "identity")
+			first, second := turn(u, tc.id, 1), turn(u, tc.id, 2)
+			u.write(first)
+			u.write(second)
+			first.complete = true // a same-record rewrite keeps its path
+			u.write(first)
+			got := byName(t, dir)
+			if len(got) != 2 || !hasTurn(got[rowName(tc.id)], first) || !strings.Contains(got[rowName(tc.id)], `"complete":true`) ||
+				!hasTurn(got[spillName(tc.id, second.turnID)], second) {
+				t.Fatal(got)
+			}
+		})
 	}
 }
 
@@ -147,14 +161,14 @@ func TestWithoutHardlinksRecycledIDsKeepEveryRow(t *testing.T) {
 	first, second := turn(a, "msg_no_link", 1), turn(b, "msg_no_link", 2)
 	a.write(first)
 	b.write(second)
-	if got := byName(t, dir); len(got) != 2 || !hasTurn(got[nameOf("msg_no_link")], first) || !hasTurn(got[nameOf("msg_no_link."+second.turnID)], second) {
+	if got := byName(t, dir); len(got) != 2 || !hasTurn(got[rowName("msg_no_link")], first) || !hasTurn(got[spillName("msg_no_link", second.turnID)], second) {
 		t.Fatal("the loser must land in its spill on the first write:", got)
 	}
 	first.complete, second.complete = true, true
 	a.write(first)
 	b.write(second)
 	got := byName(t, dir)
-	if len(got) != 2 || !strings.Contains(got[nameOf("msg_no_link")], `"complete":true`) || !strings.Contains(got[nameOf("msg_no_link."+second.turnID)], `"complete":true`) {
+	if len(got) != 2 || !strings.Contains(got[rowName("msg_no_link")], `"complete":true`) || !strings.Contains(got[spillName("msg_no_link", second.turnID)], `"complete":true`) {
 		t.Fatal(got)
 	}
 }
@@ -223,7 +237,7 @@ func TestFailedTempUnlinkNeverTruncatesAClaimedRow(t *testing.T) {
 	remove = old
 	u.write(second)
 	got := byName(t, dir)
-	if len(got) != 2 || !hasTurn(got[nameOf("msg_alias")], first) {
+	if len(got) != 2 || !hasTurn(got[rowName("msg_alias")], first) {
 		t.Fatal(got)
 	}
 }
@@ -233,12 +247,12 @@ func TestRemovedClaimReclaimedByAnotherTurnIsNotOverwritten(t *testing.T) {
 	u := newSidecar("p", "identity")
 	first, second := turn(u, "msg_reclaimed", 1), turn(u, "msg_reclaimed", 2)
 	u.write(first)
-	os.Remove(filepath.Join(dir, usageDay(first.timestamp), nameOf("msg_reclaimed")))
+	os.Remove(filepath.Join(dir, usageDay(first.timestamp), rowName("msg_reclaimed")))
 	u.write(second)
 	first.complete = true
 	u.write(first)
 	got := byName(t, dir)
-	if len(got) != 2 || !hasTurn(got[nameOf("msg_reclaimed")], second) {
+	if len(got) != 2 || !hasTurn(got[rowName("msg_reclaimed")], second) {
 		t.Fatal(got)
 	}
 }
@@ -249,13 +263,13 @@ func TestSpillRewriteKeepsItsPathWhenPrimaryIsRemoved(t *testing.T) {
 	first, second := turn(u, "msg_spill_stable", 1), turn(u, "msg_spill_stable", 2)
 	u.write(first)
 	u.write(second)
-	os.Remove(filepath.Join(dir, usageDay(first.timestamp), nameOf("msg_spill_stable")))
+	os.Remove(filepath.Join(dir, usageDay(first.timestamp), rowName("msg_spill_stable")))
 	second.usage = usageRow{{"cost", []byte("9")}}
 	u.write(second)
 	second.complete = true
 	u.write(second)
 	got := byName(t, dir)
-	if len(got) != 1 || !hasTurn(got[nameOf("msg_spill_stable."+second.turnID)], second) || !strings.Contains(got[nameOf("msg_spill_stable."+second.turnID)], `"complete":true`) {
+	if len(got) != 1 || !hasTurn(got[spillName("msg_spill_stable", second.turnID)], second) || !strings.Contains(got[spillName("msg_spill_stable", second.turnID)], `"complete":true`) {
 		t.Fatal(got)
 	}
 }
@@ -299,12 +313,12 @@ func TestSpillAliasingAnotherPrimaryKeepsEveryRow(t *testing.T) {
 		// Every one of its five names held by other turns: this turn loses its
 		// own row and leaves all theirs untouched.
 		blocked := turn(u, "msg_a", 4)
-		key := "msg_a." + blocked.turnID
-		for _, k := range []string{key, key + ".1", key + ".2", key + ".3"} {
+		_, blockedSpills := rowNames("", "msg_a", blocked.turnID)
+		for _, spill := range blockedSpills {
 			// Another turn's row sits at each of this turn's spill names.
 			holder := turn(u, "msg_a", 5)
 			day := filepath.Dir(firstRowPath(t, dir))
-			if err := os.WriteFile(filepath.Join(day, nameOf(k)), u.row(holder), 0o600); err != nil {
+			if err := os.WriteFile(filepath.Join(day, spill), u.row(holder), 0o600); err != nil {
 				t.Fatal(err)
 			}
 		}

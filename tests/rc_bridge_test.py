@@ -165,6 +165,20 @@ def _launcher():
                        "ccmorph_rc")
 
 
+def test_the_edge_route_keys_are_one_list_in_python_and_go():
+    """#636: ccmorph-rc writes ROUTE_ENV into CCMORPH_EDGE_ROUTE_ENV and
+    cli/run.go re-applies the keys it passes to nestedEdgeEnv; both comments
+    named a zsh function that no longer exists, so nothing held the lists
+    together."""
+    root = Path(__file__).resolve().parent.parent
+    run_go = (root / "cli" / "run.go").read_text()
+    calls = re.findall(r"l\.nestedEdgeEnv\(([^)]*)\)", run_go)
+    assert len(calls) == 1, calls
+    assert set(re.findall(r'"([A-Z_]+)"', calls[0])) == set(_launcher().ROUTE_ENV)
+    rc_src = (root / "addons" / "remote-control" / "ccmorph-rc").read_text()
+    assert "_ccm_nested_edge_env" not in run_go + rc_src
+
+
 def test_a_folder_is_trusted_before_the_host_starts(tmp_path):
     """An unattended start in an untrusted folder waits on a prompt nobody can
     answer; the folder never registers and reads as a dead host."""
@@ -594,18 +608,22 @@ def test_event_uploads_keep_only_what_the_phone_shows():
     assert not slim_events(bare, lambda data, kind: None)
 
 
-def test_one_event_upload_is_serialized_at_most_once(monkeypatch):
+def test_one_event_upload_is_serialized_at_most_once(tmp_path, monkeypatch):
     """slim_events knows what it changed while it walks the body; re-encoding a
-    multi-MB upload to diff it against itself doubled every session open."""
-    import rc_route
+    multi-MB upload to diff it against itself doubled every session open. The
+    count is taken where the add-on really encodes — rc_flow's _slim_body, which
+    imports encode_json by name — so both asserts can fail (#636): counting
+    rc_route.encode_json counted a function slim_events never calls."""
+    addon = _switch_addon(monkeypatch, tmp_path)._load()   # rc_flow, the module that encodes
     serialized = []
-    real_encode = rc_route.encode_json
+    real_encode = addon.encode_json
 
     def counting(obj, ensure_ascii=False):
         serialized.append(1)
         return real_encode(obj, ensure_ascii=ensure_ascii)
 
-    monkeypatch.setattr(rc_route, "encode_json", counting)
+    monkeypatch.setattr(addon, "encode_json", counting)
+    monkeypatch.setattr(addon, "_shrink", lambda data, kind: ("C" * 9, "image/jpeg"))
     body = {"events": [
         {"payload": {"type": "user", "message": {"content": [
             {"type": "tool_result", "tool_use_id": "t", "content": [
@@ -613,11 +631,12 @@ def test_one_event_upload_is_serialized_at_most_once(monkeypatch):
                                              "data": "A" * 200_000}},
                 {"type": "text", "text": "x" * 10_000}]}]},
          "tool_use_result": {"stdout": "y" * 10_000}}}]}
-    assert rc_route.slim_events(body, lambda data, kind: ("C" * 9, "image/jpeg"))
-    assert len(serialized) <= 1, f"one upload serialized the body {len(serialized)} times"
+    slim = addon._slim_body(json.dumps(body).encode(), False, {}, {})
+    assert slim is not None and len(slim) < 100_000
+    assert len(serialized) == 1, f"one upload serialized the body {len(serialized)} times"
     serialized.clear()
-    assert not rc_route.slim_events(body, lambda data, kind: ("C" * 9, "image/jpeg"))
-    assert len(serialized) <= 1, f"an already-slim upload serialized the body {len(serialized)} times"
+    assert addon._slim_body(slim, False, {}, {}) is None
+    assert serialized == [], f"an already-slim upload serialized the body {len(serialized)} times"
 
 
 def test_the_proxy_inherits_a_raised_open_file_limit(monkeypatch):
@@ -815,7 +834,7 @@ def test_the_guard_exempts_the_mark_the_account_branch_sets(tmp_path, monkeypatc
     """The launcher's block_list and the addon name one metadata key: the guard
     closes the account destination for every flow without it, and the account
     branch is the only code that sets it."""
-    addon = _addon(monkeypatch, tmp_path, "account")
+    _addon(monkeypatch, tmp_path, "account")
     assert f"!~meta {ACCOUNT_METADATA}" in _launcher().FAIL_CLOSED
 
 
@@ -1156,7 +1175,6 @@ def test_no_failed_start_ever_leaves_the_route_key_behind(tmp_path, monkeypatch,
 def test_a_start_removes_what_a_killed_launcher_left_and_keeps_live_ones(tmp_path, monkeypatch):
     """A SIGKILL runs no cleanup, so its route key stayed on disk for good. The next
     start removes the files of every launcher that is gone, and only those."""
-    import os
     import subprocess
     rc = _edge_spawn_state(tmp_path, monkeypatch)
     rc.STATE.mkdir(parents=True, exist_ok=True)
@@ -1567,3 +1585,41 @@ def test_a_handoff_no_proxy_takes_is_removed_and_nothing_changes(tmp_path, monke
     with pytest.raises(SystemExit):
         rc.switch("gw", "me", "cse_2")
     assert not (rc.STATE / "sessions" / "cse_2").exists()
+
+
+@pytest.mark.parametrize("cfg", [{"projects": ["not", "an", "object"]}, "FOLDER"],
+                         ids=["projects-is-a-list", "entry-is-a-string"])
+def test_seed_trust_leaves_a_malformed_projects_tree_alone(tmp_path, cfg):
+    """#636: seed_trust raised on valid JSON whose projects or folder entry is not
+    an object, and its caller has no handler, so the host never booted."""
+    folder = tmp_path / "work"
+    folder.mkdir()
+    if cfg == "FOLDER":
+        cfg = {"projects": {str(folder.resolve()): "trusted"}}
+    account = tmp_path / "acct"
+    account.mkdir()
+    path = account / ".claude.json"
+    path.write_text(json.dumps(cfg))
+    before = path.read_bytes()
+    _launcher().seed_trust(str(account), str(folder))
+    assert path.read_bytes() == before
+
+
+def test_the_launchers_helper_calls_are_bounded(tmp_path, monkeypatch):
+    """#636: cli _plugin_dirs and sips ran with no timeout; a helper that never
+    answers held a launch, or every flow the add-on's loop serves."""
+    import subprocess as sp
+    kwargs = []
+
+    def hung(args, **kw):
+        kwargs.append(kw.get("timeout"))
+        raise sp.TimeoutExpired(args, kw.get("timeout"))
+
+    rc = _launcher()
+    monkeypatch.setattr(rc.subprocess, "run", hung)
+    with pytest.raises(SystemExit):
+        rc.plugin_dirs({})
+    addon = _switch_addon(monkeypatch, tmp_path)._load()   # rc_flow holds _shrink
+    monkeypatch.setattr(addon.subprocess, "run", hung)
+    assert addon._shrink("AAAA", "image/png") is None
+    assert kwargs == [rc.EXTERNAL_TIMEOUT, addon.SIPS_TIMEOUT] == [30, 30]

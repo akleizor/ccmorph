@@ -1,5 +1,6 @@
 """ccmorph-rc-hosts: config parsing and the relaunch policy."""
 import os
+import re
 import time
 from pathlib import Path
 from types import SimpleNamespace
@@ -945,14 +946,6 @@ def test_tend_on_a_running_host_returns_false_not_none(tmp_path):
     h = m.Host(str(tmp_path), "profile")
     h.proc, h.started = FakeProc(), 1000.0
     assert h.tend(1001.0) is False
-
-
-def _git_repo(path):
-    import subprocess
-    path.mkdir(parents=True)
-    run = lambda *a: subprocess.run(["git", "-C", str(path), *a], check=True, capture_output=True, timeout=HANG_TIMEOUT)
-    run("init", "-q"); run("-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "--allow-empty", "-m", "init")
-    return path
 
 
 def test_a_session_that_is_gone_server_side_retires_instead_of_retrying(tmp_path, monkeypatch):
@@ -3022,7 +3015,6 @@ def test_a_switch_log_handed_to_a_child_outlives_the_sweep_and_then_ages_out(tmp
     other once nothing hands it on. A launch that raises (the launcher missing,
     retried every tick) starts no writer and stamps nothing, so repeated
     refusals never keep an aged log (the gate's refusal)."""
-    import subprocess
     m = load()
     logs = tmp_path / "logs"
     logs.mkdir()
@@ -3119,7 +3111,7 @@ def test_a_session_child_is_read_only_from_the_claude_that_runs_it(tmp_path, mon
             "/x/claude --print --session-id cse_01NAMED --sdk-url wss://x",
             "/bin/sh -c sleep --session-id cse_01SH --sdk-url wss://x",
             f"/bin/sh {store}/2.1.330 --session-id cse_01ARG --sdk-url wss://x",
-            f"/bin/echo /x/claude --session-id cse_01ECHO --sdk-url wss://x",
+            "/bin/echo /x/claude --session-id cse_01ECHO --sdk-url wss://x",
             f"{store}/sub/tool --session-id cse_01SUB --sdk-url wss://x"]
     assert m.live_sessions(rows) == {"01NEW", "01PREV", "01LINK", "01NAMED"}
     _ps_table(monkeypatch, m, "".join(f"{40 + i} {r}\n" for i, r in enumerate(rows)))
@@ -3197,7 +3189,7 @@ def test_an_npm_installed_claude_is_read_through_node(tmp_path, monkeypatch):
                         (["/usr/bin/node", "/x/other.js"], "unknown"),
                         (None, "unknown")):
         reads = iter([None] + [later] * 3)
-        monkeypatch.setattr(m, "proc_argv", lambda pid: next(reads))
+        monkeypatch.setattr(m, "proc_argv", lambda pid, reads=reads: next(reads))
         assert m.host_at(4242) == held, later
     reads = iter([["/usr/bin/node", str(cli), "remote-control"], None, None])
     monkeypatch.setattr(m, "proc_argv", lambda pid: next(reads))
@@ -5381,3 +5373,190 @@ def test_list_sessions_prints_only_json_and_asks_only_about_repo_hosts(tmp_path,
     assert json.loads(out.out) == {"account": "me", "sessions": []}
     assert "check failed" in out.err
     assert asked == [[str(tmp_path / "a")]]
+
+
+def test_both_scripts_read_one_state_root(tmp_path, monkeypatch):
+    """#636: the state-root ladder (CCMORPH_STATE_DIR, then XDG_CONFIG_HOME,
+    then ~/.config) was spelled in ccmorph-rc and again in ccmorph-rc-hosts,
+    held together only by a comment; both now take rc_route.state_root()."""
+    monkeypatch.delenv("CCMORPH_STATE_DIR", raising=False)
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    hosts = load()
+    rc = load_script(Path(__file__).resolve().parent.parent / "addons/remote-control/ccmorph-rc", "rc_state_root")
+    assert hosts.STATE_ROOT == rc.STATE_ROOT == tmp_path / "ccmorph"
+    monkeypatch.setenv("CCMORPH_STATE_DIR", str(tmp_path / "moved"))
+    assert load().STATE_ROOT == tmp_path / "moved"
+    addon = Path(__file__).resolve().parent.parent / "addons/remote-control"
+    spelled = [p.name for p in addon.iterdir() if p.is_file() and p.suffix != ".md"
+               and 'os.environ.get("CCMORPH_STATE_DIR")' in p.read_text(errors="replace")]
+    assert spelled == ["rc_route.py"], spelled
+
+
+def test_a_symlinked_folder_finds_the_state_under_its_real_path(tmp_path, monkeypatch):
+    """#636: ccmorph-rc slugged the resolved path and ccmorph-rc-hosts the raw
+    string, agreeing only because parse() pre-resolved. One rule now resolves."""
+    monkeypatch.setenv("CCMORPH_STATE_DIR", str(tmp_path / "state"))
+    real = tmp_path / "real folder"
+    real.mkdir()
+    link = tmp_path / "link"
+    link.symlink_to(real)
+    hosts = load()
+    want = re.sub(r"[^A-Za-z0-9]", "-", str(real.resolve()))
+    assert hosts.project_dirs(str(link))[0].name == want
+    rc = load_script(Path(__file__).resolve().parent.parent / "addons/remote-control/ccmorph-rc", "rc_slug")
+    assert rc.project_slug(str(link)) == want
+
+
+def test_sessions_stops_when_the_cursor_repeats(monkeypatch):
+    """#636: a server that kept answering the same non-empty cursor paged forever."""
+    m = load()
+    calls = []
+
+    def api(method, path, token, body=None):
+        calls.append(path)
+        return {"data": [{"id": "s"}], "next_cursor": "c1"}
+
+    monkeypatch.setattr(m, "api", api)
+    assert len(m.sessions("t", "active")) == 2
+    assert len(calls) == 2
+
+
+def test_deregistered_reads_only_what_this_stop_wrote(tmp_path):
+    """#636: a release line from an earlier run labelled a later stop 'environment
+    released'; only the log written after the stop's mark counts."""
+    m = load()
+    log = tmp_path / "host.log"
+    log.write_text("Environment deregistered\n")
+    h = SimpleNamespace(logfile=log)
+    mark = log.stat().st_size
+    assert not m.Host.deregistered(h, mark)
+    with open(log, "a") as f:
+        f.write("other\n")
+    assert not m.Host.deregistered(h, mark)
+    with open(log, "a") as f:
+        f.write("Environment marked offline\n")
+    assert m.Host.deregistered(h, mark)
+    assert not m.Host.deregistered(SimpleNamespace(logfile=tmp_path / "missing"), 0)
+
+
+def test_a_git_that_never_answers_does_not_hold_the_supervisor(tmp_path, monkeypatch):
+    """#636: git calls carried no timeout, so a hung git blocked the supervisor's
+    loop for good. Each is bounded by a kill timer, and a run that hit it reads
+    as a failed call, which every caller already survives."""
+    m = load()
+    intervals = []
+
+    class FiresAtOnce:
+        """threading.Timer whose deadline has already passed."""
+        def __init__(self, interval, fn):
+            intervals.append(interval)
+            self.fn, self.daemon = fn, False
+
+        def start(self):
+            self.fn()
+
+        def cancel(self):
+            pass
+
+    monkeypatch.setattr(m.threading, "Timer", FiresAtOnce)
+    done = m.run_git(["sh", "-c", "sleep 30"], capture_output=True, text=True)
+    assert done.returncode == 124 and "did not answer" in done.stderr
+    h = m.Host(str(tmp_path), "gateway")
+    h.ensure_repo()                              # returns; never raises or hangs
+    assert len(intervals) >= 3 and set(intervals) == {m.EXTERNAL_TIMEOUT}, intervals
+    monkeypatch.undo()
+    fine = load().run_git(["sh", "-c", "echo ok"], capture_output=True, text=True)
+    assert (fine.returncode, fine.stdout) == (0, "ok\n")
+
+
+def test_keychain_service_matches_the_go_golden():
+    """#636: the keychain service-name rule is spelled in util/signin.go and here;
+    both are pinned to this one value (Go: TestClaudeCredentialServiceGolden)."""
+    m = load()
+    assert m.keychain_service_for("/Users/a/.config/ccmorph/profiles/work") == "Claude Code-credentials-20e9b7cb"
+
+
+def test_zero_accounts_names_the_type_to_choose(monkeypatch):
+    """#636: rc-hosts said only 'ccmorph add <name>', while ccmorph-rc's same
+    refusal names the step that decides it: choose 'Claude account'."""
+    m = load()
+    rc = SimpleNamespace(account_candidates=lambda: [])
+    monkeypatch.setattr(m, "rc_module", lambda: rc)
+    monkeypatch.setattr(m, "account_name", lambda: None)
+    with pytest.raises(ValueError, match="and choose 'Claude account'"):
+        m.keychain_service()
+
+
+def test_a_launcher_that_does_not_compile_reads_as_not_up(tmp_path, monkeypatch):
+    """#636: #845 guarded rc_module()'s callers against OSError only, so a present
+    but half-written ccmorph-rc (SyntaxError at import) still crash-looped the
+    supervisor with no cause line. It now reads like a missing one."""
+    m = load()
+    broken = tmp_path / "addon"
+    broken.mkdir()
+    (broken / "ccmorph-rc").write_text("def half(:\n")
+    monkeypatch.setattr(m, "HERE", broken)
+    with pytest.raises(OSError, match="does not compile"):
+        m.rc_module()
+    lines = []
+    monkeypatch.setattr(m, "log", lines.append)
+    assert m.edge_ready("gw") is None
+    assert len(lines) == 1 and "does not compile" in lines[0], lines
+
+
+def test_days_settings_read_through_the_registry_and_log_a_bad_value(monkeypatch):
+    """#636: days_setting kept a regex of its own, so idle_days=1e9 read as 1 with
+    no log, and idle_days=abc fell back silently."""
+    m = load()
+    lines = []
+    monkeypatch.setattr(m, "log", lines.append)
+    assert m.idle_days("idle_days=1e9\n") == 1e9
+    assert m.idle_days("idle_days=2.5\n") == 2.5 and lines == []
+    assert m.idle_days("idle_days=abc\n") == 1.0
+    assert m.purge_days("purge_days=-3\n") == 7.0
+    assert len(lines) == 2 and "idle_days=abc" in lines[0] and "purge_days=-3" in lines[1], lines
+    assert m.park_hours("") == 6.0
+
+
+def test_a_folder_route_is_its_own_word(tmp_path, monkeypatch):
+    """#636: `~/p myroute=x` set the folder's route to x."""
+    m = load()
+    folder = tmp_path / "p"
+    folder.mkdir()
+    cfg = f"route=gw\n{folder} myroute=x\n{folder}2 route=ds\n"
+    (tmp_path / "p2").mkdir()
+    hosts = m.parse(cfg)
+    assert hosts[str(folder.resolve())][0] == "gw", hosts
+    assert hosts[str((tmp_path / "p2").resolve())][0] == "ds", hosts
+
+
+def test_the_archived_marker_follows_the_registry(tmp_path, monkeypatch):
+    """#636: edit_config wrote and stripped `archived=` with its own literal and
+    line[9:], so renaming the registry entry left the supervisor writing a line
+    parse() no longer skips. It now takes the prefix from settings_key."""
+    m = load()
+    folder = tmp_path / "f"
+    folder.mkdir()
+    config = tmp_path / "rc-hosts"
+    config.write_text(f"{folder}\n")
+    readers = dict(m.SETTINGS_READERS)
+    readers.pop("archived=")
+    readers["gone="] = m.archived_set
+    monkeypatch.setattr(m, "SETTINGS_READERS", readers)
+    m.edit_config(config, str(folder.resolve()), loaded=config.read_text())
+    assert f"gone={folder.resolve()}" in config.read_text()
+    assert "archived=" not in config.read_text()
+
+
+def test_both_scripts_name_the_bridge_dirs_alike(tmp_path, monkeypatch):
+    """#636: STATE/LOGS/EDGES/INFERENCE were spelled out in both scripts, held
+    together by a comment; rc_route.BridgeDirs derives them once."""
+    monkeypatch.setenv("CCMORPH_STATE_DIR", str(tmp_path))
+    hosts = load()
+    rc = load_script(Path(__file__).resolve().parent.parent / "addons/remote-control/ccmorph-rc", "rc_bridge_dirs")
+    assert (hosts.EDGES, hosts.INFERENCE) == (rc.EDGES, rc.INFERENCE)
+    assert hosts.LOGS == rc.BRIDGE.logs == tmp_path / "profiles/.rc-bridge/logs"
+    addon = Path(__file__).resolve().parent.parent / "addons/remote-control"
+    spelled = [p.name for p in addon.iterdir() if p.is_file() and p.suffix != ".md"
+               and '".rc-bridge"' in p.read_text(errors="replace")]
+    assert spelled == ["rc_route.py"], spelled

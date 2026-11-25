@@ -150,7 +150,7 @@ func runLocked(args []string, stderr io.Writer) (int, error) {
 			return 0, err
 		}
 		held = append(held, path)
-		if heldLock(path) {
+		if HeldLock(path) {
 			continue
 		}
 		lock, err := lockPath(path)

@@ -20,7 +20,6 @@ import (
 
 	"github.com/akleizor/ccmorph/ordjson"
 	"github.com/akleizor/ccmorph/util/modelsdev"
-	"github.com/akleizor/ccmorph/util/paths"
 )
 
 type (
@@ -39,9 +38,6 @@ const (
 // Unresolved is the one reason a model can end a metadata-only run with no
 // number; the summary keys its "here is how to resolve it" block off this note.
 const Unresolved = "no size published by the gateway, and no catalogue entry for this model id"
-
-// probeShareDir is a var so tests can point it at a fixture. It follows CCMORPH_LIB_DIR; the resolver's ShareDir follows the executable (shortcut: two roots kept to preserve both commands' behaviour, unify when one is chosen).
-var probeShareDir = func() string { return filepath.Join(paths.LibDir(), "..", "share") }
 
 func asObj(v val) obj { o, _ := v.(map[string]any); return o }
 
@@ -181,11 +177,8 @@ func DeclaredSizes(rows []obj) map[string]int64 {
 		if !ok || id == "" {
 			continue
 		}
-		for _, f := range DeclaredFields {
-			if n, ok := asPosInt(getv(row, f)); ok {
-				out[id] = n
-				break
-			}
+		if n, ok := stated(row); ok {
+			out[id] = n
 		}
 	}
 	return out
@@ -197,7 +190,7 @@ var numCtx = regexp.MustCompile(`(?m)^\s*num_ctx\s+([0-9]+)\s*$`)
 func ListModels(ctx context.Context, base, key string, timeout time.Duration, op Opener) ([]string, map[string]int64, []obj, error) {
 	op = pick(op)
 	body, err := op.Open(ctx, Request{Method: "GET", URL: APIURL(base, "/v1/models"), Header: [][2]string{
-		{"Authorization", "Bearer " + key}, {"x-api-key", key}, {"anthropic-version", "2023-06-01"}}}, timeout)
+		{"Authorization", "Bearer " + key}, {"x-api-key", key}, {"anthropic-version", AnthropicVersion}}}, timeout)
 	if err != nil {
 		return nil, nil, nil, err
 	}
@@ -318,7 +311,7 @@ var FetchCanonicalCatalogue = func(ctx context.Context, timeout time.Duration) o
 	if live := fetchJSONDict(ctx, canonicalCatalogueURL, timeout); len(live) > 0 {
 		return live
 	}
-	b, err := os.ReadFile(filepath.Join(probeShareDir(), "model-catalogue.json"))
+	b, err := os.ReadFile(filepath.Join(ShareDir(), "model-catalogue.json"))
 	if err != nil {
 		return obj{}
 	}
@@ -417,7 +410,6 @@ func CatalogueLookup(ctx context.Context, model, ownedBy string, cache *Cache, t
 	defer cache.mu.Unlock()
 	if cache.api == nil {
 		cache.api = FetchCatalogue(ctx, timeout)
-		cache.apiFetches++
 	}
 	found := CatalogueWindow(cache.api, model, ownedBy)
 	if found == nil {
@@ -425,7 +417,6 @@ func CatalogueLookup(ctx context.Context, model, ownedBy string, cache *Cache, t
 		// for reselling gateways); try the flat, provider-independent catalogue.
 		if cache.flat == nil {
 			cache.flat = FetchCanonicalCatalogue(ctx, timeout)
-			cache.flatFetches++
 		}
 		found = CanonicalCatalogueWindow(cache.flat, model, ownedBy)
 	}
@@ -434,13 +425,12 @@ func CatalogueLookup(ctx context.Context, model, ownedBy string, cache *Cache, t
 
 // Cache holds what one run fetched once: the catalogues and window sources.
 type Cache struct {
-	mu                      sync.Mutex // the launch sizes models concurrently (#603); one lazy fetch per run still
-	api, flat               obj
-	apiFetches, flatFetches int
-	sources                 []val
-	sourcesLoaded           bool
-	tables                  map[string]map[string][2]int64 // url -> model -> {default (-1 = none), window}
-	launch                  bool
+	mu            sync.Mutex // the launch sizes models concurrently (#603); one lazy fetch per run still
+	api, flat     obj
+	sources       []val
+	sourcesLoaded bool
+	tables        map[string]map[string][2]int64 // url -> model -> {default (-1 = none), window}
+	launch        bool
 }
 
 // NewCache returns an empty run cache; launch marks the launch path, which
@@ -524,7 +514,7 @@ func ProviderWindows(ctx context.Context, declared map[string]int64, rows []obj,
 	}
 	if !cache.sourcesLoaded {
 		cache.sourcesLoaded = true
-		if b, err := os.ReadFile(filepath.Join(probeShareDir(), "window-sources.json")); err == nil {
+		if b, err := os.ReadFile(filepath.Join(ShareDir(), "window-sources.json")); err == nil {
 			if doc := parseDict(b); doc != nil {
 				cache.sources, _ = getv(doc, "sources").([]any)
 			}

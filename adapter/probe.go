@@ -17,6 +17,7 @@ import (
 	"github.com/akleizor/ccmorph/ctxwindow"
 	"github.com/akleizor/ccmorph/netroute"
 	"github.com/akleizor/ccmorph/ordjson"
+	"github.com/akleizor/ccmorph/profile"
 	"github.com/akleizor/ccmorph/shim"
 )
 
@@ -25,12 +26,7 @@ const (
 	ccMaxTokens  = 32000            // what Claude Code sends
 )
 
-var (
-	outCap = regexp.MustCompile(`(?i)supports at most (\d+) completion tokens`)
-	// Every id rendered into the config is a YAML scalar and a cliproxyapi model
-	// name; ids outside this set are skipped, not escaped-and-hoped.
-	safeModelID = regexp.MustCompile(`^[A-Za-z0-9._:\[\]()@/-]+$`)
-)
+var outCap = regexp.MustCompile(`(?i)supports at most (\d+) completion tokens`)
 
 // A single tool shape per dialect: Responses takes a flat function tool, Chat
 // Completions nests it under "function".
@@ -344,7 +340,10 @@ func walkListing(data []any, logUnsafe bool) []listingRow {
 		}
 		r.name, _ = m["id"].(string)
 		if r.name != "" {
-			if safeModelID.MatchString(r.name) {
+			// Every id rendered into the config is a YAML scalar and a cliproxyapi
+			// model name; ids outside profile's model-id set are skipped, not
+			// escaped-and-hoped.
+			if profile.ValidModelID(r.name) {
 				r.safe = true
 			} else if r.chat {
 				unsafe = append(unsafe, r.name)
@@ -445,7 +444,7 @@ func listedModels(data []any, logUnsafe bool) []string {
 }
 
 func anthropicHeaders(key string) map[string]string {
-	return map[string]string{"x-api-key": key, "anthropic-version": "2023-06-01"}
+	return map[string]string{"x-api-key": key, "anthropic-version": ctxwindow.AnthropicVersion}
 }
 
 func bearer(key string) map[string]string { return map[string]string{"Authorization": "Bearer " + key} }

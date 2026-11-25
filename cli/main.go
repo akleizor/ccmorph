@@ -2,6 +2,7 @@ package cli
 
 import (
 	"fmt"
+	"github.com/akleizor/ccmorph/ctxwindow"
 	"github.com/akleizor/ccmorph/router"
 	"github.com/akleizor/ccmorph/util"
 	"github.com/akleizor/ccmorph/util/paths"
@@ -36,6 +37,10 @@ func helpAsked(words []string) bool {
 // One more is refused before anything runs. run and probe are handled apart:
 // run's words after the profile are Claude Code's, and probe's are parsed by
 // context-probe, which reports its own usage.
+// verbOptions is every --option add and quota take; any other --word is
+// refused by name (#636).
+var verbOptions = map[string][]string{"add": nil, "quota": {"--json"}}
+
 var verbArity = map[string]int{"list": 0, "use": 1, "cred": 1, "inspect": 1, "context": 3,
 	"models": 2, "rm": 1, "mv": 2, "get": 2, "set": 3, "config": 1, "add": 1, "login": 1,
 	"hop": 1, "quota": 2, "doctor": 2, "update": 1, "uninstall": 0, "version": 0, "help": 1,
@@ -156,6 +161,23 @@ func (l *launcher) dispatch(args []string) int {
 		if first == "hop" && len(rest) > 0 && rest[0] == hopSlashFlag {
 			n++ // the slash command's marker is not a word the user typed
 		}
+		// add and quota name an option they do not take as an option, before
+		// any name or count is judged: `add --key` read as a bad profile name
+		// and `add --type apikey x` blamed 'apikey' (#636).
+		if takes, judged := verbOptions[first]; judged {
+			for _, a := range rest {
+				if strings.HasPrefix(a, "--") && !slices.Contains(takes, a) {
+					l.err("unknown option '" + a + "'")
+					l.err("usage: " + usageLine(first))
+					return 2
+				}
+			}
+		}
+		// `ccmorph add help` is the help page, not a wizard for a profile
+		// named help (#636).
+		if first == "add" && len(rest) == 1 && rest[0] == "help" {
+			return l.usage("add")
+		}
 		if len(rest) > n {
 			return l.extraArg(first, rest[n])
 		}
@@ -209,7 +231,12 @@ func (l *launcher) unknown(first string, args []string) int {
 		if now := oneEditFrom(first, topFlags); now != "" {
 			l.err("unknown option '" + first + "'. Run: ccmorph " + now)
 		} else {
-			l.err("unknown option '" + first + "'. Launch flags go after the verb: ccmorph run " + first)
+			// The run pointer stays (a Claude Code flag really belongs behind
+			// the verb), but this path was the only flag error with no help
+			// fallback: advising `ccmorph run --bogus` alone repeats the same
+			// failure, so name the help page too (#636).
+			l.err("unknown option '" + first + "'. Run: ccmorph --help")
+			fmt.Fprintln(os.Stderr, "  Launch flags go after the verb: ccmorph run "+first)
 		}
 		return 1 // a flag is never a profile name
 	}
@@ -750,27 +777,6 @@ func helpWidth() int {
 	return cols
 }
 
-// wrapWords breaks text into lines of at most width cells on word boundaries;
-// a word is never split, so one wider than width keeps a line of its own.
-func wrapWords(text string, width int) []string {
-	if width < 1 {
-		return []string{text}
-	}
-	words := strings.Fields(text)
-	if len(words) == 0 {
-		return []string{""}
-	}
-	lines, line := []string{}, words[0]
-	for _, word := range words[1:] {
-		if cells(line)+1+cells(word) <= width {
-			line += " " + word
-			continue
-		}
-		lines, line = append(lines, line), word
-	}
-	return append(lines, line)
-}
-
 // wrapBody wraps every line of a help body to width columns, continuing under
 // the line's own indent so a wrapped list item stays one item. width 0 returns
 // the body unchanged.
@@ -782,11 +788,11 @@ func wrapBody(body string, width int) string {
 	for _, line := range strings.Split(body, "\n") {
 		text := strings.TrimLeft(line, " ")
 		indent := line[:len(line)-len(text)]
-		if cells(line) <= width {
+		if ctxwindow.Cells(line) <= width {
 			out = append(out, line)
 			continue
 		}
-		for _, wrapped := range wrapWords(text, width-cells(indent)) {
+		for _, wrapped := range ctxwindow.Wrap(text, width-ctxwindow.Cells(indent)) {
 			out = append(out, indent+wrapped)
 		}
 	}
@@ -803,7 +809,7 @@ func helpGrid(w int, label, desc string, width int) {
 		return
 	}
 	col := 2 + w + 1
-	chunks := wrapWords(desc, width-col)
+	chunks := ctxwindow.Wrap(desc, width-col)
 	if len(label) > w {
 		fmt.Printf("  %s\n  %-*s %s\n", label, w, "", chunks[0])
 	} else {
@@ -816,14 +822,6 @@ func helpGrid(w int, label, desc string, width int) {
 
 func (l *launcher) usage(topic string) int {
 	return l.usageAt(topic, helpWidth())
-}
-
-// confDirSpelling is the state root as a help page spells a conf file's
-// directory: the root this launcher resolved, cleaned, spelled ~/… under the
-// home directory — so the default root spells itself ~/.config/ccmorph and
-// only a redirected one changes a page.
-func (l *launcher) confDirSpelling() string {
-	return paths.SpelledFromHome(l.dir)
 }
 
 // profileTemplate is the profile.conf.example this install holds, spelled for a
@@ -857,6 +855,11 @@ func (l *launcher) templateNote() string {
 	return lead + "the template profile.conf.example, which this\ninstall is missing: reinstall ccmorph to restore it."
 }
 
+// confDirWord is the default state root as a page spells it, with or without a
+// trailing slash: `in ~/.config/ccmorph;` named the default even when
+// CCMORPH_STATE_DIR moved the root (#636).
+var confDirWord = regexp.MustCompile(`~/\.config/ccmorph\b`)
+
 // usageAt prints a help page wrapped to width columns (helpWidth). width 0 is
 // what a pipe receives: the authored lines, unwrapped.
 func (l *launcher) usageAt(topic string, width int) int {
@@ -880,24 +883,25 @@ func (l *launcher) usageAt(topic string, width int) int {
 		help("ccmorph quota [profile]", "Plan usage and spend of every profile")
 		help("ccmorph use <profile>", "Set the default; do not launch")
 		help("ccmorph config [profile]", "Change model, effort, or connection")
+		// The line is the command's own synopsis, so the list and the command's
+		// page cannot drift apart again (GH-730). The README leads with the
+		// router, so the short index names it too (#636).
+		help(router.Usage, "Spread subagents across profiles; off by default")
 		head("Troubleshooting:")
 		help("ccmorph inspect [profile]", "Show effective settings and masking; no secrets")
 		help("ccmorph doctor [--verbose] [profile]", "Check why a profile is not working")
 		if all {
 			head("More commands:")
-			help("ccmorph models <profile>", "List models from an API-key endpoint")
+			help("ccmorph models [profile]", "List models from an API-key endpoint")
 			help("ccmorph price <model>...", "Read cached model list prices")
 			help("ccmorph check <profile> <model>", "Ask one model one token: does it answer now?")
-			// The line is the command's own synopsis, so the list and the
-			// command's page cannot drift apart again (GH-730).
-			help(router.Usage, "Spread subagents across profiles; off by default")
-			help("ccmorph get <profile> <field|--json>", "Read one profile field, or all as JSON")
-			help("ccmorph set <profile> <model|effort> [value]", "Save a default; omit value to choose")
-			help("ccmorph login <profile>", "Sign in again to a provider account")
+			help(usageLine("get"), "Read one profile field, or all as JSON")
+			help(usageLine("set"), "Save a default; omit value to choose")
+			help("ccmorph login [profile]", "Sign in again to a provider account")
 			help("ccmorph mv <old> <new>", "Rename a profile")
 			help("ccmorph rm <profile>", "Delete a profile and its private sign-in state")
 			help("ccmorph profile", "Name the profile a session runs on")
-			help("ccmorph cred <profile>", "Print a stored secret (sensitive)")
+			help("ccmorph cred [profile]", "Print a stored secret (sensitive)")
 			help("ccmorph update [ref]", "Update to the latest version, or to a branch or tag")
 			help("ccmorph uninstall", "Remove the command; profiles stay")
 			head("Advanced troubleshooting (normally automatic):")
@@ -957,7 +961,9 @@ func (l *launcher) usageAt(topic string, width int) int {
 			}
 		} else {
 			// Every other page keeps spelling a root under home ~/… (GH-384).
-			body = strings.ReplaceAll(body, "~/.config/ccmorph/", l.confDirSpelling()+"/")
+			// The root this launcher resolved, cleaned, spelled ~/… under home,
+			// so only a redirected root changes a page.
+			body = confDirWord.ReplaceAllLiteralString(body, paths.SpelledFromHome(l.dir))
 		}
 	}
 	// The template's path is the code's, not the state root's: added after the
@@ -977,9 +983,10 @@ func (l *launcher) usageAt(topic string, width int) int {
 
 // pickerNote teaches a picker's keys. It ends only the pages whose command can
 // open one (#263); a page for a command that never shows a picker stays silent.
-const pickerNote = "Pickers: move with the arrow keys, Enter selects, Esc to cancel.\n" +
-	"Profile and model lists also let you type to search (with fzf installed);\n" +
-	"without fzf, type the number or part of the name of your choice."
+// The arrow keys are fzf's: the numbered menu without it takes a number or
+// part of a name, so the note says which is which (#636).
+const pickerNote = "Pickers: Enter selects, Esc to cancel. With fzf installed, the arrow keys move\n" +
+	"and you type to search; without fzf, type the number or part of the name."
 
 // pickerTopics are the help pages whose command, used as its page teaches, can
 // open a picker: an omitted argument, -i, or a menu the command always shows.
@@ -1003,9 +1010,10 @@ Native Claude help: ccmorph run <profile> --help`},
 	"add": {"ccmorph add <profile>", `Choose how to sign in. Only the selected method asks for credentials:
   Claude account: sign in to Claude with your browser.
   Claude token: a long-lived token for scripts/CI; quota cannot read plan usage.
-  API key: credential presented to Anthropic or a gateway, checked with that
-  endpoint before the profile is saved. The provider list opens with Anthropic
-  itself, then known gateways.
+  API key: credential presented to Anthropic or a gateway. The endpoint is
+  asked about it first: a key it refuses is asked for again; when it does not
+  answer, the profile is saved and the Added line says key NOT checked. The
+  provider list opens with Anthropic itself, then known gateways.
 
 Credentials are hidden while typing. Ctrl-C cancels setup.`},
 	"config": {"ccmorph config [profile]", `Choose what to change: model and effort, or connection/sign-in details.
@@ -1028,7 +1036,8 @@ own reason, empty when it answers. No secret is ever printed.`},
 	"list": {"ccmorph list", "List saved profiles. * marks the default used by ccmorph run; private marks one whose history is deleted when the session ends."},
 	"price": {"ccmorph price <model>... [--json]", `Read cached model list prices in US dollars per million tokens.
 A missing model in a populated cache is unpriced; --json omits it. The cache is never fetched.
-An empty cache is reported explicitly. Run a provider profile with ccmorph run <profile> to refresh it.`},
+An empty cache is reported explicitly. --json always prints {"cache", "hint", "prices"}; hint only
+when the cache is empty. Use -- before a model id that starts with a dash. ` + priceCacheHint},
 
 	"quota": {"ccmorph quota [profile] [--json]", `Every profile in one view, grouped by kind: Claude accounts and tokens,
 Codex subscriptions, budget accounts, and API key or provider profiles. Each
@@ -1054,7 +1063,12 @@ Omit the profile to list every profile.`},
 		"profile, the cheapest model that fits the task's kind and tier.\n" +
 		"status lists each profile's class and pace. dispatch \"<task>\" runs a task\n" +
 		"where the router picks; with --dry-run it only shows that pick. report\n" +
-		"checks the last day's routes. Its settings live in:\n" +
+		"checks the last day's routes.\n" +
+		"Words: class is subscription, budget or api; api bills per token.\n" +
+		"slack (pace) is plan time elapsed minus usage, in points; above 0 is room.\n" +
+		"kind is writing, search, x, mechanical, code, design, image_gen or vision.\n" +
+		"tier is small, mid or top (effort low, medium, high).\n" +
+		"Its settings live in:\n" +
 		"  ~/.config/ccmorph/router.json"},
 	"use": {"ccmorph use [profile|-i]", "Set the default without launching. No argument shows the current default."},
 	"inspect": {"ccmorph inspect [profile|-i]", `Show effective settings and their sources, never the stored credential.

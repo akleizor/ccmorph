@@ -100,7 +100,7 @@ func Decide(c Config, r Request) (Decision, error) {
 		return d, errors.New("no ccmorph profiles")
 	}
 	d.Notes = append(d.Notes, notes...)
-	pin := Pin{Profile: r.Profile, Model: r.Model, Effort: r.Effort, Order: c.Order}
+	pin := Pin{Profile: r.Profile, Model: r.Model, Order: c.Order}
 	if only, ok := c.Only[d.Task.Tier]; ok && r.Model == "" {
 		pin.Only = append([]string{}, only...) // no fallback outside them; [] allows none
 	}
@@ -412,12 +412,15 @@ var (
 		kind string
 		re   *regexp.Regexp
 	}{
-		{"quota", regexp.MustCompile(`(?i)\b(quota|rate.?limit|usage limit|429)\b`)},
+		// Anthropic's own machine names (rate_limit_error, authentication_error)
+		// end in a word character, so \b never closes on them: they are
+		// matched as literals beside the word-boundary tokens (#636).
+		{"quota", regexp.MustCompile(`(?i)\b(quota|rate.?limit|usage limit|429)\b|rate_limit_error`)},
 		// The bare word "auth" is a refusal only beside failed/required, the
 		// context errorOpening names below: Claude Code prints a routine startup
 		// warning naming an "auth source" on every run, and its lone word would
 		// otherwise hide the real failure (a gateway 500, a TLS timeout) behind auth.
-		{"auth", regexp.MustCompile(`(?i)\b(authentication|authorization|unauthorized|forbidden|401|403)\b|\bauth\s+(?:failed|required)\b`)},
+		{"auth", regexp.MustCompile(`(?i)\b(authentication|authorization|unauthorized|forbidden|401|403)\b|\bauth\s+(?:failed|required)\b|authentication_error`)},
 		{"timeout", regexp.MustCompile(`(?i)\b(timed?\s*out|timeout|deadline exceeded)\b`)},
 	}
 	errorOpening = regexp.MustCompile(`(?i)^\s*(?:(?:api )?(?:error|failed)\s*:|(?:quota|rate.?limit|usage limit) (?:exceeded|reached)|` +
@@ -441,13 +444,7 @@ func hardFailure(text string, isError bool, status string) string {
 
 // complete settles a route's outcome and returns a hint for the caller, if any.
 func complete(c Config, id, text, hard string) string {
-	var row Row
-	for _, r := range readRows(ledgerPath()) {
-		if r.matches(id) {
-			row = r
-			break
-		}
-	}
+	row := ledgerRow(id)
 	if row == nil || row["outcome"] != nil {
 		return ""
 	}

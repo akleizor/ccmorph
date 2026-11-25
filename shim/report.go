@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"math"
 	"os"
 	"path/filepath"
 	"slices"
@@ -89,11 +90,17 @@ var flatRowsRead = func() {}
 // task. Its read writes nothing, and after it the flat rows of a pre-shard
 // store are moved into their day folders — a relocation, never a change to a
 // row's numbers.
+// maxReportDays is the largest day count time.Duration holds. The guard used
+// 739000, which overflows and turns `since` into a future time (#636).
+const maxReportDays = float64(math.MaxInt64 / int64(24*time.Hour))
+
 func report(days float64) {
 	base := paths.StateDir()
 	now := time.Now().UTC()
 	usage := func() { die(fmt.Sprintf("usage: %s report [--days N]", os.Args[0])) }
-	if !(days > 0) || days > 739000 {
+	// time.Duration overflows past ~106751 days: a larger window wrapped into
+	// the future and printed an empty report instead of the usage error (#636).
+	if !(days > 0) || days > maxReportDays {
 		usage()
 	}
 	since := now.Add(-time.Duration(days * 24 * float64(time.Hour)))
@@ -192,7 +199,7 @@ func report(days float64) {
 		var estimate *float64
 		if cost == nil {
 			if ms, _ := Object(d.b, us.Start); ms != nil {
-				if sp, ok := lastMember(ms, "estimated_cost"); ok {
+				if sp, ok := LastMember(ms, "estimated_cost"); ok {
 					if f, fin := finiteNumber(d.b[sp.Start:sp.End]); fin && f >= 0 && f < costLimit {
 						estimate = &f
 					}
@@ -521,31 +528,6 @@ func flatRowFiles(base string) []string {
 	for _, e := range entries {
 		if !e.IsDir() && strings.HasSuffix(e.Name(), ".json") {
 			out = append(out, filepath.Join(base, e.Name()))
-		}
-	}
-	return out
-}
-
-// dayRowFiles is every row file the day folders of the window [since, now]
-// hold — a zero since reads every day folder, for a task read that has no
-// lower bound. A row always sits in a folder at or after its stamp's UTC day
-// — the writer places it there, and the move by an mtime no row's writer
-// lets run before its stamp — so no folder before the window's first day can
-// hold a row the window counts. The folders come from paths.DayNames, the
-// store's one day walk, which quota's month read takes too. Anything else in
-// the store — a folder for another day, a name that is not a day, the atomic
-// writer's in-flight tmp — is not read. The folders, then each folder's
-// files, keep ReadDir's name order, and a day name is fixed-width, so the
-// rows arrive in name order with no sort of the walk's own (#546).
-func dayRowFiles(base string, since, now time.Time) []string {
-	first, last := since.UTC().Format(paths.DayLayout), now.UTC().Format(paths.DayLayout)
-	var out []string
-	for _, name := range paths.DayNames(base, first, last) {
-		sub, _ := os.ReadDir(filepath.Join(base, name))
-		for _, f := range sub {
-			if !f.IsDir() && strings.HasSuffix(f.Name(), ".json") {
-				out = append(out, filepath.Join(base, name, f.Name()))
-			}
 		}
 	}
 	return out

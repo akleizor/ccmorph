@@ -143,6 +143,24 @@ CONSOLIDATED = {
     "isTier": "util.IsTier",
     "endHold": "util.EndRouteHold",
     "apiURL": "ctxwindow.APIURL",
+    "mappedTargetFromFields": "mappedTarget(parseModelMap(fields), bare) (#636)",
+    "hasPrefix": "inlined at both callers (#636)",
+    "cells": "ctxwindow.Cells (#636)",
+    "wrapWords": "ctxwindow.Wrap (#636)",
+    "allDigits": "ordjson.IsDigits (#636)",
+    "lastMember": "shim.LastMember (#636)",
+    "trimFloat": "strconv.FormatFloat at its one caller (#636)",
+    "regexpMust": "regexp.MustCompile at its one caller (#636)",
+    "member": "shim.LastMember (#636)",
+    "strOf": "shim.SpanStr (#636)",
+    "joinLines": "writeTranscript's fixture builder (#636)",
+    "sameDayMarks": "slices.Equal (#636)",
+    "sameFileMarks": "slices.Equal (#636)",
+    "marksFingerprint": "hashKey over the joined marks (#636)",
+    "safeModelID": "profile.ValidModelID (#636)",
+    "lockName": "ctxwindow.LockName (#636)",
+    "heldLock": "ctxwindow.HeldLock (#636)",
+    "sortedKeys": "slices.Sorted(maps.Keys(...)) (#636)",
 }
 # #422's predicates, and #520's strays beside them: the unexported spelling a
 # new copy would take, mapped to the exported definition that replaced it.
@@ -236,14 +254,15 @@ def go_sources_of(root):
     """The walk `go_sources` resolves ROOT into.
 
     Every .go file under the root is this tree's unless git says the directory
-    is another working tree of this repository (#415). `.claude` is skipped
-    whole: it holds session state and workspaces, never source this tree ships,
+    is another working tree of this repository (#415). an untracked `.claude` file is
+    skipped (a tracked one is source): it holds session state and workspaces, never source this tree ships,
     so a live builder worktree there cannot fail the guard (#449)."""
     tracked = tree_tracked_files(root)
     siblings = sibling_worktrees(root)
     return [path for path in sorted(root.glob("**/*.go"))
             # parts below root only: a checkout that itself sits under .claude/worktrees is still source
-            if ".git" not in path.relative_to(root).parts and ".claude" not in path.relative_to(root).parts
+            if ".git" not in path.relative_to(root).parts
+            and (".claude" not in path.relative_to(root).parts or path in tracked)
             and not in_a_sibling_worktree(path, siblings, tracked)]
 
 
@@ -612,6 +631,14 @@ def test_a_copy_this_tree_holds_still_fails_both_guards(tmp_path, monkeypatch, h
     assert_both_guards_fail("shim/reintroduced.go")
 
 
+def test_a_tracked_go_file_under_claude_still_fails_both_guards(tmp_path, monkeypatch):
+    repo = checkout(tmp_path)
+    place_copy(repo, ".claude/tools/shim/x.go", "tracked")
+    monkeypatch.setattr(sys.modules[__name__], "ROOT", repo)
+    # Only an untracked .claude file is session state (#449); a tracked one is source (#636).
+    assert_both_guards_fail(".claude/tools/shim/x.go")
+
+
 # A `.git` entry in the copy's own parent that git does not take for a worktree
 # of this repository: an empty file, an empty directory, a gitfile pointing
 # nowhere, or a repository of its own.
@@ -673,3 +700,52 @@ def test_a_go_file_created_after_a_walk_is_seen(tmp_path, monkeypatch):
     test_the_consolidated_helpers_are_not_hand_written_again()
     place_copy(repo, "shim/late.go", "untracked")
     assert_both_guards_fail("shim/late.go")
+
+
+def test_the_model_id_shape_is_spelled_once():
+    # #636: the model-id regex was written verbatim in profile and adapter.
+    literal = r"^[A-Za-z0-9._:\[\]()@/-]+$"
+    home = ROOT / "profile" / "profile.go"
+    offenders = [str(p.relative_to(ROOT)) for p in go_sources()
+                 if literal in p.read_text() and not p.name.endswith("_test.go") and p != home]
+    assert not offenders, "the model-id shape is hand-spelled again (#636): " + "; ".join(offenders)
+    assert literal in home.read_text(), "profile.ValidModelID's own definition is gone"
+
+
+def test_the_models_document_shape_is_read_through_one_helper():
+    # #636: every adapter reader of a parsed /v1/models doc goes through
+    # ctxwindow.ListingShape (#767), so an unchecked type assertion cannot be
+    # written again.
+    offenders = [str(p.relative_to(ROOT)) for p in go_sources()
+                 if p.parent.name == "adapter" and not p.name.endswith("_test.go")
+                 and '["data"].([]any)' in p.read_text()]
+    assert not offenders, "an unchecked /v1/models read (#636): " + "; ".join(offenders)
+
+
+def test_the_mask_switch_is_spelled_once():
+    # #636: the shim re-implemented util.MaskOn's truthiness switch.
+    needle = 'case "1", "on":'
+    home = ROOT / "util" / "masking.go"
+    offenders = [str(p.relative_to(ROOT)) for p in go_sources()
+                 if needle in p.read_text() and p != home]
+    assert not offenders, "the CCMORPH_MASK switch is hand-spelled again (#636): " + "; ".join(offenders)
+
+
+def test_the_probe_bounds_are_spelled_once():
+    # #636: the 2 s connect / max-time pair was hand-spelled at four sites.
+    needle = '"--connect-timeout"'
+    home = ROOT / "util" / "fetch.go"
+    offenders = [str(p.relative_to(ROOT)) for p in go_sources()
+                 if needle in p.read_text() and p != home and not p.name.endswith("_test.go")]
+    assert not offenders, "the curl probe bounds are hand-spelled again (#636): " + "; ".join(offenders)
+    assert home.read_text().count(needle) == 1, "curlBounds is no longer the one probe-bounds owner"
+
+
+def test_the_anthropic_version_is_spelled_once():
+    # #636: anthropic-version: 2023-06-01 was hand-spelled at nine sites.
+    needle = "2023-06-01"
+    home = ROOT / "ctxwindow" / "http.go"
+    offenders = [str(p.relative_to(ROOT)) for p in go_sources()
+                 if needle in p.read_text() and p != home and not p.name.endswith("_test.go")]
+    assert not offenders, "the anthropic-version is hand-spelled again (#636): " + "; ".join(offenders)
+    assert home.read_text().count(needle) == 1, "ctxwindow.AnthropicVersion is no longer the one owner"

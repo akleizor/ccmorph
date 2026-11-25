@@ -7,6 +7,10 @@ import (
 	"github.com/akleizor/ccmorph/profile"
 )
 
+// notInSession is what profile and hop answer outside a session ccmorph
+// launched: one sentence, naming where both work (#636).
+const notInSession = "not inside a ccmorph session; this works inside a Claude Code session started with: ccmorph run <profile>"
+
 // profileVerb is `ccmorph profile`: name the profile this session runs on
 // (#275). A session this ccmorph launched carries CCMORPH_PROFILE; one an older
 // ccmorph launched still points CLAUDE_CONFIG_DIR at its profile dir, so both
@@ -21,7 +25,7 @@ func (l *launcher) profileVerb(args []string) int {
 		name = l.configDirProfile()
 	}
 	if !profile.ValidName(name) {
-		l.err("not inside a ccmorph session")
+		l.err(notInSession)
 		return 1
 	}
 	fmt.Println(name)

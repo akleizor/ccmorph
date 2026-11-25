@@ -74,13 +74,21 @@ def requestheaders(flow, s) -> None:
     s.log(f"route     {req.method} {route}" + ("" if target == "route" else f" via {target}") + via)
 
 
+# The longest one image conversion may take on the worker thread (#636).
+SIPS_TIMEOUT = 30
+
+
 def _shrink(data: str, media_type: str | None) -> tuple[str, str] | None:
     """A 1000 px JPEG of a base64 image, via macOS sips; None if it fails."""
     with tempfile.TemporaryDirectory() as tmp:
         src, dst = Path(tmp, "in"), Path(tmp, "out.jpg")
         src.write_bytes(base64.b64decode(data))
-        done = subprocess.run(["sips", "-s", "format", "jpeg", "-s", "formatOptions", "70",
-                               "-Z", "1000", str(src), "--out", str(dst)], capture_output=True)
+        try:
+            done = subprocess.run(["sips", "-s", "format", "jpeg", "-s", "formatOptions", "70",
+                                   "-Z", "1000", str(src), "--out", str(dst)], capture_output=True,
+                                  timeout=SIPS_TIMEOUT)
+        except subprocess.TimeoutExpired:
+            return None   # the upload goes as it came: bounded, never stalled (#636)
         if done.returncode or not dst.exists():
             return None
         return base64.b64encode(dst.read_bytes()).decode(), "image/jpeg"

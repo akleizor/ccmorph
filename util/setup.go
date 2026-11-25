@@ -11,6 +11,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/akleizor/ccmorph/ctxwindow"
 	"github.com/akleizor/ccmorph/profile"
 	"github.com/akleizor/ccmorph/util/paths"
 )
@@ -451,12 +452,12 @@ func HoldLive(profiles, name string, log func(string)) (*os.File, error) {
 // contention defers the merge to the next launch instead (#177).
 func setupSerialize(profiles, name string) (func(), bool) {
 	conf := filepath.Join(filepath.Dir(profiles), name+".conf")
-	for _, held := range strings.Split(os.Getenv("CCMORPH_PROFILE_LOCK_HELD"), ":") {
-		if held == conf {
-			return func() {}, true
-		}
+	// The one lock-held rule, shared with the ctxwindow writer: a conf reached
+	// through a link, or spelled with different letter case, is the same lock.
+	if ctxwindow.HeldLock(conf) {
+		return func() {}, true
 	}
-	lock := filepath.Join(filepath.Dir(profiles), ".locks", name+".lock")
+	lock := ctxwindow.LockName(conf)
 	if os.MkdirAll(filepath.Dir(lock), 0o700) != nil {
 		return func() {}, false
 	}

@@ -24,7 +24,6 @@ import (
 	"time"
 
 	"github.com/akleizor/ccmorph/util/modelsdev"
-	"github.com/akleizor/ccmorph/util/paths"
 )
 
 // fake is a scripted Opener: each call pops the next reply for its method+path.
@@ -81,8 +80,9 @@ func state(t *testing.T) string {
 	api := FetchCatalogue
 	FetchCatalogue = func(context.Context, time.Duration) obj { return obj{} }
 	t.Cleanup(func() { FetchCatalogue = api })
-	probeShareDir = func() string { return filepath.Join(dir, "share") }
-	t.Cleanup(func() { probeShareDir = func() string { return filepath.Join(paths.LibDir(), "..", "share") } })
+	oldShare := ShareDir
+	ShareDir = func() string { return filepath.Join(dir, "share") }
+	t.Cleanup(func() { ShareDir = oldShare })
 	return dir
 }
 
@@ -261,6 +261,43 @@ func TestBaselineIsScopedAndCachedReadingsSurvive(t *testing.T) {
 	o.Mode = "auto"
 	captureStderr(t)
 	eq(t, vals(ProbeAll(context.Background(), []string{"gw"}, o)), map[string]int64{"gw:a": 1000000})
+}
+
+// #636: the CLI always passes o.Identities (probe_main.go), so this pins the
+// cached-reading rule on the path production takes; the test above pins it
+// through the nil-Identities seam.
+func TestProbeAllPinnedPathKeepsACachedReading(t *testing.T) {
+	dir := state(t)
+	conf := filepath.Join(dir, "gw.conf")
+	put(t, conf, "type=apikey\n"+"api"+"_key=k\n")
+	_, fields, err := ReadConf(conf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f, _ := os.OpenFile(conf, os.O_APPEND|os.O_WRONLY, 0)
+	fmt.Fprintf(f, `context_discovered={"route":%q,"models":{"a":1000000}}`+"\n", RouteFingerprint(fields))
+	f.Close()
+	stubs(t, okEnv, func(string) ([]string, map[string]int64, []obj, error) {
+		return []string{"a"}, map[string]int64{"a": 200000}, nil, nil
+	})
+	priorWalk = func([]string) (map[string]int64, map[string]obj) {
+		t.Fatal("the pinned path ran the nil-Identities sweep")
+		return nil, nil
+	}
+	oldProbe := probeFn
+	t.Cleanup(func() { probeFn = oldProbe })
+	probeFn = func(ctx context.Context, base, key, model, blob string, timeout time.Duration, op Opener, bisect int) ProbeResult {
+		t.Fatal("a cached reading was spent again")
+		return ProbeResult{}
+	}
+	o := DefaultOptions()
+	o.Mode = "auto"
+	o.Identities = map[string]*Identity{}
+	captureStderr(t)
+	eq(t, vals(ProbeAll(context.Background(), []string{"gw"}, o)), map[string]int64{"gw:a": 1000000})
+	if o.Identities["gw"] == nil {
+		t.Fatal("the pinned path did not record gw's identity")
+	}
 }
 
 // Python: DiscoveryDeadline.
@@ -473,8 +510,8 @@ func TestScopeExclusionsAndNearMisses(t *testing.T) {
 	listModelsFn = func(ctx context.Context, base, key string, timeout time.Duration, op Opener) ([]string, map[string]int64, []obj, error) {
 		return nil, nil, nil, &URLError{context.DeadlineExceeded}
 	}
-	os.WriteFile(filepath.Join(probeShareDir(), "x"), nil, 0) // no-op: share dir may not exist
-	put(t, filepath.Join(probeShareDir(), "model-catalogue.json"), `{"retrieved":"2026-01-01","models":{"openai/gpt-5":{"limit":{"context":400000,"input":272000}}}}`)
+	os.WriteFile(filepath.Join(ShareDir(), "x"), nil, 0) // no-op: share dir may not exist
+	put(t, filepath.Join(ShareDir(), "model-catalogue.json"), `{"retrieved":"2026-01-01","models":{"openai/gpt-5":{"limit":{"context":400000,"input":272000}}}}`)
 	o.Only = map[string]bool{"gpt-5": true}
 	out := captureStderr(t)
 	r = ProbeAll(context.Background(), []string{"sample"}, o)
@@ -552,8 +589,8 @@ func TestCatalogueFetchedAtMostOncePerRun(t *testing.T) {
 	for _, m := range []string{"x", "y", "z"} {
 		CatalogueLookup(context.Background(), m, "", cache, time.Second)
 	}
-	if api != 1 || flat != 1 || cache.apiFetches != 1 || cache.flatFetches != 1 { // one api.json + one models.json, fetched once each
-		t.Fatalf("fetches %d %d %d %d", api, flat, cache.apiFetches, cache.flatFetches)
+	if api != 1 || flat != 1 { // one api.json + one models.json, fetched once each
+		t.Fatalf("fetches %d %d", api, flat)
 	}
 }
 
@@ -614,7 +651,7 @@ func TestCanonicalCatalogueWindow(t *testing.T) {
 // Python: catalogue_offline_test.
 func TestBlockedCatalogueUsesTheBundledSnapshot(t *testing.T) {
 	state(t)
-	put(t, filepath.Join(probeShareDir(), "model-catalogue.json"),
+	put(t, filepath.Join(ShareDir(), "model-catalogue.json"),
 		`{"retrieved":"2026-09-01","models":{"openai/gpt-5":{"limit":{"context":400000,"input":272000}}}}`)
 	out := captureStderr(t)
 	cat := FetchCanonicalCatalogue(context.Background(), time.Second)
@@ -945,7 +982,7 @@ func TestBisectFindsTheBoundaryAndSpendsAlmostNothing(t *testing.T) {
 	}
 	// Hitting the accept cap says the answer understates.
 	send, _, _ = gateway(500_000, true)
-	if _, note, _ := BisectCeiling(send, blob, 1000, bisectTolerance, 1, bisectMaxSteps); !strings.Contains(note, "understates") && !strings.Contains(note, "reported") {
+	if _, note, _ := BisectCeiling(send, blob, 1000, bisectTolerance, 1, bisectMaxSteps); !strings.Contains(note, "understates") {
 		t.Fatal(note)
 	}
 }
@@ -1131,6 +1168,35 @@ func TestOpenerUsesTheAmbientProxyAndRefusesCrossOriginRedirects(t *testing.T) {
 	}
 }
 
+// bodyTransport answers every request 200 with the same body.
+type bodyTransport string
+
+func (b bodyTransport) RoundTrip(r *http.Request) (*http.Response, error) {
+	return &http.Response{StatusCode: 200, Header: http.Header{}, Request: r,
+		Body: io.NopCloser(strings.NewReader(string(b)))}, nil
+}
+
+// #636: io.ReadAll had no ceiling, so a gateway that streamed without end was
+// held in memory until the idle timer, which bytes kept resetting, never fired.
+func TestOpenRefusesAReplyOverTheCap(t *testing.T) {
+	old := maxReplyBody
+	t.Cleanup(func() { maxReplyBody = old })
+	maxReplyBody = 16
+	open := func(body string) ([]byte, error) {
+		cl := &sameOriginClient{&http.Client{Transport: bodyTransport(body)}}
+		return cl.Open(context.Background(), Request{Method: "GET", URL: "http://gw.invalid/v1/models"}, time.Second)
+	}
+	if got, err := open(strings.Repeat("a", 16)); err != nil || string(got) != strings.Repeat("a", 16) {
+		t.Fatalf("a body at the cap: %q, %v", got, err)
+	}
+	if got, err := open(""); err != nil || len(got) != 0 {
+		t.Fatalf("an empty body: %q, %v", got, err)
+	}
+	if got, err := open(strings.Repeat("a", 17)); err == nil || !strings.Contains(err.Error(), "reply larger than 16 bytes") || got != nil {
+		t.Fatalf("a body over the cap: %q, %v", got, err)
+	}
+}
+
 // waitsTransport answers after `headers`; its body's first byte comes at `first`.
 // Both waits honour the request context, the way a real socket does.
 type waitsTransport struct{ headers, first time.Duration }
@@ -1246,7 +1312,7 @@ func TestTimeoutBoundsEachWaitNotTheWholeTransfer(t *testing.T) {
 // Python: provider_windows contract.
 func TestProviderSourceContract(t *testing.T) {
 	dir := state(t)
-	put(t, filepath.Join(probeShareDir(), "window-sources.json"), `{"sources":[{"name":"t","owned_by":["openai"],"url":"https://t.invalid/m.json",
+	put(t, filepath.Join(ShareDir(), "window-sources.json"), `{"sources":[{"name":"t","owned_by":["openai"],"url":"https://t.invalid/m.json",
 	 "rows":"models","id":"slug","default":"context_window","window":"max_context_window"}]}`)
 	_ = dir
 	catalogue := `{"models":[{"slug":"gpt-6-sol","context_window":272000,"max_context_window":872000},
@@ -2537,7 +2603,7 @@ func shippedSources(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	put(t, filepath.Join(probeShareDir(), "window-sources.json"), string(b))
+	put(t, filepath.Join(ShareDir(), "window-sources.json"), string(b))
 }
 
 func codexListing() string {
@@ -2707,5 +2773,45 @@ func TestRateLimitedProbeLeavesTheModelForTheNextLaunchIssue775(t *testing.T) {
 	}
 	if w := windowsOf("gw"); len(w) != 1 || w["slow-model"] != 131072 {
 		t.Fatalf("the recorded state changed on a launch with nothing to size: %v", w)
+	}
+}
+
+// sizedOpener answers every validation probe with one stated window and
+// counts the models it was asked about.
+type sizedOpener struct{ asked map[string]bool }
+
+func (o sizedOpener) Open(_ context.Context, r Request, _ time.Duration) ([]byte, error) {
+	for _, m := range []string{"zzx", "zzy", "zzkeep"} {
+		if strings.Contains(string(r.Body), `"`+m) {
+			o.asked[m] = true
+		}
+	}
+	return nil, &HTTPError{400, []byte("maximum context length is 131072")}
+}
+
+// #636: launch sizing compared excluded_models to the raw listing id, so a
+// [1m] variant and a tier alias of an excluded model were still sized —
+// exactly the ids IsExcluded hides from the picker.
+func TestLaunchSizingSkipsWhatIsExcludedHides(t *testing.T) {
+	dir := state(t)
+	conf := filepath.Join(dir, "gw.conf")
+	put(t, conf, "type=apikey\nbase_url=https://gw.invalid\napi_key=k\nexcluded_models=zzx\nenv.ANTHROPIC_DEFAULT_ZZY_MODEL=zzx\n")
+	_, fields, err := ReadConf(conf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for id, want := range map[string]bool{"zzx": true, "zzx[1m]": true, "zzy": true, "zzkeep": false} {
+		if got := IsExcluded(fields, id); got != want {
+			t.Errorf("IsExcluded(%q) = %v, want %v", id, got, want)
+		}
+	}
+	captureStderr(t)
+	asked := map[string]bool{}
+	listing := `{"data":[{"id":"zzx[1m]"},{"id":"zzy"},{"id":"zzkeep"}]}`
+	if c := SizeListing(context.Background(), "gw", listing, "https://gw.invalid", "canary", sizedOpener{asked}); c != 0 {
+		t.Fatalf("the launch exited %d", c)
+	}
+	if asked["zzx"] || asked["zzy"] || !asked["zzkeep"] {
+		t.Fatalf("launch sizing asked about %v; only zzkeep is selectable", asked)
 	}
 }

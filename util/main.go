@@ -52,8 +52,6 @@ func readAll(r io.Reader) []byte { b, _ := io.ReadAll(r); return b }
 
 func asObj(v any) *ordjson.Obj { o, _ := v.(*ordjson.Obj); return o }
 
-func str(v any) (string, bool) { s, ok := v.(string); return s, ok }
-
 // AtomicWrite replaces path through a same-dir temp file, renamed into place:
 // prefix is the temp's name prefix, mode the replaced file's mode, and sync
 // fsyncs the temp before the rename. The dance itself is paths.AtomicWrite's;

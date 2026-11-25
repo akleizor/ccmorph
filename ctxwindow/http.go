@@ -3,6 +3,7 @@ package ctxwindow
 import (
 	"bytes"
 	"context"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -100,6 +101,10 @@ func BuildOpener() Opener {
 	}}
 }
 
+// maxReplyBody caps one reply body: a gateway that streams without end is
+// refused, not held in memory (#636). A var so a test can lower it.
+var maxReplyBody int64 = 64 << 20
+
 // progress resets the idle timer whenever bytes move, so the timeout bounds
 // each wait on the socket (connect, the headers, the first body byte, every
 // read) the way urllib's timeout did, not the whole exchange. The run's own deadline still arrives
@@ -158,12 +163,15 @@ func (c *sameOriginClient) Open(ctx context.Context, r Request, timeout time.Dur
 	// a wait of its own, as the shim's upstream timer does.
 	timer.Reset(timeout)
 	defer resp.Body.Close()
-	data, err := io.ReadAll(&progress{resp.Body, timer, timeout})
+	data, err := io.ReadAll(io.LimitReader(&progress{resp.Body, timer, timeout}, maxReplyBody+1))
 	if err != nil {
 		if idle.Load() {
 			err = context.DeadlineExceeded
 		}
 		return nil, &URLError{err}
+	}
+	if int64(len(data)) > maxReplyBody {
+		return nil, &URLError{fmt.Errorf("reply larger than %d bytes", maxReplyBody)}
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return nil, &HTTPError{resp.StatusCode, data}
@@ -257,9 +265,9 @@ func decodeReplace(b []byte) string {
 // original: a gateway may hand back the upstream body as a hex blob.
 func DecodeHexBodies(detail string) string {
 	for _, m := range sdkBytes.FindAllStringSubmatch(detail, -1) {
-		raw := make([]byte, len(m[1])/2)
-		for i := range raw {
-			raw[i] = unhex(m[1][2*i])<<4 | unhex(m[1][2*i+1])
+		raw, err := hex.DecodeString(m[1])
+		if err != nil { // sdkBytes only matches whole hex pairs, so this is unreachable
+			continue
 		}
 		if text := decodeReplace(raw); text != "" {
 			detail = detail + " " + text
@@ -268,15 +276,9 @@ func DecodeHexBodies(detail string) string {
 	return detail
 }
 
-func unhex(c byte) byte {
-	switch {
-	case c >= 'a':
-		return c - 'a' + 10
-	case c >= 'A':
-		return c - 'A' + 10
-	}
-	return c - '0'
-}
+// AnthropicVersion is the anthropic-version every request states. It was
+// spelled at nine sites; a version bump has one owner here (#636).
+const AnthropicVersion = "2023-06-01"
 
 // APIURL is the one join of a base with a /v1 path (#563 — util's and the
 // adapter's spellings of it are gone): a base whose path ends in a version
@@ -306,26 +308,15 @@ func APIURL(base, path string) string {
 
 var versionSuffix = regexp.MustCompile(`(?i)/v[0-9]+$`)
 
-func payload(nChars int) string {
-	var sb strings.Builder
-	n := 0
-	for i := 0; n < nChars; i++ {
-		s := fmt.Sprintf("The quick brown fox jumps over the lazy dog number %d. ", i)
-		sb.WriteString(s)
-		n += len(s)
-	}
-	return sb.String()
-}
-
 func pad(s string, width int) string {
-	if n := cells(s); n < width {
+	if n := Cells(s); n < width {
 		return s + strings.Repeat(" ", width-n)
 	}
 	return s
 }
 
 func padLeft(s string, width int) string {
-	if n := cells(s); n < width {
+	if n := Cells(s); n < width {
 		return strings.Repeat(" ", width-n) + s
 	}
 	return s

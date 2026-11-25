@@ -69,9 +69,9 @@ type Option struct {
 // Pin is what the caller or config fixed: a profile, a model, an allowed set
 // for the tier (Only, nil when unset) and a preferred order.
 type Pin struct {
-	Profile, Model, Effort string
-	Only                   []string
-	Order                  []string
+	Profile, Model string
+	Only           []string
+	Order          []string
 }
 
 func drawsOn(w Window, model string) bool {
@@ -168,8 +168,7 @@ func Options(t Task, profiles []Profile, labels func(profile, model string) (Lab
 		if pin.Profile != "" && p.Name != pin.Profile {
 			continue
 		}
-		type pick struct{ model, family string }
-		newest := map[string]pick{}
+		newest := map[string]string{}
 		var families []string
 		for _, m := range p.Models {
 			if pin.Model != "" && m != pin.Model || pin.Only != nil && !slices.Contains(pin.Only, m) {
@@ -201,23 +200,23 @@ func Options(t Task, profiles []Profile, labels func(profile, model string) (Lab
 			// The user's order outranks a newer version of the same family:
 			// when both are ordered, the earlier entry wins; a newer model
 			// only decides between two the order says nothing about.
-			mPref, pPref := preferred(m, pin.Order), preferred(prev.model, pin.Order)
+			mPref, pPref := preferred(m, pin.Order), preferred(prev, pin.Order)
 			better := !seen || mPref && !pPref ||
-				mPref && pPref && slices.Index(pin.Order, m) < slices.Index(pin.Order, prev.model) ||
-				!mPref && !pPref && newer(m, prev.model)
+				mPref && pPref && slices.Index(pin.Order, m) < slices.Index(pin.Order, prev) ||
+				!mPref && !pPref && newer(m, prev)
 			if !better {
 				dropped = append(dropped, p.Name+"/"+m+": older served model")
 				continue
 			}
 			if seen {
-				dropped = append(dropped, p.Name+"/"+prev.model+": older served model")
+				dropped = append(dropped, p.Name+"/"+prev+": older served model")
 			} else {
 				families = append(families, l.Family)
 			}
-			newest[l.Family] = pick{m, l.Family}
+			newest[l.Family] = m
 		}
 		for _, f := range families {
-			m := newest[f].model
+			m := newest[f]
 			l, _ := labels(p.Name, m)
 			rank := slices.Index(order, f) + 1
 			if rank == 0 {

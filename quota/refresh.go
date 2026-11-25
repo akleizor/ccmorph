@@ -26,13 +26,21 @@ var refreshAuthDir = func(dir string) error {
 	}
 	defer os.RemoveAll(tmp)
 	conf := filepath.Join(tmp, "config.yaml")
-	yaml := fmt.Sprintf("host: \"127.0.0.1\"\nport: 0\nauth-dir: %q\napi-keys:\n  - \"unused\"\n", dir)
-	if err := os.WriteFile(conf, []byte(yaml), 0o600); err != nil {
+	if err := os.WriteFile(conf, refreshConfig(dir), 0o600); err != nil {
 		return err
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
 	defer cancel()
 	return exec.CommandContext(ctx, bin, "-refresh", "-config", conf).Run()
+}
+
+// refreshConfig is the one-shot cliproxyapi config for dir. auth-dir takes a
+// JSON string, which is a valid YAML double-quoted scalar: Go's %q quotes some
+// bytes YAML does not read the same way, and the file then stops being honest
+// YAML (#636).
+func refreshConfig(dir string) []byte {
+	quoted, _ := json.Marshal(dir)
+	return []byte(fmt.Sprintf("host: \"127.0.0.1\"\nport: 0\nauth-dir: %s\napi-keys:\n  - \"unused\"\n", quoted))
 }
 
 // clipAuth is the part of a cliproxyapi sign-in file the quota readers use.

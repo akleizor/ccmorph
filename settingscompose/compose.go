@@ -73,8 +73,6 @@ type failure struct {
 	msg    string
 }
 
-func (f *failure) Error() string { return f.msg }
-
 func osFail(err error) { panic(&failure{msg: err.Error()}) }
 func valueFail(format string, a ...any) {
 	panic(&failure{msg: fmt.Sprintf(format, a...)})
@@ -368,10 +366,6 @@ func pathEq(a, b []string) bool {
 	return true
 }
 
-func hasPrefix(p, prefix []string) bool {
-	return len(p) >= len(prefix) && pathEq(p[:len(prefix)], prefix)
-}
-
 // merge is a deep merge with special handling for hook and permission lists:
 // lists under .hooks.* append, permissions.deny combines without duplicates,
 // other lists replace. base and override are left untouched.
@@ -401,7 +395,7 @@ func mergeInto(result, override *obj, path []string) {
 				out := append([]any(nil), el...)
 				for _, item := range vl {
 					found := false
-					for _, e := range el {
+					for _, e := range out {
 						if ordjson.Equal(item, e) {
 							found = true
 							break
@@ -484,6 +478,44 @@ func isUsageCommand(command string) bool {
 	return filepath.Base(core) == "ccmorph-core"
 }
 
+// pruneUsageCommands removes only ccmorph's usage command from an entry,
+// keeping any sibling command a hand-edit put in the same group (#636).
+func pruneUsageCommands(entry value) (value, bool) {
+	e, ok := entry.(*obj)
+	if !ok {
+		return entry, false
+	}
+	hooks, ok := getObj(e, "hooks").([]any)
+	if !ok {
+		return entry, false
+	}
+	kept := []any{}
+	for _, h := range hooks {
+		ho, ok := h.(*obj)
+		if ok {
+			if c, ok := getObj(ho, "command").(string); ok && isUsageCommand(c) {
+				continue
+			}
+		}
+		kept = append(kept, h)
+	}
+	if len(kept) == len(hooks) {
+		return entry, false
+	}
+	e.Set("hooks", kept)
+	return e, true
+}
+
+// emptyHookEntry is an entry with no hooks left.
+func emptyHookEntry(entry value) bool {
+	e, ok := entry.(*obj)
+	if !ok {
+		return false
+	}
+	hooks, ok := getObj(e, "hooks").([]any)
+	return ok && len(hooks) == 0
+}
+
 // isUsageHook is an entry whose command is this profile's usage writer.
 func isUsageHook(entry value) bool {
 	e, ok := entry.(*obj)
@@ -527,7 +559,9 @@ func withoutUsage(docIn *obj) *obj {
 		}
 		var kept []any
 		for _, e := range entries {
-			if !isUsageHook(e) {
+			// Only an entry the usage command was taken out of, and which then
+			// holds nothing, goes: a person's own empty group stays as written.
+			if e, pruned := pruneUsageCommands(e); !pruned || !emptyHookEntry(e) {
 				kept = append(kept, e)
 			}
 		}
@@ -751,7 +785,7 @@ func accumulates(path []string) bool {
 		return true
 	}
 	for _, list := range permissionRuleLists {
-		if hasPrefix(path, list) || hasPrefix(list, path) {
+		if (len(path) >= len(list) && pathEq(path[:len(list)], list)) || (len(list) >= len(path) && pathEq(list[:len(path)], path)) {
 			return true
 		}
 	}
@@ -874,7 +908,7 @@ func fold(base, current, layerIn, canonical *obj, mapping map[string]bool) *obj 
 				setPath(layer, here, after)
 				kept := unset[:0:0]
 				for _, p := range unset {
-					if !hasPrefix(p, here) {
+					if !(len(p) >= len(here) && pathEq(p[:len(here)], here)) {
 						kept = append(kept, p)
 					}
 				}
@@ -1023,7 +1057,7 @@ func backup(profileDir string, content []byte) {
 	now := time.Now()
 	stamp := now.Format("20060102T150405") + fmt.Sprintf(".%06d", now.UnixNano()%1_000_000)
 	target := join(folder, "settings."+stamp+".json")
-	if err := os.WriteFile(target, content, 0o666); err != nil {
+	if err := os.WriteFile(target, content, 0o600); err != nil {
 		osFail(err)
 	}
 	if err := os.Chmod(target, 0o600); err != nil {

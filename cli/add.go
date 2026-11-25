@@ -3,6 +3,7 @@ package cli
 import (
 	"bufio"
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -14,6 +15,7 @@ import (
 	"syscall"
 	"unicode"
 
+	"github.com/akleizor/ccmorph/ctxwindow"
 	"github.com/akleizor/ccmorph/profile"
 	"github.com/akleizor/ccmorph/util"
 	"github.com/akleizor/ccmorph/util/paths"
@@ -34,6 +36,14 @@ func (l *launcher) add(args []string) int {
 		name = v
 	}
 	if name == "" {
+		// Every other invalid name is told what is wrong with it; `add ""`
+		// only got the bare usage line (#636).
+		if len(args) > 0 && args[0] == "" {
+			l.err("invalid profile name '': the name is empty")
+		} else {
+			// The next action, not bare syntax (#636).
+			l.err("add needs a profile name, e.g.: ccmorph add work")
+		}
 		l.err("usage: " + usageLine("add"))
 		return 1
 	}
@@ -69,7 +79,7 @@ func (l *launcher) add(args []string) int {
 		// names the machine's own install step.
 		rows += "\nmore\tMore sign-ins\t" + browserLogins + " (cliproxyapi)"
 	}
-	choice, ok := l.menu("native", "Sign-in method — "+name, rows, func(v string) (string, string, bool) {
+	choice, ok := l.menu("native", "Sign-in method — "+name, rows, name, func(v string) (string, string, bool) {
 		if _, _, ok := methodAction(v, providers, haveBridge); !ok {
 			return "", "not a sign-in method — enter a number from the list or a name", false
 		}
@@ -120,15 +130,20 @@ const menuTryLimit = 3
 // gateway URL ended the whole wizard. Now an answer that matches no row re-asks
 // — naming the limit it states — so every answer already given stands; the
 // deliberate ways out stay: EOF, and q, the word the numbered menu names.
-func (l *launcher) menu(mode, title, rows string, match func(string) (string, string, bool)) (string, bool) {
+// name is the profile the wizard is building, so a menu that runs out of
+// stdin can name the piped way to answer (#636).
+func (l *launcher) menu(mode, title, rows, name string, match func(string) (string, string, bool)) (string, bool) {
 	if isTTY(0) {
 		v, rc := uiSelect(mode, title, rows, "")
 		return v, rc == 0
 	}
-	themeFor(2).list(title, splitRows(rows), "labels")
 	for wrong := 1; ; wrong++ {
+		themeFor(2).list(title, splitRows(rows), "labels")
 		v, rc := uiInput("> ", false)
 		if rc != 0 {
+			// Piped mode works, but nothing on screen said so: the last
+			// line of a no-answer run names the working path (#636).
+			l.err("no answer on stdin — to answer without a terminal, pipe each answer on its own line, e.g.: echo 1 | ccmorph add " + name)
 			return "", false
 		}
 		if v == "q" || v == "Q" {
@@ -276,6 +291,23 @@ func handSignInSignals(child *os.Process) (release func()) {
 	}
 }
 
+// loginCancelled reports whether a sign-in ended because the person pressed
+// Ctrl-C rather than because it failed. The sign-in owns the terminal, and
+// handSignInSignals hands ccmorph's own SIGINT to the child, so a cancel
+// reaches us as a child killed by SIGINT — or, for a child that traps the
+// keypress itself, as exit 130. Both are the picker's Cancelled line, not
+// "login failed" (#636).
+func loginCancelled(err error) bool {
+	var exit *exec.ExitError
+	if !errors.As(err, &exit) {
+		return false
+	}
+	if ws, ok := exit.Sys().(syscall.WaitStatus); ok && ws.Signaled() && ws.Signal() == syscall.SIGINT {
+		return true
+	}
+	return exit.ExitCode() == 130
+}
+
 // subBrowserLogin runs Claude Code's browser sign-in against the profile's
 // config dir and returns the signed-in email. add and login both put a Claude
 // account profile through it; the readback is what names the profile.
@@ -292,6 +324,10 @@ func (l *launcher) subBrowserLogin(name string) (string, bool) {
 	err := login.Wait()
 	release()
 	if err != nil {
+		if loginCancelled(err) {
+			themeFor(2).cancelled()
+			return "", false
+		}
 		l.err("login failed")
 		return "", false
 	}
@@ -376,8 +412,10 @@ func (l *launcher) askCredential(prompt, what string) (string, bool) {
 			return "", false
 		}
 		if v = cleanCredential(v); v == "" {
-			l.err("empty " + what)
-			return "", false
+			// A blank line is asked again, as a malformed one is (#636); a
+			// closed stdin still ends the add above.
+			l.err("empty " + what + " — paste it again")
+			continue
 		}
 		if credentialSpace(v) {
 			l.err(what + " contains whitespace — copy it again as one piece")
@@ -519,7 +557,7 @@ func (l *launcher) addAPIKey(name string) int {
 		}
 	}
 	rows = append(rows, "custom\tCustom endpoint\tAnthropic or any gateway URL")
-	pick, ok := l.menu("search", "Provider — "+name, strings.Join(rows, "\n"), func(v string) (string, string, bool) {
+	pick, ok := l.menu("search", "Provider — "+name, strings.Join(rows, "\n"), name, func(v string) (string, string, bool) {
 		p := v
 		if n, err := strconv.Atoi(v); err == nil && n >= 1 && n <= len(rows) {
 			p = rowID(rows[n-1])
@@ -566,11 +604,24 @@ func (l *launcher) addAPIKey(name string) int {
 		// Custom endpoint names its address before the key, so the key prompt
 		// can name the service the key is for (#278). The dash, not brackets:
 		// labels like "Qwen (Alibaba Cloud, China)" bring their own (#361).
-		v, rc := uiInput("Endpoint (blank = api.anthropic.com): ", false)
-		if rc != 0 {
-			return 1
+		// A bad address is refused and asked again here, before the key: a
+		// typo once surfaced only after the key prompt and cost every earlier
+		// answer (#636).
+		for {
+			v, rc := uiInput("Endpoint (blank = api.anthropic.com): ", false)
+			if rc != 0 {
+				return 1
+			}
+			url = cleanCredential(v)
+			if url == "" {
+				break
+			}
+			if err := profile.ValidateBaseURL("the", url); err != nil {
+				l.err(err.Error() + " — type it again, e.g. https://gateway.example")
+				continue
+			}
+			break
 		}
-		url = cleanCredential(v)
 		service := url
 		if service == "" {
 			service = "api.anthropic.com"
@@ -582,6 +633,7 @@ func (l *launcher) addAPIKey(name string) int {
 	// discovered at launch. The endpoint was answered once, before the key; a
 	// re-entered key is checked against the same endpoint.
 	var key string
+	checked := false
 	for {
 		var ok bool
 		key, ok = l.askCredential(prompt+" (hidden): ", "api key")
@@ -592,7 +644,8 @@ func (l *launcher) addAPIKey(name string) int {
 			l.err("apikey values cannot contain CR/LF")
 			return 1
 		}
-		if !l.checkKey(url, key) {
+		var accepted bool
+		if accepted, checked = l.checkKeyVerdict(url, key); !accepted {
 			continue
 		}
 		break
@@ -617,7 +670,11 @@ func (l *launcher) addAPIKey(name string) int {
 		l.rollback(name)
 		return 1
 	}
-	fmt.Println(l.accent + "Added" + l.reset + " " + name + " (API key → " + shownEndpoint(url) + ")")
+	unchecked := ""
+	if !checked {
+		unchecked = " · " + l.yellow + "key NOT checked" + l.reset
+	}
+	fmt.Println(l.accent + "Added" + l.reset + " " + name + " (API key → " + shownEndpoint(url) + ")" + unchecked)
 	if url != "" {
 		l.probeNudge(name)
 	}
@@ -657,7 +714,7 @@ func shownEndpoint(url string) string {
 	return url
 }
 
-// checkKey asks the endpoint the listing question doctor asks — the only
+// checkKeyVerdict asks the endpoint the listing question doctor asks — the only
 // request that can vouch for a key before a session spends it — and reports
 // the answer in the add's own step. A 2xx accepts; 401 refuses and returns
 // false so the key is asked for again. 403, 404 and 405 answer the question
@@ -671,12 +728,15 @@ func shownEndpoint(url string) string {
 // URL can carry a login or a key in its query, and a note that echoes it back
 // is a credential in the output (INTENT promise 5). The key reaches curl
 // through its stdin config, never a command line.
-func (l *launcher) checkKey(url, key string) bool {
+//
+// It also answers whether the endpoint vouched for the key: the Added line
+// marks an unchecked save loudly (#636).
+func (l *launcher) checkKeyVerdict(url, key string) (ok, checked bool) {
 	base, native := nativeBase(url)
 	shown := shownEndpoint(url)
 	var headers []string
 	if native {
-		headers = []string{"anthropic-version: 2023-06-01"}
+		headers = []string{"anthropic-version: " + ctxwindow.AnthropicVersion}
 	}
 	_, code := util.ProbeListing(base, key, headers...)
 	switch code {
@@ -684,20 +744,21 @@ func (l *launcher) checkKey(url, key string) bool {
 		// The listing itself was refused, by rule or by absence: no word
 		// here is a verdict on the key, so the save proceeds unchecked.
 		fmt.Println(l.dim + shown + ": listing not allowed (HTTP " + code + ") — the key was not checked" + l.reset)
-		return true
+		return true, false
 	}
 	switch probeVerdict(code) {
 	case probeAccepted:
 		fmt.Println(l.dim + shown + " accepted the API key (HTTP " + code + ")" + l.reset)
+		return true, true
 	case probeRejected:
 		l.err(shown + " rejected the API key (HTTP " + code + ") — paste it again")
-		return false
+		return false, true
 	case probeSilent:
 		fmt.Println(l.dim + shown + " did not answer, so the API key was not checked" + l.reset)
 	default:
 		fmt.Println(l.dim + shown + " answered HTTP " + code + ", so the API key was not checked" + l.reset)
 	}
-	return true
+	return true, false
 }
 
 func (l *launcher) addProvider(name, provider string) int {
@@ -838,7 +899,11 @@ func (l *launcher) providerLogin(name, provider string) bool {
 	}
 	cmd := exec.Command(bin, "-"+provider+"-login", "-config", conf)
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
-	if cmd.Run() != nil {
+	if err := cmd.Run(); err != nil {
+		if loginCancelled(err) {
+			themeFor(2).cancelled()
+			return false
+		}
 		l.err(providerLabel(provider) + " login failed")
 		return false
 	}

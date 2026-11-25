@@ -444,3 +444,20 @@ func TestMissingAdapterNamesTheUpdateAndTheRestart(t *testing.T) {
 		t.Fatalf("refusal %q still blames gateway availability", msg)
 	}
 }
+
+// TestCatalogueBuildsTheFallbackURLWithoutDoublingTheVersion pins #636: the
+// retired spelling joined "/v1/models" onto a base that already ended in /v1.
+func TestCatalogueBuildsTheFallbackURLWithoutDoublingTheVersion(t *testing.T) {
+	for base, want := range map[string]string{
+		"http://gw":    "http://gw/v1/models",
+		"http://gw/v1": "http://gw/v1/models",
+		"http://gw/":   "http://gw/v1/models",
+	} {
+		if got := newCatalogue(base, "", nil).modelsURL; got != want {
+			t.Fatalf("newCatalogue(%q) modelsURL = %q, want %q", base, got, want)
+		}
+		if got := newCatalogue("http://other", "http://gw/v1/models", nil).modelsURL; got != "http://gw/v1/models" {
+			t.Fatalf("an explicit models_url was rewritten: %q", got)
+		}
+	}
+}

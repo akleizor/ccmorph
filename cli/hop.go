@@ -103,7 +103,7 @@ func (l *launcher) hop(args []string) int {
 		return 1
 	}
 	if session == "" {
-		l.err("not inside a Claude Code session")
+		l.err(notInSession)
 		return 1
 	}
 	if !relayValid(relay) {

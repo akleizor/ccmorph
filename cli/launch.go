@@ -234,7 +234,7 @@ func (l *launcher) theme() {
 		return
 	}
 	l.bold, l.dim, l.reset = "\033[1m", "\033[2m", "\033[0m"
-	l.accent, l.yellow, l.red, l.cyan = rgb("d77757"), rgb("ffc107"), rgb("ff6b80"), rgb("b1b9f9")
+	l.accent, l.yellow, l.red, l.cyan = rgb(palette.accent), rgb(palette.yellow), rgb(palette.red), rgb(palette.cyan)
 }
 
 // signals is _ccm_launch's traps and _ccm_fork_forward's: INT and QUIT belong to

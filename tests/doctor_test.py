@@ -1199,7 +1199,7 @@ SIGNED_OUT = ('#!/bin/sh\n[ "$1 $2" = "auth status" ] && '
     ("signed-out", "type=sub\nemail=demo@example.test\n", OK_CURL, "sign in again: ccmorph login demo"),
     # #649: a sign-in interrupted before its email line is half-made, and the
     # repair named here must be the one `add`, `run` and `login` already name.
-    ("half-made-sub", "type=sub\n", None, "sign in again: ccmorph login demo"),
+    ("half-made-sub", "type=sub\n", None, "sign in: ccmorph login demo"),
     ("key-refused-by-claude", f"type=apikey\napi_key={REFUSED_KEY}\n", OK_CURL,
      "let Claude Code use the key again: ccmorph login demo"),
     ("settings-invalid", GW, OK_CURL, "fix the JSON in {settings}"),
@@ -1403,8 +1403,8 @@ def test_doctor_terminal_statuses(tmp_path):
            "TERM": "xterm-256color"}
     env.pop("NO_COLOR", None)
     for overrides, profile, expected, code in [
-        ({}, "demo", "\x1b[38;2;215;119;87m✓\x1b[0m", 0),
-        ({}, "missing", "\x1b[38;2;255;107;128m✗\x1b[0m", 1),
+        ({}, "demo", "\x1b[38;2;194;98;66m✓\x1b[0m", 0),
+        ({}, "missing", "\x1b[38;2;243;32;62m✗\x1b[0m", 1),
         ({"NO_COLOR": "1"}, "demo", "✓ profile:", 0),
         ({"TERM": "dumb"}, "demo", "✓ profile:", 0),
     ]:
@@ -1494,7 +1494,7 @@ def test_bare_doctor_names_both_completion_lines_gh363(tmp_path):
     # no-profile doctor must print both halves of the completion hint.
     result, _ = run_bare_doctor(tmp_path)
     assert "INFO   fpath=(" in result.stdout, result.stdout
-    assert "INFO   autoload -Uz compinit && compinit # add both lines to ~/.zshrc" in result.stdout, result.stdout
+    assert "INFO   autoload -Uz compinit && compinit # completion off; add both to ~/.zshrc" in result.stdout, result.stdout
 
 
 def test_doctor_on_a_fresh_install_fails_without_claude(tmp_path):

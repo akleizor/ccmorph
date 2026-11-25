@@ -540,9 +540,10 @@ func TestTheListingWalkReadsEveryRowShapeOnceIssue479(t *testing.T) {
 	}
 }
 
-// The #562 chat denial is one rule with two remaining spellings, each shaped
-// for its package's JSON decoder: util.DeniedForChat over ordjson rows and
-// this walk over encoding/json rows. Pinned into equality here — every
+// The #562 chat denial is one rule with three spellings, each shaped for its
+// package's reader: util.DeniedForChat over ordjson rows, this walk over
+// encoding/json rows, and ctxwindow.ListingRows, which sizes the listing
+// (#636). Pinned into equality here — every
 // capabilities shape takes the same verdict through both, and only an
 // explicit chat_completion: false denies. The walk once denied on a mere
 // absence (a truthy test, so a row publishing any other capability dropped
@@ -578,6 +579,9 @@ func TestTheListingWalkAndDeniedForChatDenyTheSameRowsIssue617(t *testing.T) {
 		}
 		if denied := util.DeniedForChat(obj); denied != !c.chat {
 			t.Errorf("capabilities %s: DeniedForChat = %v, want chat=%v", c.caps, denied, c.chat)
+		}
+		if kept := len(ctxwindow.ListingRows([]any{decoded})) == 1; kept != c.chat {
+			t.Errorf("capabilities %s: ctxwindow.ListingRows kept=%v, want %v", c.caps, kept, c.chat)
 		}
 		rows := walkListing([]any{decoded}, false)
 		if len(rows) != 1 {
@@ -1897,7 +1901,9 @@ func TestAutoLaunchWithoutModelIsBoundedBySelectDeadline(t *testing.T) {
 	swap(t, &profileDirs, t.TempDir())
 	swap(t, &selectTimeout, 50*time.Millisecond)
 	stalled := make(chan struct{}) // never closed: the gateway that never answers
+	entered := make(chan struct{}) // the classifier really started before the deadline
 	swap(t, &classifyFn, func(_, _, _, _ string, _ bool) ([]Row, error) {
+		close(entered)
 		<-stalled
 		return nil, nil
 	})
@@ -1907,7 +1913,11 @@ func TestAutoLaunchWithoutModelIsBoundedBySelectDeadline(t *testing.T) {
 	t.Cleanup(func() { exiting.Store(false) })
 	exiting.Store(false)
 
-	go Main([]string{"demo", "--auto"})
+	done := make(chan struct{}) // Main's goroutine has finished, defers included
+	go func() {
+		defer close(done)
+		Main([]string{"demo", "--auto"})
+	}()
 	select {
 	case got := <-code:
 		if got != 1 {
@@ -1916,6 +1926,16 @@ func TestAutoLaunchWithoutModelIsBoundedBySelectDeadline(t *testing.T) {
 	case <-time.After(10 * time.Second):
 		t.Fatal("--auto without --model armed no select deadline")
 	}
+	select {
+	case <-entered:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the classifier never ran")
+	}
+	// exitFn sends before runtime.Goexit unwinds, so the captured streams must
+	// not be read until the goroutine is finished: that is the race -race saw.
+	// Releasing the classifier lets Main's own goroutine return.
+	close(stalled)
+	<-done
 	if text := output(); !strings.Contains(text, "classifying") || !strings.Contains(text, "exceeded") {
 		t.Fatalf("no deadline message on stderr: %q", text)
 	}

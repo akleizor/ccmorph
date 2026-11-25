@@ -1,5 +1,7 @@
 package profile
 
+import "slices"
+
 // The env-key lists every launch, read and sweep uses. One copy, here.
 
 var MappingEnv = []string{
@@ -68,15 +70,14 @@ var LaunchEnv = []string{
 	"CCMORPH_ATTEMPT",
 }
 
-// ProfileEnv: the keys a conf may set as env.<NAME>; the mapping keys come first.
-var ProfileEnv = append(append([]string{}, MappingEnv...),
+// ProfileEnv: the keys a conf may set as env.<NAME>; the mapping keys come
+// first, then the tuning keys — composed, so a fourth tuning key reaches this
+// list too (#636).
+var ProfileEnv = slices.Concat(MappingEnv, TuningEnv, []string{
 	"CLAUDE_CODE_ALWAYS_ENABLE_EFFORT",
 	"CLAUDE_CODE_MAX_TOOL_USE_CONCURRENCY",
 	"ENABLE_TOOL_SEARCH",
 	"CLAUDE_CODE_DISABLE_ADVISOR_TOOL",
-	"CLAUDE_CODE_SIMPLE",
-	"MAX_THINKING_TOKENS",
-	"CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC",
 	"CCMORPH_RANDOM_DEVICE_ID",
 	"CCMORPH_AFFINITY_HEADER",
 	"CCMORPH_USER_AGENT",
@@ -96,7 +97,8 @@ var ProfileEnv = append(append([]string{}, MappingEnv...),
 	"ANTHROPIC_CUSTOM_MODEL_OPTION",
 	"ANTHROPIC_CUSTOM_MODEL_OPTION_NAME",
 	"ANTHROPIC_CUSTOM_MODEL_OPTION_DESCRIPTION",
-	"CLAUDE_CODE_MODEL_CAPABILITIES")
+	"CLAUDE_CODE_MODEL_CAPABILITIES",
+})
 
 // Defaults are the allowlists Read checks a conf against.
 func Defaults() Lists { return Lists{ProfileEnv: SetOf(ProfileEnv), MappingEnv: SetOf(MappingEnv)} }

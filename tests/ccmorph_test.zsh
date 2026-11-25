@@ -171,6 +171,20 @@ _ccm_test_collect_leaks() {
   done
 }
 
+# A test home is removed with a bounded retry: a child the test started can
+# still be writing it for a moment after the test returns, and a bare rm -rf
+# printed "Directory not empty" into the gate's log (#636). What is still there
+# after the retries is left to the per-test sweep below, which reaps the
+# children first and removes their homes after.
+_ccm_rm_home() {
+  local tries=0
+  while (( ++tries <= 5 )) && [[ -e "$1" ]]; do
+    command rm -rf -- "$1" 2>/dev/null && [[ ! -e "$1" ]] && return 0
+    command sleep 0.1
+  done
+  return 0
+}
+
 _ccm_test_sweep_homes() {
   local from=$1 pid pass rc=0
   local -a tree volley_tree
@@ -187,7 +201,10 @@ _ccm_test_sweep_homes() {
     command sleep 0.2
     _ccm_test_collect_leaks $from
   done
-  (( $#_ccm_test_leaked || $#_ccm_test_kids )) || return 0
+  if ! (( $#_ccm_test_leaked || $#_ccm_test_kids )); then
+    _ccm_test_remove_homes $from
+    return 0
+  fi
   rc=1
   for pid in $_ccm_test_leaked $_ccm_test_kids; do
     print -u2 -- "pid $pid outlived its test: $(ps -o command= -p $pid 2>/dev/null)"
@@ -212,7 +229,20 @@ _ccm_test_sweep_homes() {
   for pid in $volley_tree $tree; do
     kill -KILL $pid 2>/dev/null
   done
+  _ccm_test_remove_homes $from
   return $rc
+}
+
+# The homes the test registered and its own removal left behind (a child was
+# still writing): with the children reaped, nothing writes them any more.
+_ccm_test_remove_homes() {
+  local home
+  for home in ${_ccm_test_homes[$1,-1]}; do
+    # A PATH mirror is cached across tests (_ccm_test_path_mirrors): kept.
+    (( ${${(v)_ccm_test_path_mirrors}[(Ie)$home]} )) && continue
+    [[ -e "$home" ]] && _ccm_rm_home "$home"
+  done
+  return 0
 }
 
 # GH-434: a trapped signal runs its handler the moment it lands, even
@@ -528,7 +558,7 @@ test_models_does_not_send_anthropic_version() {
   source "$CCMORPH_SOURCE"
 
   ccmorph _models gw >/dev/null || {
-    rm -rf "$test_home"
+    _ccm_rm_home "$test_home"
     return 1
   }
 
@@ -541,7 +571,7 @@ test_models_does_not_send_anthropic_version() {
     "$(<"$HOME/curl.args")" \
     'x-api-key: sk_prod_test' \
     'the key must still be sent' || rc=1
-  rm -rf "$test_home"
+  _ccm_rm_home "$test_home"
   return $rc
 }
 
@@ -559,7 +589,7 @@ test_models_lists_only_chat_capable_from_the_gateway() {
   local actual rc=0
   actual=$(ccmorph _models gw) || {
     print -u2 -- 'ccmorph models must succeed against a reachable gateway'
-    rm -rf "$test_home"
+    _ccm_rm_home "$test_home"
     return 1
   }
 
@@ -585,7 +615,7 @@ test_models_lists_only_chat_capable_from_the_gateway() {
     "$args" \
     'x-api-key: sk_prod_test' \
     "models must authenticate with the profile's key" || rc=1
-  rm -rf "$test_home"
+  _ccm_rm_home "$test_home"
   return $rc
 }
 
@@ -615,7 +645,7 @@ test_models_second_column_shows_display_name_or_owner() {
   local actual
   actual=$(ccmorph _models gw) || {
     print -u2 -- 'ccmorph models must succeed against a reachable gateway'
-    rm -rf "$test_home"
+    _ccm_rm_home "$test_home"
     return 1
   }
 
@@ -624,10 +654,10 @@ test_models_second_column_shows_display_name_or_owner() {
   local want=$'bare-fake-2\t\nclaude-haiku-fake-1\tFake Haiku 1\nglm-fake-9\tfakeco'
   [[ "$actual" == "$want" ]] || {
     print -u2 -- "the second column must name the model, never a bare ? (got: ${(qqq)actual})"
-    rm -rf "$test_home"
+    _ccm_rm_home "$test_home"
     return 1
   }
-  rm -rf "$test_home"
+  _ccm_rm_home "$test_home"
 }
 
 # A gateway records the HTTPS_PROXY it was invoked with, so a test can prove
@@ -666,7 +696,7 @@ test_models_discovery_uses_the_ambient_proxy() {
   }
   assert_contains "$(<"$HOME/curl.env")" 'HTTPS_PROXY=http://127.0.0.1:47999' \
     'discovery curl must see the ambient proxy, never a blanked one' || rc=1
-  rm -rf "$test_home"
+  _ccm_rm_home "$test_home"
   return $rc
 }
 
@@ -693,13 +723,13 @@ test_models_keeps_entries_that_declare_no_capabilities() {
   local actual rc=0
   actual=$(ccmorph _models native) || {
     print -u2 -- 'an endpoint without a capabilities field must still list models'
-    rm -rf "$test_home"
+    _ccm_rm_home "$test_home"
     return 1
   }
 
   assert_contains "$actual" 'plain-a' 'undeclared capability must not exclude a model' || rc=1
   assert_contains "$actual" 'plain-b' 'undeclared capability must not exclude a model' || rc=1
-  rm -rf "$test_home"
+  _ccm_rm_home "$test_home"
   return $rc
 }
 
@@ -712,7 +742,7 @@ test_models_defaults_to_anthropic_when_profile_has_no_base_url() {
   source "$CCMORPH_SOURCE"
 
   ccmorph _models native >/dev/null || {
-    rm -rf "$test_home"
+    _ccm_rm_home "$test_home"
     return 1
   }
 
@@ -721,7 +751,7 @@ test_models_defaults_to_anthropic_when_profile_has_no_base_url() {
     "$(<"$HOME/curl.args")" \
     'https://api.anthropic.com/v1/models' \
     'a profile with no base_url must query the native endpoint' || rc=1
-  rm -rf "$test_home"
+  _ccm_rm_home "$test_home"
   return $rc
 }
 
@@ -738,7 +768,7 @@ test_models_rejects_a_profile_with_no_key() {
     print -u2 -- 'a subscription profile has no key to query a gateway with'
     rc=1
   fi
-  rm -rf "$test_home"
+  _ccm_rm_home "$test_home"
   return $rc
 }
 
@@ -760,14 +790,14 @@ test_the_listing_shows_the_model_that_will_actually_launch() {
   local rc=0 shown
   shown=$(ccmorph list) || {
     print -u2 -- 'the listing must succeed'
-    rm -rf "$test_home"; return 1
+    _ccm_rm_home "$test_home"; return 1
   }
   assert_contains "$shown" 'conf-bootstrap' \
     'the listing must show the configured conf default' || rc=1
   assert_not_contains "$shown" 'chosen-model' \
     'native inline state must not override a configured default' || rc=1
 
-  rm -rf "$test_home"
+  _ccm_rm_home "$test_home"
   return $rc
 }
 
@@ -784,11 +814,11 @@ test_the_listing_names_an_account_with_no_default_model() {
   source "$CCMORPH_SOURCE"
 
   local rc=0 shown
-  shown=$(ccmorph list) || { rm -rf "$test_home"; return 1; }
+  shown=$(ccmorph list) || { _ccm_rm_home "$test_home"; return 1; }
   assert_not_contains "$shown" '→ ?' \
     'an unset default must not be shown as an unexplained question mark' || rc=1
 
-  rm -rf "$test_home"
+  _ccm_rm_home "$test_home"
   return $rc
 }
 
@@ -812,7 +842,7 @@ test_the_listing_refuses_words_after_the_verb() {
   fi
   assert_contains "$err" 'extra' 'the stray word must be named' || rc=1
 
-  rm -rf "$test_home"
+  _ccm_rm_home "$test_home"
   return $rc
 }
 
@@ -830,7 +860,7 @@ test_model_command_sets_the_profiles_default_model() {
   local rc=0
   ccmorph set gw model alpha-chat >/dev/null || {
     print -u2 -- 'ccmorph model <name> <id> must succeed'
-    rm -rf "$test_home"; return 1
+    _ccm_rm_home "$test_home"; return 1
   }
   local got
   got=$(python3 -c '
@@ -849,7 +879,7 @@ print(d.get("model"), d.get("effortLevel"), "ANTHROPIC_MODEL" in env)
   shown=$(ccmorph get gw model) || rc=1
   assert_contains "$shown" 'alpha-chat' \
     'ccmorph get <profile> model must report the current default' || rc=1
-  rm -rf "$test_home"
+  _ccm_rm_home "$test_home"
   return $rc
 }
 
@@ -869,15 +899,18 @@ test_set_model_interactively_saves_the_chosen_id() {
   export _CCMORPH_PROFILE_DIRS="$HOME/.config/ccmorph/profiles"
   fake_gateway
   fake_fzf
+  # The menu opens on its Keep row, even with nothing saved (#636); this fzf
+  # takes the first catalogue row past it.
+  sed -i.bak 's/| head -n 1/| grep -v "^@keep" | head -n 1/' "$HOME/bin/fzf"
   write_apikey_conf gw 'api_key=sk_prod_test' 'base_url=https://gateway.invalid'
   source "$CCMORPH_SOURCE"
   local rc=0 out saved
 
-  # fake_fzf takes the first offered row. The listing is sorted, so that is
-  # alpha-chat -- an id this test never types, which is the point.
+  # The first catalogue row: the listing is sorted, so that is alpha-chat --
+  # an id this test never types, which is the point.
   out=$(ccmorph set gw model -i 2>/dev/null) || {
     print -u2 -- '-i must save a chosen model, not fail'
-    rm -rf "$test_home"; return 1
+    _ccm_rm_home "$test_home"; return 1
   }
   [[ "$out" == alpha-chat ]] || {
     print -u2 -- "-i must print the bare chosen id (got: $out)"; rc=1
@@ -886,11 +919,15 @@ test_set_model_interactively_saves_the_chosen_id() {
   [[ "$saved" == alpha-chat ]] || {
     print -u2 -- "the chosen model must be saved (got: $saved)"; rc=1
   }
+  [[ "$(head -n 1 "$HOME/fzf.input")" == @keep* ]] \
+    || { print -u2 -- 'the menu must open on its Keep row'; rc=1; }
   # The non-chat model must never be offered.
   assert_not_contains "$(<"$HOME/fzf.input")" 'embed-only' \
     'the picker must not offer a model that cannot serve a session' || rc=1
 
-  # A missing value is the same request as an explicit -i.
+  # A missing value is the same request as an explicit -i. With alpha-chat now
+  # saved, the first row is its Keep row, and taking it keeps alpha-chat.
+  command mv -f "$HOME/bin/fzf.bak" "$HOME/bin/fzf"
   mkdir -p "$HOME/.config/ccmorph/profiles/gw"
   print -r -- '{}' > "$HOME/.config/ccmorph/profiles/gw/settings.json"
   out=$(ccmorph set gw model 2>/dev/null) || {
@@ -899,7 +936,7 @@ test_set_model_interactively_saves_the_chosen_id() {
   [[ "$out" == alpha-chat ]] || {
     print -u2 -- "an omitted value must save the chosen id (got: $out)"; rc=1
   }
-  rm -rf "$test_home"
+  _ccm_rm_home "$test_home"
   return $rc
 }
 
@@ -938,7 +975,7 @@ test_search_picker_on_an_old_fzf_never_hides_rows_silently_issue_278() {
     'a list the terminal cannot hold gets the whole terminal' || rc=1
   assert_contains "$(<"$HOME/fzf.args")" $'--header\nMore rows than fit here:' \
     'a cut list must say rows are cut' || rc=1
-  rm -rf "$test_home"
+  _ccm_rm_home "$test_home"
   return $rc
 }
 
@@ -1027,7 +1064,7 @@ sys.exit(status >> 8 if os.WIFEXITED(status) else 1)'
     }
   done
   done
-  rm -rf "$test_home"
+  _ccm_rm_home "$test_home"
   return $rc
 }
 
@@ -1044,7 +1081,7 @@ test_set_effort_interactively_offers_the_engine_levels() {
   local rc=0 out offered
   offered=$(ccmorph _ui rows effort gw 2>/dev/null) || {
     print -u2 -- '-i must offer effort levels'
-    rm -rf "$test_home"; return 1
+    _ccm_rm_home "$test_home"; return 1
   }
   out="${${offered%%$'\n'*}%%$'\t'*}"
   ccmorph set gw effort "$out" >/dev/null 2>&1 || { print -u2 -- '-i must save a chosen effort level'; rc=1; }
@@ -1057,7 +1094,7 @@ test_set_effort_interactively_offers_the_engine_levels() {
   [[ ! -f "$HOME/curl.args" ]] || {
     print -u2 -- 'the effort picker must not query the endpoint'; rc=1
   }
-  rm -rf "$test_home"
+  _ccm_rm_home "$test_home"
   return $rc
 }
 
@@ -1088,7 +1125,7 @@ test_the_picker_without_fzf_names_the_direct_command_and_the_choices() {
     'the refusal must name the direct command with the profile filled in' || rc=1
   assert_contains "$err" 'xhigh' \
     'the refusal must still show what there was to choose from' || rc=1
-  rm -rf "$test_home"
+  _ccm_rm_home "$test_home"
   return $rc
 }
 
@@ -1111,7 +1148,7 @@ test_a_test_home_hides_the_machines_bridge_issue_414() {
     print -u2 -- "a stub bridge in \$HOME/bin must be what the test's PATH finds"
     rc=1
   }
-  rm -rf "$test_home"
+  _ccm_rm_home "$test_home"
   return $rc
 }
 
@@ -1150,7 +1187,7 @@ test_a_bridged_path_entry_keeps_its_coresident_tools_issue_476() {
   }
   PATH="$saved_path"
   [[ -n "$cleaned" ]] && rm -rf -- "$cleaned"
-  rm -rf "$test_home"
+  _ccm_rm_home "$test_home"
   return $rc
 }
 
@@ -1173,7 +1210,7 @@ test_saved_default_model_beats_the_confs_bootstrap_model_at_launch() {
   source "$CCMORPH_SOURCE"
 
   _ccm_launch -a proxy prompt || {
-    rm -rf "$test_home"
+    _ccm_rm_home "$test_home"
     return 1
   }
 
@@ -1184,7 +1221,7 @@ test_saved_default_model_beats_the_confs_bootstrap_model_at_launch() {
   assert_not_contains "$actual" 'chosen-model' \
     'native saved state must not override the configured default' || rc=1
 
-  rm -rf "$test_home"
+  _ccm_rm_home "$test_home"
   return $rc
 }
 
@@ -1202,7 +1239,7 @@ test_explicit_model_flag_beats_the_saved_default() {
   source "$CCMORPH_SOURCE"
 
   _ccm_launch -a proxy --model flag-model prompt || {
-    rm -rf "$test_home"
+    _ccm_rm_home "$test_home"
     return 1
   }
 
@@ -1215,7 +1252,7 @@ test_explicit_model_flag_beats_the_saved_default() {
   assert_not_contains "$actual" 'chosen-model' \
     'an explicit --model must outrank the saved default' || rc=1
 
-  rm -rf "$test_home"
+  _ccm_rm_home "$test_home"
   return $rc
 }
 
@@ -1242,7 +1279,7 @@ test_effort_command_leaves_native_per_model_state_untouched() {
   local rc=0
   ccmorph set gw effort xhigh >/dev/null || {
     print -u2 -- 'ccmorph effort <profile> <level> must succeed'
-    rm -rf "$test_home"; return 1
+    _ccm_rm_home "$test_home"; return 1
   }
   local got
   got=$(python3 -c '
@@ -1259,7 +1296,7 @@ print(d.get("effortLevel"),
     print -u2 -- "native modelSettings must survive a new default (got: $got)"
     rc=1
   }
-  rm -rf "$test_home"
+  _ccm_rm_home "$test_home"
   return $rc
 }
 
@@ -1276,7 +1313,7 @@ test_effort_command_sets_the_profiles_default_effort() {
   local rc=0
   ccmorph set gw effort xhigh >/dev/null || {
     print -u2 -- 'ccmorph effort <name> <level> must succeed'
-    rm -rf "$test_home"; return 1
+    _ccm_rm_home "$test_home"; return 1
   }
   local got
   got=$(python3 -c '
@@ -1288,7 +1325,7 @@ print(d.get("effortLevel"), d.get("model"))
     print -u2 -- "the default effort must land in conf, native settings kept (got: $got)"
     rc=1
   }
-  rm -rf "$test_home"
+  _ccm_rm_home "$test_home"
   return $rc
 }
 
@@ -1311,7 +1348,7 @@ test_effort_command_refuses_a_level_claude_code_would_drop() {
   [[ ! -f "$HOME/.config/ccmorph/profiles/gw/settings.json" ]] ||
     assert_not_contains "$(<"$HOME/.config/ccmorph/profiles/gw/settings.json")" 'turbo' \
       'a refused level must not be written' || rc=1
-  rm -rf "$test_home"
+  _ccm_rm_home "$test_home"
   return $rc
 }
 
@@ -1377,7 +1414,7 @@ PY
   assert_not_contains "$out" 'skipping invalid profile' \
     'a repaired profile must not be skipped' || rc=1
 
-  rm -rf "$test_home"
+  _ccm_rm_home "$test_home"
   return $rc
 }
 
@@ -1421,7 +1458,7 @@ test_set_model_refuses_a_flag_shaped_value() {
       rc=1
     }
   done
-  rm -rf "$test_home"
+  _ccm_rm_home "$test_home"
   return $rc
 }
 
@@ -1482,7 +1519,7 @@ test_set_model_refuses_an_unserved_id_and_saves_only_on_confirm_issue_267() {
   }
   assert_not_contains "$err" 'is not served by' \
     'the saved id is not judged again when it is kept' || rc=1
-  rm -rf "$test_home"
+  _ccm_rm_home "$test_home"
   return $rc
 }
 
@@ -1591,7 +1628,7 @@ exit 18'
   err=$(ccmorph set gw model quiet-again </dev/null 2>&1 >/dev/null)
   assert_contains "$err" 'did not answer, so the model was not checked' \
     'silence must still be called silence (got: '"$err"')' || rc=1
-  rm -rf "$test_home"
+  _ccm_rm_home "$test_home"
   return $rc
 }
 
@@ -1636,7 +1673,7 @@ test_run_model_flag_refuses_an_unserved_id_before_claude_opens_issue_267() {
     print -u2 -- 'claude must not open on --resume with an unserved --model id'
     rc=1
   }
-  rm -rf "$test_home"
+  _ccm_rm_home "$test_home"
   return $rc
 }
 
@@ -1658,7 +1695,7 @@ test_set_adapter_is_rejected_as_automatic() {
     rc=1
   }
   assert_contains "$out" 'model|effort' 'retired adapter setting must name the supported settings' || rc=1
-  rm -rf "$test_home"
+  _ccm_rm_home "$test_home"
   return $rc
 
 }
@@ -1685,7 +1722,7 @@ test_effort_interactive_still_requires_a_real_profile() {
     print -u2 -- 'nothing may be written for a profile that does not exist'
     rc=1
   }
-  rm -rf "$test_home"
+  _ccm_rm_home "$test_home"
   return $rc
 }
 
@@ -1703,14 +1740,14 @@ test_the_former_pick_name_still_works() {
   local rc=0 picked
   picked=$(ccmorph _menu gw) || {
     print -u2 -- 'the former `pick` name must keep working as an alias'
-    rm -rf "$test_home"
+    _ccm_rm_home "$test_home"
     return 1
   }
   [[ "$picked" == alpha-chat ]] || {
     print -u2 -- "the alias must behave identically; got: ${(qqq)picked}"
     rc=1
   }
-  rm -rf "$test_home"
+  _ccm_rm_home "$test_home"
   return $rc
 }
 
@@ -1732,7 +1769,7 @@ test_menu_with_no_account_chains_from_the_account_chooser() {
   local rc=0 picked
   picked=$(ccmorph _menu) || {
     print -u2 -- 'the model picker with no profile must offer the profile chooser first'
-    rm -rf "$test_home"
+    _ccm_rm_home "$test_home"
     return 1
   }
   # The stub picks the first row of each chooser: the only profile, then its
@@ -1741,7 +1778,7 @@ test_menu_with_no_account_chains_from_the_account_chooser() {
     print -u2 -- "chaining must end at a model id; got: ${(qqq)picked}"
     rc=1
   }
-  rm -rf "$test_home"
+  _ccm_rm_home "$test_home"
   return $rc
 }
 
@@ -1763,14 +1800,14 @@ test_menu_keeps_a_catalogue_value_spelled_at_keep() {
   local rc=0 picked
   picked=$(ccmorph _menu prov) || {
     print -u2 -- 'the model menu must succeed on a provider catalogue'
-    rm -rf "$test_home"
+    _ccm_rm_home "$test_home"
     return 1
   }
   [[ "$picked" == '@keep' ]] || {
     print -u2 -- "the menu must answer the catalogue value unchanged; got: ${(qqq)picked}"
     rc=1
   }
-  rm -rf "$test_home"
+  _ccm_rm_home "$test_home"
   return $rc
 }
 
@@ -1791,7 +1828,7 @@ test_version_accepts_the_conventional_flags() {
     }
     assert_contains "$out" 'ccmorph ' "ccmorph $flag must print the version" || rc=1
   done
-  rm -rf "$test_home"
+  _ccm_rm_home "$test_home"
   return $rc
 }
 
@@ -1987,7 +2024,7 @@ test_claude_subcommands_are_asked_for_never_hardcoded() {
   _CCMORPH_CLAUDE_OPT_ARITY_PROBED=0
   _CCMORPH_CLAUDE_HELP=""
   _CCMORPH_CLAUDE_HELP_PROBED=0
-  rm -rf "$test_home"
+  _ccm_rm_home "$test_home"
   return $rc
 }
 
@@ -2065,7 +2102,7 @@ test_arguments_reach_claude_exactly_as_given() {
     fi
   done
 
-  rm -rf "$test_home"
+  _ccm_rm_home "$test_home"
   return $rc
 }
 
@@ -2115,7 +2152,7 @@ test_a_word_behind_runs_own_separator_is_never_rewritten_issue_751() {
     rc=1
   }
 
-  rm -rf "$test_home"
+  _ccm_rm_home "$test_home"
   return $rc
 }
 
@@ -2144,7 +2181,7 @@ test_run_with_a_profile_keeps_claudes_native_help() {
   assert_not_contains "$output" 'Usage: ccmorph run' \
     'run gw --help must not print ccmorph page instead of forwarding' || rc=1
 
-  rm -rf "$test_home"
+  _ccm_rm_home "$test_home"
   return $rc
 }
 
@@ -2237,7 +2274,7 @@ test_a_launch_that_opens_no_session_answers_while_the_endpoint_is_down_issue_650
     print -u2 -- "FAIL: agent dispatch rewrote the prompt 'version' into --version: $(<"$CCMORPH_TEST_LOG")"
     rc=1
   fi
-  rm -rf "$test_home"
+  _ccm_rm_home "$test_home"
   return $rc
 }
 
@@ -2273,7 +2310,7 @@ test_a_missing_argument_prints_usage_under_nounset() {
   out=$(ccmorph mv 2>&1)
   assert_contains "$out" 'ccmorph mv' \
     'the usage line must name the verb that was typed, not a retired one' || rc=1
-  rm -rf "$test_home"
+  _ccm_rm_home "$test_home"
   return $rc
 }
 
@@ -2294,7 +2331,7 @@ test_claude_subcommands_reach_claude_through_the_launch_pipeline() {
   source "$CCMORPH_SOURCE"
   ccmorph use gw >/dev/null || {
     print -u2 -- 'could not set a default profile'
-    rm -rf "$test_home"; return 1
+    _ccm_rm_home "$test_home"; return 1
   }
 
   # The dispatcher marks a subcommand launch for the launcher, which is what suppresses
@@ -2359,7 +2396,7 @@ test_claude_subcommands_reach_claude_through_the_launch_pipeline() {
     }
   done
 
-  rm -rf "$test_home"
+  _ccm_rm_home "$test_home"
   return $rc
 }
 
@@ -2383,7 +2420,7 @@ test_a_retired_verb_is_rejected_not_merely_undocumented() {
     assert_contains "$err" 'unknown command' \
       "a retired verb must report itself unknown (got: $err)" || rc=1
   done
-  rm -rf "$test_home"
+  _ccm_rm_home "$test_home"
   return $rc
 }
 
@@ -2429,7 +2466,7 @@ test_the_retired_window_verb_still_dispatches() {
     print -u2 -- "  ${retired}: $out_old"
     rc=1
   fi
-  rm -rf "$test_home"
+  _ccm_rm_home "$test_home"
   return $rc
 }
 
@@ -2503,9 +2540,12 @@ test_only_the_current_vocabulary_is_taught() {
   fi
   # And help must teach the set verb. The help is rendered through `_ccm_help` rows,
   # not literal `print "  ccmorph …"` lines, so the check matches the call shape.
+  # The row carries usageLine's optional-bracket spelling (#636): every argument
+  # may be omitted, so the pinned shape reads with square brackets, not the old
+  # required-looking angle ones.
   local help_all
   help_all=$(command env -i HOME="$HOME" PATH="$PATH" NO_COLOR=1 zsh "$REPO_ROOT/bin/ccmorph" help all 2>&1)
-  if [[ "$help_all" != *'ccmorph set <profile> <model|effort>'* ]]; then
+  if [[ "$help_all" != *'ccmorph set [profile] [model|effort] [value]'* ]]; then
     print -u2 -- 'help must teach the set verb'
     rc=1
   fi
@@ -2548,7 +2588,7 @@ test_menu_returns_a_bare_model_id() {
   local picked rc=0
   picked=$(ccmorph _menu gw) || {
     print -u2 -- 'the model picker must succeed when fzf returns a choice'
-    rm -rf "$test_home"
+    _ccm_rm_home "$test_home"
     return 1
   }
 
@@ -2556,7 +2596,7 @@ test_menu_returns_a_bare_model_id() {
     print -u2 -- "pick must emit only the model id; got: ${(qqq)picked}"
     rc=1
   }
-  rm -rf "$test_home"
+  _ccm_rm_home "$test_home"
   return $rc
 }
 
@@ -2573,7 +2613,7 @@ test_launch_interactive_resolves_the_account() {
   # No --model, so -i asks for the profile AND then the model. The fake picker
   # answers both from the same stub.
   _ccm_launch -i prompt || {
-    rm -rf "$test_home"
+    _ccm_rm_home "$test_home"
     return 1
   }
 
@@ -2584,7 +2624,7 @@ test_launch_interactive_resolves_the_account() {
     'the interactive flag must never reach Claude Code' || rc=1
   assert_not_contains "$(<"$HOME/fzf.input")" 'sk-test-' \
     'profile picker rows must not expose credentials' || rc=1
-  rm -rf "$test_home"
+  _ccm_rm_home "$test_home"
   return $rc
 }
 
@@ -2612,7 +2652,7 @@ test_launch_sizes_without_waiting_on_the_network() {
   source "$CCMORPH_SOURCE"
 
   _ccm_launch -a alpha prompt || {
-    rm -rf "$test_home"
+    _ccm_rm_home "$test_home"
     return 1
   }
 
@@ -2620,7 +2660,7 @@ test_launch_sizes_without_waiting_on_the_network() {
   actual="$(<"$CCMORPH_TEST_LOG")"
   assert_contains "$actual" 'PROXY=http://127.0.0.1:1' \
     'the refusing sizing proxy must reach the launched Claude Code' || rc=1
-  rm -rf "$test_home"
+  _ccm_rm_home "$test_home"
   return $rc
 }
 
@@ -2654,7 +2694,7 @@ test_launch_interactive_with_an_account_asks_only_the_model() {
       print -u2 -- "$form -i ran the profile chooser it should have skipped"
       rc=1
     fi
-    rm -rf "$test_home"
+    _ccm_rm_home "$test_home"
   done
   return $rc
 }
@@ -2687,7 +2727,7 @@ test_launch_interactive_opens_on_the_saved_model_issue_377() {
     print -u2 -- 'the launch picker must offer the Keep row first, so the cursor opens on it'
     rc=1
   }
-  rm -rf "$test_home"
+  _ccm_rm_home "$test_home"
   return $rc
 }
 
@@ -2717,7 +2757,7 @@ test_public_model_picker_flag_asks_only_for_model() {
       print -u2 -- "public $form --model -i ran the profile chooser"
       rc=1
     fi
-    rm -rf "$test_home"
+    _ccm_rm_home "$test_home"
   done
   return $rc
 }
@@ -2740,13 +2780,13 @@ test_interactive_asks_no_model_where_ccmorph_owns_no_list() {
   local rc=0
   _ccm_launch -i prompt || {
     print -u2 -- '-i on a native profile must launch, not fail reaching an endpoint'
-    rm -rf "$test_home"; return 1
+    _ccm_rm_home "$test_home"; return 1
   }
 
   local actual="$(<"$CCMORPH_TEST_LOG")"
   assert_not_contains "$actual" '--model' \
     'ccmorph must not choose a model for a native profile' || rc=1
-  rm -rf "$test_home"
+  _ccm_rm_home "$test_home"
   return $rc
 }
 
@@ -2777,7 +2817,7 @@ test_cancelled_profile_picker_launches_nothing() {
     print -u2 -- 'a cancelled profile picker must not launch Claude Code'
     rc=1
   }
-  rm -rf "$test_home"
+  _ccm_rm_home "$test_home"
   return $rc
 }
 
@@ -2793,7 +2833,7 @@ test_profile_picker_does_not_change_default() {
   source "$CCMORPH_SOURCE"
 
   _ccm_launch -i prompt >/dev/null || {
-    rm -rf "$test_home"
+    _ccm_rm_home "$test_home"
     return 1
   }
 
@@ -2802,7 +2842,7 @@ test_profile_picker_does_not_change_default() {
     print -u2 -- '-i must not change the saved default'
     rc=1
   }
-  rm -rf "$test_home"
+  _ccm_rm_home "$test_home"
   return $rc
 }
 
@@ -2817,7 +2857,7 @@ test_profile_pick_precedes_model_pick() {
   source "$CCMORPH_SOURCE"
 
   _ccm_launch -i prompt || {
-    rm -rf "$test_home"
+    _ccm_rm_home "$test_home"
     return 1
   }
 
@@ -2826,7 +2866,7 @@ test_profile_pick_precedes_model_pick() {
     'the model list must come from the profile just chosen' || rc=1
   assert_contains "$actual" 'API_KEY=sk-test-alpha' \
     '-i must launch the selected profile' || rc=1
-  rm -rf "$test_home"
+  _ccm_rm_home "$test_home"
   return $rc
 }
 
@@ -2840,7 +2880,7 @@ test_launch_interactive_resolves_a_real_model() {
   source "$CCMORPH_SOURCE"
 
   _ccm_launch -a gw -i prompt || {
-    rm -rf "$test_home"
+    _ccm_rm_home "$test_home"
     return 1
   }
 
@@ -2854,7 +2894,7 @@ test_launch_interactive_resolves_a_real_model() {
     "$actual" \
     $'--model\t-i' \
     'the flag must never be passed through as a model value' || rc=1
-  rm -rf "$test_home"
+  _ccm_rm_home "$test_home"
   return $rc
 }
 
@@ -2885,7 +2925,7 @@ test_launch_aborts_when_pick_is_cancelled() {
     print -u2 -- 'a cancelled picker must not launch Claude Code at all'
     rc=1
   }
-  rm -rf "$test_home"
+  _ccm_rm_home "$test_home"
   return $rc
 }
 
@@ -2896,7 +2936,7 @@ test_proxy_model_is_bootstrap_fallback() {
   source "$CCMORPH_SOURCE"
 
   _ccm_launch -a proxy prompt || {
-    rm -rf "$test_home"
+    _ccm_rm_home "$test_home"
     return 1
   }
 
@@ -2918,7 +2958,7 @@ test_proxy_model_is_bootstrap_fallback() {
     "$actual" \
     'LAUNCH_EFFORT=<unset>' \
     'ccmorph must not expose wrapper-owned effort relay state' || rc=1
-  rm -rf "$test_home"
+  _ccm_rm_home "$test_home"
   return $rc
 }
 
@@ -2931,7 +2971,7 @@ test_proxy_context_limit_reaches_claude() {
   source "$CCMORPH_SOURCE"
 
   _ccm_launch -a proxy prompt || {
-    rm -rf "$test_home"
+    _ccm_rm_home "$test_home"
     return 1
   }
 
@@ -2941,7 +2981,7 @@ test_proxy_context_limit_reaches_claude() {
     "$actual" \
     'MAX_CONTEXT=400000' \
     'proxy context limit must reach the Claude Code process' || rc=1
-  rm -rf "$test_home"
+  _ccm_rm_home "$test_home"
   return $rc
 }
 
@@ -2990,7 +3030,7 @@ test_add_apikey_preset_fills_endpoint_and_tiers() {
     (( ${#${(@ps:\t:)line}} == 6 )) || { print -u2 -- "preset row needs 6 fields: $line"; rc=1 }
     [[ "${${(@ps:\t:)line}[3]}" == https://* ]] || { print -u2 -- "preset URL must be https: $line"; rc=1 }
   done < "$REPO_ROOT/share/provider-presets.tsv"
-  rm -rf "$test_home"
+  _ccm_rm_home "$test_home"
   return $rc
 }
 
@@ -3018,7 +3058,7 @@ test_add_apikey_lists_anthropic_first() {
   }
   assert_contains "$out" 'API key for anth — Anthropic (hidden): ' 'the key prompt must name Anthropic' || rc=1
   assert_not_contains "$out" 'Base URL' 'the Anthropic row asks for no address' || rc=1
-  rm -rf "$test_home"
+  _ccm_rm_home "$test_home"
   return $rc
 }
 
@@ -3033,12 +3073,12 @@ test_add_apikey_native_endpoint_skips_adapter() {
   # before the key so the key prompt can name the service it is for (#278).
   local out
   out=$(ccmorph add nativegw <<< $'3\ncustom\nhttp://native.invalid\nnative-key\n' 2>&1) || {
-    rm -rf "$test_home"
+    _ccm_rm_home "$test_home"
     return 1
   }
   assert_contains "$out" 'API key for nativegw — http://native.invalid (hidden): ' \
     'the key prompt must name the service the key is for' || {
-    rm -rf "$test_home"
+    _ccm_rm_home "$test_home"
     return 1
   }
 
@@ -3047,7 +3087,7 @@ test_add_apikey_native_endpoint_skips_adapter() {
     'apikey type must be written' || rc=1
   assert_not_contains "$actual" 'adapter=true' \
     'adapter must NOT be set when the endpoint speaks /v1/messages' || rc=1
-  rm -rf "$test_home"
+  _ccm_rm_home "$test_home"
   return $rc
 }
 
@@ -3086,13 +3126,13 @@ test_add_apikey_model_level_404_is_native() {
 
   local out rc=0
   out=$(ccmorph add nativemodel404 <<< $'3\ncustom\nhttp://native404.invalid\nk\n') || {
-    rm -rf "$test_home"
+    _ccm_rm_home "$test_home"
     return 1
   }
   local actual="$(<"$HOME/.config/ccmorph/nativemodel404.conf")"
   assert_not_contains "$actual" 'adapter=true' \
     'a 404 naming the MODEL proves the route exists — must not enable the adapter' || rc=1
-  rm -rf "$test_home"
+  _ccm_rm_home "$test_home"
   return $rc
 }
 
@@ -3115,7 +3155,7 @@ test_help_teaches_credential_type_not_gateway_shape() {
     'help must say what a token profile cannot do' || rc=1
   assert_not_contains "$help" $'\n  proxy' \
     'help must not teach legacy proxy as a second profile type' || rc=1
-  rm -rf "$test_home"
+  _ccm_rm_home "$test_home"
   return $rc
 }
 
@@ -3136,7 +3176,7 @@ test_direct_resume_recovers_last_main_thread_model_command() {
     > "$transcript"
 
   _ccm_launch -a proxy --resume "$session_id" || {
-    rm -rf "$test_home"
+    _ccm_rm_home "$test_home"
     return 1
   }
 
@@ -3150,7 +3190,7 @@ test_direct_resume_recovers_last_main_thread_model_command() {
     "$actual" \
     'sidechain-model' \
     'direct resume must ignore sidechain /model commands' || rc=1
-  rm -rf "$test_home"
+  _ccm_rm_home "$test_home"
   return $rc
 }
 
@@ -3177,14 +3217,14 @@ test_direct_resume_derives_the_carried_claude_send_id() {
     > "$transcript"
 
   _ccm_launch -a resume1m --resume "$session_id" || {
-    rm -rf "$test_home"
+    _ccm_rm_home "$test_home"
     return 1
   }
 
   local actual="$(<"$CCMORPH_TEST_LOG")" rc=0
   assert_contains "$actual" 'MODEL_ENV=claude-opus-5[1m]' \
     'a resumed probed Claude model must pass through the canonical send-id resolver' || rc=1
-  rm -rf "$test_home"
+  _ccm_rm_home "$test_home"
   return $rc
 }
 
@@ -3204,14 +3244,14 @@ test_direct_resume_carries_a_model_without_a_profile_default() {
     > "$transcript"
 
   _ccm_launch -a nodefault --resume "$session_id" || {
-    rm -rf "$test_home"
+    _ccm_rm_home "$test_home"
     return 1
   }
 
   local actual="$(<"$CCMORPH_TEST_LOG")" rc=0
   assert_contains "$actual" 'MODEL_ENV=alpha-chat' \
     'a routed resume must carry its valid model even when the profile has no default' || rc=1
-  rm -rf "$test_home"
+  _ccm_rm_home "$test_home"
   return $rc
 }
 
@@ -3232,7 +3272,7 @@ test_direct_resume_recovers_the_last_assistant_model_without_a_model_command() {
     > "$transcript"
 
   _ccm_launch -a nodefault --resume "$session_id" || {
-    rm -rf "$test_home"
+    _ccm_rm_home "$test_home"
     return 1
   }
 
@@ -3241,7 +3281,7 @@ test_direct_resume_recovers_the_last_assistant_model_without_a_model_command() {
     'a routed resume with no /model command must recover the main assistant model' || rc=1
   assert_not_contains "$actual" 'sidechain-model' \
     'assistant sidechains must not decide the resumed model' || rc=1
-  rm -rf "$test_home"
+  _ccm_rm_home "$test_home"
   return $rc
 }
 
@@ -3288,7 +3328,7 @@ test_an_option_value_that_looks_like_a_flag_is_not_that_flag() {
   assert_contains "$actual" 'MODEL_ENV=sub-model' \
     'a --continue inside an option value must not suppress the profile model' || rc=1
 
-  rm -rf "$test_home"
+  _ccm_rm_home "$test_home"
   return $rc
 }
 
@@ -3348,7 +3388,7 @@ test_a_direct_launch_forwards_a_native_value_that_looks_like_a_launcher_flag() {
   assert_contains "$actual" "ARG${tab}--system-prompt${tab}--profile${tab}other${tab}-p${tab}x"$'\nSUBAGENT' \
     'a flag-shaped value must remain the prompt text under KSH_ARRAYS' || rc=1
 
-  rm -rf "$test_home"
+  _ccm_rm_home "$test_home"
   return $rc
 }
 
@@ -3366,7 +3406,7 @@ test_direct_resume_reports_a_rejected_carried_model() {
     > "$transcript"
 
   out=$(_ccm_launch -a proxy --resume "$session_id" 2>&1) || {
-    rm -rf "$test_home"
+    _ccm_rm_home "$test_home"
     return 1
   }
 
@@ -3375,7 +3415,7 @@ test_direct_resume_reports_a_rejected_carried_model() {
     'a direct resume must report when it changes the carried model' || rc=1
   assert_contains "$actual" 'MODEL_ENV=bootstrap-model' \
     'a rejected carried model must fall back to the profile default' || rc=1
-  rm -rf "$test_home"
+  _ccm_rm_home "$test_home"
   return $rc
 }
 
@@ -3437,7 +3477,7 @@ print -r -- '\''{"has_more":false,"data":[{"id":"gpt-6.1-sol"},{"id":"other-defa
   assert_contains "$actual" $'ARG\t--resume\tmapped-resume\t--model\tclaude-sonnet-5-5\t--effort\tlow' \
     'explicit model and effort flags must remain untouched during mapped resume' || rc=1
   assert_not_contains "$out" 'is not served by mapped' 'explicit model must bypass carried-model rejection' || rc=1
-  rm -rf "$test_home"
+  _ccm_rm_home "$test_home"
   return $rc
 }
 
@@ -3487,7 +3527,7 @@ test_a_hop_reads_the_catalogue_afresh() {
     print -u2 -- "the first pass's catalogue must not reach the next hop: ${(qqq)projected}"
     rc=1
   }
-  rm -rf "$test_home"
+  _ccm_rm_home "$test_home"
   return $rc
 }
 
@@ -3623,7 +3663,7 @@ test_hop_inside_a_core_launch_resumes_on_the_target() {
     rc=1
   }
   unset CCMORPH_TEST_SOURCE CCMORPH_TEST_HOP_ARGS CCMORPH_TEST_TESTS_DIR
-  rm -rf "$test_home"
+  _ccm_rm_home "$test_home"
   return $rc
 }
 
@@ -3663,7 +3703,7 @@ test_hop_failure_names_the_way_back_to_the_source_profile() {
     rc=1
   }
   unset CCMORPH_TEST_SOURCE CCMORPH_TEST_HOP_ARGS CCMORPH_TEST_TESTS_DIR
-  rm -rf "$test_home"
+  _ccm_rm_home "$test_home"
   return $rc
 }
 
@@ -3701,7 +3741,7 @@ test_an_ended_session_prints_the_command_that_resumes_it() {
   out=$(_ccm_launch -a proxy -p x 2>&1) || rc=1
   assert_not_contains "$out" 'ccmorph run proxy --resume' \
     'a print run must not put a resume line in captured output' || rc=1
-  rm -rf "$test_home"
+  _ccm_rm_home "$test_home"
   return $rc
 }
 
@@ -3769,7 +3809,7 @@ test_a_session_with_no_conversation_ends_without_a_resume_command_issue_359() {
     'the failed resume must end with the error Claude Code printed' || rc=1
   assert_not_contains "$out" 'ccmorph run proxy --resume' \
     'a failed resume must not offer the same command again' || rc=1
-  rm -rf "$test_home"
+  _ccm_rm_home "$test_home"
   return $rc
 }
 
@@ -3821,7 +3861,7 @@ test_hop_before_the_first_message_starts_a_new_conversation_issue_288() {
     rc=1
   }
   unset CCMORPH_TEST_SOURCE CCMORPH_TEST_HOP_ARGS CCMORPH_TEST_TESTS_DIR
-  rm -rf "$test_home"
+  _ccm_rm_home "$test_home"
   return $rc
 }
 
@@ -3857,7 +3897,7 @@ test_failed_switch_with_no_conversation_does_not_offer_a_resume_issue_288() {
     rc=1
   }
   unset CCMORPH_TEST_SOURCE CCMORPH_TEST_HOP_ARGS CCMORPH_TEST_TESTS_DIR
-  rm -rf "$test_home"
+  _ccm_rm_home "$test_home"
   return $rc
 }
 
@@ -3879,7 +3919,7 @@ test_hop_relays_model_and_effort() {
   local hop_output
   local NO_COLOR=1
   hop_output=$(hop_as_claude proxy) || {
-    rm -rf "$test_home"
+    _ccm_rm_home "$test_home"
     return 1
   }
 
@@ -3896,7 +3936,7 @@ test_hop_relays_model_and_effort() {
       "relay must carry the current model and effort\n  expected: ${(qqq)expected}\n  actual: ${(qqq)actual}"
     rc=1
   fi
-  rm -rf "$test_home"
+  _ccm_rm_home "$test_home"
   return $rc
 }
 
@@ -3994,7 +4034,7 @@ test_hop_refuses_to_end_the_session_when_the_target_cannot_start() {
     esac
   done
   unset CLAUDE_CODE_SESSION_ID CCMORPH_RELAY_ID
-  rm -rf "$test_home"
+  _ccm_rm_home "$test_home"
   return $rc
 }
 
@@ -4045,7 +4085,7 @@ test_hop_refuses_a_key_claude_code_was_told_to_refuse() {
   [[ ! -e "$HOME/.config/ccmorph/.reswitch.$relay_id" ]] || { print -u2 -- "hop must queue nothing"; rc=1 }
   [[ "$out" != *'Switching'* ]] || { print -u2 -- "hop must not announce a switch: ${(qqq)out}"; rc=1 }
   unset CLAUDE_CODE_SESSION_ID CCMORPH_RELAY_ID
-  rm -rf "$test_home"
+  _ccm_rm_home "$test_home"
   return $rc
 }
 
@@ -4073,7 +4113,7 @@ test_hop_refuses_to_switch_away_from_a_private_profile() {
   [[ ! -e "$HOME/.config/ccmorph/.reswitch.$relay_id" ]] || { print -u2 -- "hop must queue nothing"; rc=1 }
   [[ "$out" != *'Switching'* ]] || { print -u2 -- "hop must not announce a switch: ${(qqq)out}"; rc=1 }
   unset CLAUDE_CODE_SESSION_ID CCMORPH_RELAY_ID CLAUDE_CONFIG_DIR
-  rm -rf "$test_home"
+  _ccm_rm_home "$test_home"
   return $rc
 }
 
@@ -4109,7 +4149,7 @@ test_launch_failure_names_the_cause_and_the_doctor_command() {
     print -u2 -- "a plain launch has no switch to undo: ${(qqq)out}"
     rc=1
   }
-  rm -rf "$test_home"
+  _ccm_rm_home "$test_home"
   return $rc
 }
 
@@ -4124,7 +4164,7 @@ test_hop_refuses_when_no_claude_process_runs_it() {
   [[ "$out" == *'cannot find the Claude Code process'* ]] || { print -u2 -- "hop must say why: ${(qqq)out}"; rc=1 }
   [[ ! -e "$HOME/.config/ccmorph/.reswitch.$CCMORPH_RELAY_ID" ]] || { print -u2 -- 'hop must queue nothing'; rc=1 }
   unset CLAUDE_CODE_SESSION_ID CCMORPH_RELAY_ID
-  rm -rf "$test_home"
+  _ccm_rm_home "$test_home"
   return $rc
 }
 
@@ -4167,7 +4207,7 @@ test_hop_falls_back_when_the_target_cannot_serve_the_model() {
     rc=1
   fi
 
-  rm -rf "$test_home"
+  _ccm_rm_home "$test_home"
   return $rc
 }
 
@@ -4208,7 +4248,7 @@ test_hop_asks_the_gateway_which_models_it_serves() {
     rc=1
   fi
 
-  rm -rf "$test_home"
+  _ccm_rm_home "$test_home"
   return $rc
 }
 
@@ -4257,7 +4297,7 @@ test_hop_without_a_profile_names_the_choices_instead_of_restarting() {
   }
 
   unset CLAUDE_CODE_SESSION_ID CCMORPH_RELAY_ID
-  rm -rf "$test_home"
+  _ccm_rm_home "$test_home"
   return $rc
 }
 
@@ -4290,7 +4330,7 @@ test_hop_to_the_running_profile_changes_nothing() {
   }
 
   unset CLAUDE_CODE_SESSION_ID CCMORPH_RELAY_ID
-  rm -rf "$test_home"
+  _ccm_rm_home "$test_home"
   return $rc
 }
 
@@ -4337,7 +4377,7 @@ test_hop_to_a_wrong_name_inside_claude_answers_in_one_line() {
   }
 
   unset CLAUDE_CODE_SESSION_ID CCMORPH_RELAY_ID
-  rm -rf "$test_home"
+  _ccm_rm_home "$test_home"
   return $rc
 }
 
@@ -4385,7 +4425,7 @@ test_relay_resume_preserves_dangerous_permission_mode() {
 
   local relay_output
   relay_output=$(ZDOTDIR="$HOME" ccmorph run proxy --dangerously-skip-permissions) || {
-    rm -rf "$test_home"
+    _ccm_rm_home "$test_home"
     return 1
   }
 
@@ -4413,7 +4453,7 @@ test_relay_resume_preserves_dangerous_permission_mode() {
     "$actual" \
     $'ARG\t--dangerously-skip-permissions\t--model\tsource-model\t--effort\thigh\t--resume\trelay-session' \
     'relay resume must preserve permission mode, model, and effort' || rc=1
-  rm -rf "$test_home"
+  _ccm_rm_home "$test_home"
   return $rc
 }
 
@@ -4428,7 +4468,7 @@ check_relay_cache_notice_absent() {
   seed_session_transcript relay-session 'spoken before the switch'
   # Seeding atomically replaces the conf: finish it before creating the alias.
   source "$CCMORPH_SOURCE"
-  _ccm_config_store seed-model-defaults proxy || { rm -rf "$test_home"; return 1; }
+  _ccm_config_store seed-model-defaults proxy || { _ccm_rm_home "$test_home"; return 1; }
   # A same-file profile is a second directory entry for proxy.conf (a hard
   # link). Its name differs by more than letter case: on a volume that ignores
   # case PROXY.conf opens proxy.conf, yet it is no profile of its own (#259).
@@ -4476,7 +4516,7 @@ check_relay_cache_notice_absent() {
       rc=1
     }
   fi
-  rm -rf "$test_home"
+  _ccm_rm_home "$test_home"
   return $rc
 }
 
@@ -4523,18 +4563,18 @@ printf "%s %s %s\n" "$1" "$2" "$CLAUDE_CONFIG_DIR" > "$HOME/ran"; echo noise' > 
   out=$(cd "$HOME/work" && _ccm_prelaunch demo)
   [[ -z "$out" ]] || {
     print -u2 "prelaunch must stay stdout-silent inside _env, got: $out"
-    unset CCMORPH_PRELAUNCH; rm -rf "$test_home"; return 1
+    unset CCMORPH_PRELAUNCH; _ccm_rm_home "$test_home"; return 1
   }
   assert_contains "$(<"$HOME/ran")" "prelaunch $HOME/work ${_CCMORPH_PROFILE_DIRS}/demo" \
     'prelaunch must receive the launch cwd and the profile config dir' || {
-    unset CCMORPH_PRELAUNCH; rm -rf "$test_home"; return 1
+    unset CCMORPH_PRELAUNCH; _ccm_rm_home "$test_home"; return 1
   }
   export CCMORPH_PRELAUNCH="$HOME/bin/missing"
   _ccm_prelaunch demo
   local rc=$?
   (( rc == 0 )) || print -u2 'a missing prelaunch executable must never block a launch'
   unset CCMORPH_PRELAUNCH
-  rm -rf "$test_home"
+  _ccm_rm_home "$test_home"
   return $rc
 }
 
@@ -4556,7 +4596,7 @@ test_local_sh_loads_and_its_exports_take_effect() {
     'sourcing ccmorph must load local.sh so its opt-in exports take effect'
   local rc=$?
   unset CCMORPH_PRELAUNCH
-  rm -rf "$test_home"
+  _ccm_rm_home "$test_home"
   return $rc
 }
 
@@ -4575,17 +4615,17 @@ test_absent_local_sh_is_a_clean_noop() {
   unset _CCMORPH_LAUNCH_SOURCED
   source "$CCMORPH_SOURCE" || {
     print -u2 -- 'sourcing must succeed with no local.sh present'
-    rm -rf "$test_home"; return 1
+    _ccm_rm_home "$test_home"; return 1
   }
 
   assert_contains "[${CCMORPH_PRELAUNCH:-<unset>}]" "[<unset>]" \
     'a vanilla install leaves the prelaunch opt-in unset' || {
-    rm -rf "$test_home"; return 1
+    _ccm_rm_home "$test_home"; return 1
   }
   assert_contains "[${_CCMORPH_LAUNCH_SOURCED:-<missing>}]" "[1]" \
     'a vanilla source must run to completion, setting the launcher marker'
   local rc=$?
-  rm -rf "$test_home"
+  _ccm_rm_home "$test_home"
   return $rc
 }
 
@@ -4618,12 +4658,12 @@ test_broken_local_sh_does_not_abort_the_source() {
 
   assert_contains "$result" "src_rc=0" \
     'a parse error in local.sh must not fail the outer source of ccmorph' || {
-    rm -rf "$test_home"; return 1
+    _ccm_rm_home "$test_home"; return 1
   }
   assert_contains "$result" "launcher=1" \
     'a broken local.sh must not prevent ccmorph from reaching the end of its launcher library'
   local rc=$?
-  rm -rf "$test_home"
+  _ccm_rm_home "$test_home"
   return $rc
 }
 
@@ -4739,7 +4779,7 @@ test_a_failed_migration_is_loud() {
   err=$(_ccm_migrate_state 2>&1) && rc=1
   assert_contains "$err" 'migration incomplete' 'failed migration must preserve legacy context' || rc=1
   [[ -f "$HOME/.config/ccmorph/model-registry" ]] || rc=1
-  rm -rf "$test_home"
+  _ccm_rm_home "$test_home"
   return $rc
 }
 
@@ -4814,7 +4854,7 @@ test_a_renamed_state_file_migrates_itself() {
   local out=$(_ccm_model_window proxy bootstrap-model)
   assert_contains "$out" '321000' 'legacy scoped context must move into its profile' || rc=1
   ccmorph list >/dev/null 2>&1 || rc=1
-  rm -rf "$test_home"
+  _ccm_rm_home "$test_home"
   return $rc
 }
 
@@ -4997,7 +5037,7 @@ test_runtime_data_never_looks_like_a_profile() {
   assert_not_contains "$out" 'invalid profile' \
     'listing profiles must produce no invalid-name warning' || rc=1
 
-  rm -rf "$test_home"
+  _ccm_rm_home "$test_home"
   return $rc
 }
 
@@ -5040,7 +5080,7 @@ test_one_models_listing_per_launch_is_shared() {
     rc=1
   }
 
-  rm -rf "$test_home"
+  _ccm_rm_home "$test_home"
   return $rc
 }
 
@@ -5107,7 +5147,7 @@ test_code_and_state_are_separate_directories() {
     rc=1
   }
 
-  rm -rf "$test_home"
+  _ccm_rm_home "$test_home"
   return $rc
 }
 
@@ -5162,7 +5202,7 @@ test_native_effort_does_not_rewrite_explicit_model() {
   source "$CCMORPH_SOURCE"
 
   _ccm_launch -a proxy --model 'legacy-model-xhigh' --effort low || {
-    rm -rf "$test_home"
+    _ccm_rm_home "$test_home"
     return 1
   }
 
@@ -5172,7 +5212,7 @@ test_native_effort_does_not_rewrite_explicit_model() {
     $'ARG\t--model\tlegacy-model-xhigh\t--effort\tlow' \
     'native --effort must pass through without rewriting an explicit model'
   local rc=$?
-  rm -rf "$test_home"
+  _ccm_rm_home "$test_home"
   return $rc
 }
 
@@ -5183,7 +5223,7 @@ test_native_effort_validation_belongs_to_claude() {
   source "$CCMORPH_SOURCE"
 
   _ccm_launch -a proxy --effort || {
-    rm -rf "$test_home"
+    _ccm_rm_home "$test_home"
     return 1
   }
 
@@ -5194,7 +5234,7 @@ test_native_effort_validation_belongs_to_claude() {
   assert_contains "$actual" 'MODEL_ENV=bootstrap-model' \
     'ccmorph must pass native effort arguments through for Claude Code to validate' && (( ! _argv_rc ))
   local rc=$?
-  rm -rf "$test_home"
+  _ccm_rm_home "$test_home"
   return $rc
 }
 
@@ -5216,18 +5256,18 @@ test_saved_effort_starts_new_sessions() {
   for level in low medium high xhigh max; do
     ccmorph set proxy effort "$level" >/dev/null || {
       print -u2 -- "ccmorph set proxy effort $level must succeed"
-      rm -rf "$test_home"
+      _ccm_rm_home "$test_home"
       return 1
     }
     : > "$CCMORPH_TEST_LOG"
     _ccm_launch -a proxy || {
-      rm -rf "$test_home"
+      _ccm_rm_home "$test_home"
       return 1
     }
     assert_contains "$(<"$CCMORPH_TEST_LOG")" $'ARG\t--effort\t'"$level" \
       "a new session must start at the saved effort ($level)" || rc=1
   done
-  rm -rf "$test_home"
+  _ccm_rm_home "$test_home"
   return $rc
 }
 
@@ -5242,11 +5282,11 @@ test_typed_effort_decides_over_the_saved_one() {
   source "$CCMORPH_SOURCE"
 
   ccmorph set proxy effort xhigh >/dev/null || {
-    rm -rf "$test_home"
+    _ccm_rm_home "$test_home"
     return 1
   }
   _ccm_launch -a proxy --effort low || {
-    rm -rf "$test_home"
+    _ccm_rm_home "$test_home"
     return 1
   }
 
@@ -5256,7 +5296,7 @@ test_typed_effort_decides_over_the_saved_one() {
     'the typed effort must decide over the saved one' || rc=1
   assert_not_contains "$actual" $'--effort\txhigh' \
     'the saved effort must not also reach the argv' || rc=1
-  rm -rf "$test_home"
+  _ccm_rm_home "$test_home"
   return $rc
 }
 
@@ -5279,24 +5319,24 @@ test_saved_effort_honors_a_per_model_override() {
   source "$CCMORPH_SOURCE"
 
   ccmorph set proxy effort low >/dev/null || {
-    rm -rf "$test_home"
+    _ccm_rm_home "$test_home"
     return 1
   }
   local rc=0
   _ccm_launch -a proxy || {
-    rm -rf "$test_home"
+    _ccm_rm_home "$test_home"
     return 1
   }
   assert_contains "$(<"$CCMORPH_TEST_LOG")" $'ARG\t--effort\thigh' \
     'the per-model override must win over the profile default' || rc=1
   : > "$CCMORPH_TEST_LOG"
   _ccm_launch -a proxy --model chosen-model || {
-    rm -rf "$test_home"
+    _ccm_rm_home "$test_home"
     return 1
   }
   assert_contains "$(<"$CCMORPH_TEST_LOG")" $'--model\tchosen-model\t--effort\txhigh' \
     'the model the person typed has its own row, and that row must decide' || rc=1
-  rm -rf "$test_home"
+  _ccm_rm_home "$test_home"
   return $rc
 }
 
@@ -5312,18 +5352,18 @@ test_resume_keeps_the_conversations_own_effort() {
   source "$CCMORPH_SOURCE"
 
   ccmorph set proxy effort xhigh >/dev/null || {
-    rm -rf "$test_home"
+    _ccm_rm_home "$test_home"
     return 1
   }
   _ccm_launch -a proxy --resume 8f1c2a34-5b6d-4e7f-8a9b-0c1d2e3f4a5b || {
-    rm -rf "$test_home"
+    _ccm_rm_home "$test_home"
     return 1
   }
 
   assert_not_contains "$(<"$CCMORPH_TEST_LOG")" '--effort' \
     'a resume must keep the effort of the conversation it resumes, not the profile default'
   local rc=$?
-  rm -rf "$test_home"
+  _ccm_rm_home "$test_home"
   return $rc
 }
 
@@ -5338,7 +5378,7 @@ test_subscription_profile_does_not_inject_model() {
   _ccm_repair_projects_link() { return 0; }
 
   _ccm_launch -a subscription prompt || {
-    rm -rf "$test_home"
+    _ccm_rm_home "$test_home"
     return 1
   }
 
@@ -5347,7 +5387,7 @@ test_subscription_profile_does_not_inject_model() {
     "$actual" \
     $'ARG\tprompt' \
     'subscription profile arguments must reach Claude Code' || {
-    rm -rf "$test_home"
+    _ccm_rm_home "$test_home"
     return 1
   }
   assert_not_contains \
@@ -5355,7 +5395,7 @@ test_subscription_profile_does_not_inject_model() {
     $'\t--model\t' \
     'subscription profiles must leave model ownership to Claude Code'
   local rc=$?
-  rm -rf "$test_home"
+  _ccm_rm_home "$test_home"
   return $rc
 }
 
@@ -5374,7 +5414,7 @@ test_invalid_resume_model_falls_back_to_profile_model() {
     > "$transcript"
 
   _ccm_launch -a proxy --resume "$session_id" || {
-    rm -rf "$test_home"
+    _ccm_rm_home "$test_home"
     return 1
   }
 
@@ -5385,7 +5425,7 @@ test_invalid_resume_model_falls_back_to_profile_model() {
   assert_contains "$actual" 'MODEL_ENV=bootstrap-model' \
     'invalid transcript model values must fall back to the profile bootstrap model' && (( ! _argv_rc ))
   local rc=$?
-  rm -rf "$test_home"
+  _ccm_rm_home "$test_home"
   return $rc
 }
 
@@ -5403,7 +5443,7 @@ test_resume_rejects_flag_picker_and_multitoken_model_values() {
       > "$transcript"
     : > "$CCMORPH_TEST_LOG"
     _ccm_launch -a proxy --resume "$session_id" || {
-      rm -rf "$test_home"
+      _ccm_rm_home "$test_home"
       return 1
     }
     actual="$(<"$CCMORPH_TEST_LOG")"
@@ -5411,7 +5451,7 @@ test_resume_rejects_flag_picker_and_multitoken_model_values() {
       "a transcript model shaped as ${(qqq)bad} must fall back to the profile default" || rc=1
   done
 
-  rm -rf "$test_home"
+  _ccm_rm_home "$test_home"
   return $rc
 }
 
@@ -5479,7 +5519,7 @@ test_provider_profile_accepts_picker_exclusions() {
   source "$CCMORPH_SOURCE"
   local rc=0
   _ccm_read cx || { print -u2 -- "a provider profile must accept excluded_models"; rc=1; }
-  rm -rf "$test_home"
+  _ccm_rm_home "$test_home"
   return $rc
 }
 test_quota_hands_every_profile_to_the_core_with_no_key_in_argv() {
@@ -5521,7 +5561,7 @@ test_quota_hands_every_profile_to_the_core_with_no_key_in_argv() {
   }
   ccmorph quota --bogus >/dev/null 2>&1 && { print -u2 -- 'an unknown flag must be refused'; rc=1 }
   ccmorph quota a b >/dev/null 2>&1 && { print -u2 -- 'a second profile must be refused'; rc=1 }
-  rm -rf "$test_home"
+  _ccm_rm_home "$test_home"
   return $rc
 }
 test_every_profile_keeps_its_own_secure_storage() {
@@ -5548,7 +5588,7 @@ test_every_profile_keeps_its_own_secure_storage() {
     assert_contains "$actual" "CLAUDE_CONFIG_DIR=$HOME/.config/ccmorph/profiles/$profile" \
       "profile '$profile' must own its config dir" || rc=1
   done
-  rm -rf "$test_home"
+  _ccm_rm_home "$test_home"
   return $rc
 }
 
@@ -5565,7 +5605,7 @@ test_apikey_profile_exports_gateway_base_url() {
   local actual rc=0
   actual=$(ccmorph _env gw) || {
     print -u2 -- 'a gateway apikey profile must produce an environment'
-    rm -rf "$test_home"
+    _ccm_rm_home "$test_home"
     return 1
   }
 
@@ -5581,7 +5621,7 @@ test_apikey_profile_exports_gateway_base_url() {
     "$actual" \
     'CLAUDE_CODE_MAX_CONTEXT_TOKENS=200000' \
     'apikey profiles must honour the env.* allowlist' || rc=1
-  rm -rf "$test_home"
+  _ccm_rm_home "$test_home"
   return $rc
 }
 
@@ -5606,7 +5646,7 @@ test_profile_advisor_disable_reaches_launch_without_leaking() {
   CLAUDE_CODE_DISABLE_ADVISOR_TOOL=1 ccmorph run other >/dev/null 2>&1 || rc=1
   assert_contains "$(<"$CCMORPH_TEST_LOG")" 'DISABLE_ADVISOR=<unset>' \
     'an ambient advisor disable must not leak into another profile' || rc=1
-  rm -rf "$test_home"
+  _ccm_rm_home "$test_home"
   return $rc
 }
 
@@ -5635,7 +5675,7 @@ test_profile_simple_mode_reaches_launch_without_leaking() {
   ccmorph run other >/dev/null 2>&1 || rc=1
   assert_contains "$(<"$CCMORPH_TEST_LOG")" 'SIMPLE=<unset>' \
     'minimal mode must not leak into another profile' || rc=1
-  rm -rf "$test_home"
+  _ccm_rm_home "$test_home"
   return $rc
 }
 
@@ -5655,14 +5695,14 @@ test_apikey_profile_passes_unknown_model_window_flag() {
   local actual rc=0
   actual=$(ccmorph _env gw) || {
     print -u2 -- 'a gateway apikey profile must produce an environment'
-    rm -rf "$test_home"
+    _ccm_rm_home "$test_home"
     return 1
   }
   assert_contains \
     "$actual" \
     'CLAUDE_CODE_DISABLE_UNKNOWN_MODEL_WINDOW_ENFORCEMENT=1' \
     'the unknown-model-window flag must survive the env.* allowlist' || rc=1
-  rm -rf "$test_home"
+  _ccm_rm_home "$test_home"
   return $rc
 }
 
@@ -5684,7 +5724,7 @@ test_profile_may_pin_one_model_picker_row() {
   local actual rc=0
   actual=$(ccmorph _env gw) || {
     print -u2 -- 'a profile pinning a picker row must still produce an environment'
-    rm -rf "$test_home"
+    _ccm_rm_home "$test_home"
     return 1
   }
 
@@ -5712,7 +5752,7 @@ test_profile_may_pin_one_model_picker_row() {
     "$actual" \
     'ANTHROPIC_DEFAULT_OPUS_MODEL_DESCRIPTION=1M window through the gateway' \
     'the pinned Opus alias must carry its own description' || rc=1
-  rm -rf "$test_home"
+  _ccm_rm_home "$test_home"
   return $rc
 }
 
@@ -5724,7 +5764,7 @@ test_apikey_profile_without_model_defers_to_claude_code() {
   source "$CCMORPH_SOURCE"
 
   _ccm_launch -a native prompt || {
-    rm -rf "$test_home"
+    _ccm_rm_home "$test_home"
     return 1
   }
 
@@ -5734,7 +5774,7 @@ test_apikey_profile_without_model_defers_to_claude_code() {
     "$actual" \
     '--model' \
     'an apikey profile with no model must let Claude Code own model selection' || rc=1
-  rm -rf "$test_home"
+  _ccm_rm_home "$test_home"
   return $rc
 }
 
@@ -5799,7 +5839,7 @@ test_launch_names_a_rejected_native_key_before_the_session_opens() {
   _ccm_launch -a anth prompt >/dev/null 2>&1 || { print -u2 -- 'an accepted key must still start the session'; rc=1; }
   [[ -s "$CCMORPH_TEST_LOG" ]] || { print -u2 -- 'claude did not start on an accepted key'; rc=1; }
 
-  rm -rf "$test_home"
+  _ccm_rm_home "$test_home"
   return $rc
 }
 
@@ -5814,7 +5854,7 @@ test_apikey_profile_with_model_injects_it() {
   source "$CCMORPH_SOURCE"
 
   _ccm_launch -a gw prompt || {
-    rm -rf "$test_home"
+    _ccm_rm_home "$test_home"
     return 1
   }
 
@@ -5824,7 +5864,7 @@ test_apikey_profile_with_model_injects_it() {
     'a configured apikey model must be injected for the gateway backend' || rc=1
   assert_contains "$actual" 'MODEL_ENV=gateway-claude' \
     'a configured apikey model must be injected for the gateway backend' || rc=1
-  rm -rf "$test_home"
+  _ccm_rm_home "$test_home"
   return $rc
 }
 
@@ -5839,7 +5879,7 @@ test_apikey_explicit_model_overrides_profile_model() {
   source "$CCMORPH_SOURCE"
 
   _ccm_launch -a gw --model other-backend-model prompt || {
-    rm -rf "$test_home"
+    _ccm_rm_home "$test_home"
     return 1
   }
 
@@ -5853,7 +5893,7 @@ test_apikey_explicit_model_overrides_profile_model() {
     "$actual" \
     'profile-default' \
     'an explicit --model must suppress the profile model, not stack with it' || rc=1
-  rm -rf "$test_home"
+  _ccm_rm_home "$test_home"
   return $rc
 }
 
@@ -5867,7 +5907,7 @@ test_apikey_without_model_passes_explicit_model_through() {
   _ccm_probe_nudge() { print -r -- "$1" > "$HOME/probe-nudge"; }
 
   _ccm_launch -a native --model some-model prompt || {
-    rm -rf "$test_home"
+    _ccm_rm_home "$test_home"
     return 1
   }
 
@@ -5901,7 +5941,7 @@ test_apikey_without_model_passes_explicit_model_through() {
   # so its budget rides the environment rather than the file.
   assert_contains "$(<"$CCMORPH_TEST_LOG")" 'AUTO_COMPACT=300000' \
     'an explicit native context override must still be honored' || rc=1
-  rm -rf "$test_home"
+  _ccm_rm_home "$test_home"
   return $rc
 }
 
@@ -5965,7 +6005,7 @@ test_a_legacy_transport_key_is_reported_and_ignored() {
     rc=1
   fi
   unset _ccm
-  rm -rf "$test_home"
+  _ccm_rm_home "$test_home"
   return $rc
 }
 
@@ -5982,7 +6022,7 @@ test_key_prints_the_api_key_for_an_apikey_account() {
     print -u2 -- "key must print the api key bare; got ${(qqq)out}"
     rc=1
   fi
-  rm -rf "$test_home"
+  _ccm_rm_home "$test_home"
   return $rc
 }
 
@@ -6002,7 +6042,7 @@ test_key_does_not_provision_claude_profile_state() {
     print -u2 -- 'reading a key must not provision Claude profile state'
     rc=1
   fi
-  rm -rf "$test_home"
+  _ccm_rm_home "$test_home"
   return $rc
 }
 
@@ -6022,7 +6062,7 @@ test_secret_prints_whichever_secret_the_account_holds() {
   local rc=0 got
   got=$(ccmorph cred tok) || {
     print -u2 -- 'secret must succeed on a token profile'
-    rm -rf "$test_home"; return 1
+    _ccm_rm_home "$test_home"; return 1
   }
   [[ "$got" == tok-secret ]] || {
     print -u2 -- "secret must print a token profile's token (got: $got)"
@@ -6030,13 +6070,13 @@ test_secret_prints_whichever_secret_the_account_holds() {
   }
   got=$(ccmorph cred ak) || {
     print -u2 -- 'secret must succeed on an apikey profile'
-    rm -rf "$test_home"; return 1
+    _ccm_rm_home "$test_home"; return 1
   }
   [[ "$got" == key-secret ]] || {
     print -u2 -- "secret must print an apikey profile's key (got: $got)"
     rc=1
   }
-  rm -rf "$test_home"
+  _ccm_rm_home "$test_home"
   return $rc
 }
 
@@ -6056,7 +6096,7 @@ test_secret_refuses_an_account_that_stores_no_secret() {
   }
   assert_contains "$err" 'login' \
     'the refusal must say how a sub profile does authenticate' || rc=1
-  rm -rf "$test_home"
+  _ccm_rm_home "$test_home"
   return $rc
 }
 
@@ -6083,7 +6123,7 @@ test_an_unreachable_endpoint_names_the_network_not_an_exception() {
     'the failure must name the endpoint that did not answer' || fail=1
   assert_contains "$err" 'private network' \
     'the failure must tell the user how to fix it' || fail=1
-  rm -rf "$test_home"
+  _ccm_rm_home "$test_home"
   return $fail
 }
 
@@ -6132,7 +6172,7 @@ test_env_reports_the_real_endpoint_not_the_adapter() {
 
   local actual rc=0
   actual=$(ccmorph _env gw) || {
-    rm -rf "$test_home"
+    _ccm_rm_home "$test_home"
     return 1
   }
   # _env is consumed by other tooling, including the adapter itself to learn its
@@ -6141,7 +6181,7 @@ test_env_reports_the_real_endpoint_not_the_adapter() {
     '_env must report the profile'"'"'s real endpoint' || rc=1
   assert_not_contains "$actual" '127.0.0.1' \
     '_env must not report a local adapter address' || rc=1
-  rm -rf "$test_home"
+  _ccm_rm_home "$test_home"
   return $rc
 }
 
@@ -6207,7 +6247,7 @@ test_adapter_redirects_claude_to_the_local_port() {
   source "$CCMORPH_SOURCE"
 
   _ccm_launch -a gw prompt || {
-    rm -rf "$test_home"
+    _ccm_rm_home "$test_home"
     return 1
   }
 
@@ -6222,7 +6262,7 @@ test_adapter_redirects_claude_to_the_local_port() {
     'the adapter must receive the profile name' || rc=1
   assert_not_contains "$(<"$HOME/adapter.argv")" 'sk_prod_test' \
     'the credential must never appear in adapter argv' || rc=1
-  rm -rf "$test_home"
+  _ccm_rm_home "$test_home"
   return $rc
 }
 
@@ -6308,7 +6348,7 @@ test_adapter_redirect_under_a_terminal_never_reaches_the_operators_picker() {
     'the adapter-redirect test must complete under a terminal' || rc=1
   assert_contains "$(<"$out")" 'Gateway ready' \
     'a launch behind the adapter announces its gateway on a terminal' || rc=1
-  rm -rf "$test_home"
+  _ccm_rm_home "$test_home"
   return $rc
 }
 
@@ -6341,7 +6381,7 @@ test_task_env_becomes_request_headers_on_an_adapter_launch() {
   assert_contains "$actual" 'x-ccmorph-parent: test-parent-1' 'the parent header' || rc=1
   assert_contains "$actual" 'PARENT_ENV=<unset>' 'the child must not inherit the parent session id' || rc=1
   assert_contains "$actual" 'TASK=<unset> ATTEMPT=<unset>' 'the session must not inherit the variables' || rc=1
-  rm -rf "$test_home"
+  _ccm_rm_home "$test_home"
   return $rc
 }
 
@@ -6366,7 +6406,7 @@ test_task_tags_merge_with_the_users_own_custom_headers_issue_208() {
   local actual="$(<"$CCMORPH_TEST_LOG")"
   assert_contains "$actual" $'x-tenant: acme\nx-ccmorph-task: issue-208' \
     'the user header must be kept in front of the task tag' || rc=1
-  rm -rf "$test_home"
+  _ccm_rm_home "$test_home"
   return $rc
 }
 
@@ -6396,7 +6436,7 @@ test_a_nul_in_the_users_header_cannot_inject_a_record_issue_208() {
   assert_not_contains "$actual" 'x-tenant' \
     'a NUL-bearing header value is dropped whole, not emitted truncated' || rc=1
   assert_contains "$actual" 'x-ccmorph-task: issue-208' 'the task header' || rc=1
-  rm -rf "$test_home"
+  _ccm_rm_home "$test_home"
   return $rc
 }
 
@@ -6413,7 +6453,7 @@ test_no_task_means_no_headers_and_bad_shapes_are_dropped() {
   CLAUDE_CODE_SESSION_ID='bad/session' CCMORPH_TASK=/etc/passwd CCMORPH_ATTEMPT=x _ccm_launch -a gw prompt || rc=1
   [[ "$(grep -c '^HDRS=<unset>$' "$CCMORPH_TEST_LOG")" == 2 ]] || {
     print -u2 -- 'no task, or only malformed values, must leave the headers unset'; rc=1; }
-  rm -rf "$test_home"
+  _ccm_rm_home "$test_home"
   return $rc
 }
 
@@ -6427,7 +6467,7 @@ test_a_launch_without_the_adapter_never_carries_task_headers() {
   source "$CCMORPH_SOURCE"
   CCMORPH_TASK=issue-42 _ccm_launch -a direct prompt || rc=1
   assert_contains "$(<"$CCMORPH_TEST_LOG")" 'HDRS=<unset>' 'a direct launch has no shim to read them' || rc=1
-  rm -rf "$test_home"
+  _ccm_rm_home "$test_home"
   return $rc
 }
 
@@ -6447,7 +6487,7 @@ test_adapter_is_stopped_when_the_session_ends() {
     print -u2 -- 'adapter must be stopped when the launch returns'
     rc=1
   }
-  rm -rf "$test_home"
+  _ccm_rm_home "$test_home"
   return $rc
 }
 
@@ -6533,7 +6573,7 @@ test_adapter_doubles_die_with_a_killed_launcher() {
     print -u2 -- 'the adapter doubles ignored the equals-spelled parent pid'
     rc=1
   }
-  rm -rf "$test_home"
+  _ccm_rm_home "$test_home"
   return $rc
 }
 
@@ -6561,7 +6601,7 @@ test_adapter_launch_survives_an_unwritable_optional_log() {
     print -u2 -- 'log init must drop group/other access without adding owner write'
     rc=1
   }
-  rm -rf "$test_home"
+  _ccm_rm_home "$test_home"
   return $rc
 }
 
@@ -6590,7 +6630,7 @@ test_adapter_launch_uses_current_process_tree() {
     'the local adapter must receive the profile name' || rc=1
   assert_contains "$(<"$CCMORPH_TEST_LOG")" 'BASE_URL=http://127.0.0.1:45999' \
     'the launched Claude process must use the local adapter port' || rc=1
-  rm -rf "$test_home"
+  _ccm_rm_home "$test_home"
   return $rc
 }
 
@@ -6619,7 +6659,7 @@ test_no_ambient_proxy_means_the_adapter_gets_none() {
   # ccmorph invents no proxy: with none in the environment the adapter gets none.
   assert_contains "$(<"$HOME/adapter.env")" 'HTTPS_PROXY=<unset>' \
     'ccmorph must not synthesize a proxy for the adapter' || rc=1
-  rm -rf "$test_home"
+  _ccm_rm_home "$test_home"
   return $rc
 }
 
@@ -6664,7 +6704,7 @@ test_an_ambient_proxy_reaches_the_child_and_the_adapter() {
     'the adapter must dial the endpoint through the same ambient proxy' || rc=1
   assert_contains "$(<"$HOME/curl.env")" 'HTTPS_PROXY=http://127.0.0.1:48080' \
     'the model listing must go through the ambient proxy too' || rc=1
-  rm -rf "$test_home"
+  _ccm_rm_home "$test_home"
   return $rc
 }
 
@@ -6694,7 +6734,7 @@ test_adapter_launch_withholds_mid_conversation_system_for_claude_models() {
     'an adapter route must not be offered the server-side advisor tool' || rc=1
   assert_contains "$(<"$CCMORPH_TEST_LOG")" 'ALWAYS_EFFORT=1' \
     'an adapter route must expose /effort without a per-profile line' || rc=1
-  rm -rf "$test_home"
+  _ccm_rm_home "$test_home"
   return $rc
 }
 
@@ -6722,7 +6762,7 @@ test_declared_model_capabilities_is_never_overruled() {
     'the conf value must not be replaced by the ccmorph default' || rc=1
   assert_contains "$log" 'DISABLE_ADVISOR=0' \
     'a conf that keeps the advisor must not be overruled' || rc=1
-  rm -rf "$test_home"
+  _ccm_rm_home "$test_home"
   return $rc
 }
 
@@ -6742,7 +6782,7 @@ test_native_endpoint_keeps_mid_conversation_system() {
     'an endpoint that speaks Anthropic natively must keep the native turn' || rc=1
   assert_contains "$(<"$CCMORPH_TEST_LOG")" 'DISABLE_ADVISOR=<unset>' \
     'a native endpoint keeps the advisor tool' || rc=1
-  rm -rf "$test_home"
+  _ccm_rm_home "$test_home"
   return $rc
 }
 
@@ -6766,7 +6806,7 @@ test_launch_aborts_when_the_adapter_cannot_serve() {
     print -u2 -- 'Claude Code was started despite the adapter failing'
     rc=1
   }
-  rm -rf "$test_home"
+  _ccm_rm_home "$test_home"
   return $rc
 }
 
@@ -6793,7 +6833,7 @@ test_shell_env_does_not_leak_into_a_profile() {
     'a shell-exported context limit must not reach a profile that did not set it' || rc=1
   assert_contains "$actual" 'PICKER_ROW=<unset>' \
     'a shell-exported picker row must not reach a profile that pins none' || rc=1
-  rm -rf "$test_home"
+  _ccm_rm_home "$test_home"
   return $rc
 }
 
@@ -6841,7 +6881,7 @@ test_a_route_scoped_probe_beats_the_endpoint_declaration() {
   source "$CCMORPH_SOURCE"
 
   local rc=0
-  _ccm_launch -a derived prompt || { rm -rf "$test_home"; return 1; }
+  _ccm_launch -a derived prompt || { _ccm_rm_home "$test_home"; return 1; }
   local actual="$(<"$CCMORPH_TEST_LOG")"
 
   # The endpoint disguises non-Claude ids as claude-fable-5-dd-<reversed>, so the
@@ -6856,13 +6896,13 @@ test_a_route_scoped_probe_beats_the_endpoint_declaration() {
     'a declaration must not overrule the stored window' || rc=1
 
   : > "$CCMORPH_TEST_LOG"
-  _ccm_launch -a unscoped prompt || { rm -rf "$test_home"; return 1; }
+  _ccm_launch -a unscoped prompt || { _ccm_rm_home "$test_home"; return 1; }
   actual="$(<"$CCMORPH_TEST_LOG")"
   assert_contains "$actual" 'MAX_CONTEXT=888888' \
     'each profile must use its own stored window' || rc=1
   assert_not_contains "$actual" 'MAX_CONTEXT=372000' \
     'live metadata must not override known registry state during launch' || rc=1
-  rm -rf "$test_home"
+  _ccm_rm_home "$test_home"
   return $rc
 }
 
@@ -6881,14 +6921,14 @@ test_conf_window_beats_the_published_one() {
   source "$CCMORPH_SOURCE"
 
   local rc=0
-  _ccm_launch -a pinned prompt || { rm -rf "$test_home"; return 1; }
+  _ccm_launch -a pinned prompt || { _ccm_rm_home "$test_home"; return 1; }
 
   # An author who pins a ceiling has a reason the endpoint cannot know -- a smaller
   # budget on purpose, or an endpoint that over-declares. Derivation fills a gap; it
   # does not overrule.
   assert_contains "$(<"$CCMORPH_TEST_LOG")" 'MAX_CONTEXT=120000' \
     'an explicit conf ceiling must win over the published one' || rc=1
-  rm -rf "$test_home"
+  _ccm_rm_home "$test_home"
   return $rc
 }
 
@@ -6906,13 +6946,13 @@ test_endpoint_publishing_no_window_changes_nothing() {
   source "$CCMORPH_SOURCE"
 
   local rc=0
-  _ccm_launch -a silent prompt >/dev/null 2>&1 || { rm -rf "$test_home"; return 1; }
+  _ccm_launch -a silent prompt >/dev/null 2>&1 || { _ccm_rm_home "$test_home"; return 1; }
 
   # A gateway may publish no window for any model it serves, so this is the
   # common case, not an edge one. It must leave the launch exactly as it found it.
   assert_contains "$(<"$CCMORPH_TEST_LOG")" 'MAX_CONTEXT=<unset>' \
     'an endpoint that publishes no window must not invent one' || rc=1
-  rm -rf "$test_home"
+  _ccm_rm_home "$test_home"
   return $rc
 }
 
@@ -6939,7 +6979,7 @@ test_registry_supplies_window_when_endpoint_probe_has_none() {
 
   local rc=0
   _ccm_launch -a routed prompt >/dev/null 2>&1 || {
-    rm -rf "$test_home"
+    _ccm_rm_home "$test_home"
     return 1
   }
   local actual="$(<"$CCMORPH_TEST_LOG")"
@@ -6965,7 +7005,7 @@ test_registry_supplies_window_when_endpoint_probe_has_none() {
   _ccm_launch -a other prompt >/dev/null 2>&1 || rc=1
   assert_not_contains "$(<"$CCMORPH_TEST_LOG")" 'MAX_CONTEXT=1048576' \
     'a profile with no stored data must never inherit another profile''s window' || rc=1
-  rm -rf "$test_home"
+  _ccm_rm_home "$test_home"
   return $rc
 }
 
@@ -6998,7 +7038,7 @@ test_launch_reads_its_arrays_under_a_callers_ksh_arrays() {
 
   local rc=0
   _ccm_launch -a routed --model context-model prompt >/dev/null 2>&1 || {
-    rm -rf "$test_home"
+    _ccm_rm_home "$test_home"
     return 1
   }
   local want_arg="$(grep '^ARG' "$CCMORPH_TEST_LOG")"
@@ -7024,7 +7064,7 @@ test_launch_reads_its_arrays_under_a_callers_ksh_arrays() {
     'the stored window must still supply the launch under KSH_ARRAYS' || rc=1
   assert_contains "$actual" 'AUTO_COMPACT=1000000' \
     'the auto-compact budget from the stored window must survive KSH_ARRAYS' || rc=1
-  rm -rf "$test_home"
+  _ccm_rm_home "$test_home"
   return $rc
 }
 
@@ -7049,11 +7089,11 @@ test_the_window_env_is_the_launched_models_own_window() {
   source "$CCMORPH_SOURCE"
 
   local rc=0
-  _ccm_launch -a gw prompt >/dev/null 2>&1 || { rm -rf "$test_home"; return 1; }
+  _ccm_launch -a gw prompt >/dev/null 2>&1 || { _ccm_rm_home "$test_home"; return 1; }
   local actual="$(<"$CCMORPH_TEST_LOG")"
   assert_contains "$actual" 'MAX_CONTEXT=200000' \
     'the env ceiling must be the launched model'"'"'s own window, not the route'"'"'s largest' || rc=1
-  rm -rf "$test_home"
+  _ccm_rm_home "$test_home"
   return $rc
 }
 
@@ -7078,13 +7118,13 @@ test_the_launched_model_budgets_through_the_native_setting() {
   source "$CCMORPH_SOURCE"
 
   local rc=0
-  _ccm_launch -a gw prompt >/dev/null 2>&1 || { rm -rf "$test_home"; return 1; }
+  _ccm_launch -a gw prompt >/dev/null 2>&1 || { _ccm_rm_home "$test_home"; return 1; }
   local actual="$(<"$CCMORPH_TEST_LOG")"
   assert_contains "$actual" '"autoCompactWindow":300000' \
     'the launched model must budget through the native autoCompactWindow setting' || rc=1
   assert_contains "$actual" 'AUTO_COMPACT=<unset>' \
     'the env auto-compact pin must go: it shadows the settings layer and /autocompact' || rc=1
-  rm -rf "$test_home"
+  _ccm_rm_home "$test_home"
   return $rc
 }
 
@@ -7112,7 +7152,7 @@ test_a_mapped_alias_budgets_against_its_target() {
   source "$CCMORPH_SOURCE"
 
   local rc=0
-  _ccm_launch -a gw prompt >/dev/null 2>&1 || { rm -rf "$test_home"; return 1; }
+  _ccm_launch -a gw prompt >/dev/null 2>&1 || { _ccm_rm_home "$test_home"; return 1; }
   local actual="$(<"$CCMORPH_TEST_LOG")"
   assert_contains "$actual" '"autoCompactWindow":128000' \
     'a mapped session must budget against the model the shim serves, not the id it asked for' || rc=1
@@ -7124,7 +7164,7 @@ test_a_mapped_alias_budgets_against_its_target() {
     'the [1m] marker belongs to a window this session does not have' || rc=1
   assert_not_contains "$actual" 'claude-opus-5[1m]' \
     'no marker for the source window may survive anywhere the launch writes' || rc=1
-  rm -rf "$test_home"
+  _ccm_rm_home "$test_home"
   return $rc
 }
 
@@ -7190,7 +7230,7 @@ test_a_session_never_offers_a_model_it_cannot_compact() {
 
   local rc=0
   CCMORPH_WITHHOLD_FATAL=1 \
-    _ccm_launch -a gw prompt >/dev/null 2>&1 || { rm -rf "$test_home"; return 1; }
+    _ccm_launch -a gw prompt >/dev/null 2>&1 || { _ccm_rm_home "$test_home"; return 1; }
   local actual="$(<"$CCMORPH_TEST_LOG")"
 
   # The launched model keeps its OWN budget -- the whole point of per-model
@@ -7213,7 +7253,7 @@ test_a_session_never_offers_a_model_it_cannot_compact() {
     'a model whose wall is under the trigger must be withheld' || rc=1
   assert_not_contains "$offered" 'small' \
     'every model under the trigger must be withheld, not just the smallest' || rc=1
-  rm -rf "$test_home"
+  _ccm_rm_home "$test_home"
   return $rc
 }
 
@@ -7237,7 +7277,7 @@ test_a_small_launch_still_offers_the_whole_route() {
   source "$CCMORPH_SOURCE"
 
   local rc=0
-    _ccm_launch -a gw prompt >/dev/null 2>&1 || { rm -rf "$test_home"; return 1; }
+    _ccm_launch -a gw prompt >/dev/null 2>&1 || { _ccm_rm_home "$test_home"; return 1; }
   local actual="$(<"$CCMORPH_TEST_LOG")"
   assert_contains "$actual" '"autoCompactWindow":200000' \
     'the small launch budgets from its own wall' || rc=1
@@ -7249,7 +7289,7 @@ test_a_small_launch_still_offers_the_whole_route() {
     assert_contains "$offered" "$_m" \
       "a 160k trigger clears every wall, so $_m must stay offered" || rc=1
   done
-  rm -rf "$test_home"
+  _ccm_rm_home "$test_home"
   return $rc
 }
 
@@ -7273,7 +7313,7 @@ test_withholding_never_edits_the_profile() {
 
   local rc=0
   CCMORPH_WITHHOLD_FATAL=1 \
-    _ccm_launch -a gw prompt >/dev/null 2>&1 || { rm -rf "$test_home"; return 1; }
+    _ccm_launch -a gw prompt >/dev/null 2>&1 || { _ccm_rm_home "$test_home"; return 1; }
   local profile_models
   profile_models=$(command python3 -c '
 import json, sys
@@ -7281,7 +7321,7 @@ print(",".join(json.load(open(sys.argv[1])).get("availableModels") or []))' \
     "$HOME/.config/ccmorph/profiles/gw/settings.profile.json" 2>/dev/null)
   assert_contains "$profile_models" 'tiny' \
     'the profile must keep every model the profile can reach' || rc=1
-  rm -rf "$test_home"
+  _ccm_rm_home "$test_home"
   return $rc
 }
 
@@ -7309,7 +7349,7 @@ test_by_default_every_model_stays_selectable_and_is_named() {
   source "$CCMORPH_SOURCE"
 
   local rc=0
-    _ccm_launch -a gw prompt >/dev/null 2>&1 || { rm -rf "$test_home"; return 1; }
+    _ccm_launch -a gw prompt >/dev/null 2>&1 || { _ccm_rm_home "$test_home"; return 1; }
   local actual="$(<"$CCMORPH_TEST_LOG")"
 
   local offered
@@ -7325,7 +7365,7 @@ test_by_default_every_model_stays_selectable_and_is_named() {
     'the advisory must name the token count where a risky model stops compacting' || rc=1
   assert_contains "$actual" 'limit 272k' \
     'every risky model gets its own number, not one lumped warning' || rc=1
-  rm -rf "$test_home"
+  _ccm_rm_home "$test_home"
   return $rc
 }
 
@@ -7348,13 +7388,13 @@ test_a_users_saved_autocompact_choice_survives_derivation() {
   source "$CCMORPH_SOURCE"
 
   local rc=0
-    _ccm_launch -a gw prompt >/dev/null 2>&1 || { rm -rf "$test_home"; return 1; }
+    _ccm_launch -a gw prompt >/dev/null 2>&1 || { _ccm_rm_home "$test_home"; return 1; }
   local actual="$(<"$CCMORPH_TEST_LOG")"
   assert_contains "$actual" '"autoCompactWindow":123456' \
     'a /autocompact choice saved in the profile settings must beat the derived value' || rc=1
   assert_not_contains "$actual" '"autoCompactWindow":300000' \
     'the derived budget must not overrule the saved one' || rc=1
-  rm -rf "$test_home"
+  _ccm_rm_home "$test_home"
   return $rc
 }
 
@@ -7383,14 +7423,14 @@ test_a_policy_tombstone_does_not_hide_a_canonical_budget() {
   local rc=0
   # --model roomy is the shape that carries a per-session budget: it is injected
   # into the environment, which the engine reads BEFORE the settings layer.
-  _ccm_launch -a gw --model roomy prompt >/dev/null 2>&1 || { rm -rf "$test_home"; return 1; }
+  _ccm_launch -a gw --model roomy prompt >/dev/null 2>&1 || { _ccm_rm_home "$test_home"; return 1; }
   local actual="$(<"$CCMORPH_TEST_LOG")"
   assert_contains "${actual//\"autoCompactWindow\": /\"autoCompactWindow\":}" \
     '"autoCompactWindow":400000' \
     'the generated settings must keep the canonical budget the policy only tombstones' || rc=1
   assert_contains "$actual" 'AUTO_COMPACT=<unset>' \
     'the saved budget must reach the launcher too, so no derived budget overrides it' || rc=1
-  rm -rf "$test_home"
+  _ccm_rm_home "$test_home"
   return $rc
 }
 
@@ -7417,7 +7457,7 @@ test_a_claude_default_still_sizes_the_route_for_switches() {
   source "$CCMORPH_SOURCE"
 
   local rc=0
-    _ccm_launch -a gw prompt >/dev/null 2>&1 || { rm -rf "$test_home"; return 1; }
+    _ccm_launch -a gw prompt >/dev/null 2>&1 || { _ccm_rm_home "$test_home"; return 1; }
   local actual="$(<"$CCMORPH_TEST_LOG")"
   assert_contains "$actual" 'MAX_CONTEXT=500000' \
     'a claude default must still size the route for mid-session switches' || rc=1
@@ -7430,7 +7470,7 @@ test_a_claude_default_still_sizes_the_route_for_switches() {
   # the route's 500,000.
   assert_contains "$actual" '"autoCompactWindow":1000000' \
     'a claude-launched session must budget from its own probed window' || rc=1
-  rm -rf "$test_home"
+  _ccm_rm_home "$test_home"
   return $rc
 }
 
@@ -7456,11 +7496,11 @@ test_a_tier_alias_budgets_from_the_model_behind_it() {
   source "$CCMORPH_SOURCE"
 
   local rc=0
-    _ccm_launch -a gw prompt >/dev/null 2>&1 || { rm -rf "$test_home"; return 1; }
+    _ccm_launch -a gw prompt >/dev/null 2>&1 || { _ccm_rm_home "$test_home"; return 1; }
   local actual="$(<"$CCMORPH_TEST_LOG")"
   assert_contains "$actual" '"autoCompactWindow":700000' \
     'an alias launch must budget from the model the alias resolves to' || rc=1
-  rm -rf "$test_home"
+  _ccm_rm_home "$test_home"
   return $rc
 }
 
@@ -7486,7 +7526,7 @@ test_the_budget_never_exceeds_the_launched_models_wall() {
   source "$CCMORPH_SOURCE"
 
   local rc=0
-    _ccm_launch -a gw prompt >/dev/null 2>&1 || { rm -rf "$test_home"; return 1; }
+    _ccm_launch -a gw prompt >/dev/null 2>&1 || { _ccm_rm_home "$test_home"; return 1; }
   local actual="$(<"$CCMORPH_TEST_LOG")"
   # The ceiling is the launched model's own wall, never the route's largest...
   assert_contains "$actual" 'MAX_CONTEXT=200000' \
@@ -7496,7 +7536,7 @@ test_the_budget_never_exceeds_the_launched_models_wall() {
     'the budget must track the launched model, never the route ceiling' || rc=1
   assert_not_contains "$actual" '"autoCompactWindow":1000000' \
     'a budget at the route ceiling is the never-compacts wedge' || rc=1
-  rm -rf "$test_home"
+  _ccm_rm_home "$test_home"
   return $rc
 }
 
@@ -7515,13 +7555,13 @@ test_the_window_follows_the_saved_default_model() {
   source "$CCMORPH_SOURCE"
 
   local rc=0
-    _ccm_launch -a gw prompt >/dev/null 2>&1 || { rm -rf "$test_home"; return 1; }
+    _ccm_launch -a gw prompt >/dev/null 2>&1 || { _ccm_rm_home "$test_home"; return 1; }
   local actual="$(<"$CCMORPH_TEST_LOG")"
   assert_contains "$actual" 'MAX_CONTEXT=500000' \
     'the saved /model default must drive the window when the conf names no model' || rc=1
   assert_contains "$actual" '"autoCompactWindow":500000' \
     'the saved default model must also set its own auto-compact budget' || rc=1
-  rm -rf "$test_home"
+  _ccm_rm_home "$test_home"
   return $rc
 }
 
@@ -7553,7 +7593,7 @@ test_launch_model_flag_drives_the_window_not_the_conf_default() {
 
   local rc=0
     _ccm_launch -a gw --model routed-xl prompt >/dev/null 2>&1 || {
-    rm -rf "$test_home"
+    _ccm_rm_home "$test_home"
     return 1
   }
   local actual="$(<"$CCMORPH_TEST_LOG")"
@@ -7561,7 +7601,7 @@ test_launch_model_flag_drives_the_window_not_the_conf_default() {
     'the --model flag, not the conf default, must size the launch window' || rc=1
   assert_not_contains "$actual" 'MAX_CONTEXT=200000' \
     'a launched non-claude model must never be left to Claude Code'"'"'s 200000 default' || rc=1
-  rm -rf "$test_home"
+  _ccm_rm_home "$test_home"
   return $rc
 }
 
@@ -7598,7 +7638,7 @@ test_a_flat_endpoint_declaration_yields_to_probe_at_launch() {
 
   local rc=0
     _ccm_launch -a flatgw prompt >/dev/null 2>&1 || {
-    rm -rf "$test_home"
+    _ccm_rm_home "$test_home"
     return 1
   }
   local actual="$(<"$CCMORPH_TEST_LOG")"
@@ -7606,7 +7646,7 @@ test_a_flat_endpoint_declaration_yields_to_probe_at_launch() {
     'a flat endpoint declaration must yield to the probed registry ceiling at launch' || rc=1
   assert_not_contains "$actual" 'MAX_CONTEXT=200000' \
     'the invented flat default must never become the injected window' || rc=1
-  rm -rf "$test_home"
+  _ccm_rm_home "$test_home"
   return $rc
 }
 
@@ -7638,13 +7678,13 @@ test_a_genuine_shared_window_is_not_mistaken_for_flat() {
 
   local rc=0
     _ccm_launch -a realgw prompt >/dev/null 2>&1 || {
-    rm -rf "$test_home"
+    _ccm_rm_home "$test_home"
     return 1
   }
   local actual="$(<"$CCMORPH_TEST_LOG")"
   assert_contains "$actual" 'MAX_CONTEXT=1048576' \
     'a non-flat endpoint declaration must still supply the window' || rc=1
-  rm -rf "$test_home"
+  _ccm_rm_home "$test_home"
   return $rc
 }
 
@@ -7672,11 +7712,11 @@ test_a_claude_id_keeps_claude_codes_own_window() {
   source "$CCMORPH_SOURCE"
 
   local rc=0
-  _ccm_launch -a gwclaude prompt >/dev/null 2>&1 || { rm -rf "$test_home"; return 1; }
+  _ccm_launch -a gwclaude prompt >/dev/null 2>&1 || { _ccm_rm_home "$test_home"; return 1; }
 
   assert_contains "$(<"$CCMORPH_TEST_LOG")" 'MAX_CONTEXT=<unset>' \
     'a claude- id must keep Claude Code own window, not an endpoint declaration' || rc=1
-  rm -rf "$test_home"
+  _ccm_rm_home "$test_home"
   return $rc
 }
 
@@ -7698,7 +7738,7 @@ test_a_derived_window_survives_an_endpoint_blip() {
   # own conf. The launch must remember it locally, so even an unreachable
   # endpoint later cannot shrink it.
   write_profile_discovered blip gpt-5.6-sol=372000
-  _ccm_launch -a blip prompt >/dev/null 2>&1 || { rm -rf "$test_home"; return 1; }
+  _ccm_launch -a blip prompt >/dev/null 2>&1 || { _ccm_rm_home "$test_home"; return 1; }
   assert_contains "$(<"$CCMORPH_TEST_LOG")" 'MAX_CONTEXT=372000' \
     'the first launch must use the recorded discovered window' || rc=1
 
@@ -7710,11 +7750,11 @@ test_a_derived_window_survives_an_endpoint_blip() {
   printf '%s\n' '#!/bin/sh' 'exit 7' > "$HOME/bin/curl"
   chmod +x "$HOME/bin/curl"
   : > "$CCMORPH_TEST_LOG"
-  _ccm_launch -a blip prompt >/dev/null 2>&1 || { rm -rf "$test_home"; return 1; }
+  _ccm_launch -a blip prompt >/dev/null 2>&1 || { _ccm_rm_home "$test_home"; return 1; }
 
   assert_contains "$(<"$CCMORPH_TEST_LOG")" 'MAX_CONTEXT=372000' \
     'an unreachable endpoint must reuse the last known window, not shrink it' || rc=1
-  rm -rf "$test_home"
+  _ccm_rm_home "$test_home"
   return $rc
 }
 
@@ -7748,7 +7788,7 @@ test_launch_warns_when_a_model_refuses_before_compacting() {
 
   local rc=0 err
   err=$(        _ccm_launch -a mixed prompt 2>&1 >/dev/null) || {
-    rm -rf "$test_home"
+    _ccm_rm_home "$test_home"
     return 1
   }
 
@@ -7758,7 +7798,7 @@ test_launch_warns_when_a_model_refuses_before_compacting() {
     'the warning must state the ceiling that makes it unsafe' || rc=1
   assert_not_contains "$err" 'big' \
     'a model with headroom must not be reported' || rc=1
-  rm -rf "$test_home"
+  _ccm_rm_home "$test_home"
   return $rc
 }
 
@@ -7787,7 +7827,7 @@ test_launch_names_switch_targets_the_trigger_would_overrun() {
 
   local rc=0
     _ccm_launch -a spread prompt >/dev/null 2>&1 || {
-    rm -rf "$test_home"
+    _ccm_rm_home "$test_home"
     return 1
   }
 
@@ -7812,7 +7852,7 @@ test_launch_names_switch_targets_the_trigger_would_overrun() {
     'a switch target with headroom must not be named' || rc=1
   assert_contains "$actual" 'systemMessage' \
     'the warning must ride a hook systemMessage, which persists in the TUI' || rc=1
-  rm -rf "$test_home"
+  _ccm_rm_home "$test_home"
   return $rc
 }
 
@@ -7834,14 +7874,14 @@ test_the_trigger_follows_a_non_default_percentage() {
   source "$CCMORPH_SOURCE"
 
   local rc=0
-    _ccm_launch -a gw prompt >/dev/null 2>&1 || { rm -rf "$test_home"; return 1; }
+    _ccm_launch -a gw prompt >/dev/null 2>&1 || { _ccm_rm_home "$test_home"; return 1; }
   local actual="$(<"$CCMORPH_TEST_LOG")"
 
   assert_contains "$actual" 'compacts at 882k' \
     'the trigger must be the percentage of the usable window, not a buffered form' || rc=1
   assert_contains "$actual" 'eighthundred limit 800k' \
     'a model between the two formulas must be named fatal' || rc=1
-  rm -rf "$test_home"
+  _ccm_rm_home "$test_home"
   return $rc
 }
 
@@ -7863,7 +7903,7 @@ test_the_output_reserve_override_reaches_the_hazard_path() {
   source "$CCMORPH_SOURCE"
 
   local rc=0
-    _ccm_launch -a gw prompt >/dev/null 2>&1 || { rm -rf "$test_home"; return 1; }
+    _ccm_launch -a gw prompt >/dev/null 2>&1 || { _ccm_rm_home "$test_home"; return 1; }
   local actual="$(<"$CCMORPH_TEST_LOG")"
 
   # It has to reach the launched process at all...
@@ -7872,7 +7912,7 @@ test_the_output_reserve_override_reaches_the_hazard_path() {
   # ...and it has to move the trigger ccmorph reports.
   assert_contains "$actual" 'onefifty limit 150k' \
     'a smaller reserve raises the trigger, making the sibling fatal' || rc=1
-  rm -rf "$test_home"
+  _ccm_rm_home "$test_home"
   return $rc
 }
 
@@ -7902,7 +7942,7 @@ test_an_out_of_schema_saved_budget_does_not_block_derivation() {
   source "$CCMORPH_SOURCE"
 
   local rc=0
-    _ccm_launch -a gw prompt >/dev/null 2>&1 || { rm -rf "$test_home"; return 1; }
+    _ccm_launch -a gw prompt >/dev/null 2>&1 || { _ccm_rm_home "$test_home"; return 1; }
   local actual="$(<"$CCMORPH_TEST_LOG")"
 
   assert_contains "${actual//\"autoCompactWindow\": /\"autoCompactWindow\":}" \
@@ -7915,7 +7955,7 @@ test_an_out_of_schema_saved_budget_does_not_block_derivation() {
   # then computed to ~29,600 and the fatal sibling went unnamed.
   assert_contains "$actual" 'fourhundred limit 400k' \
     'the advisory must resolve the same budget the overlay ships' || rc=1
-  rm -rf "$test_home"
+  _ccm_rm_home "$test_home"
   return $rc
 }
 
@@ -7959,7 +7999,7 @@ test_a_non_finite_saved_budget_does_not_abort_the_launch() {
   local rc=0
     _ccm_launch -a gw prompt >/dev/null 2>&1 || {
       print -u2 -- "FAIL: a non-finite saved budget must not abort the launch"
-      rm -rf "$test_home"
+      _ccm_rm_home "$test_home"
       return 1
     }
   # And the overlay actually reached Claude. Pre-fix the program died on int(inf) and
@@ -7970,7 +8010,7 @@ test_a_non_finite_saved_budget_does_not_abort_the_launch() {
     'the overlay must still be rendered and passed through --settings' || rc=1
   assert_contains "$actual" 'availableModels' \
     'the rendered overlay must carry the merged settings, not an empty file' || rc=1
-  rm -rf "$test_home"
+  _ccm_rm_home "$test_home"
   return $rc
 }
 
@@ -7999,7 +8039,7 @@ test_the_overlay_and_the_advisory_agree_on_the_schema() {
     want="${spec##*|}"
     printf '%s\n' "{\"autoCompactWindow\":$saved}" > "$HOME/.claude/settings.json"
     : > "$CCMORPH_TEST_LOG"
-      _ccm_launch -a gw prompt >/dev/null 2>&1 || { rm -rf "$test_home"; return 1; }
+      _ccm_launch -a gw prompt >/dev/null 2>&1 || { _ccm_rm_home "$test_home"; return 1; }
     actual="$(<"$CCMORPH_TEST_LOG")"
     if [[ "$want" == yes ]]; then
       assert_contains "${actual//\"autoCompactWindow\": /\"autoCompactWindow\":}" \
@@ -8015,7 +8055,7 @@ test_the_overlay_and_the_advisory_agree_on_the_schema() {
         "saved $saved must be discarded by the advisory too" || rc=1
     fi
   done
-  rm -rf "$test_home"
+  _ccm_rm_home "$test_home"
   return $rc
 }
 
@@ -8040,12 +8080,12 @@ test_a_valid_saved_budget_still_beats_the_derivation() {
   source "$CCMORPH_SOURCE"
 
   local rc=0
-    _ccm_launch -a gw prompt >/dev/null 2>&1 || { rm -rf "$test_home"; return 1; }
+    _ccm_launch -a gw prompt >/dev/null 2>&1 || { _ccm_rm_home "$test_home"; return 1; }
   local actual="$(<"$CCMORPH_TEST_LOG")"
   assert_contains "${actual//\"autoCompactWindow\": /\"autoCompactWindow\":}" \
     '"autoCompactWindow":300000' \
     'a schema-valid saved budget must survive the derivation' || rc=1
-  rm -rf "$test_home"
+  _ccm_rm_home "$test_home"
   return $rc
 }
 
@@ -8068,12 +8108,12 @@ test_a_conf_pinned_ceiling_still_gets_hazard_analysis() {
   source "$CCMORPH_SOURCE"
 
   local rc=0
-    _ccm_launch -a gw prompt >/dev/null 2>&1 || { rm -rf "$test_home"; return 1; }
+    _ccm_launch -a gw prompt >/dev/null 2>&1 || { _ccm_rm_home "$test_home"; return 1; }
   local actual="$(<"$CCMORPH_TEST_LOG")"
 
   assert_contains "$actual" 'small limit 400k' \
     'a fatal switch must be named even when the conf pins the ceiling' || rc=1
-  rm -rf "$test_home"
+  _ccm_rm_home "$test_home"
   return $rc
 }
 
@@ -8097,7 +8137,7 @@ test_the_advisory_and_the_withhold_share_one_budget() {
 
   local rc=0
   CCMORPH_WITHHOLD_FATAL=1 \
-    _ccm_launch -a gw prompt >/dev/null 2>&1 || { rm -rf "$test_home"; return 1; }
+    _ccm_launch -a gw prompt >/dev/null 2>&1 || { _ccm_rm_home "$test_home"; return 1; }
   local actual="$(<"$CCMORPH_TEST_LOG")"
 
   # Nothing is fatal at a ~224k trigger, so the model must survive in the picker
@@ -8108,7 +8148,7 @@ test_the_advisory_and_the_withhold_share_one_budget() {
     'a model above the effective trigger must not be withheld' || rc=1
   assert_not_contains "$actual" 'narrow limit' \
     'a model above the effective trigger must not be named either' || rc=1
-  rm -rf "$test_home"
+  _ccm_rm_home "$test_home"
   return $rc
 }
 
@@ -8158,7 +8198,7 @@ test_a_layer_percentage_sizes_the_hazard_set() {
   # the layer trigger survives the overlay's availableModels, and the one below it
   # still goes.
   CCMORPH_WITHHOLD_FATAL=1 \
-    _ccm_launch -a gw prompt >/dev/null 2>&1 || { rm -rf "$test_home"; return 1; }
+    _ccm_launch -a gw prompt >/dev/null 2>&1 || { _ccm_rm_home "$test_home"; return 1; }
   local actual="$(<"$CCMORPH_TEST_LOG")"
   # The premise, at the launch: the layers set the percentage, so nothing is injected
   # into the engine's environment and the layer value is all the engine has.
@@ -8172,7 +8212,7 @@ test_a_layer_percentage_sizes_the_hazard_set() {
     'a model above the layer trigger must not be withheld from the picker' || rc=1
   assert_not_contains "$offered" 'small-model' \
     'a model below the layer trigger is still withheld' || rc=1
-  rm -rf "$test_home"
+  _ccm_rm_home "$test_home"
   return $rc
 }
 
@@ -8193,14 +8233,14 @@ test_the_reported_trigger_is_the_engines_own_arithmetic() {
   source "$CCMORPH_SOURCE"
 
   local rc=0
-    _ccm_launch -a gw prompt >/dev/null 2>&1 || { rm -rf "$test_home"; return 1; }
+    _ccm_launch -a gw prompt >/dev/null 2>&1 || { _ccm_rm_home "$test_home"; return 1; }
   local actual="$(<"$CCMORPH_TEST_LOG")"
 
   assert_not_contains "$actual" 'midsize limit' \
     'a model above the engine trigger must not be called fatal' || rc=1
   assert_not_contains "$actual" 'compacts at 160k' \
     'the trigger must not be computed as a bare percentage of the budget' || rc=1
-  rm -rf "$test_home"
+  _ccm_rm_home "$test_home"
   return $rc
 }
 
@@ -8236,7 +8276,7 @@ test_no_launch_advisory_relies_on_pre_exec_stderr() {
   err=$(        _ccm_launch -a blank prompt 2>&1 >/dev/null)
   assert_not_contains "$err" 'Context limit unknown' \
     'the unprobed-model line must not go where the TUI paints over it' || rc=1
-  rm -rf "$test_home"
+  _ccm_rm_home "$test_home"
   return $rc
 }
 
@@ -8258,7 +8298,7 @@ test_the_unprobed_model_advisory_persists_in_the_tui() {
   local _CCMORPH_LOG="$HOME/ccmorph.log"
   local rc=0
     _ccm_launch -a blank prompt >/dev/null 2>&1 || {
-    rm -rf "$test_home"; return 1
+    _ccm_rm_home "$test_home"; return 1
   }
   local actual="$(<"$CCMORPH_TEST_LOG")"
   assert_not_contains "$actual" 'Context limit unknown' \
@@ -8267,7 +8307,7 @@ test_the_unprobed_model_advisory_persists_in_the_tui() {
     'no command is handed to the person' || rc=1
   assert_contains "$(<"$_CCMORPH_LOG")" 'window unknown profile=blank' \
     'the fallback is still recorded where it can be diagnosed' || rc=1
-  rm -rf "$test_home"
+  _ccm_rm_home "$test_home"
   return $rc
 }
 
@@ -8293,7 +8333,7 @@ test_the_switch_warning_caps_the_names_it_lists() {
 
   local rc=0
     _ccm_launch -a wide prompt >/dev/null 2>&1 || {
-    rm -rf "$test_home"
+    _ccm_rm_home "$test_home"
     return 1
   }
 
@@ -8310,7 +8350,7 @@ test_the_switch_warning_caps_the_names_it_lists() {
     print -u2 -- "the switch warning must appear exactly once (got $occurrences)"
     rc=1
   fi
-  rm -rf "$test_home"
+  _ccm_rm_home "$test_home"
   return $rc
 }
 
@@ -8342,7 +8382,7 @@ test_the_launch_hazard_advisory_matches_switch_hazard_warn() {
   local advise_from_record advise_withheld
 
   rm -f "$CCMORPH_TEST_LOG"
-    _ccm_launch -a gw prompt >/dev/null 2>&1 || { rm -rf "$test_home"; return 1 }
+    _ccm_launch -a gw prompt >/dev/null 2>&1 || { _ccm_rm_home "$test_home"; return 1 }
   advise_from_record=$(grep -m1 '^ADVISE=' "$CCMORPH_TEST_LOG" || true)
   advise_from_record=${advise_from_record#ADVISE=}
   assert_contains "$advise_from_record" 'lower model limits: kimi-k3 limit 40k' \
@@ -8350,13 +8390,13 @@ test_the_launch_hazard_advisory_matches_switch_hazard_warn() {
 
   rm -f "$CCMORPH_TEST_LOG"
   CCMORPH_WITHHOLD_FATAL=1 \
-    _ccm_launch -a gw prompt >/dev/null 2>&1 || { rm -rf "$test_home"; return 1 }
+    _ccm_launch -a gw prompt >/dev/null 2>&1 || { _ccm_rm_home "$test_home"; return 1 }
   advise_withheld=$(grep -m1 '^ADVISE=' "$CCMORPH_TEST_LOG" || true)
   advise_withheld=${advise_withheld#ADVISE=}
   assert_contains "$advise_withheld" 'hidden from /model: kimi-k3 limit 40k' \
     'withheld choices must be reported in their own wording' || rc=1
 
-  rm -rf "$test_home"
+  _ccm_rm_home "$test_home"
   return $rc
 }
 
@@ -8413,7 +8453,7 @@ test_the_hazard_record_sizes_from_the_percentage_the_launch_injects() {
     source "$CCMORPH_SOURCE"
 
     rm -f "$CCMORPH_TEST_LOG"
-    _ccm_launch -a gw prompt >/dev/null 2>&1 || { rm -rf "$test_home"; return 1; }
+    _ccm_launch -a gw prompt >/dev/null 2>&1 || { _ccm_rm_home "$test_home"; return 1; }
     actual=$(<"$CCMORPH_TEST_LOG")
     assert_contains "$actual" "AUTOCOMPACT_PCT=${want_pct[$case]}" \
       "the $case percentage must be the one the engine gets" || rc=1
@@ -8424,7 +8464,7 @@ test_the_hazard_record_sizes_from_the_percentage_the_launch_injects() {
     assert_contains "$advise_from_record" 'kimi-k3 limit 40k' \
       "the $case advisory must name the model under the trigger" || rc=1
 
-    rm -rf "$test_home"
+    _ccm_rm_home "$test_home"
   done
   return $rc
 }
@@ -8463,7 +8503,7 @@ test_a_malformed_layer_percentage_leaves_the_injected_one_in_charge() {
   # trigger is 784000. Reading the layer alone yields 967000 instead -- above the
   # 800000 wall of a model the engine in fact compacts long before reaching.
   CCMORPH_WITHHOLD_FATAL=1 \
-    _ccm_launch -a gw prompt >/dev/null 2>&1 || { rm -rf "$test_home"; return 1; }
+    _ccm_launch -a gw prompt >/dev/null 2>&1 || { _ccm_rm_home "$test_home"; return 1; }
   local actual="$(<"$CCMORPH_TEST_LOG")"
   # The premise, at the launch: the layer value does not parse, so the engine gets
   # the injected fleet percentage and nothing else.
@@ -8479,7 +8519,7 @@ test_a_malformed_layer_percentage_leaves_the_injected_one_in_charge() {
     'a model wall below the injected trigger is still withheld' || rc=1
   assert_not_contains "$actual" 'big-model limit' \
     'a model wall above the injected trigger is safe and must not be named' || rc=1
-  rm -rf "$test_home"
+  _ccm_rm_home "$test_home"
   return $rc
 }
 
@@ -8503,13 +8543,13 @@ test_no_switch_warning_when_the_whole_route_clears_the_trigger() {
 
   local rc=0 err
   err=$(        _ccm_launch -a safe prompt 2>&1 >/dev/null) || {
-    rm -rf "$test_home"
+    _ccm_rm_home "$test_home"
     return 1
   }
 
   assert_not_contains "$err" 'compacts at' \
     'a route whose every model clears the trigger must warn about nothing' || rc=1
-  rm -rf "$test_home"
+  _ccm_rm_home "$test_home"
   return $rc
 }
 
@@ -8528,12 +8568,12 @@ test_launch_is_silent_when_every_model_has_headroom() {
   source "$CCMORPH_SOURCE"
 
   local rc=0 err
-  err=$(        _ccm_launch -a roomy prompt 2>&1 >/dev/null) || { rm -rf "$test_home"; return 1; }
+  err=$(        _ccm_launch -a roomy prompt 2>&1 >/dev/null) || { _ccm_rm_home "$test_home"; return 1; }
 
   # A check that cries wolf gets ignored, which is worse than no check at all.
   assert_not_contains "$err" 'refuse' \
     'a profile whose models all have headroom must say nothing' || rc=1
-  rm -rf "$test_home"
+  _ccm_rm_home "$test_home"
   return $rc
 }
 
@@ -8600,7 +8640,7 @@ test_launch_projects_picker_rows_with_our_own_tag() {
     print -u2 -- "a projected model must appear once, got $projected_count copies"
     rc=1
   }
-  rm -rf "$test_home"
+  _ccm_rm_home "$test_home"
   return $rc
 }
 
@@ -8637,7 +8677,7 @@ test_projected_row_carries_the_profiles_own_tag() {
   assert_contains "$(<"$HOME/.config/ccmorph/profiles/gw/.claude.json")" '"description": "Gateway"' \
     'an omitted tag must fall back to the built-in default' || rc=1
 
-  rm -rf "$test_home"
+  _ccm_rm_home "$test_home"
   return $rc
 }
 
@@ -8663,7 +8703,7 @@ test_projection_leaves_everything_alone_when_the_endpoint_is_down() {
   # true -- a model list changes far less often than a network does.
   assert_contains "$(<"$HOME/.config/ccmorph/profiles/gw/.claude.json")" 'Keep' \
     'a failed projection must leave the previous rows in place' || rc=1
-  rm -rf "$test_home"
+  _ccm_rm_home "$test_home"
   return $rc
 }
 
@@ -8720,7 +8760,7 @@ test_projection_undisguises_ids_and_labels_every_row_with_the_id() {
   # belongs in the picker; the live advisory uses the smaller ceiling and names the risk.
   assert_contains "$state" 'gpt-4o' \
     'a probed model must remain selectable even when its smaller ceiling needs a warning' || rc=1
-  rm -rf "$test_home"
+  _ccm_rm_home "$test_home"
   return $rc
 }
 
@@ -8757,7 +8797,7 @@ test_projection_never_drops_the_profiles_own_model() {
     'a genuine Claude entry must survive' || rc=1
   assert_not_contains "$settings" '"claude-fable-5-dd"' \
     'the old disguise prefix must go: the projection lists each id exactly' || rc=1
-  rm -rf "$test_home"
+  _ccm_rm_home "$test_home"
   return $rc
 }
 
@@ -8802,7 +8842,7 @@ test_relay_relaunch_keeps_a_mapped_alias_allowed() {
 
   # A launch replaces the profile layer with its generated settings, so the relaunch
   # cases below run against a home that no projection has written yet.
-  rm -rf "$test_home"
+  _ccm_rm_home "$test_home"
   test_home=$(mktemp -d)
   setup_home "$test_home"
   fake_gateway_with_windows
@@ -8867,7 +8907,7 @@ test_relay_relaunch_keeps_a_mapped_alias_allowed() {
   # not refused but remapped. With no exclusion the offline contract leaves both
   # files alone (test_projection_leaves_everything_alone_when_the_endpoint_is_down),
   # which is why this leg sets one.
-  rm -rf "$test_home"
+  _ccm_rm_home "$test_home"
   test_home=$(mktemp -d)
   setup_home "$test_home"
   printf '%s\n' "${gw_conf[@]}" 'excluded_models=embed-only' \
@@ -8891,7 +8931,7 @@ test_relay_relaunch_keeps_a_mapped_alias_allowed() {
     rc=1
   }
 
-  rm -rf "$test_home"
+  _ccm_rm_home "$test_home"
   return $rc
 }
 
@@ -8936,7 +8976,7 @@ test_projected_rows_use_the_real_model_id() {
   # addressed by the name that gets the full window, and that name is allowed.
   assert_contains "$settings" '"model": "gpt-5.6-sol-xhigh"' \
     "a live session's chosen model must survive, remapping kills the session" || rc=1
-  rm -rf "$test_home"
+  _ccm_rm_home "$test_home"
   return $rc
 }
 
@@ -8968,7 +9008,7 @@ test_projection_undisguises_a_stored_model() {
 
   assert_contains "$settings" '"model": "gpt-5.6-sol-xhigh"' \
     'a stored disguised model must be rewritten to the id that gets the full window' || rc=1
-  rm -rf "$test_home"
+  _ccm_rm_home "$test_home"
   return $rc
 }
 
@@ -9011,7 +9051,7 @@ test_the_picker_offers_a_model_whatever_its_siblings_declare() {
     'a model declaring the same window as a sibling must be offered' || rc=1
   assert_contains "$state" '"value": "c"' \
     'a model declaring no window at all must be offered too' || rc=1
-  rm -rf "$test_home"
+  _ccm_rm_home "$test_home"
   return $rc
 }
 
@@ -9050,7 +9090,7 @@ test_picker_follows_gateway_chat_capabilities() {
     'explicit chat_completion:false is excluded' || rc=1
   assert_contains "$state" 'gpt-image-2' \
     'missing capability metadata must not become a name-based exclusion' || rc=1
-  rm -rf "$test_home"
+  _ccm_rm_home "$test_home"
   return $rc
 }
 
@@ -9076,7 +9116,7 @@ test_picker_skips_a_malformed_non_string_model_id() {
     _ccm_project_picker gw http://gw.invalid sk_t
   assert_contains "$(<"$HOME/.config/ccmorph/profiles/gw/.claude.json")" '"value": "valid"' \
     'one malformed id must not abort every valid picker row' || rc=1
-  rm -rf "$test_home"
+  _ccm_rm_home "$test_home"
   return $rc
 }
 
@@ -9098,7 +9138,7 @@ test_picker_uses_a_route_scoped_registry_probe() {
     _ccm_project_picker gw http://gw.invalid sk_t
   assert_contains "$(<"$HOME/.config/ccmorph/profiles/gw/.claude.json")" '"value": "route-only"' \
     'the picker must use the canonical route-scoped registry probe' || rc=1
-  rm -rf "$test_home"
+  _ccm_rm_home "$test_home"
   return $rc
 }
 
@@ -9164,7 +9204,7 @@ test_the_launch_sweep_clears_every_allowlisted_env_key() {
     fi
   done
 
-  rm -rf "$test_home"
+  _ccm_rm_home "$test_home"
   return $rc
 }
 
@@ -9188,7 +9228,7 @@ test_launch_warns_about_a_hand_set_disguised_model() {
     'a disguised session model must be reported with what it costs' || rc=1
   assert_contains "$err" 'gpt-5.6-sol' \
     'the warning must name the id that gets the full window' || rc=1
-  rm -rf "$test_home"
+  _ccm_rm_home "$test_home"
   return $rc
 }
 
@@ -9223,7 +9263,7 @@ test_projection_omits_models_that_cannot_serve_a_session() {
     'a model that cannot answer /v1/messages must not be offered' || rc=1
   assert_contains "$state" 'gpt-5.6-sol' \
     'a chat model beside it must still be offered' || rc=1
-  rm -rf "$test_home"
+  _ccm_rm_home "$test_home"
   return $rc
 }
 
@@ -9246,10 +9286,10 @@ test_setup_dir_shares_output_styles_with_canonical() {
 
   source "$CCMORPH_SOURCE"
   typeset -gA _ccm=(type sub)
-  _ccm_setup_dir_unlocked gw || {
+  _ccm_setup_dir gw || {
     unset _ccm
     print -u2 -- 'setup_dir must provision the profile'
-    rm -rf "$test_home"; return 1
+    _ccm_rm_home "$test_home"; return 1
   }
   unset _ccm
 
@@ -9262,7 +9302,7 @@ test_setup_dir_shares_output_styles_with_canonical() {
       rc=1
     fi
   done
-  rm -rf "$test_home"
+  _ccm_rm_home "$test_home"
   return $rc
 }
 
@@ -9285,10 +9325,10 @@ test_setup_dir_removes_a_stale_ccmorph_statusline() {
 
   source "$CCMORPH_SOURCE"
   typeset -gA _ccm=(type sub)
-  _ccm_setup_dir_unlocked gw || {
+  _ccm_setup_dir gw || {
     unset _ccm
     print -u2 -- 'setup_dir must provision the profile'
-    rm -rf "$test_home"; return 1
+    _ccm_rm_home "$test_home"; return 1
   }
   unset _ccm
 
@@ -9304,7 +9344,7 @@ print((doc.get("statusLine") or {}).get("command") or "none", doc.get("model"))
     print -u2 -- "a stale ccmorph statusline must be unwired, other keys kept (got: $state)"
     rc=1
   fi
-  rm -rf "$test_home"
+  _ccm_rm_home "$test_home"
   return $rc
 }
 
@@ -9324,10 +9364,10 @@ test_setup_dir_never_touches_a_users_own_statusline() {
 
   source "$CCMORPH_SOURCE"
   typeset -gA _ccm=(type sub)
-  _ccm_setup_dir_unlocked gw || {
+  _ccm_setup_dir gw || {
     unset _ccm
     print -u2 -- 'setup_dir must provision the profile'
-    rm -rf "$test_home"; return 1
+    _ccm_rm_home "$test_home"; return 1
   }
   unset _ccm
 
@@ -9342,7 +9382,7 @@ with open(sys.argv[1], encoding="utf-8") as fh:
     print -u2 -- "a user's own statusLine must survive provisioning (got: $wired)"
     rc=1
   fi
-  rm -rf "$test_home"
+  _ccm_rm_home "$test_home"
   return $rc
 }
 
@@ -9384,10 +9424,10 @@ test_setup_dir_is_idempotent_on_settings() {
 
   source "$CCMORPH_SOURCE"
   typeset -gA _ccm=(type sub)
-  _ccm_setup_dir_unlocked gw >/dev/null 2>&1
+  _ccm_setup_dir gw >/dev/null 2>&1
   local first
   first=$(cat "$HOME/.config/ccmorph/profiles/gw/settings.json" 2>/dev/null)
-  _ccm_setup_dir_unlocked gw >/dev/null 2>&1
+  _ccm_setup_dir gw >/dev/null 2>&1
   local second
   second=$(cat "$HOME/.config/ccmorph/profiles/gw/settings.json" 2>/dev/null)
   unset _ccm
@@ -9397,7 +9437,7 @@ test_setup_dir_is_idempotent_on_settings() {
     print -u2 -- 'repeated provisioning must not rewrite settings.json'
     rc=1
   fi
-  rm -rf "$test_home"
+  _ccm_rm_home "$test_home"
   return $rc
 }
 
@@ -9413,9 +9453,9 @@ test_setup_dir_links_the_harness_even_before_content_exists() {
     > "$HOME/.config/ccmorph/gw.conf"
   source "$CCMORPH_SOURCE"
   typeset -gA _ccm=(type sub)
-  _ccm_setup_dir_unlocked gw || {
+  _ccm_setup_dir gw || {
     unset _ccm; print -u2 -- 'setup_dir must provision the profile'
-    rm -rf "$test_home"; return 1
+    _ccm_rm_home "$test_home"; return 1
   }
   unset _ccm
 
@@ -9429,7 +9469,7 @@ test_setup_dir_links_the_harness_even_before_content_exists() {
       rc=1
     fi
   done
-  rm -rf "$test_home"
+  _ccm_rm_home "$test_home"
   return $rc
 }
 
@@ -9447,7 +9487,7 @@ test_late_harness_files_heal_on_next_setup() {
     > "$HOME/.config/ccmorph/gw.conf"
   source "$CCMORPH_SOURCE"
   typeset -gA _ccm=(type apikey)
-  _ccm_setup_dir_unlocked gw || { unset _ccm; rm -rf "$test_home"; return 1 }
+  _ccm_setup_dir gw || { unset _ccm; _ccm_rm_home "$test_home"; return 1 }
   unset _ccm
 
   local rc=0
@@ -9457,12 +9497,12 @@ test_late_harness_files_heal_on_next_setup() {
   }
   print 'shared memory' > "$HOME/.claude/CLAUDE.md"
   typeset -gA _ccm=(type apikey)
-  _ccm_setup_dir gw || { unset _ccm; rm -rf "$test_home"; return 1 }
+  _ccm_setup_dir gw || { unset _ccm; _ccm_rm_home "$test_home"; return 1 }
   unset _ccm
   [[ -L "$HOME/.config/ccmorph/profiles/gw/CLAUDE.md" && \
      "$(<"$HOME/.config/ccmorph/profiles/gw/CLAUDE.md")" == 'shared memory' ]] \
     || { print -u2 -- 'late CLAUDE.md must be linked by the next setup pass'; rc=1 }
-  rm -rf "$test_home"
+  _ccm_rm_home "$test_home"
   return $rc
 }
 
@@ -9484,7 +9524,7 @@ test_profile_local_harness_content_survives_an_upgrade() {
   source "$CCMORPH_SOURCE"
   typeset -gA _ccm=(type sub)
   local rc=0 err
-  err=$(_ccm_setup_dir_unlocked gw 2>&1) \
+  err=$(_ccm_setup_dir gw 2>&1) \
     && { print -u2 -- 'a skills collision must refuse, not merge'; rc=1 }
   unset _ccm
   [[ $err == *'nothing moved'* ]] \
@@ -9496,7 +9536,7 @@ test_profile_local_harness_content_survives_an_upgrade() {
   [[ ! -L "$HOME/.config/ccmorph/profiles/gw/CLAUDE.md" && \
      "$(<"$HOME/.config/ccmorph/profiles/gw/CLAUDE.md")" == 'local override' ]] \
     || { print -u2 -- 'a real profile-local file is an override, never replaced'; rc=1 }
-  rm -rf "$test_home"
+  _ccm_rm_home "$test_home"
   return $rc
 }
 
@@ -9533,7 +9573,7 @@ test_add_context_refresh_is_background_and_declared_only() {
   assert_contains "$scheduled" 'context-probe --declared-only --profile gw --deadline 30' \
     'add must schedule only a bounded, free metadata refresh' || rc=1
   [[ ! -f "$HOME/refresh.direct" ]] || { print -u2 'add synchronously ran the refresh'; rc=1; }
-  rm -rf "$test_home"
+  _ccm_rm_home "$test_home"
   return $rc
 }
 
@@ -9553,7 +9593,7 @@ test_launch_resolves_scoped_registry_globs() {
     'launch must use canonical scoped wildcard registry matching' || rc=1
   assert_not_contains "$(<"$HOME/background.args")" 'context-probe' \
     'a wildcard-known window needs no refresh' || rc=1
-  rm -rf "$test_home"
+  _ccm_rm_home "$test_home"
   return $rc
 }
 
@@ -9590,7 +9630,7 @@ while time.monotonic() < deadline:
 else:
     raise SystemExit("background metadata never completed in the log")
 PY
-  rm -rf "$test_home"
+  _ccm_rm_home "$test_home"
   return $rc
 }
 
@@ -9638,7 +9678,7 @@ test_launch_context_lookup_is_local_before_background_refresh() {
   assert_not_contains "$(<"$HOME/background.args")" 'context-probe' \
     'a known registry window must not schedule redundant work' || rc=1
   [[ ! -f "$HOME/context.endpoint" && ! -f "$HOME/refresh.direct" ]] || rc=1
-  rm -rf "$test_home"
+  _ccm_rm_home "$test_home"
   return $rc
 }
 
@@ -9661,7 +9701,7 @@ test_probe_dispatch_preserves_explicit_inference_arguments() {
   # Metadata-only is the default and needs no banner; only paid mode warns.
   assert_not_contains "$out" 'may incur charges' 'the default run must not print the paid-mode warning' || rc=1
   assert_not_contains "$out" 'one probe per model' 'the default must not promise an inference sweep' || rc=1
-  rm -rf "$test_home"
+  _ccm_rm_home "$test_home"
   return $rc
 }
 
@@ -9681,7 +9721,7 @@ test_add_gateway_profile_offers_probe() {
   # Verify the profile was created and the nudge did not abort the add.
   [[ "$out" == *"Added"* ]] \
     || { print -u2 -- 'adding a routed profile must succeed even when the endpoint is unreachable'; rc=1 }
-  rm -rf "$test_home"
+  _ccm_rm_home "$test_home"
   return $rc
 }
 
@@ -9696,7 +9736,7 @@ test_add_native_profile_stays_quiet_about_probe() {
   out=$(print -l apikey custom '' sk-test-not-real '' | ccmorph add nat 2>&1)
   [[ "$out" == *"ccmorph probe"* ]] \
     && { print -u2 -- 'a native profile must not be nudged to probe'; rc=1 }
-  rm -rf "$test_home"
+  _ccm_rm_home "$test_home"
   return $rc
 }
 
@@ -9729,7 +9769,7 @@ PYKEY
   [[ "$out" == *"Added"* ]] || { print -u2 -- 'add must still succeed when the answer cannot be recorded'; rc=1; }
   assert_contains "$out" 'choose Yes' \
     'add must name the answer when it cannot record it' || rc=1
-  rm -rf "$test_home"
+  _ccm_rm_home "$test_home"
   return $rc
 }
 
@@ -9760,7 +9800,7 @@ test_add_cleans_a_pasted_credential_issue_254() {
     'internal whitespace must be named at the key prompt' || rc=1
   [[ "$(<"$HOME/.config/ccmorph/ws.conf")" == *$'api_key=sk-good\n'* ]] \
     || { print -u2 -- 'a key refused at the prompt must accept the re-entered one'; rc=1 }
-  rm -rf "$test_home"
+  _ccm_rm_home "$test_home"
   return $rc
 }
 
@@ -9861,14 +9901,22 @@ exit 1'
   [[ "$(<"$HOME/.config/ccmorph/pwurl.conf")" == *'base_url=http://user:pw-canary835@gateway.invalid'* ]] \
     || { print -u2 -- 'the saved endpoint must keep the password the endpoint needs'; rc=1 }
   # A credential in the endpoint is judged on its own text, so a leak that drops
-  # the host is still caught. Typed without a scheme the save refuses it, but
-  # only after the check has named it.
-  for url in "http://user:$canary@$host" "http://$host/v1?key=$canary" "user:$canary@$host" "$host/v1?key=$canary"; do
+  # the host is still caught. Typed without a scheme the endpoint prompt refuses
+  # it and asks again before any key (#636), naming neither part of it.
+  for url in "http://user:$canary@$host" "http://$host/v1?key=$canary"; do
     (( ++n ))
     out=$(print -l apikey custom "$url" sk-urlleg-not-real | ccmorph add "canary$n" 2>/dev/null)
     assert_contains "$out" 'listing not allowed (HTTP 403) — the key was not checked' \
       'the check must have run before its output is judged' || rc=1
     assert_not_contains "$out" "$canary" 'no part of a URL credential may reach stdout' || rc=1
+  done
+  for url in "user:$canary@$host" "$host/v1?key=$canary"; do
+    (( ++n ))
+    out=$(print -l apikey custom "$url" | ccmorph add "canary$n" 2>&1)
+    assert_contains "$out" 'endpoint must use http:// or https:// — type it again' \
+      'a scheme-less endpoint is refused at its own prompt' || rc=1
+    assert_not_contains "$out" "$canary" 'no part of a URL credential may reach the output' || rc=1
+    [[ ! -e "$HOME/.config/ccmorph/canary$n.conf" ]] || { print -u2 -- 'a refused endpoint must save nothing'; rc=1 }
   done
   # The blank endpoint is Anthropic's own; a 403 on its listing is the same answer.
   out=$(print -l apikey custom '' sk-native-not-real | ccmorph add natforbid 2>&1)
@@ -9881,7 +9929,7 @@ exit 1'
   assert_contains "$out" 'http://gw500.invalid answered HTTP 500, so the API key was not checked' \
     'a status that refuses nothing keeps its own line' || rc=1
   assert_contains "$out" 'Added err500' 'a listing 500 must not block the add' || rc=1
-  rm -rf "$test_home"
+  _ccm_rm_home "$test_home"
   return $rc
 }
 
@@ -9930,7 +9978,7 @@ esac'
     print -u2 -- 'a token check must not send an x-api-key header'
     rc=1
   fi
-  rm -rf "$test_home"
+  _ccm_rm_home "$test_home"
   return $rc
 }
 
@@ -10026,7 +10074,7 @@ test_add_wrong_menu_answer_reasks_instead_of_exiting_issue_727() {
     'the unprinted More row must not send a bridged machine to an install step' || rc=1
   assert_contains "$out" 'Added bridged' \
     'the method menu must carry on after the unprinted answer' || rc=1
-  rm -rf "$test_home"
+  _ccm_rm_home "$test_home"
   return $rc
 }
 
@@ -10086,7 +10134,7 @@ PYKEY
   [[ -s "$CCMORPH_TEST_LOG" ]] || { print -u2 -- 'claude did not start after the unrecordable answer'; rc=1; }
   [[ "$(<"$doc")" == '{"customApiKeyResponses":"not-an-object"}' ]] \
     || { print -u2 -- 'the launch rewrote a file it could not safely change'; rc=1; }
-  rm -rf "$test_home"
+  _ccm_rm_home "$test_home"
   return $rc
 }
 
@@ -10156,7 +10204,7 @@ test_launch_carries_the_persons_answers_to_the_next_profile() {
     'a profile that received the answers must not warn about the first-run screens' || rc=1
   [[ "$(<"$profiles/gw/.claude.json")" == "$before" ]] \
     || { print -u2 -- 'the profile holding the answers must stay untouched'; rc=1; }
-  rm -rf "$test_home"
+  _ccm_rm_home "$test_home"
   return $rc
 }
 
@@ -10212,7 +10260,7 @@ test_hop_lands_on_the_resumed_conversation_not_the_questions() {
     rc=1
   }
   unset CCMORPH_TEST_SOURCE CCMORPH_TEST_HOP_ARGS CCMORPH_TEST_TESTS_DIR
-  rm -rf "$test_home"
+  _ccm_rm_home "$test_home"
   return $rc
 }
 
@@ -10283,7 +10331,7 @@ test_launch_names_the_safe_answer_when_a_question_remains() {
   [[ "$(<"$profiles/to/.claude.json")" == *'"projects":"not-an-object"'* ]] \
     || { print -u2 -- 'the relaunch rewrote the projects key it could not safely change'; rc=1 }
   unset CCMORPH_TEST_RELAY_TARGET
-  rm -rf "$test_home"
+  _ccm_rm_home "$test_home"
   return $rc
 }
 
@@ -10333,7 +10381,7 @@ test_an_unprobed_launch_is_not_given_a_siblings_ceiling() {
   assert_contains "$actual" '"autoCompactWindow":128000' \
     'the unknown launch model must receive conservative compaction, not a process-wide clamp' || rc=1
 
-  rm -rf "$test_home"
+  _ccm_rm_home "$test_home"
   return $rc
 }
 
@@ -10405,7 +10453,7 @@ test_the_launch_window_reports_every_window_fact() {
   [[ ${#f} == 6 && "${(j:|:)f}" == '400000|conf-manual||manual-model|1048576|' ]] ||
     { print -u2 "no saved budget: ${(j:|:)f}"; rc=1 }
 
-  rm -rf "$test_home"
+  _ccm_rm_home "$test_home"
   return $rc
 }
 
@@ -10443,7 +10491,7 @@ test_a_broken_settings_compose_does_not_take_the_window_facts_with_it() {
   [[ ${#f} == 6 && "${(j:|:)f}" == '|default|128000|unprobed-model||' ]] ||
     { print -u2 "unprobed model: ${(j:|:)f}"; rc=1 }
 
-  rm -rf "$test_home"
+  _ccm_rm_home "$test_home"
   return $rc
 }
 
@@ -10467,10 +10515,10 @@ test_a_settings_model_still_sizes_the_budget() {
 
   local _CCMORPH_LOG="$HOME/ccmorph.log"
   local rc=0
-  _ccm_launch -a seeded prompt >/dev/null 2>&1 || { rm -rf "$test_home"; return 1 }
+  _ccm_launch -a seeded prompt >/dev/null 2>&1 || { _ccm_rm_home "$test_home"; return 1 }
   assert_contains "$(<"$_CCMORPH_LOG")" 'window derived profile=seeded model=plain-model' \
     'the settings.json model must still size the budget' || rc=1
-  rm -rf "$test_home"
+  _ccm_rm_home "$test_home"
   return $rc
 }
 
@@ -10507,16 +10555,17 @@ test_launch_hints_when_a_routed_window_is_unprobed() {
   _ccm_launch -a opq prompt >/dev/null 2>&1 || rc=1
   [[ "$(<"$CCMORPH_TEST_LOG")" == *"ccmorph probe"* ]] \
     && { print -u2 -- 'a probed launch must not nag'; rc=1 }
-  rm -rf "$test_home"
+  _ccm_rm_home "$test_home"
   return $rc
 }
 
 test_an_unwritable_window_cache_is_silent_and_nonfatal() {
-  # The per-model window cache is an optimisation. In a sandboxed shell its path
-  # can be read-only while the registry and the launched Claude remain usable.
-  # A trailing `|| :` kept the launch alive, but zsh reports a redirection failure
-  # BEFORE the command's own `2>/dev/null` is installed, so every launch still
-  # printed `_ccm_launch:… operation not permitted: …/cache/context-window`.
+  # The per-model window cache is no longer written: a launch hands a legacy
+  # cache/context-window to ctxwindow/migrate.go, which moves it aside as
+  # cache/context-window.migrated. The test once pinned a best-effort write that
+  # no code makes any more, so it passed whatever the product did and its
+  # cleanup chmod failed on every run (#636). It pins the move instead: a
+  # read-only legacy file is moved aside, silently, and the launch goes on.
   local test_home
   test_home=$(mktemp -d)
   setup_home "$test_home"
@@ -10524,19 +10573,22 @@ test_an_unwritable_window_cache_is_silent_and_nonfatal() {
   printf '%s\n' 'type=apikey' 'base_url=http://gw.invalid' 'api_key=test-key' \
     'model=opaque-model' > "$HOME/.config/ccmorph/readonly.conf"
   write_profile_context readonly opaque-model=500000
-  mkdir -p "$HOME/.config/ccmorph/profiles/readonly/cache"
-  : > "$HOME/.config/ccmorph/profiles/readonly/cache/context-window"
-  chmod 400 "$HOME/.config/ccmorph/profiles/readonly/cache/context-window"
+  local cache="$HOME/.config/ccmorph/profiles/readonly/cache/context-window"
+  mkdir -p "${cache:h}"
+  : > "$cache"
+  chmod 400 "$cache"
   source "$CCMORPH_SOURCE"
 
   local err rc=0
   err=$(    _ccm_launch -a readonly prompt 2>&1 >/dev/null) || rc=1
   assert_not_contains "$err" 'operation not permitted' \
-    'a refused best-effort cache write must not leak a shell error into launch UX' || rc=1
+    'moving a read-only legacy cache must not leak a shell error into launch UX' || rc=1
   assert_not_contains "$err" 'permission denied' \
-    'a refused best-effort cache write must stay silent' || rc=1
-  chmod 600 "$HOME/.config/ccmorph/profiles/readonly/cache/context-window"
-  rm -rf "$test_home"
+    'moving a read-only legacy cache must stay silent' || rc=1
+  [[ ! -e "$cache" && -e "$cache.migrated" ]] \
+    || { print -u2 -- 'the legacy cache was not moved aside'; rc=1; }
+  [[ -s "$CCMORPH_TEST_LOG" ]] || { print -u2 -- 'claude did not start'; rc=1; }
+  _ccm_rm_home "$test_home"
   return $rc
 }
 
@@ -10567,7 +10619,7 @@ test_flag_errors_name_the_spelling_the_user_typed() {
   err=$(_ccm_launch -a a --profile=b 2>&1)
   assert_contains "$err" '--profile= may be specified only once' \
     'the duplicate report must name the second, offending form' || rc=1
-  rm -rf "$test_home"
+  _ccm_rm_home "$test_home"
   return $rc
 }
 
@@ -10600,7 +10652,7 @@ test_subscription_profile_settings_override_global_launch_settings() {
   source "$CCMORPH_SOURCE"
 
   _ccm_launch -a sub prompt || {
-    rm -rf "$test_home"
+    _ccm_rm_home "$test_home"
     return 1
   }
 
@@ -10617,7 +10669,7 @@ test_subscription_profile_settings_override_global_launch_settings() {
   assert_not_contains "$actual" 'CLAUDE_CODE_OAUTH_TOKEN' \
     'subscription credentials must remain process-only' || rc=1
 
-  rm -rf "$test_home"
+  _ccm_rm_home "$test_home"
   return $rc
 }
 
@@ -10638,7 +10690,7 @@ test_profile_settings_override_global_launch_settings() {
   source "$CCMORPH_SOURCE"
 
   _ccm_launch -a proxy prompt || {
-    rm -rf "$test_home"
+    _ccm_rm_home "$test_home"
     return 1
   }
 
@@ -10657,7 +10709,7 @@ test_profile_settings_override_global_launch_settings() {
   assert_contains "$actual" '"permissions":{"defaultMode":"ask"}' \
     'profile launch settings must inherit absent global objects' || rc=1
 
-  rm -rf "$test_home"
+  _ccm_rm_home "$test_home"
   return $rc
 }
 
@@ -10673,7 +10725,7 @@ test_proxy_gateway_credentials_reach_claude_only_through_the_environment() {
   source "$CCMORPH_SOURCE"
 
   _ccm_launch -a proxy prompt || {
-    rm -rf "$test_home"
+    _ccm_rm_home "$test_home"
     return 1
   }
 
@@ -10694,7 +10746,7 @@ test_proxy_gateway_credentials_reach_claude_only_through_the_environment() {
     rc=1
   fi
 
-  rm -rf "$test_home"
+  _ccm_rm_home "$test_home"
   return $rc
 }
 
@@ -10740,7 +10792,7 @@ test_the_command_resolves_its_library_and_forwards_every_argument() {
   HOME="$test_home" CCMORPH_LIB_DIR="$test_home/lib" \
     zsh "$REPO_ROOT/bin/ccmorph" hop latest || {
       print -u2 -- 'the command must load the library and run it'
-      rm -rf "$test_home"
+      _ccm_rm_home "$test_home"
       return 1
     }
 
@@ -10764,7 +10816,7 @@ test_the_command_resolves_its_library_and_forwards_every_argument() {
     rc=1
   }
 
-  rm -rf "$test_home"
+  _ccm_rm_home "$test_home"
   return $rc
 }
 
@@ -10802,7 +10854,7 @@ test_the_command_reports_a_library_it_cannot_load() {
   assert_contains "$output" 'CCMORPH_LIB_DIR is set but has no readable ccmorph.sh' \
     'a wrong CCMORPH_LIB_DIR must say so by name' || rc=1
 
-  rm -rf "$test_home"
+  _ccm_rm_home "$test_home"
   return $rc
 }
 
@@ -10844,7 +10896,7 @@ test_a_bare_invocation_prints_usage_and_launches_nothing() {
   source "$CCMORPH_SOURCE"
   ccmorph use gw >/dev/null || {
     print -u2 -- 'could not set a default profile'
-    rm -rf "$test_home"; return 1
+    _ccm_rm_home "$test_home"; return 1
   }
 
   local calls="" rc=0
@@ -10919,7 +10971,7 @@ test_a_bare_invocation_prints_usage_and_launches_nothing() {
   assert_contains "$no_default" 'no default profile set' \
     'run with no default must name the fix' || rc=1
 
-  rm -rf "$test_home"
+  _ccm_rm_home "$test_home"
   return $rc
 }
 
@@ -10959,7 +11011,7 @@ test_the_launcher_adds_nothing_unrequested() {
     rc=1
   }
 
-  rm -rf "$test_home"
+  _ccm_rm_home "$test_home"
   return $rc
 }
 
@@ -11007,7 +11059,7 @@ test_run_keeps_native_command_delimiters() {
   assert_not_contains "$actual" "${tab}--${tab}" \
     'the outer separator must not be forwarded' || rc=1
 
-  rm -rf "$test_home"
+  _ccm_rm_home "$test_home"
   return $rc
 }
 
@@ -11089,7 +11141,7 @@ test_picker_without_a_registry_offers_rows_and_spawns_nothing() {
     print -u2 -- "no registry must mean no model-window spawns, got $calls"
     rc=1
   }
-  rm -rf "$test_home"
+  _ccm_rm_home "$test_home"
   return $rc
 }
 
@@ -11136,7 +11188,7 @@ test_picker_projects_a_derived_1m_row_for_a_probed_claude() {
   state="$(<"$HOME/.config/ccmorph/profiles/gw/.claude.json")"
   assert_contains "$state" 'claude-opus-5' \
     'no recorded window must preserve catalogue visibility without adding a derived suffix' || rc=1
-  rm -rf "$test_home"
+  _ccm_rm_home "$test_home"
   return $rc
 }
 
@@ -11156,11 +11208,11 @@ test_launch_substitutes_the_derived_send_id_for_a_claude_model() {
   source "$CCMORPH_SOURCE"
 
   local rc=0
-    _ccm_launch -a sendid prompt || { rm -rf "$test_home"; return 1; }
+    _ccm_launch -a sendid prompt || { _ccm_rm_home "$test_home"; return 1; }
   local actual="$(<"$CCMORPH_TEST_LOG")"
   assert_contains "$actual" 'MODEL_ENV=claude-opus-5[1m]' \
     'a conf default probed at 1M must launch with the [1m] id' || rc=1
-  rm -rf "$test_home"
+  _ccm_rm_home "$test_home"
   return $rc
 }
 
@@ -11175,26 +11227,26 @@ test_inspect_uses_the_fleet_or_default_compaction_percent() {
   source "$CCMORPH_SOURCE"
 
   local actual rc=0
-  actual=$(ccmorph inspect proxy) || { rm -rf "$test_home"; return 1; }
+  actual=$(ccmorph inspect proxy) || { _ccm_rm_home "$test_home"; return 1; }
   assert_contains "$actual" 'compaction target 73%' \
     'show must describe the fleet percentage instead of a hardcoded 80 percent' || rc=1
 
   mkdir -p "$HOME/.config/ccmorph/profiles/proxy"
   print -r -- '{"env":{"CLAUDE_AUTOCOMPACT_PCT_OVERRIDE":"90"}}' \
     > "$HOME/.config/ccmorph/profiles/proxy/settings.json"
-  actual=$(ccmorph inspect proxy) || { rm -rf "$test_home"; return 1; }
+  actual=$(ccmorph inspect proxy) || { _ccm_rm_home "$test_home"; return 1; }
   assert_contains "$actual" 'compaction target 90%' \
     'show must use the profile settings override instead of the fleet value' || rc=1
 
   print -r -- '{"schemaVersion":1,"autoCompactAtPercent":"broken"}' \
     > "$HOME/.agents/runtime/policies/context.json"
-  actual=$(ccmorph inspect proxy) || { rm -rf "$test_home"; return 1; }
+  actual=$(ccmorph inspect proxy) || { _ccm_rm_home "$test_home"; return 1; }
   assert_contains "$actual" 'compaction target 90%' \
     'a valid settings override must make a malformed unused fleet policy irrelevant' || rc=1
 
   print -r -- 'env.CLAUDE_AUTOCOMPACT_PCT_OVERRIDE=75' \
     >> "$HOME/.config/ccmorph/proxy.conf"
-  actual=$(ccmorph inspect proxy) || { rm -rf "$test_home"; return 1; }
+  actual=$(ccmorph inspect proxy) || { _ccm_rm_home "$test_home"; return 1; }
   assert_contains "$actual" 'compaction target 75%' \
     'show must use the conf override before settings and fleet' || rc=1
 
@@ -11203,10 +11255,10 @@ test_inspect_uses_the_fleet_or_default_compaction_percent() {
   rm -f "$HOME/.config/ccmorph/proxy.conf.bak" \
     "$HOME/.config/ccmorph/profiles/proxy/settings.json" \
     "$HOME/.agents/runtime/policies/context.json"
-  actual=$(ccmorph inspect proxy) || { rm -rf "$test_home"; return 1; }
+  actual=$(ccmorph inspect proxy) || { _ccm_rm_home "$test_home"; return 1; }
   assert_contains "$actual" 'compaction target 75%' \
     'show must use the built-in 75 percent fallback when the policy is absent' || rc=1
-  rm -rf "$test_home"
+  _ccm_rm_home "$test_home"
   return $rc
 }
 
@@ -11225,7 +11277,7 @@ test_inspect_names_masking_for_every_profile() {
 
   local rc=0 actual
   # setup_home's proxy is a gateway profile without the setting.
-  actual=$(ccmorph inspect proxy) || { rm -rf "$test_home"; return 1; }
+  actual=$(ccmorph inspect proxy) || { _ccm_rm_home "$test_home"; return 1; }
   assert_contains "$actual" 'masking    off' \
     'a gateway profile without the setting must say masking is off' || rc=1
   # GH-384: the off state carried no words, so the row could only be read
@@ -11235,25 +11287,25 @@ test_inspect_names_masking_for_every_profile() {
     'the off line must say what off means for secrets' || rc=1
   assert_contains "$actual" 'env.CCMORPH_MASK=1 sends them as placeholders' \
     'the off line must say what masking is and how to turn it on' || rc=1
-  actual=$(ccmorph inspect gw) || { rm -rf "$test_home"; return 1; }
+  actual=$(ccmorph inspect gw) || { _ccm_rm_home "$test_home"; return 1; }
   assert_contains "$actual" 'masking    on' \
     'a gateway profile with env.CCMORPH_MASK=1 must say masking is on' || rc=1
   assert_contains "$actual" 'secrets reach the endpoint as placeholders' \
     'the on line must say what masking does' || rc=1
-  actual=$(ccmorph inspect anth) || { rm -rf "$test_home"; return 1; }
+  actual=$(ccmorph inspect anth) || { _ccm_rm_home "$test_home"; return 1; }
   assert_contains "$actual" 'env.CCMORPH_MASK=1' \
     'a direct Anthropic profile with the setting on must show the setting' || rc=1
   assert_contains "$actual" 'not available on this route, nothing is masked' \
     'the setting on a route the shim does not front must say nothing is masked' || rc=1
-  actual=$(ccmorph inspect anthquiet) || { rm -rf "$test_home"; return 1; }
+  actual=$(ccmorph inspect anthquiet) || { _ccm_rm_home "$test_home"; return 1; }
   assert_contains "$actual" 'masking    not available on this route' \
     'a direct Anthropic profile without the setting must say masking is not available' || rc=1
   assert_not_contains "$actual" 'nothing is masked' \
     'without the setting the row must not claim a refused promise' || rc=1
-  actual=$(ccmorph inspect subacct) || { rm -rf "$test_home"; return 1; }
+  actual=$(ccmorph inspect subacct) || { _ccm_rm_home "$test_home"; return 1; }
   assert_contains "$actual" 'masking    not available on this route' \
     'a subscription profile must say masking is not available on its route' || rc=1
-  rm -rf "$test_home"
+  _ccm_rm_home "$test_home"
   return $rc
 }
 
@@ -11271,7 +11323,7 @@ test_inspect_names_the_model_question_for_a_gateway() {
   source "$CCMORPH_SOURCE"
 
   local rc=0 actual
-  actual=$(ccmorph inspect gw) || { rm -rf "$test_home"; return 1; }
+  actual=$(ccmorph inspect gw) || { _ccm_rm_home "$test_home"; return 1; }
   assert_contains "$actual" 'ccmorph asks which model at each launch' \
     'a gateway profile without a saved model must say ccmorph asks at each launch' || rc=1
   assert_contains "$actual" '(ccmorph asks which model at each launch)' \
@@ -11280,16 +11332,16 @@ test_inspect_names_the_model_question_for_a_gateway() {
     'a gateway launch does not leave the model to Claude Code' || rc=1
   assert_not_contains "$actual" 'Claude Code picks the model' \
     'the launches-as line must not claim Claude Code picks the model' || rc=1
-  actual=$(ccmorph inspect anth) || { rm -rf "$test_home"; return 1; }
+  actual=$(ccmorph inspect anth) || { _ccm_rm_home "$test_home"; return 1; }
   assert_contains "$actual" '— Claude Code picks the model' \
     'a native profile without a saved model says Claude Code picks the model' || rc=1
   # setup_home's proxy is a gateway profile with model=bootstrap-model saved.
-  actual=$(ccmorph inspect proxy) || { rm -rf "$test_home"; return 1; }
+  actual=$(ccmorph inspect proxy) || { _ccm_rm_home "$test_home"; return 1; }
   assert_contains "$actual" 'bootstrap-model' \
     'a gateway profile with a saved model shows the model' || rc=1
   assert_not_contains "$actual" 'asks which model' \
     'a saved model means no question at launch' || rc=1
-  rm -rf "$test_home"
+  _ccm_rm_home "$test_home"
   return $rc
 }
 
@@ -11346,7 +11398,7 @@ test_launch_says_whether_secrets_are_masked() {
     print -u2 -- "masking off must not print a line: ${(qqq)out}"
     rc=1
   }
-  rm -rf "$test_home"
+  _ccm_rm_home "$test_home"
   return $rc
 }
 
@@ -11359,7 +11411,7 @@ test_launch_compacts_at_fleet_percent_unless_the_conf_overrules() {
   source "$CCMORPH_SOURCE"
 
   local rc=0
-  _ccm_launch -a proxy prompt || { rm -rf "$test_home"; return 1; }
+  _ccm_launch -a proxy prompt || { _ccm_rm_home "$test_home"; return 1; }
   assert_contains "$(<"$CCMORPH_TEST_LOG")" 'AUTOCOMPACT_PCT=73' \
     'every profile reads the fleet compaction policy instead of a local constant' || rc=1
 
@@ -11371,13 +11423,13 @@ test_launch_compacts_at_fleet_percent_unless_the_conf_overrules() {
     'env.CLAUDE_AUTOCOMPACT_PCT_OVERRIDE=90' \
     > "$HOME/.config/ccmorph/pct90.conf"
   : > "$CCMORPH_TEST_LOG"
-  _ccm_launch -a pct90 prompt || { rm -rf "$test_home"; return 1; }
+  _ccm_launch -a pct90 prompt || { _ccm_rm_home "$test_home"; return 1; }
   assert_contains "$(<"$CCMORPH_TEST_LOG")" 'AUTOCOMPACT_PCT=90' \
     'a conf declaring its own trigger must overrule the default' || rc=1
 
   rm -f "$HOME/.config/ccmorph/pct90.conf" "$HOME/.agents/runtime/policies/context.json"
   : > "$CCMORPH_TEST_LOG"
-  _ccm_launch -a proxy prompt || { rm -rf "$test_home"; return 1; }
+  _ccm_launch -a proxy prompt || { _ccm_rm_home "$test_home"; return 1; }
   assert_contains "$(<"$CCMORPH_TEST_LOG")" 'AUTOCOMPACT_PCT=75' \
     'an absent fleet policy must fall back to the built-in 75 percent default' || rc=1
 
@@ -11390,7 +11442,7 @@ test_launch_compacts_at_fleet_percent_unless_the_conf_overrules() {
   }
   assert_contains "$err" 'invalid fleet context policy' \
     'a malformed present policy must fail instead of falling back' || rc=1
-  rm -rf "$test_home"
+  _ccm_rm_home "$test_home"
   return $rc
 }
 
@@ -11415,7 +11467,7 @@ test_a_settings_file_compaction_trigger_is_not_overruled() {
   source "$CCMORPH_SOURCE"
 
   local rc=0
-  _ccm_launch -a proxy prompt || { rm -rf "$test_home"; return 1; }
+  _ccm_launch -a proxy prompt || { _ccm_rm_home "$test_home"; return 1; }
   # The launch overlay is what Claude Code actually reads for a settings-file value
   # (it reaches the process through --settings, not through the environment), so the
   # overlay's env block is the signal. The stub records it as SETTINGS=.
@@ -11430,7 +11482,7 @@ test_a_settings_file_compaction_trigger_is_not_overruled() {
     > "$HOME/.claude/settings.json"
   rm -f "$HOME/.config/ccmorph/profiles/proxy/settings.profile.json"
   : > "$CCMORPH_TEST_LOG"
-  _ccm_launch -a proxy prompt || { rm -rf "$test_home"; return 1; }
+  _ccm_launch -a proxy prompt || { _ccm_rm_home "$test_home"; return 1; }
   actual="$(<"$CCMORPH_TEST_LOG")"
   assert_contains "$actual" '"CLAUDE_AUTOCOMPACT_PCT_OVERRIDE":"65"' \
     'a trigger set in canonical settings.json must survive the launch' || rc=1
@@ -11442,7 +11494,7 @@ test_a_settings_file_compaction_trigger_is_not_overruled() {
   print -r -- '{"env":{"CLAUDE_AUTOCOMPACT_PCT_OVERRIDE":"broken"}}' \
     > "$HOME/.claude/settings.json"
   : > "$CCMORPH_TEST_LOG"
-  _ccm_launch -a proxy prompt || { rm -rf "$test_home"; return 1; }
+  _ccm_launch -a proxy prompt || { _ccm_rm_home "$test_home"; return 1; }
   actual="$(<"$CCMORPH_TEST_LOG")"
   assert_contains "$actual" 'AUTOCOMPACT_PCT=80' \
     'an engine-invalid saved trigger must leave a gap for fleet/default injection' || rc=1
@@ -11450,7 +11502,7 @@ test_a_settings_file_compaction_trigger_is_not_overruled() {
   print -r -- '{"env":{"CLAUDE_AUTOCOMPACT_PCT_OVERRIDE":"90junk"}}' \
     > "$HOME/.claude/settings.json"
   : > "$CCMORPH_TEST_LOG"
-  _ccm_launch -a proxy prompt || { rm -rf "$test_home"; return 1; }
+  _ccm_launch -a proxy prompt || { _ccm_rm_home "$test_home"; return 1; }
   actual="$(<"$CCMORPH_TEST_LOG")"
   assert_contains "$actual" '"CLAUDE_AUTOCOMPACT_PCT_OVERRIDE":"90junk"' \
     'settings validation must use the engine parseFloat prefix semantics' || rc=1
@@ -11466,14 +11518,14 @@ test_a_settings_file_compaction_trigger_is_not_overruled() {
   print -r -- '{"env":{"CLAUDE_AUTOCOMPACT_PCT_OVERRIDE":"broken"}}' \
     > "$HOME/.config/ccmorph/profiles/proxy/settings.json"
   : > "$CCMORPH_TEST_LOG"
-  _ccm_launch -a proxy prompt || { rm -rf "$test_home"; return 1; }
+  _ccm_launch -a proxy prompt || { _ccm_rm_home "$test_home"; return 1; }
   actual="$(<"$CCMORPH_TEST_LOG")"
   assert_contains "$actual" 'AUTOCOMPACT_PCT=80' \
     'an invalid profile override must leave a gap for fleet/default injection' || rc=1
   assert_not_contains "$actual" '"CLAUDE_AUTOCOMPACT_PCT_OVERRIDE":"65"' \
     'an overridden canonical trigger must not reappear through validation order' || rc=1
 
-  rm -rf "$test_home"
+  _ccm_rm_home "$test_home"
   return $rc
 }
 
@@ -11495,7 +11547,7 @@ test_launch_skips_the_sizer_when_nothing_is_new() {
     { print -u2 -- 'an all-known listing must skip the sizer'; rc=1; }
   _ccm_listing_has_unsized gw '{"data":[{"id": "known-model"},{"id": "brand-new"}]}' ||
     { print -u2 -- 'a new model must reach the sizer'; rc=1; }
-  rm -rf "$test_home"
+  _ccm_rm_home "$test_home"
   return $rc
 }
 
@@ -11525,7 +11577,7 @@ test_add_sub_completes_the_browser_login() {
   [[ -f "$HOME/login.ran" ]] || { print -u2 -- 'the browser login never ran'; rc=1; }
   command grep -qx 'email=a@example.com' "$HOME/.config/ccmorph/demo.conf" ||
     { print -u2 -- 'the profile must be saved with the signed-in email'; rc=1; }
-  rm -rf "$test_home"
+  _ccm_rm_home "$test_home"
   return $rc
 }
 
@@ -11576,7 +11628,7 @@ test_login_signs_a_signed_out_account_profile_in_again() {
     { print -u2 -- 'the profile must record the account the sign-in landed on'; rc=1; }
   command grep -qx 'type=sub' "$HOME/.config/ccmorph/s.conf" ||
     { print -u2 -- 'the sign-in must not rewrite the profile type'; rc=1; }
-  rm -rf "$test_home"
+  _ccm_rm_home "$test_home"
   return $rc
 }
 
@@ -11609,7 +11661,7 @@ test_add_sub_auth_calls_scrub_securestorage_dir() {
   # The runner calls tests in-process: the export must not outlive the test.
   [[ ${CLAUDE_SECURESTORAGE_CONFIG_DIR-unset} == unset ]] ||
     { print -u2 -- 'FAIL: CLAUDE_SECURESTORAGE_CONFIG_DIR leaked into the runner shell'; rc=1; }
-  rm -rf "$test_home"
+  _ccm_rm_home "$test_home"
   return $rc
 }
 
@@ -11651,7 +11703,7 @@ test_add_sub_sigkilled_mid_login_leaves_no_profile() {
   if [[ ! -s "$HOME/core.pid" ]]; then
     kill -TERM $job 2>/dev/null; touch "$HOME/go"; wait $job 2>/dev/null
     print -u2 -- 'the browser sign-in never started'
-    rm -rf "$test_home"
+    _ccm_rm_home "$test_home"
     return 1
   fi
   corepid=$(<"$HOME/core.pid")
@@ -11679,7 +11731,7 @@ test_add_sub_sigkilled_mid_login_leaves_no_profile() {
     'a killed sign-in must not hold the name' || rc=1
   command grep -qx 'email=a@example.com' "$HOME/.config/ccmorph/demo.conf" ||
     { print -u2 -- 'the retried add must save the signed-in account'; rc=1; }
-  rm -rf "$test_home"
+  _ccm_rm_home "$test_home"
   return $rc
 }
 
@@ -11716,7 +11768,7 @@ test_add_sub_terminal_signal_mid_login_cleans_up() {
   if [[ ! -s "$HOME/core.pid" ]]; then
     kill -TERM $job 2>/dev/null; touch "$HOME/go"; wait $job 2>/dev/null
     print -u2 -- 'the browser sign-in never started'
-    rm -rf "$test_home"
+    _ccm_rm_home "$test_home"
     return 1
   fi
   corepid=$(<"$HOME/core.pid")
@@ -11756,7 +11808,7 @@ test_add_sub_terminal_signal_mid_login_cleans_up() {
     'a rolled-back sign-in leaves no profile for list to show' || rc=1
   assert_contains "$out" 'proxy (API key: http://proxy.invalid' \
     'list must still show the profiles the home already had' || rc=1
-  rm -rf "$test_home"
+  _ccm_rm_home "$test_home"
   return $rc
 }
 
@@ -11805,8 +11857,10 @@ test_login_repairs_a_sub_profile_that_never_got_an_email() {
     print -u2 -- 'a sub profile with no email must not pass doctor'
     rc=1
   }
-  assert_contains "$out" 'sign in again: ccmorph login s' \
+  assert_contains "$out" 'sign in: ccmorph login s' \
     'doctor must name the repair every other verb names' || rc=1
+  assert_not_contains "$out" 'sign in again' \
+    'a conf that never signed in is not told to sign in again (#636)' || rc=1
   assert_not_contains "$out" 'ccmorph rm s' \
     'doctor must not point a half-made sign-in at a re-create' || rc=1
   # list and add are the two voices the issue caught disagreeing (#649): on
@@ -11837,7 +11891,7 @@ test_login_repairs_a_sub_profile_that_never_got_an_email() {
     { print -u2 -- 'login must add the email line a stub profile never had'; rc=1; }
   command grep -qx 'type=sub' "$HOME/.config/ccmorph/s.conf" ||
     { print -u2 -- 'the repair must not rewrite the profile type'; rc=1; }
-  rm -rf "$test_home"
+  _ccm_rm_home "$test_home"
   return $rc
 }
 
@@ -11919,7 +11973,7 @@ test_every_credential_type_states_how_it_authenticates() {
   local sub_env
   sub_env=$(ccmorph _env subacct 2>&1) || {
     print -u2 -- 'a sub profile must produce an environment'
-    rm -rf "$test_home"; return 1
+    _ccm_rm_home "$test_home"; return 1
   }
   assert_contains "$sub_env" "CLAUDE_CONFIG_DIR=" \
     'a sub profile must still be pointed at its own config dir' || rc=1
@@ -11936,7 +11990,7 @@ test_every_credential_type_states_how_it_authenticates() {
     rc=1
   fi
 
-  rm -rf "$test_home"
+  _ccm_rm_home "$test_home"
   return $rc
 }
 
@@ -12029,12 +12083,18 @@ test_a_conf_env_budget_pin_reaches_the_launch() {
   source "$CCMORPH_SOURCE"
 
   local rc=0
-    _ccm_launch -a gw prompt >/dev/null 2>&1 || { rm -rf "$test_home"; return 1; }
+    _ccm_launch -a gw prompt >/dev/null 2>&1 || { _ccm_rm_home "$test_home"; return 1; }
+  # A launch that never started leaves an empty log, and an absence-only
+  # assertion over an empty log passes; the pin itself must reach the launch
+  # (#636).
+  [[ -s "$CCMORPH_TEST_LOG" ]] || { print -u2 -- 'claude did not start'; rc=1; }
   local actual="$(<"$CCMORPH_TEST_LOG")"
 
+  assert_contains "$actual" 'AUTO_COMPACT=1e5' \
+    'the conf pin must reach the launched budget' || rc=1
   assert_not_contains "$actual" 'mid limit' \
     'an engine-valid exponent pin must govern, leaving the sibling safe' || rc=1
-  rm -rf "$test_home"
+  _ccm_rm_home "$test_home"
   return $rc
 }
 
@@ -12058,7 +12118,7 @@ test_a_launch_survives_a_settings_projection_it_cannot_write() {
   local err rc=0
   err=$(_ccm_launch -a proxy prompt 2>&1 >/dev/null) || {
     print -u2 -- 'launch must succeed when the settings cannot be generated'
-    rm -rf "$test_home"; return 1
+    _ccm_rm_home "$test_home"; return 1
   }
   local actual="$(<"$CCMORPH_TEST_LOG")"
   assert_contains "$actual" 'BASE_URL=http://proxy.invalid' \
@@ -12068,7 +12128,7 @@ test_a_launch_survives_a_settings_projection_it_cannot_write() {
   assert_contains "$err" 'previously generated settings' \
     'the degraded launch must say so' || rc=1
 
-  rm -rf "$test_home"
+  _ccm_rm_home "$test_home"
   return $rc
 }
 run_test test_a_launch_survives_a_settings_projection_it_cannot_write
@@ -12098,7 +12158,7 @@ test_a_launch_refuses_when_its_settings_policy_cannot_be_read() {
     rc=1
   }
 
-  rm -rf "$test_home"
+  _ccm_rm_home "$test_home"
   return $rc
 }
 test_a_launch_refuses_a_dangling_policy_issue_308() {
@@ -12143,7 +12203,7 @@ test_a_launch_with_stale_settings_and_a_new_policy() {
   if [[ "$kind" == carried ]]; then
     (( launch_rc == 0 )) || {
       print -u2 -- 'a launch may keep stale settings that carry the policy (issue 319)'
-      rm -rf "$test_home"; return 1
+      _ccm_rm_home "$test_home"; return 1
     }
     assert_not_contains "$err" 'settings.policy.json' \
       'carried settings must not read as a refusal' || rc=1
@@ -12170,7 +12230,7 @@ test_a_launch_with_stale_settings_and_a_new_policy() {
     }
   fi
 
-  rm -rf "$test_home"
+  _ccm_rm_home "$test_home"
   return $rc
 }
 test_a_launch_refuses_stale_settings_when_the_lock_cannot_open_issue_319() {
@@ -12214,7 +12274,7 @@ test_the_fold_runs_exactly_when_settings_json_changed() {
   assert_contains "$(<"$HOME/fold.log")" fold \
     'a missing saved copy must run the fold, never skip it' || rc=1
 
-  rm -rf "$test_home"
+  _ccm_rm_home "$test_home"
   return $rc
 }
 run_test test_the_fold_runs_exactly_when_settings_json_changed
@@ -12228,10 +12288,10 @@ test_a_nested_launch_never_inherits_an_outer_advisory() {
   source "$CCMORPH_SOURCE"
   local rc=0
   CCMORPH_ADVISE='{"systemMessage": "ccmorph: stale outer advisory"}' _ccm_launch -a proxy prompt ||
-    { rm -rf "$test_home"; return 1; }
+    { _ccm_rm_home "$test_home"; return 1; }
   assert_contains "$(<"$CCMORPH_TEST_LOG")" 'ADVISE=<unset>' \
     'an inherited advisory must not reach the nested session' || rc=1
-  rm -rf "$test_home"
+  _ccm_rm_home "$test_home"
   return $rc
 }
 run_test test_a_nested_launch_never_inherits_an_outer_advisory
@@ -12252,13 +12312,13 @@ test_the_advisory_is_valid_json() {
   source "$CCMORPH_SOURCE"
 
   local rc=0 advise
-  _ccm_launch -a gw prompt >/dev/null 2>&1 || { rm -rf "$test_home"; return 1; }
+  _ccm_launch -a gw prompt >/dev/null 2>&1 || { _ccm_rm_home "$test_home"; return 1; }
   advise=$(grep '^ADVISE=' "$CCMORPH_TEST_LOG")
   advise=${advise#ADVISE=}
   [[ "$advise" != '<unset>' ]] || { print -u2 -- 'FAIL: the fixture must produce an advisory'; rc=1; }
   print -r -- "$advise" | python3 -c 'import json, sys; json.load(sys.stdin)' ||
     { print -u2 -- "FAIL: the advisory must be valid JSON: $advise"; rc=1; }
-  rm -rf "$test_home"
+  _ccm_rm_home "$test_home"
   return $rc
 }
 run_test test_the_advisory_is_valid_json
@@ -12566,7 +12626,7 @@ test_picker_projection_is_complete_before_claude_entry() {
   source "$CCMORPH_SOURCE"
   _ccm_launch -a gw prompt
   local rc=$?
-  rm -rf "$test_home"
+  _ccm_rm_home "$test_home"
   return $rc
 }
 run_test test_picker_projection_is_complete_before_claude_entry
@@ -12582,7 +12642,7 @@ test_claude_inherits_callers_tmux_environment() {
   [[ "$actual" == '' ]] || rc=1
   actual=$(unset TMUX; _ccm_run_claude --)
   [[ "$actual" == '<unset>' ]] || rc=1
-  rm -rf "$test_home"
+  _ccm_rm_home "$test_home"
   return $rc
 }
 run_test test_claude_inherits_callers_tmux_environment
@@ -12623,7 +12683,7 @@ test_context_verb_reads_sets_and_clears_one_models_window() {
   ccmorph context nosuch some-model 2>/dev/null && rc=1
   ccmorph context gw 2>/dev/null && rc=1
 
-  rm -rf "$test_home"
+  _ccm_rm_home "$test_home"
   return $rc
 }
 run_test test_context_verb_reads_sets_and_clears_one_models_window
@@ -12700,7 +12760,7 @@ test_context_names_a_model_the_profile_does_not_list() {
     print -u2 -- "a listed model on a default-base key must still answer: ${(qqq)out}"; rc=1
   }
 
-  rm -rf "$test_home"
+  _ccm_rm_home "$test_home"
   return $rc
 }
 run_test test_context_names_a_model_the_profile_does_not_list
@@ -12872,7 +12932,7 @@ test_context_save_warns_only_for_models_the_listing_leaves_out_issue_370() {
     }
   done
 
-  rm -rf "$test_home"
+  _ccm_rm_home "$test_home"
   return $rc
 }
 run_test test_context_save_warns_only_for_models_the_listing_leaves_out_issue_370
@@ -12891,7 +12951,7 @@ test_picker_uses_gateway_before_adapter_and_settings_overlay() {
   assert_not_contains "$state" '"value": "embedding"' 'explicit non-chat models excluded' || rc=1
   assert_contains "$logged" 'new-chat' 'launch settings must include newly discovered rows on first launch' || rc=1
   assert_contains "$logged" 'BASE_URL=http://127.0.0.1:49123' 'inference must still use the adapter' || rc=1
-  rm -rf "$test_home"
+  _ccm_rm_home "$test_home"
   return $rc
 }
 run_test test_picker_uses_gateway_before_adapter_and_settings_overlay
@@ -12917,7 +12977,7 @@ test_model_mappings_work_for_every_credential_type() {
       _ccm_read "$name" 1 >/dev/null 2>&1 && rc=1
     fi
   done
-  rm -rf "$test_home"
+  _ccm_rm_home "$test_home"
   return $rc
 }
 run_test test_model_mappings_work_for_every_credential_type
@@ -12956,7 +13016,7 @@ test_launch_refuses_a_model_map_key_no_request_can_carry() {
     print -u2 -- 'a map keyed by the wire model id must still launch'
     rc=1
   }
-  rm -rf "$test_home"
+  _ccm_rm_home "$test_home"
   return $rc
 }
 run_test test_launch_refuses_a_model_map_key_no_request_can_carry
@@ -12968,7 +13028,7 @@ test_adapter_controls_do_not_reach_claude_or_overlay() {
   local actual rc=0
   actual=$(CCMORPH_USER_AGENT=ua/{version} CCMORPH_STALL_TIMEOUT=1 CCMORPH_UPSTREAM_PROXY=http://127.0.0.1:1 CCMORPH_RANDOM_DEVICE_ID=1 CCMORPH_AFFINITY_HEADER=X-A CCMORPH_SHIM_HOOKS=/tmp/hooks.py CCMORPH_MASK=1 CCMORPH_MASK_COMMANDS=x _ccm_run_claude CCMORPH_USER_AGENT=ua/{version} CCMORPH_STALL_TIMEOUT=1 CCMORPH_UPSTREAM_PROXY=http://127.0.0.1:1 CCMORPH_RANDOM_DEVICE_ID=1 CCMORPH_AFFINITY_HEADER=X-A CCMORPH_SHIM_HOOKS=/tmp/hooks.py CCMORPH_MASK=1 CCMORPH_MASK_COMMANDS=x --)
   [[ "$actual" == 'unset|unset|unset|unset|unset|unset|unset|unset' ]] || rc=1
-  rm -rf "$test_home"
+  _ccm_rm_home "$test_home"
   return $rc
 }
 run_test test_adapter_controls_do_not_reach_claude_or_overlay
@@ -13010,7 +13070,7 @@ test_private_session_leaves_no_transcript_behind() {
     print -u2 -- 'a session that keeps its history must not be told it was deleted'
     rc=1
   }
-  rm -rf "$test_home"
+  _ccm_rm_home "$test_home"
   return $rc
 }
 run_test test_private_session_leaves_no_transcript_behind
@@ -13030,7 +13090,7 @@ test_private_session_key_stays_the_profiles_own() {
   [[ "$f[1]" == "$prof" && "$f[2]" != "$prof" && "$f[3]" == unset && "$f[4]" == unset ]] || { print -u2 -- "private: $seen"; rc=1; }
   seen=$(_ccm_run_claude "CLAUDE_CONFIG_DIR=$prof" --)
   [[ "$seen" == "unset|$prof|unset|unset" ]] || { print -u2 -- "normal: $seen"; rc=1; }
-  rm -rf "$test_home"
+  _ccm_rm_home "$test_home"
   return $rc
 }
 run_test test_private_session_key_stays_the_profiles_own
@@ -13042,7 +13102,7 @@ test_private_session_is_removed_when_terminated() {
   # The fake claude records the launcher's pid and config dir, writes a transcript, waits.
   printf '%s\n' '#!/bin/sh' 'mkdir -p "$CLAUDE_CONFIG_DIR/projects/p" && echo t > "$CLAUDE_CONFIG_DIR/projects/p/s.jsonl"' 'printf "%s\n" "$PPID $$ $CLAUDE_CONFIG_DIR" >&3 || exit 9' 'exec sleep 30' > "$HOME/bin/claude"
   chmod +x "$HOME/bin/claude"
-  zmodload zsh/zselect || { rm -rf "$test_home"; return 1; }
+  zmodload zsh/zselect || { _ccm_rm_home "$test_home"; return 1; }
   local -i hang=$(( CCMORPH_TEST_HANG_TIMEOUT * 100 ))
   for sig in TERM HUP; do
     fifo="$test_home/started.$sig"
@@ -13089,7 +13149,7 @@ test_private_session_is_removed_when_terminated() {
     [[ ! -e "${${info#* * }:h}" ]] || { print -u2 -- "$sig: private dir left behind"; rc=1; }
     (( st == 128 + ${signals[(i)$sig]} - 1 )) || { print -u2 -- "$sig: status $st"; rc=1; }
   done
-  rm -rf "$test_home"
+  _ccm_rm_home "$test_home"
   return $rc
 }
 run_test test_private_session_is_removed_when_terminated
@@ -13114,7 +13174,7 @@ test_private_session_is_removed_when_hop_notice_hits_closed_stdout() {
   (( ${#left} == 0 )) || { print -u2 -- "private dir left behind: $left"; rc=1; }
   (( st == 0 )) || { print -u2 -- "status $st, expected claude's 0"; rc=1; }
   [[ -e "$HOME/claude-started" ]] || { print -u2 -- 'claude did not start after the notice write failed'; rc=1; }
-  rm -rf "$test_home"
+  _ccm_rm_home "$test_home"
   return $rc
 }
 run_test test_private_session_is_removed_when_hop_notice_hits_closed_stdout
@@ -13142,7 +13202,7 @@ test_private_session_is_removed_when_the_end_notice_hits_closed_stderr() {
   (( ${#left} == 0 )) || { print -u2 -- "private dir left behind: $left"; rc=1 }
   (( st == 0 )) || { print -u2 -- "status $st, expected claude's 0"; rc=1 }
   [[ -e "$HOME/claude-started" ]] || { print -u2 -- 'claude did not start'; rc=1 }
-  rm -rf "$test_home"
+  _ccm_rm_home "$test_home"
   return $rc
 }
 run_test test_private_session_is_removed_when_the_end_notice_hits_closed_stderr
@@ -13155,7 +13215,7 @@ test_private_session_is_removed_on_group_quit() {
   mkdir -p "$prof" && print '{}' > "$prof/.claude.json"
   printf '%s\n' '#!/bin/sh' 'printf "%s\n" "$PPID $$ $CLAUDE_CONFIG_DIR" >&3 || exit 9' 'exec sleep 30' > "$HOME/bin/claude"
   chmod +x "$HOME/bin/claude"
-  zmodload zsh/zselect || { rm -rf "$test_home"; return 1; }
+  zmodload zsh/zselect || { _ccm_rm_home "$test_home"; return 1; }
   local -i hang=$(( CCMORPH_TEST_HANG_TIMEOUT * 100 ))
   fifo="$test_home/started.QUIT"
   mkfifo "$fifo"
@@ -13181,7 +13241,7 @@ test_private_session_is_removed_on_group_quit() {
     fi
     rc=1
     exec {fd}<&-; exec {crutch}>&-
-    rm -rf "$test_home"; return $rc
+    _ccm_rm_home "$test_home"; return $rc
   fi
   read -r info <&$fd
   kill -QUIT -- -$pid 2>/dev/null
@@ -13196,7 +13256,7 @@ test_private_session_is_removed_on_group_quit() {
   exec {fd}<&-
   wait $pid
   [[ ! -e "${${info#* * }:h}" ]] || { print -u2 -- "QUIT: private dir left behind"; rc=1; }
-  rm -rf "$test_home"
+  _ccm_rm_home "$test_home"
   return $rc
 }
 run_test test_private_session_is_removed_on_group_quit
@@ -13209,7 +13269,7 @@ test_private_session_forwards_term_and_keeps_claudes_status() {
   # still there at that moment (the launcher must not remove it under claude).
   printf '%s\n' '#!/bin/sh' 'trap '\''test -e "$CLAUDE_CONFIG_DIR/.claude.json" && echo kept > "$SEEN"; exit 0'\'' TERM HUP' 'printf "%s\n" "$PPID $$ $CLAUDE_CONFIG_DIR" >&3 || exit 9' 'while :; do sleep 0.1; done' > "$HOME/bin/claude"
   chmod +x "$HOME/bin/claude"
-  zmodload zsh/zselect || { rm -rf "$test_home"; return 1; }
+  zmodload zsh/zselect || { _ccm_rm_home "$test_home"; return 1; }
   local -i hang=$(( CCMORPH_TEST_HANG_TIMEOUT * 100 ))
   for sig in TERM HUP; do
     export SEEN="$test_home/seen.$sig"
@@ -13257,7 +13317,7 @@ test_private_session_forwards_term_and_keeps_claudes_status() {
     [[ -s "$SEEN" && "$(<"$SEEN")" == kept ]] || { print -u2 -- "$sig: config gone before claude exited"; rc=1; }
     [[ ! -e "${${info#* * }:h}" ]] || { print -u2 -- "$sig: private dir left behind"; rc=1; }
   done
-  rm -rf "$test_home"
+  _ccm_rm_home "$test_home"
   return $rc
 }
 run_test test_private_session_forwards_term_and_keeps_claudes_status
@@ -13268,7 +13328,7 @@ test_private_session_keeps_exit_status_after_stop_and_continue() {
   mkdir -p "$prof" && print '{}' > "$prof/.claude.json"
   printf '%s\n' '#!/bin/sh' 'printf "%s\n" "$PPID $$ $CLAUDE_CONFIG_DIR" >&3 || exit 9' 'sleep 1' 'exit 7' > "$HOME/bin/claude"
   chmod +x "$HOME/bin/claude"
-  zmodload zsh/zselect || { rm -rf "$test_home"; return 1; }
+  zmodload zsh/zselect || { _ccm_rm_home "$test_home"; return 1; }
   local -i hang=$(( CCMORPH_TEST_HANG_TIMEOUT * 100 ))
   fifo="$test_home/started.STOP"
   mkfifo "$fifo"
@@ -13293,7 +13353,7 @@ test_private_session_keeps_exit_status_after_stop_and_continue() {
     fi
     rc=1
     exec {fd}<&-; exec {crutch}>&-
-    rm -rf "$test_home"; return $rc
+    _ccm_rm_home "$test_home"; return $rc
   fi
   read -r info <&$fd
   exec {fd}<&-
@@ -13303,7 +13363,7 @@ test_private_session_keeps_exit_status_after_stop_and_continue() {
   wait $pid; st=$?
   (( st == 7 )) || { print -u2 -- "STOP/CONT: status $st, want claude's 7"; rc=1; }
   [[ ! -e "${${info#* * }:h}" ]] || { print -u2 -- "STOP/CONT: private dir left behind"; rc=1; }
-  rm -rf "$test_home"
+  _ccm_rm_home "$test_home"
   return $rc
 }
 run_test test_private_session_keeps_exit_status_after_stop_and_continue
@@ -13317,7 +13377,7 @@ test_private_session_launcher_ends_with_claude() {
   # The fake claude waits for $GO, then exits 6.
   printf '%s\n' '#!/bin/sh' 'printf "%s\n" "$PPID $$ $CLAUDE_CONFIG_DIR" >&3 || exit 9' 'while [ ! -e "$GO" ]; do sleep 0.1; done' 'exit 6' > "$HOME/bin/claude"
   chmod +x "$HOME/bin/claude"
-  zmodload zsh/zselect || { rm -rf "$test_home"; return 1; }
+  zmodload zsh/zselect || { _ccm_rm_home "$test_home"; return 1; }
   local -i hang=$(( CCMORPH_TEST_HANG_TIMEOUT * 100 ))
   for mode in noclobber deleted; do
     export GO="$test_home/go.$mode"
@@ -13364,7 +13424,7 @@ test_private_session_launcher_ends_with_claude() {
     (( st == 6 )) || { print -u2 -- "$mode: status $st, want claude's 6"; rc=1; }
     [[ ! -e "${${info#* * }:h}" ]] || { print -u2 -- "$mode: private dir left behind"; rc=1; }
   done
-  rm -rf "$test_home"
+  _ccm_rm_home "$test_home"
   return $rc
 }
 run_test test_private_session_launcher_ends_with_claude
@@ -13387,7 +13447,7 @@ test_private_session_keeps_the_terminal_as_stdin() {
   export OUT="$test_home/out.closed"
   zsh -c 'source "$1"; _ccm_run_claude "CLAUDE_CONFIG_DIR=$2" CCMORPH_PRIVATE=1 --' _ "$CCMORPH_SOURCE" "$prof" <&- 2>/dev/null
   [[ -s "$OUT" ]] || { print -u2 -- "closed stdin: claude did not start"; rc=1; }
-  rm -rf "$test_home"
+  _ccm_rm_home "$test_home"
   return $rc
 }
 run_test test_private_session_keeps_the_terminal_as_stdin
@@ -13404,7 +13464,7 @@ test_private_session_claude_does_not_inherit_ignored_int_quit() {
     mask=$(_ccm_run_claude "CLAUDE_CONFIG_DIR=$prof" CCMORPH_PRIVATE=1 --)
     (( (16#${mask:-0} & 6) == 0 )) || { print -u2 -- "SigIgn=$mask: INT/QUIT ignored"; rc=1; }
   fi
-  rm -rf "$test_home"
+  _ccm_rm_home "$test_home"
   return $rc
 }
 run_test test_private_session_claude_does_not_inherit_ignored_int_quit
@@ -13415,7 +13475,7 @@ test_private_session_forwarding_traps_precede_the_fork() {
   local test_home; test_home=$(mktemp -d); setup_home "$test_home"
   source "$CCMORPH_SOURCE"
   local -a body; body=("${(@f)$(functions _ccm_fork_forward)}")
-  rm -rf "$test_home"
+  _ccm_rm_home "$test_home"
   local p_fwd='*trap*kill -TERM $_ccm_pid*' p_fork='*} *&'
   local fwd=${body[(i)$~p_fwd]} fork=${body[(i)$~p_fork]}
   (( fork <= $#body )) || { print -u2 -- "no background fork of claude"; return 1; }
@@ -13430,7 +13490,7 @@ test_private_session_keeps_exit_status_after_interrupt() {
   # The fake claude survives SIGINT (as Claude Code does), then exits 0 on its own.
   printf '%s\n' '#!/bin/sh' 'trap "" INT' 'printf "%s\n" "$PPID $$ $CLAUDE_CONFIG_DIR" >&3 || exit 9' 'sleep 1' 'exit 0' > "$HOME/bin/claude"
   chmod +x "$HOME/bin/claude"
-  zmodload zsh/zselect || { rm -rf "$test_home"; return 1; }
+  zmodload zsh/zselect || { _ccm_rm_home "$test_home"; return 1; }
   local -i hang=$(( CCMORPH_TEST_HANG_TIMEOUT * 100 ))
   fifo="$test_home/started.INT"
   mkfifo "$fifo"
@@ -13455,7 +13515,7 @@ test_private_session_keeps_exit_status_after_interrupt() {
     fi
     rc=1
     exec {fd}<&-; exec {crutch}>&-
-    rm -rf "$test_home"; return $rc
+    _ccm_rm_home "$test_home"; return $rc
   fi
   read -r info <&$fd
   exec {fd}<&-
@@ -13464,7 +13524,7 @@ test_private_session_keeps_exit_status_after_interrupt() {
   wait $pid; st=$?
   (( st == 0 )) || { print -u2 -- "INT: status $st, want 0"; rc=1; }
   [[ ! -e "${${info#* * }:h}" ]] || { print -u2 -- "INT: private dir left behind"; rc=1; }
-  rm -rf "$test_home"
+  _ccm_rm_home "$test_home"
   return $rc
 }
 run_test test_private_session_keeps_exit_status_after_interrupt
@@ -13505,7 +13565,7 @@ test_launcher_forwards_term_and_hup_to_claude() {
   # did not start"; this shape passed TERM and HUP twice at load 339-353.
   local test_home; test_home=$(mktemp -d); setup_home "$test_home"
   local rc=0 sig pid st cpid fifo fd crutch marker
-  zmodload zsh/zselect || { rm -rf "$test_home"; return 1; }
+  zmodload zsh/zselect || { _ccm_rm_home "$test_home"; return 1; }
   local -i hang=$(( CCMORPH_TEST_HANG_TIMEOUT * 100 ))
   # GH-398: the waits are events, never deadlines. The witness is written by a
   # `sleep` function inside the launcher's own `zsh -c` child, the only process
@@ -13564,7 +13624,7 @@ test_launcher_forwards_term_and_hup_to_claude() {
     (( st == 7 )) || { print -u2 -- "$sig: status $st, want claude's 7"; rc=1; }
     [[ ! -s "$marker" ]] || { print -u2 -- "$sig: GH-398: the launcher's wait used real-clock polling"; rc=1; }
   done
-  rm -rf "$test_home"
+  _ccm_rm_home "$test_home"
   return $rc
 }
 run_test test_launcher_forwards_term_and_hup_to_claude
@@ -13578,7 +13638,7 @@ test_launcher_keeps_stdin_and_exit_status() {
   print hello | zsh -c 'source "$1"; _ccm_launch -a proxy prompt' _ "$CCMORPH_SOURCE"; st=$?
   [[ -s "$OUT" && "$(<"$OUT")" == hello ]] || { print -u2 -- "claude did not get the caller's stdin"; rc=1; }
   (( st == 5 )) || { print -u2 -- "status $st, want claude's 5"; rc=1; }
-  rm -rf "$test_home"
+  _ccm_rm_home "$test_home"
   return $rc
 }
 run_test test_launcher_keeps_stdin_and_exit_status
@@ -13593,7 +13653,7 @@ test_launch_runs_claude_when_tmpdir_is_unwritable() {
   TMPDIR="$test_home/ro" zsh -c 'source "$1"; _ccm_run_claude --' _ "$CCMORPH_SOURCE" 2>/dev/null; st=$?
   [[ -s "$OUT" ]] || { print -u2 -- "claude did not start with an unwritable TMPDIR"; rc=1; }
   (( st == 5 )) || { print -u2 -- "status $st, want claude's 5"; rc=1; }
-  chmod 755 "$test_home/ro"; rm -rf "$test_home"
+  chmod 755 "$test_home/ro"; _ccm_rm_home "$test_home"
   return $rc
 }
 run_test test_launch_runs_claude_when_tmpdir_is_unwritable
@@ -13607,7 +13667,7 @@ test_launch_keeps_claudes_niceness() {
   zsh -c 'source "$1"; ps -o ni= -p $$ | tr -d " " > "$OUT.me"; _ccm_launch -a proxy prompt' _ "$CCMORPH_SOURCE"
   mine=$(<"$OUT.me")
   [[ -s "$OUT" && "$(<"$OUT")" == "$mine" ]] || { print -u2 -- "claude nice $(<"$OUT"), launcher $mine"; rc=1; }
-  rm -rf "$test_home"
+  _ccm_rm_home "$test_home"
   return $rc
 }
 run_test test_launch_keeps_claudes_niceness
@@ -13618,7 +13678,7 @@ test_signal_with_a_queued_hop_ends_the_launch() {
   local test_home; test_home=$(mktemp -d); setup_home "$test_home"
   local rc=0 st pid cpid relay started crutch marker="$test_home/launcher-sleeps"
   local -i hang=$(( CCMORPH_TEST_HANG_TIMEOUT * 100 ))
-  zmodload zsh/zselect || { rm -rf "$test_home"; return 1; }
+  zmodload zsh/zselect || { _ccm_rm_home "$test_home"; return 1; }
   # GH-303: scheduling must not decide whether the signal contract passes.
   # GH-779: the counter and the counted code share a process - the override is
   # defined inside the launcher's `zsh -c` child below, and this stub proves it
@@ -13654,7 +13714,7 @@ test_signal_with_a_queued_hop_ends_the_launch() {
     kill -KILL $pid 2>/dev/null
     wait $pid 2>/dev/null
     exec {started}<&-; exec {crutch}>&-
-    rm -rf "$test_home"
+    _ccm_rm_home "$test_home"
     return 1
   fi
   read -r relay cpid <&$started || { print -u2 -- "claude did not start"; rc=1; }
@@ -13672,7 +13732,7 @@ test_signal_with_a_queued_hop_ends_the_launch() {
   [[ -s "$READY" ]] && (( $(wc -l < "$READY") == 1 )) || { print -u2 -- "claude was relaunched or did not start"; rc=1; }
   [[ -n $relay && ! -e "$HOME/.config/ccmorph/.reswitch.$relay" ]] || { print -u2 -- "relay file left behind"; rc=1; }
   [[ ! -s "$marker" ]] || { print -u2 -- "GH-303: signal synchronization used real-clock polling"; rc=1; }
-  rm -rf "$test_home"
+  _ccm_rm_home "$test_home"
   return $rc
 }
 run_test test_signal_with_a_queued_hop_ends_the_launch
@@ -13686,7 +13746,7 @@ test_private_session_runs_the_binary_not_a_shell_function() {
   export OUT="$test_home/out"
   zsh -c 'claude() { print FUNCTION-RAN > "$OUT"; }; source "$1"; _ccm_run_claude "CLAUDE_CONFIG_DIR=$2" CCMORPH_PRIVATE=1 --' _ "$CCMORPH_SOURCE" "$prof"
   [[ -s "$OUT" && "$(<"$OUT")" == BINARY-RAN ]] || { print -u2 -- "ran: $(<"$OUT")"; rc=1; }
-  rm -rf "$test_home"
+  _ccm_rm_home "$test_home"
   return $rc
 }
 run_test test_private_session_runs_the_binary_not_a_shell_function
@@ -13710,7 +13770,7 @@ test_model_prompt_survives_run_separators() {
   ccmorph run proxy --model mine -- -- -p 'literal prompt' || rc=1
   actual=$(<"$CCMORPH_TEST_LOG")
   assert_contains "$actual" "${tab}--${tab}-p${tab}literal prompt" 'a second separator belongs to Claude' || rc=1
-  rm -rf "$test_home"
+  _ccm_rm_home "$test_home"
   return $rc
 }
 run_test test_model_prompt_survives_run_separators
@@ -13755,7 +13815,7 @@ test_env_scrub_canary() {
     print -u2 -- 'the runner session env reached the fake claude'
     rc=1
   fi
-  rm -rf "$test_home"
+  _ccm_rm_home "$test_home"
   return $rc
 }
 
@@ -13924,7 +13984,7 @@ echo $! > "$3"' _ "$SCRIPT_DIR/fake_adapter_serve.sh" "$bystander" \
   fi
   kill -KILL "$serve_pid" "$bystander" 2>/dev/null
   wait "$bystander" 2>/dev/null
-  rm -rf "$test_home"
+  _ccm_rm_home "$test_home"
   return $rc
 }
 run_test test_the_serve_tail_leaves_an_unclaimed_double_writing_to_a_file
@@ -14017,12 +14077,12 @@ test_leak_canary() {
     (( ++i < 200 )) || {
       print -u2 -- "the leaked child $pid never armed its traps; the canary is broken, not the sweep"
       kill -KILL "$pid" 2>/dev/null
-      rm -rf "$test_home"
+      _ccm_rm_home "$test_home"
       return 1
     }
     command sleep 0.05
   done
-  rm -rf "$test_home"
+  _ccm_rm_home "$test_home"
   # Prove the leaker is beyond any stray signal's reach before judging the
   # sweep on catching it: TERM it ourselves and demand it survive. With the
   # traps armed only the sweep's KILL escalation can end it -- a stray TERM
@@ -14080,7 +14140,7 @@ test_profile_history_is_shared_and_a_real_dir_merges() {
   [[ "$(<"$HOME/.claude/projects/p/native.jsonl")" == old ]] || { print -u2 'native history must survive'; rc=1; }
   [[ "$(<"$HOME/.claude/projects/p/own.jsonl")" == mine ]] || { print -u2 'profile history must merge into the store'; rc=1; }
   _ccm_dir_ok proxy || { print -u2 'a merged profile must pass the fast path'; rc=1; }
-  rm -rf "$test_home"
+  _ccm_rm_home "$test_home"
   return $rc
 }
 
@@ -14095,7 +14155,7 @@ test_removing_a_profile_keeps_its_history_resumable() {
   [[ ! -e "$dir" ]] || { print -u2 'the profile dir must be removed'; rc=1; }
   [[ "$(<"$HOME/.claude/projects/p/s-1.jsonl")" == kept && -f "$HOME/.claude/projects/p/s-1/subagents/a.jsonl" ]] ||
     { print -u2 'its history must move to native history, not be deleted'; rc=1; }
-  rm -rf "$test_home"
+  _ccm_rm_home "$test_home"
   return $rc
 }
 
@@ -14143,7 +14203,7 @@ test_removing_profiles_never_loses_a_carried_transcript() {
   _ccm_remove_profile_dir f 2>/dev/null && { print -u2 'a colliding park must keep the profile'; rc=1; }
   [[ "$(<"$P/f/projects.premigration.1.1/p/S.jsonl")" == park-collide ]] ||
     { print -u2 'the colliding park must survive the refused rm'; rc=1; }
-  rm -rf "$test_home"
+  _ccm_rm_home "$test_home"
   return $rc
 }
 
@@ -14179,7 +14239,7 @@ test_native_resume_carries_into_native_history_even_inside_a_profile() {
   CLAUDE_CONFIG_DIR="$P/c" _ccm_launch --resume T >/dev/null 2>&1
   [[ -f "$CCMORPH_TEST_LOG" && "$(<"$CCMORPH_TEST_LOG")" == *FOUND* ]] ||
     { print -u2 'a native resume must find the session in native history'; rc=1; }
-  rm -rf "$test_home"
+  _ccm_rm_home "$test_home"
   return $rc
 }
 
@@ -14225,7 +14285,7 @@ test_hop_carries_the_one_session_into_the_target_history() {
   }
   [[ -d "$store/hop-session/subagents" ]] || { print -u2 'the sidecar dir must stay with the transcript'; rc=1; }
   [[ ! -f "$CCMORPH_TEST_LOG" || "$(<"$CCMORPH_TEST_LOG")" != *MISSING* ]] || rc=1
-  rm -rf "$test_home"
+  _ccm_rm_home "$test_home"
   return $rc
 }
 
@@ -14240,7 +14300,7 @@ test_resume_by_id_reaches_another_profiles_session() {
   [[ "$HOME/.claude/projects/p/sid-1.jsonl" -ef "$other/sid-1.jsonl" ]] || { print -u2 'resume must link the session in'; rc=1; }
   _ccm_carry_session '../x' "$HOME/.claude/projects" && { print -u2 'a non-id must be refused'; rc=1; }
   _ccm_carry_session nowhere "$HOME/.claude/projects" && rc=1
-  rm -rf "$test_home"
+  _ccm_rm_home "$test_home"
   return $rc
 }
 run_test test_profile_history_is_shared_and_a_real_dir_merges
@@ -14264,7 +14324,7 @@ test_a_sub_profile_launch_for_the_terminal_check() {
   _ccm_repair_projects_link() { return 0; }
   local rc=0
   _ccm_launch -a subwith -p x || rc=1
-  rm -rf "$test_home"
+  _ccm_rm_home "$test_home"
   return $rc
 }
 
@@ -14276,7 +14336,7 @@ test_a_sub_profile_never_announces_a_gateway_on_a_terminal() {
   local out="$test_home/terminal.log"
   python3 -c 'import os, pty; m, s = pty.openpty(); os.close(m); os.close(s)' 2>/dev/null || {
     print -u2 -- 'note: no pty here; skipping the terminal-only check'
-    rm -rf "$test_home"; return 0
+    _ccm_rm_home "$test_home"; return 0
   }
   run_under_a_terminal "$out" env \
     CCMORPH_TEST_FILTER=test_a_sub_profile_launch_for_the_terminal_check \
@@ -14285,7 +14345,7 @@ test_a_sub_profile_never_announces_a_gateway_on_a_terminal() {
     'the sub-profile launch must complete under a terminal' || rc=1
   assert_not_contains "$(<"$out")" 'Gateway ready' \
     'a subscription profile must not announce a gateway' || rc=1
-  rm -rf "$test_home"
+  _ccm_rm_home "$test_home"
   return $rc
 }
 run_test test_a_sub_profile_launch_for_the_terminal_check

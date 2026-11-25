@@ -1,0 +1,13 @@
+name: install zsh
+description: >-
+  zsh for the suites: apt on Linux (the Ubuntu images ship none), the system's
+  own on macOS. One place, so every job installs it the same way (#636).
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      run: |
+        if [ "$RUNNER_OS" = "Linux" ]; then
+          sudo apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=30 update && sudo apt-get install -y zsh
+        fi
+        zsh --version

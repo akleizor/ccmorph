@@ -10,4 +10,14 @@ package = false
 default-groups = ["test"]
 
 [dependency-groups]
-test = ["pytest", "pytest-timeout", "pytest-xdist"]
+test = ["pytest", "pytest-timeout", "pytest-xdist", "ruff==0.17.5"]
+
+# The bug-class rules only (#636): undefined and unused names, syntax and
+# runtime errors, and bugbear's real defects. B904/B905 are style choices here.
+[tool.ruff]
+extend-include = ["addons/remote-control/ccmorph-rc", "addons/remote-control/ccmorph-rc-hosts",
+                  "share/usage-export"]
+
+[tool.ruff.lint]
+select = ["F", "E9", "PLE", "B"]
+ignore = ["B904", "B905"]

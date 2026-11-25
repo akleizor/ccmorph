@@ -20,13 +20,13 @@ func TestPriceJSON(t *testing.T) {
 	out, rc := captureStdout(t, func() int {
 		return (&launcher{}).verb([]string{"price", "--json", "model-FP8", "missing"})
 	})
-	if rc != 0 || out != "{\"model-FP8\":{\"input\":0.15,\"output\":0.6}}\n" {
+	if rc != 0 || out != "{\"cache\":\"ok\",\"prices\":{\"model-FP8\":{\"input\":0.15,\"output\":0.6}}}\n" {
 		t.Fatalf("rc %d, output %q", rc, out)
 	}
 }
 
 func TestPriceEmptyCache(t *testing.T) {
-	const hint = "Run a `provider` profile with `ccmorph run PROFILE`; its launch refreshes this cache in the background."
+	const hint = priceCacheHint
 	for _, tc := range []struct {
 		name  string
 		cache string
@@ -93,5 +93,38 @@ func TestPriceEmptyCache(t *testing.T) {
 				t.Fatalf("rc %d, output %q; want %q", rc, out, tc.want)
 			}
 		})
+	}
+}
+
+// #636: an option-shaped argument was read as a model id, so `--jsoon` printed
+// an unpriced line with exit 0; after --, a dash-leading id is a model.
+func TestPriceRefusesAnUnknownOption(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("XDG_STATE_HOME", root)
+	dir := filepath.Join(root, "ccmorph")
+	if err := os.Mkdir(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	cache := `{"host":"owned:any","fetched":0,"models":{"-x":{"input":1,"output":2}}}`
+	if err := os.WriteFile(filepath.Join(dir, "prices-owned-any.json"), []byte(cache), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, args := range [][]string{{"price", "--jsoon", "x"}, {"price", "x", "-j"}} {
+		out, rc := captureStdout(t, func() int { return (&launcher{}).verb(args) })
+		if rc != 2 || out != "" {
+			t.Errorf("%v: rc %d, stdout %q; want rc 2 and nothing priced", args, rc, out)
+		}
+	}
+	for _, c := range []struct {
+		args []string
+		want string
+	}{
+		{[]string{"price", "--", "-x"}, "-x  $1/$2 per 1M tokens\n"},
+		{[]string{"price", "--json", "--", "--json"}, "{\"cache\":\"ok\",\"prices\":{}}\n"},
+	} {
+		out, rc := captureStdout(t, func() int { return (&launcher{}).verb(c.args) })
+		if rc != 0 || out != c.want {
+			t.Errorf("%v: rc %d, stdout %q, want %q", c.args, rc, out, c.want)
+		}
 	}
 }

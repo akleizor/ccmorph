@@ -14,7 +14,7 @@ from pathlib import Path
 
 import pytest
 
-from support import HANG_TIMEOUT, path_without
+from support import HANG_TIMEOUT, anthropic_accepts_the_key, path_without
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -135,10 +135,12 @@ def seed(box):
 def test_use_sets_the_default_and_bare_use_reports_it(box):
     seed(box)
     bare = box.run('use')
-    assert 'No default set' in bare.stdout
+    # #636: piped, stdout is the default's name and there is none: empty, with
+    # the sentence on stderr.
+    assert bare.stdout == '' and 'No default set' in bare.stderr, (bare.stdout, bare.stderr)
     # GH-368: profiles exist but none is the default, so the answer names the
     # profiles to choose from and never the command just typed.
-    assert 'Profiles: gw tok work' in bare.stdout
+    assert 'Profiles: gw tok work' in bare.stderr
     assert 'ccmorph use' not in bare.stdout
     done = box.run('use', 'tok')
     assert done.returncode == 0, done.stderr
@@ -211,7 +213,7 @@ def test_an_invalid_default_is_refused_as_written_never_rescued_to_a_case_twin(b
     (box.state / 'active').write_text('\u212a\n', encoding='utf-8')
     bare = box.run('use')
     assert bare.returncode == 0, bare.stderr
-    assert 'No default set. Profiles: k' in bare.stdout, bare.stdout
+    assert 'No default set. Profiles: k' in bare.stderr, bare.stderr
     assert "invalid active profile '\u212a'" in bare.stderr, bare.stderr
     doctor = box.run('doctor')
     assert doctor.returncode == 1, doctor.stdout
@@ -221,7 +223,10 @@ def test_an_invalid_default_is_refused_as_written_never_rescued_to_a_case_twin(b
 
 def test_list_marks_the_default_and_labels_every_profile_type(box):
     seed(box)
+    # #636: no default yet, so no star to explain.
+    assert '* = default' not in box.run('list').stdout
     box.run('use', 'tok')
+    assert '* = default profile' in box.run('list').stdout
     # #489: a provider profile with no saved model is described by the same
     # walk as the profile menu — with its Browser login fallback, not a bare
     # kind. One with a saved model joins it the way every other kind already
@@ -324,6 +329,57 @@ def test_kimi_sign_ins_and_provider_list_share_one_name_per_service_gh_366(box):
         assert name in sign_in, f'the sign-in methods do not name {name}'
         assert name in provider_list, f'the provider list does not name {name}'
     assert 'Kimi-ai' not in sign_in, 'the kimi.ai sign-in is still named by its domain alone'
+
+
+def test_a_blank_line_at_the_provider_menu_repaints_the_menu(box):
+    """#636: a blank Enter in the add pickers exited 1 with
+    `unknown provider ''` — no repaint, no retry, every answer lost. An answer
+    that matches no row is re-asked with the list printed again."""
+    seed(box)
+    out = box.run('add', 'p3', answer='3\n\n')
+    assert out.returncode == 1, out.stderr
+    assert "unknown provider ''" not in out.stderr
+    asked = out.stdout + out.stderr
+    assert asked.count('Provider — p3') >= 2, 'the menu did not repaint'
+    assert 'not a provider' in out.stderr
+
+
+def test_set_model_that_nothing_could_check_says_so(box):
+    """#636: `set <profile> model <any string>` saved in silence for the
+    profiles no listing can answer — a browser sign-in, a native base, a
+    profile with no key to ask with — and inspect then prints the typo as the
+    launch model with no warning. The save still stands; stderr says it went
+    unchecked. effort keeps its own validator and needs no note."""
+    seed(box)
+    out = box.run('set', 'work', 'model', 'opus-typo-636')
+    assert out.returncode == 0, out.stderr
+    assert 'opus-typo-636' in out.stdout, out.stdout
+    assert 'was not checked' in out.stderr, out.stderr
+    eff = box.run('set', 'work', 'effort', 'high')
+    assert eff.returncode == 0, eff.stderr
+    assert 'not checked' not in eff.stderr, eff.stderr
+
+
+def test_add_with_an_empty_name_says_the_name_is_empty(box):
+    """#636: `ccmorph add ""` printed the bare usage line; unlike every other
+    invalid name it never said the name was empty."""
+    seed(box)
+    out = box.run('add', '')
+    assert out.returncode != 0, out.stderr
+    assert "invalid profile name ''" in out.stderr, out.stderr
+    assert 'the name is empty' in out.stderr, out.stderr
+    assert 'usage: ccmorph add' in out.stderr, out.stderr
+    assert 'needs a profile name' not in out.stderr, out.stderr
+
+
+def test_a_piped_add_with_no_answer_names_the_piped_way(box):
+    """#636 (from #653): piped add works but nothing on screen said so; the
+    last line a no-answer run prints names the working path."""
+    seed(box)
+    out = box.run('add', 'p4', answer='')
+    assert out.returncode == 1, out.stderr
+    last = out.stderr.strip().splitlines()[-1]
+    assert 'echo 1 | ccmorph add p4' in last, out.stderr
 
 
 def test_list_with_no_profiles_points_at_add(box):
@@ -695,6 +751,18 @@ def test_profile_outside_a_session_names_nothing(box):
     assert 'not inside a ccmorph session' in out.stderr
 
 
+def test_hop_and_profile_say_one_thing_outside_a_session(box):
+    """#636: profile said "ccmorph session", hop "Claude Code session", and
+    neither named where it works."""
+    seed(box)
+    want = ('not inside a ccmorph session; this works inside a Claude Code '
+            'session started with: ccmorph run <profile>')
+    for args in (('profile',), ('hop', 'work')):
+        out = box.run(*args)
+        assert out.returncode == 1, (args, out.stderr)
+        assert want in out.stderr, (args, out.stderr)
+
+
 def test_profile_refuses_arguments(box):
     out = box.run('profile', 'extra')
     assert out.returncode == 2
@@ -767,6 +835,18 @@ def test_a_mistyped_flag_is_an_unknown_option_not_a_command(box, flag, near):
     assert f'Run: ccmorph {near}' in out.stderr
     assert 'go after the verb' not in out.stderr
     assert 'profiles:' not in out.stderr
+
+
+def test_a_long_unknown_option_gets_the_help_fallback(box):
+    """#636: `ccmorph --bogus` advised `ccmorph run --bogus`, which repeats the
+    same failure. A long option ccmorph does not know gets the help fallback
+    too, while keeping the pointer a real Claude Code flag still deserves."""
+    seed(box)
+    out = box.run('--bogus')
+    assert out.returncode == 1, out.stderr
+    assert "unknown option '--bogus'" in out.stderr
+    assert 'Run: ccmorph --help' in out.stderr
+    assert 'Launch flags go after the verb: ccmorph run --bogus' in out.stderr
 
 
 def test_a_misplaced_launch_flag_keeps_the_pointer_behind_run(box):
@@ -1066,9 +1146,15 @@ def test_add_and_rm_without_a_name_print_usage(box):
     added = box.run('add')
     assert added.returncode != 0
     assert 'usage: ccmorph add <profile>' in added.stderr
+    # #636: the next action, not bare syntax.
+    assert 'add needs a profile name, e.g.: ccmorph add work' in added.stderr
     assert 'invalid profile name' not in added.stderr
     removed = box.run('rm')
     assert removed.returncode != 0
+    # #636: with no profile at all the first-run sentence answers, not usage.
+    assert 'No profiles yet' in removed.stderr, removed.stderr
+    seed(box)
+    removed = box.run('rm')
     assert 'usage: ccmorph rm <profile>' in removed.stderr
 
 
@@ -1418,3 +1504,211 @@ def test_router_on_off_and_status_still_act(box):
     assert off.returncode == 0, off.stderr
     assert json.loads((box.state / 'router.json').read_text())['enabled'] is False
     assert box.run('router').stdout.startswith('Router off (')
+
+
+def test_a_keyless_model_save_prints_no_refusal(box):
+    """#636: the listing guard read the conf loudly, so a successful save on
+    an API-key profile with no key printed profile.Validate's refusal."""
+    box.conf('keyless', 'type=apikey\nbase_url=https://gw.invalid\n')
+    out = box.run('set', 'keyless', 'model', 'sonnet')
+    assert out.returncode == 0, out.stderr
+    assert out.stdout == 'sonnet\n', out.stdout
+    assert 'has no api_key' not in out.stderr, out.stderr
+    assert 'was not checked' in out.stderr, out.stderr
+
+
+def test_doctor_names_an_unknown_option(box):
+    """#636: doctor folded --bogus into the names and blamed 'alpha'."""
+    seed(box)
+    out = box.run('doctor', '--bogus', 'alpha')
+    assert out.returncode == 2, out.stderr
+    assert "unknown option '--bogus'" in out.stderr, out.stderr
+    assert "'alpha'" not in out.stderr, out.stderr
+    assert 'usage: ccmorph doctor' in out.stderr, out.stderr
+
+
+def test_bare_use_piped_prints_the_bare_name(box):
+    """#636: a terminal reads 'Default profile: <name>'; a pipe keeps the bare
+    name a script captures."""
+    seed(box)
+    assert box.run('use', 'tok').returncode == 0
+    out = box.run('use')
+    assert (out.returncode, out.stdout) == (0, 'tok\n'), out.stderr
+
+
+def test_rm_of_a_missing_name_takes_no_lock(box):
+    """#636: rm of a name with nothing to remove created .locks/<name>.lock."""
+    for seeded in (False, True):
+        if seeded:
+            seed(box)
+        out = box.run('rm', 'nosuch')
+        assert out.returncode == 1, out.stderr
+        assert 'nosuch' in out.stderr, out.stderr
+        assert not (box.state / '.locks' / 'nosuch.lock').exists()
+
+
+def test_rm_says_the_default_before_the_question(box):
+    """#636: rm's question never said the profile was the default; that came
+    only after the removal."""
+    seed(box)
+    assert box.run('use', 'tok').returncode == 0
+    out = box.run('rm', 'tok', answer='n\n')
+    assert out.returncode == 1, out.stderr
+    assert "Remove profile 'tok' (the default profile)" in out.stderr, out.stderr
+    assert (box.state / 'tok.conf').exists()
+    other = box.run('rm', 'gw', answer='n\n')
+    assert 'the default profile' not in other.stderr, other.stderr
+
+
+def test_bare_inspect_names_the_other_profiles(box):
+    """#636: inspect with no argument showed only the default, so another
+    profile read as missing; an explicit profile prints no hint."""
+    seed(box)
+    assert box.run('use', 'tok').returncode == 0
+    bare = box.run('inspect')
+    assert bare.returncode == 0, bare.stderr
+    assert 'Other profiles: gw work (ccmorph inspect <profile>)' in bare.stderr, bare.stderr
+    named = box.run('inspect', 'gw')
+    assert named.returncode == 0, named.stderr
+    assert 'Other profiles' not in named.stderr, named.stderr
+
+
+def test_inspect_names_where_endpoint_and_protocol_come_from(box):
+    """#636: the endpoint and protocol rows named no source."""
+    box.conf('gw2', 'type=apikey\nbase_url=https://api.anthropic.com\napi_key=k\n')
+    box.conf('work', 'type=sub\nemail=demo@example.com\n')
+    out = box.run('inspect', 'gw2')
+    assert out.returncode == 0, out.stderr
+    rows = {line.split()[0]: line for line in out.stdout.splitlines() if line.startswith('  ')}
+    assert 'gw2.conf' in rows['endpoint'], out.stdout
+    assert 'read from the endpoint address' in rows['protocol'], out.stdout
+    work = box.run('inspect', 'work')
+    assert "Anthropic's own endpoint" in work.stdout, work.stdout
+
+
+def test_run_i_with_one_profile_asks_no_profile(box):
+    """#636: run -i asked which profile even when only one exists."""
+    box.conf('work', 'type=sub\nemail=demo@example.com\n')
+    out = box.run('run', '-i')
+    assert 'no profile chosen' not in out.stderr, out.stderr
+    assert 'PROFILE=work' in box.log(), (out.returncode, out.stderr)
+
+
+def test_piped_add_prompts_each_end_their_line(box):
+    """#636: a piped answer is not echoed, so the wizard's prompts ran together
+    ("Endpoint …: API key … (hidden): … did not answer") exactly where secrets
+    are asked for."""
+    out = box.run('add', 'gw1', answer='3\ncustom\nhttps://gw.example\nsecret-key\n')
+    assert out.returncode == 0, out.stderr
+    lines = out.stderr.splitlines()
+    endpoint = [l for l in lines if l.startswith('Endpoint (blank')]
+    assert endpoint == ['Endpoint (blank = api.anthropic.com): '], lines
+    key = [l for l in lines if l.startswith('API key for gw1')]
+    assert len(key) == 1 and key[0].endswith('(hidden): '), lines
+    assert 'secret-key' not in out.stderr
+
+
+@pytest.mark.parametrize('argv, word', [
+    (('add', '--key'), '--key'),
+    (('add', '--type', 'apikey', 'api2'), '--type'),
+    (('quota', '--bogus'), '--bogus'),
+    (('quota', 'gw', '--bogus'), '--bogus'),
+])
+def test_add_and_quota_name_an_unknown_option(box, argv, word):
+    """#636: add --key read as a bad profile name, add --type apikey x blamed
+    'apikey', and quota --bogus read as an invalid profile name."""
+    seed(box)
+    out = box.run(*argv)
+    assert out.returncode == 2, out.stderr
+    assert f"unknown option '{word}'" in out.stderr, out.stderr
+    assert 'invalid profile name' not in out.stderr and 'unexpected argument' not in out.stderr
+    assert not (box.state / 'apikey.conf').exists() and not (box.state / 'api2.conf').exists()
+
+
+def test_add_help_is_the_help_page(box):
+    """#636: ccmorph add help started the wizard for a profile named help."""
+    out = box.run('add', 'help')
+    assert out.returncode == 0, out.stderr
+    assert out.stdout.startswith('Usage: ccmorph add'), out.stdout
+    assert not (box.state / 'help.conf').exists()
+
+
+def test_cred_with_no_profile_at_all_says_the_first_run_sentence(box):
+    """#636: cred with no profile and no terminal printed bare usage, breaking the
+    'No profiles yet' pattern every sibling follows."""
+    out = box.run('cred')
+    assert out.returncode == 1, out.stderr
+    assert 'No profiles yet' in out.stderr, out.stderr
+    assert 'usage:' not in out.stderr, out.stderr
+    seed(box)
+    out = box.run('cred')
+    assert 'usage: ccmorph cred' in out.stderr, out.stderr
+
+
+def test_a_missing_name_lists_only_valid_profiles(box):
+    """#636: run nosuch answered 'Profiles: acct gw' though list skips acct as
+    invalid; an invalid conf is named apart with the command that says why."""
+    box.conf('gw', 'type=sub\nemail=demo@example.com\n')
+    box.conf('acct', 'type=sub\n')
+    out = box.run('run', 'nosuch')
+    assert out.returncode != 0
+    assert "no profile 'nosuch'. Profiles: gw; not valid: acct (ccmorph doctor acct says why)" in out.stderr, out.stderr
+
+
+def test_inspect_names_the_saved_effort_and_why_a_window_is_unknown(box):
+    """#636: inspect's launch line left out a saved effort, and an unknown
+    window named no source and no next step."""
+    box.conf('gw', 'type=apikey\nbase_url=https://gw.invalid\n' + 'api' + '_key=k\nmodel=test-model-1\neffort=high\n')
+    out = box.run('inspect', 'gw')
+    assert out.returncode == 0, out.stderr
+    assert 'claude --model test-model-1 --effort high' in out.stdout, out.stdout
+    assert 'not probed yet, ccmorph probe gw looks it up' in out.stdout, out.stdout
+
+
+def test_list_names_a_saved_effort_and_a_model_the_row_hides(box):
+    """#636: list omitted a saved effort, and a saved model on a Claude account
+    row (whose detail is its email)."""
+    box.conf('acct', 'type=sub\nemail=demo@example.com\nmodel=opus\neffort=high\n')
+    box.conf('gw', 'type=apikey\nbase_url=https://gw.invalid\n' + 'api' + '_key=k\nmodel=m1\n')
+    out = box.run('list')
+    assert out.returncode == 0, out.stderr
+    acct = next(l for l in out.stdout.splitlines() if ' acct ' in l)
+    gw = next(l for l in out.stdout.splitlines() if ' gw ' in l)
+    assert '· model opus' in acct and '· effort high' in acct, acct
+    assert gw.count('m1') == 1, gw   # already shown after the arrow, not twice
+
+
+def test_a_profiles_mcp_run_names_its_own_add(box):
+    """#636: `ccmorph run <p> mcp list` showed only Claude's `claude mcp add`,
+    which writes the host's ~/.claude.json, invisible to the profile."""
+    box.conf('work', 'type=sub\nemail=demo@example.com\n')
+    out = box.run('run', 'work', 'mcp', 'list')
+    assert out.returncode == 0, out.stderr
+    assert 'ccmorph run work mcp add' in out.stderr, out.stderr
+
+
+def test_an_api_key_add_says_when_the_key_went_unchecked(box):
+    """#636: help add promised the key is checked before saving, yet an endpoint
+    that did not answer saved it, and the Added line looked like any other."""
+    out = box.run('add', 'gw1', answer='3\ncustom\nhttps://gw.example\nsecret-key\n')
+    assert out.returncode == 0, out.stderr
+    added = next(l for l in out.stdout.splitlines() if l.startswith('Added gw1'))
+    assert added.endswith('key NOT checked'), added
+    anthropic_accepts_the_key(box.home / 'bin')
+    out = box.run('add', 'k2', answer='3\ncustom\n\nsecret-key\n')
+    added = next(l for l in out.stdout.splitlines() if l.startswith('Added k2'))
+    assert 'NOT checked' not in added, out.stdout + out.stderr
+    page = box.run('help', 'add').stdout
+    assert 'key NOT checked' in page and 'checked with that\n  endpoint before the profile is saved' not in page
+
+
+def test_the_add_wizard_asks_again_instead_of_exiting(box):
+    """#636: a bad custom endpoint was refused only after the key prompt, and a
+    blank key line ended the add, each discarding every earlier answer."""
+    out = box.run('add', 'gw3', answer='3\ncustom\nnot-a-url\nhttps://gw.example\n\nsecret-key\n')
+    assert out.returncode == 0, out.stderr
+    assert 'endpoint must use http:// or https:// — type it again' in out.stderr, out.stderr
+    assert out.stderr.count('Endpoint (blank') == 2, out.stderr
+    assert 'empty api key — paste it again' in out.stderr, out.stderr
+    assert 'base_url=https://gw.example' in (box.state / 'gw3.conf').read_text()
+    assert 'not-a-url did not answer' not in out.stderr + out.stdout

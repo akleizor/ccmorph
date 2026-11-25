@@ -5,22 +5,9 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from support import HANG_TIMEOUT
+from support import HANG_TIMEOUT, home_env
 
 ROOT = Path(__file__).resolve().parents[1]
-
-
-def home_env(tmp, **extra):
-    home = Path(tmp)
-    state = home / ".config/ccmorph"
-    state.mkdir(parents=True, exist_ok=True)
-    (home / ".claude/projects").mkdir(parents=True, exist_ok=True)
-    env = {k: v for k, v in os.environ.items()
-           if not k.startswith(("CCMORPH", "_CCMORPH", "CLAUDE_", "ANTHROPIC_", "AWS_"))}
-    env.update(HOME=tmp, XDG_CONFIG_HOME=str(home / ".config"), TMPDIR=tmp,
-               CCMORPH_STATE_DIR=str(state), CCMORPH_LIB_DIR=str(ROOT / "lib"),
-               LANG="C.UTF-8", LC_ALL="C.UTF-8", **extra)
-    return env, state
 
 
 class UrlRedaction(unittest.TestCase):

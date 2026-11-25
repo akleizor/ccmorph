@@ -17,8 +17,9 @@
   stay shared.
 - **Hop mid-session.** `ccmorph hop [profile]` moves a running conversation to
   another profile, keeping its model and effort; without a profile it names the
-  others to choose from. The status line names the profile a session runs on,
-  and `ccmorph profile` answers from the prompt.
+  others to choose from. The status line names the profile a session runs on
+  (with your own status line, the startup message does), and `ccmorph profile`
+  answers from the prompt.
 - **Any endpoint.** Gateways that do not speak Anthropic's API are translated
   automatically through a per-launch adapter.
 - **Model router.** `ccmorph router on` spreads subagent work across your
@@ -39,8 +40,9 @@ ccmorph run  ------+--> personal   API key             -->  Anthropic API
 
 ## Requirements
 
-- `zsh` and the `claude` CLI. The installer names the command to install a missing
-  one for your package manager, and stops. `python3` 3.8 or newer is needed by the
+- `zsh` and the `claude` CLI. The installer checks both before it changes
+  anything: for a missing `zsh` it names the install command for your package
+  manager, for a missing `claude` the Claude Code setup page, and it stops. `python3` 3.8 or newer is needed by the
   usage export and the optional Remote Control add-on.
 - A release ships `ccmorph-core` prebuilt for macOS and Linux (arm64, amd64).
   Installing from a clone needs Go to build it (`make shim`).
@@ -50,8 +52,10 @@ ccmorph run  ------+--> personal   API key             -->  Anthropic API
   offers fzf through your package manager and cliproxyapi through Homebrew, and
   installs only on confirm.
 - To install: `brew` for Homebrew, `git` and `make` for a clone, or `curl`
-  and `sh` for the one-liner. Reading the usage export needs `ccusage`, which
-  no install route provides: get it from [ccusage](https://github.com/ccusage/ccusage).
+  and `sh` for the one-liner. Reading the usage export needs
+  [ccusage](https://github.com/ccusage/ccusage), which no ccmorph install route
+  provides: install it with `npm install -g ccusage` (or run it through `npx`
+  without installing it).
 - macOS or Linux. On Windows, use WSL.
 
 ## Install
@@ -120,12 +124,13 @@ ccmorph use <profile>              # make a profile the default for `ccmorph run
 ccmorph run -i                     # choose the profile, then the model
 ccmorph run <profile> --model <id> # profile plus explicit model
 ccmorph run work mcp list          # native Claude Code arguments pass through
-ccmorph config <profile>           # change model, effort, or connection
+ccmorph config [profile]           # change model, effort, or connection
 ccmorph set <profile> model -i     # save a default model, chosen from the endpoint
 ccmorph inspect [<profile>]        # effective settings and where each came from
 ccmorph doctor [<profile>]         # check why a profile is not working
 ccmorph quota [<profile>] [--json] # every profile's plan usage, spend and API balance
 ccmorph router on                  # spread subagents across your profiles (off by default)
+ccmorph router off                 # stop routing (new sessions start without it)
 ```
 
 To switch a running session, type in the Claude Code prompt:
@@ -134,11 +139,15 @@ To switch a running session, type in the Claude Code prompt:
 /ccmorph:hop personal
 ```
 
-`! ccmorph hop personal` does the same. `/ccmorph:hop` with no profile names the
-other profiles to choose from; hopping to the profile the session already runs
-on changes nothing.
+`! ccmorph hop personal` does the same when typed at the Claude Code prompt:
+there the `!` runs the command and shows its output. Do not use the `!` form in
+a shell, where `!` negates the exit status and the failure would read as
+success. `/ccmorph:hop` with no profile names the other profiles to choose
+from; hopping to the profile the session already runs on changes nothing.
 
-The session's status line names the profile it runs on, and changes with a hop.
+The session's status line names the profile it runs on, and changes with a hop. With
+your own status line, ccmorph keeps yours and names the profile in the startup message
+instead (#393).
 `/ccmorph:profile` (or `! ccmorph profile`) prints the name.
 
 `ccmorph --help` shows everyday commands, `ccmorph help all` the full list, and
@@ -152,10 +161,17 @@ Each turn a profile serves writes one receipt under
 of the receipt's UTC stamp: tokens, the model that answered, and the
 cost the gateway billed when it reports one — otherwise an estimated cost at
 the provider's models.dev list price, marked as an estimate in the receipt and
-the export. The day folders are an index, so a reader with a time window opens
-only the folders its window touches rather than every receipt ever written;
-the report also moves any rows a pre-shard store still holds flat into their
-day folders, once. No prompt, header or credential is stored. Export the
+the export. A closed UTC day older than yesterday is compacted into one file,
+`usage/<YYYY-MM-DD>.jsonl`, one receipt per line in its original filename
+order, with `usage/<YYYY-MM-DD>.jsonl.idx` beside it holding each receipt's
+name and modification time; live days keep their folder. The day folders and
+their compacted files are an index, so a reader with a time window opens only
+the days its window touches rather than every receipt ever written; the report
+also moves any rows a pre-shard store still holds flat into their day folders,
+once. `ccmorph quota` keeps its derived spend tallies in
+`~/.local/state/ccmorph/quota/spend/` (one file per day, plus a month memo), so
+a repeat read does not rescan the month; it is a cache, and deleting it only
+costs the next read a rescan. No prompt, header or credential is stored. Export the
 receipts and read them with ccusage — where `ccmorph quota` shows each
 profile's live plan usage and spend, the export turns the whole receipt
 history into a ccusage report under the `--output` directory:

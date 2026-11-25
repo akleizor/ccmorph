@@ -18,7 +18,9 @@ import (
 
 func main() {
 	if len(os.Args) < 2 {
-		fmt.Fprintln(os.Stderr, "usage: ccmorph-core adapter|shim|usage-row|settings-compose|model-window|context-probe|quota ...")
+		// Every verb the switch below dispatches, internal ones included, so the
+		// usage line is a complete list (#636; tests/repo_layout_test.py pins it).
+		fmt.Fprintln(os.Stderr, "usage: ccmorph-core adapter|shim|usage-row|usage-compact|settings-compose|model-window|context-probe|quota|launch|cli|util|tether ...")
 		os.Exit(2)
 	}
 	switch os.Args[1] {

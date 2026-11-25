@@ -31,8 +31,8 @@ jobs:
     timeout-minutes: 20  # a hung step (an apt mirror, 2026-11-23) fails inside merge-gate's 30 minutes, not at GitHub's 6 h (#827)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - run: sudo apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=30 update && sudo apt-get install -y zsh
+      - uses: actions/checkout@v7
+      - uses: ./.github/actions/install-zsh
       - name: parse every zsh file
         run: |
           for f in bin/ccmorph lib/ccmorph.sh lib/ccmorph-*.zsh install.sh \
@@ -45,7 +45,9 @@ jobs:
           done
       - name: byte-compile every python file
         run: |
-          python3 -m py_compile tests/*.py addons/remote-control/ccmorph-rc addons/remote-control/ccmorph-rc-hosts addons/remote-control/*.py
+          python3 -m py_compile tests/*.py && make py-compile
+      - name: ruff's bug-class rules (pyproject.toml pins ruff and its rules)
+        run: pipx run ruff==0.17.5 check tests addons share
       - name: shebangs must find their interpreter via env
         # #!/bin/zsh does not exist where zsh lives in /usr/bin, and both of these
         # run DIRECTLY as executables — install.sh puts `ccmorph` on PATH — so
@@ -73,14 +75,9 @@ jobs:
     # runner for GitHub's 6-hour default and its log stays unreadable until then.
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
-      - name: install zsh
-        run: |
-          if [ "$RUNNER_OS" = "Linux" ]; then
-            sudo apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=30 update && sudo apt-get install -y zsh
-          fi
-          zsh --version
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v7
+      - uses: ./.github/actions/install-zsh
+      - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
       - name: every Go file is gofmt-clean
@@ -103,7 +100,7 @@ jobs:
             export CCMORPH_TEST_SECOND_FS=/Volumes/ccmsecond
           fi
           # the gate's own Go target: vet, test, and the umask 077 and NO_PROXY='*' reruns (#774), never a copy of it
-          go build ./... && make test-go shim
+          go build ./... && make test-go shim && go test -race ./adapter
       - name: zsh suite
         run: zsh tests/ccmorph_test.zsh
       - name: installer suite
@@ -117,7 +114,7 @@ jobs:
       # pytest was never installed here, so this step had never run a test. The
       # runner's own python3 is externally managed on macOS (PEP 668), so use a
       # setup-python interpreter that pip may install into.
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.13"
       - name: python suite
@@ -130,32 +127,32 @@ jobs:
   python-floor:
     timeout-minutes: 20
     # The floor is 3.8, and only the Remote Control add-on (a mitmproxy add-on) and
-    # the pytest suite still run on Python. Prove both on 3.8, 3.12 and 3.13 — the
+    # the pytest suite still run on Python. Prove both on 3.8 and 3.12 — the
     # failure this guards against surfaced days after install, inside a child
-    # process, as a bare SyntaxError.
+    # process, as a bare SyntaxError. 3.13 runs in the test job (#636).
     strategy:
       fail-fast: false
       matrix:
-        python: ["3.8", "3.12", "3.13"]
+        python: ["3.8", "3.12"]
     # 24.04, not latest: setup-python has no 3.8 build for 26.04, and 3.8 is
     # the floor this job exists to prove. The floor is the Python version, not
     # the image it is proven on.
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with:
           python-version: ${{ matrix.python }}
       # Most Python tests drive the zsh library; the Ubuntu image ships no zsh.
-      - run: sudo apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=30 update && sudo apt-get install -y zsh
-      - uses: actions/setup-go@v5
+      - uses: ./.github/actions/install-zsh
+      - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
       - run: make shim
       - run: |
           python -m pip install pytest pytest-timeout "backports.zoneinfo; python_version < '3.9'"
-          python -m py_compile addons/remote-control/ccmorph-rc addons/remote-control/ccmorph-rc-hosts addons/remote-control/*.py
-          python -m pytest tests/ -q
+          make py-compile PYTHON=python
+          CCMORPH_LIB_DIR="$PWD/lib" python -m pytest tests/ -q  # as gate-py and the test job run it (#636)
 
   install-check:
     timeout-minutes: 20
@@ -169,7 +166,7 @@ jobs:
         os: [ubuntu-latest, macos-latest]
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - if: runner.os == 'Linux'
         run: sudo apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=30 update && sudo apt-get install -y zsh python3 curl
       - name: stub the claude CLI (the installer requires it, npm is not the point here)
@@ -178,7 +175,7 @@ jobs:
           printf '#!/bin/sh\necho "claude 0.0.0-stub"\n' > "$HOME/.local/bin/claude"
           chmod +x "$HOME/.local/bin/claude"
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
       - name: build the ccmorph-core binary a checkout installs
@@ -243,9 +240,9 @@ jobs:
     # clean on every run, not only at release time.
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with: { fetch-depth: 0 }
-      - run: sudo apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=30 update && sudo apt-get install -y zsh
+      - uses: ./.github/actions/install-zsh
       - name: build from HEAD the way make release builds from a tag
         run: |
           git archive --format=tar.gz --prefix=ccmorph/ -o /tmp/probe.tar.gz HEAD

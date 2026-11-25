@@ -9,12 +9,9 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"runtime"
 	"slices"
 	"strings"
 )
-
-var goos = runtime.GOOS
 
 var routeDefaults = []string{
 	"CLAUDE_CODE_MODEL_CAPABILITIES=-mid_conv_system,-mid_conv_tool_change,-per_turn_effort",
@@ -29,8 +26,8 @@ func engineInt(v string) string {
 	return ""
 }
 
-// triggerEnv is _ccm_trigger_env: the env's compaction percentage, output
-// reserve and 1M kill switch, read as the engine reads them.
+// triggerEnv is the env's compaction percentage, output reserve and 1M kill
+// switch, read as the engine reads them.
 func (l *launcher) triggerEnv(penv []string) (pct, maxout, no1m string) {
 	for _, e := range penv {
 		k, v, _ := strings.Cut(e, "=")

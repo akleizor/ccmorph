@@ -11,6 +11,8 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"github.com/akleizor/ccmorph/ctxwindow"
 )
 
 // fit cuts on whole characters (valid UTF-8) and marks the cut with an ellipsis.
@@ -49,10 +51,10 @@ func TestFitEndsOnAWholeWord(t *testing.T) {
 // when that side cuts nothing, so the menu keeps one shape while it scrolls.
 func TestMoreLineNamesTheCutAndKeepsItsShape(t *testing.T) {
 	plain := uiTheme{}
-	if got := plain.moreLine("↓", 9); got != "\033[2K"+"  "+"↓ 9 more" {
+	if got := plain.moreLine("↓", 9, true); got != "\033[2K"+"  "+"↓ 9 more" {
 		t.Fatalf("moreLine = %q", got)
 	}
-	if got := plain.moreLine("↑", 0); got != "\033[2K" {
+	if got := plain.moreLine("↑", 0, true); got != "\033[2K" {
 		t.Fatalf("blank edge = %q", got)
 	}
 }
@@ -98,7 +100,7 @@ func flagValue(args []string, flag string) string {
 // jump (#278).
 func TestFzfArgsNeverHideRowsSilently(t *testing.T) {
 	cut := "More rows than fit here:"
-	old := fzfArgs("0.35.1 (homebrew)\n", 19, 45, "Provider", nil)
+	old := fzfArgs("0.35.1 (homebrew)\n", 19, 45, 200, "Provider", nil)
 	if flagValue(old, "--height") != "24" || !strings.HasPrefix(flagValue(old, "--header"), "↑/↓ Move") {
 		t.Errorf("a list that fits gets a window of rows+5: %v", old)
 	}
@@ -106,24 +108,24 @@ func TestFzfArgsNeverHideRowsSilently(t *testing.T) {
 		strings.Contains(strings.Join(old, " "), "end:last") {
 		t.Errorf("old fzf cycles and gets no flags it lacks: %v", old)
 	}
-	tight := fzfArgs("0.29.0\n", 19, 24, "Provider", nil)
+	tight := fzfArgs("0.29.0\n", 19, 24, 200, "Provider", nil)
 	if flagValue(tight, "--height") != "23" || !strings.HasPrefix(flagValue(tight, "--header"), cut) {
 		t.Errorf("a list the terminal cannot hold must say rows are cut: %v", tight)
 	}
-	if got := flagValue(fzfArgs("", 3, 24, "P", nil), "--height"); got != "8" {
+	if got := flagValue(fzfArgs("", 3, 24, 200, "P", nil), "--height"); got != "8" {
 		t.Errorf("an unreadable version is treated as old: height %q", got)
 	}
-	mid := fzfArgs("0.40.0\n", 19, 45, "Provider", nil)
+	mid := fzfArgs("0.40.0\n", 19, 45, 200, "Provider", nil)
 	if flagValue(mid, "--height") != "45%" || !strings.Contains(strings.Join(mid, " "), "--scrollbar") ||
 		!strings.Contains(strings.Join(mid, " "), "home:first,end:last") {
 		t.Errorf("0.40 gets the scrollbar and jump, not the adaptive window: %v", mid)
 	}
-	if got := flagValue(fzfArgs("0.75.0\n", 19, 45, "P", nil), "--height"); got != "~-1" {
+	if got := flagValue(fzfArgs("0.75.0\n", 19, 45, 200, "P", nil), "--height"); got != "~-1" {
 		t.Errorf("0.75 grows the window to the list: %q", got)
 	}
 	for lines := 6; lines <= 60; lines++ {
 		for n := 1; n <= 40; n++ {
-			args := fzfArgs("0.29.0\n", n, lines, "P", nil)
+			args := fzfArgs("0.29.0\n", n, lines, 200, "P", nil)
 			h, _ := strconv.Atoi(flagValue(args, "--height"))
 			says := strings.HasPrefix(flagValue(args, "--header"), cut)
 			if (n+fzfChrome > h) != says {
@@ -167,8 +169,8 @@ func TestReceiptNeverCutsTheChoiceIssue361(t *testing.T) {
 		t.Fatalf("narrow receiptLine = %q, want %q", got, want)
 	}
 	for _, line := range strings.Split(got, "\n") {
-		if cells(line) > 30 {
-			t.Fatalf("line %q is %d cells, want at most 30", line, cells(line))
+		if ctxwindow.Cells(line) > 30 {
+			t.Fatalf("line %q is %d cells, want at most 30", line, ctxwindow.Cells(line))
 		}
 	}
 	// A typed question ends in ": ": its space does not double the receipt's.
@@ -331,7 +333,7 @@ func TestSearchPickerWithoutTerminalChildHelper(t *testing.T) {
 // one — the list's heading would survive above the redrawn block (#449).
 func TestReceiptHeightCountsTheFold(t *testing.T) {
 	plain := uiTheme{}
-	prompt := numberPrompt(2)
+	prompt := numberPrompt(2, false)
 	if got := plain.receiptHeight(prompt, "1", 80); got != 1 {
 		t.Fatalf("a one-line receipt is %d rows, want 1", got)
 	}
@@ -340,6 +342,11 @@ func TestReceiptHeightCountsTheFold(t *testing.T) {
 	}
 	if got := plain.receiptHeight(prompt, "", 80); got != 1 {
 		t.Fatalf("an empty answer leaves the question alone, want 1 row, got %d", got)
+	}
+	// #636: a choice the terminal folds is counted by its wrapped rows, so the
+	// redraw erases every row it wrote.
+	if got := plain.receiptHeight(prompt, strings.Repeat("m", 200), 80); got != 4 {
+		t.Fatalf("a wrapped choice is %d rows, want 4", got)
 	}
 }
 
@@ -570,5 +577,67 @@ func TestSeqTailHandsBackASignalMidSequenceIssue388(t *testing.T) {
 	tail, done, s := k.seqTail(stop)
 	if tail != "1" || done || s != syscall.SIGTERM {
 		t.Fatalf("seqTail = %q, %v, %v; want \"1\", false, terminated", tail, done, s)
+	}
+}
+
+// TestFitCutsAHugeLineQuickly pins #636: fit trimmed one rune per pass while
+// recounting the whole string, so a very long line was quadratic.
+func TestFitCutsAHugeLineQuickly(t *testing.T) {
+	start := time.Now()
+	got := fit(strings.Repeat("界", 100000), 11)
+	if want := strings.Repeat("界", 5) + "…"; got != want {
+		t.Fatalf("fit = %q, want %q", got, want)
+	}
+	if elapsed := time.Since(start); elapsed > time.Second {
+		t.Fatalf("fit took %s: the trim is not linear", elapsed)
+	}
+}
+
+// #636: the profile picker started on the alphabetically first profile, and a
+// narrow terminal cut the default tag from the row's far end.
+func TestDefaultFirstOpensOnTheDefault(t *testing.T) {
+	rows := []string{"a\tAPI key\tgw\t", "b\tClaude\td\tdefault", "c\tToken\t\t"}
+	got := defaultFirst(rows)
+	want := []string{"b\tClaude · default\td\t", "a\tAPI key\tgw\t", "c\tToken\t\t"}
+	if strings.Join(got, "|") != strings.Join(want, "|") {
+		t.Fatalf("defaultFirst = %q, want %q", got, want)
+	}
+	plain := []string{"a\tAPI key\tgw\t", "c\tToken\t\t"}
+	if got := defaultFirst(plain); strings.Join(got, "|") != strings.Join(plain, "|") {
+		t.Fatalf("rows with no default changed: %q", got)
+	}
+	if got := defaultFirst(nil); len(got) != 0 {
+		t.Fatalf("no rows became %q", got)
+	}
+}
+
+// #636: at 56 columns fzf cut the header from the right, so Esc Cancel was
+// the first thing a narrow terminal lost.
+func TestFzfHeaderKeepsEscCancelOnANarrowTerminal(t *testing.T) {
+	for _, c := range []struct {
+		version string
+		n       int
+		want    string
+	}{
+		{"0.40.0\n", 5, "Enter Select · Esc Cancel"},
+		{"0.29.0\n", 40, "More rows than fit · Esc Cancel"},
+	} {
+		if got := flagValue(fzfArgs(c.version, c.n, 24, 56, "Profile", nil), "--header"); got != c.want {
+			t.Errorf("%s at 56 columns: header %q, want %q", c.version, got, c.want)
+		}
+	}
+	if got := flagValue(fzfArgs("0.40.0\n", 5, 24, 0, "Profile", nil), "--header"); !strings.Contains(got, "Home/End") {
+		t.Errorf("an unknown width cut the header: %q", got)
+	}
+}
+
+// #636: on a terminal the numbered question said (q to cancel) beside the
+// hint's Esc Cancel; a pipe, which shows no hint, keeps the q.
+func TestNumberPromptNamesOneCancel(t *testing.T) {
+	if got := numberPrompt(3, true); got != "Select [1-3] or type a name: " {
+		t.Errorf("terminal prompt %q", got)
+	}
+	if got := numberPrompt(3, false); !strings.Contains(got, "(q to cancel)") {
+		t.Errorf("piped prompt %q lost its only cancel", got)
 	}
 }

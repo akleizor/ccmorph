@@ -61,6 +61,14 @@ func (l *launcher) doctorVerb(args []string) int {
 			verbose = true
 			continue
 		}
+		// An unknown long flag is named as one: folded into the names, `doctor
+		// --bogus alpha` blamed 'alpha' for the extra argument (#636). A single
+		// dash word stays a name, which gets the one bad-name reply (GH-373).
+		if strings.HasPrefix(a, "--") && !interactive(a) {
+			l.err("unknown option '" + a + "'")
+			l.err("usage: " + usageLine("doctor"))
+			return 2
+		}
 		rest = append(rest, a)
 	}
 	args = rest
@@ -86,8 +94,8 @@ func (l *launcher) doctorVerb(args []string) int {
 }
 
 func (l *launcher) status(kind, msg string) {
-	symbols := map[string][2]string{"OK": {"✓", "d77757"}, "FAIL": {"✗", "ff6b80"},
-		"WARN": {"!", "ffc107"}, "INFO": {"ℹ", "b1b9f9"}, "SKIP": {"–", "999999"}}
+	symbols := map[string][2]string{"OK": {"✓", palette.accent}, "FAIL": {"✗", palette.red},
+		"WARN": {"!", palette.yellow}, "INFO": {"ℹ", palette.cyan}, "SKIP": {"–", palette.gray}}
 	s, ok := symbols[kind]
 	switch {
 	case !ok:
@@ -136,15 +144,17 @@ func (l *launcher) doctorEnvironment() int {
 	if !l.doctorClaude() {
 		failed = 1
 	}
-	tool := func(name, missing string) {
+	// Each row says what the tool enables, found or not: a path alone left a
+	// reader to guess why it was listed (#636).
+	tool := func(name, gives, missing string) {
 		if p, err := exec.LookPath(name); err == nil {
-			l.status("INFO", name+": "+p)
+			l.status("INFO", name+": "+p+" ("+gives+")")
 		} else {
 			l.status("INFO", name+": not found ("+missing+")")
 		}
 	}
-	tool("fzf", "numbered menus")
-	tool("cliproxyapi", "Claude-family models only on gateways")
+	tool("fzf", "type-to-search pickers", "numbered menus")
+	tool("cliproxyapi", "dialect translation and provider sign-in", "Claude-family models only on gateways")
 	if p, err := exec.LookPath("ccmorph"); err == nil {
 		l.status("OK", "PATH: ccmorph is on PATH ("+filepath.Dir(p)+")")
 	} else {
@@ -279,12 +289,14 @@ func (l *launcher) doctorCompletion() zshCompletion {
 	// Every line is its own row: doctor's report keeps one status word a line.
 	switch {
 	case c.onFpath && c.compinit:
-		l.status("INFO", "completion: put the fpath line above compinit in "+c.rcName+":")
+		// Each lead says completion is off before the fix: the same INFO
+		// word also marks a missing optional tool (#636).
+		l.status("INFO", "completion: off; put the fpath line above compinit in "+c.rcName+":")
 		l.status("INFO", "  fpath=("+shellWord(c.dir)+" $fpath)")
 	case c.onFpath:
 		// zsh reaches the file; doctorCompinit names the line it still misses.
 	case c.compinit:
-		l.status("INFO", "completion: add to "+c.rcName+", above compinit (or Oh My Zsh):")
+		l.status("INFO", "completion: off; add to "+c.rcName+", above compinit (or Oh My Zsh):")
 		l.status("INFO", "  fpath=("+shellWord(c.dir)+" $fpath)")
 	default:
 		l.status("INFO", "  fpath=("+shellWord(c.dir)+" $fpath)")
@@ -301,10 +313,10 @@ func (l *launcher) doctorCompinit(c zshCompletion) {
 	switch {
 	case !c.ask || c.bound || c.compinit:
 	case c.onFpath:
-		l.status("INFO", "completion: nothing in "+c.rcName+" runs compinit — add:")
+		l.status("INFO", "completion: off; nothing in "+c.rcName+" runs compinit — add:")
 		l.status("INFO", "  autoload -Uz compinit && compinit")
 	default:
-		l.status("INFO", "  autoload -Uz compinit && compinit # add both lines to "+c.rcName)
+		l.status("INFO", "  autoload -Uz compinit && compinit # completion off; add both to "+c.rcName)
 	}
 }
 
@@ -363,7 +375,7 @@ func (l *launcher) doctor(name string, verbose bool) int {
 			// GH-649: a sign-in interrupted before its email line is this
 			// conf's whole story, and `login` is the one repair every other
 			// verb already names for it — doctor may not point elsewhere.
-			l.status("FAIL", "not ready: sign in again: ccmorph login "+name)
+			l.status("FAIL", "not ready: sign in: ccmorph login "+name)
 		} else if repair := profile.RepairOf(readErr); repair != "" {
 			// GH-839: the conf refusal already names the one edit that repairs
 			// it (`set … effort`, remove the unknown key), so the verdict

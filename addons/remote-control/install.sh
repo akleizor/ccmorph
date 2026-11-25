@@ -35,6 +35,9 @@ for cmd in ccmorph-rc ccmorph-rc-hosts; do
   ln -sfn "$HERE/$cmd" "$BIN/$cmd"
 done
 
+# A custom state root may not exist yet: without it the rc-hosts write below
+# aborted the install halfway (#636).
+mkdir -p "$STATE"
 [[ -e "$STATE/rc-hosts" ]] || cat > "$STATE/rc-hosts" <<'CONF'
 # One Remote Control host per folder, kept up by the com.ccmorph.rc-hosts
 # LaunchAgent. Edits apply within seconds.
@@ -49,6 +52,16 @@ mkdir -p "${PLIST:h}" "${LOG:h}"
 # every bridge session ask for removable volumes, Accessibility and the LAN again.
 LAUNCHER=
 [[ -x $HOME/.local/libexec/tcc-host ]] && LAUNCHER="<string>$HOME/.local/libexec/tcc-host</string>"
+# The supervisor resolves the state root as this script did: a launchd job sees
+# none of this shell's environment, so a custom root is passed on, or the
+# supervisor would read another rc-hosts than the one written above (#636).
+STATE_ENV=
+for var in CCMORPH_STATE_DIR XDG_CONFIG_HOME; do
+  [[ -n "${(P)var:-}" ]] || continue
+  value="${(P)var}"; value="${value//&/&amp;}"; value="${value//</&lt;}"; value="${value//>/&gt;}"
+  STATE_ENV+="
+		<key>$var</key><string>$value</string>"
+done
 # ProcessType Interactive: launchd gives the supervisor no CPU/IO throttling
 # (man launchd.plist), so the poll loop keeps its bridges online under heavy load.
 cat > "$PLIST" <<PL
@@ -60,7 +73,7 @@ cat > "$PLIST" <<PL
 	<key>ProcessType</key><string>Interactive</string>
 	<key>ProgramArguments</key><array>$LAUNCHER<string>$HERE/ccmorph-rc-hosts</string></array>
 	<key>EnvironmentVariables</key><dict>
-		<key>PATH</key><string>$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+		<key>PATH</key><string>$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>$STATE_ENV
 	</dict>
 	<key>RunAtLoad</key><true/>
 	<key>KeepAlive</key><true/>

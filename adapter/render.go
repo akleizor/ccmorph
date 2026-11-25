@@ -14,6 +14,7 @@ import (
 	"github.com/akleizor/ccmorph/ctxwindow"
 	"github.com/akleizor/ccmorph/netroute"
 	"github.com/akleizor/ccmorph/ordjson"
+	"github.com/akleizor/ccmorph/profile"
 	"github.com/akleizor/ccmorph/quirks"
 	"github.com/akleizor/ccmorph/shim"
 	"github.com/akleizor/ccmorph/util"
@@ -98,7 +99,7 @@ func render(rows []Row, key string, port int, upstream, authdir, proxy, shimPath
 	// still carry YAML metacharacters, and one such id breaks the whole config.
 	var safe []Row
 	for _, r := range rows {
-		if safeModelID.MatchString(r.Model) {
+		if profile.ValidModelID(r.Model) {
 			safe = append(safe, r)
 		} else {
 			logf("omitting model id with unsafe characters: %s", shim.PyRepr(ordjson.TruncRunes(r.Model, 60)))

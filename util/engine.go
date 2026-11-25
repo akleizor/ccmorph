@@ -176,13 +176,8 @@ func pctPtr(raw string) *float64 {
 
 // digitsInt is int(v) if v.isdigit() else 0.
 func digitsInt(v string) int64 {
-	if v == "" {
+	if !ordjson.IsDigits(v) {
 		return 0
-	}
-	for _, c := range v {
-		if c < '0' || c > '9' {
-			return 0
-		}
 	}
 	n, err := strconv.ParseInt(v, 10, 64)
 	if err != nil {

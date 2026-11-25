@@ -12,6 +12,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -870,7 +871,7 @@ func indexDay(dir string, old map[string]seenFile) (map[string]seenFile, bool, b
 		}
 		files[r.Name] = f
 	}
-	return files, !sameFileMarks(marksOf(files), marksOf(old)), false, true
+	return files, !slices.Equal(marksOf(files), marksOf(old)), false, true
 }
 
 // archivedDayRows validates the archive even on cache hits, then merges live overlays.
@@ -991,7 +992,7 @@ func folderMarks(dir string) (fingerprint string, partial, ok bool) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
-			return marksFingerprint(nil), false, true
+			return hashKey(""), false, true
 		}
 		return "", false, false
 	}
@@ -1021,13 +1022,6 @@ func folderMarks(dir string) (fingerprint string, partial, ok bool) {
 			n, info.Size(), info.ModTime().UnixNano(), stamp.Dev, stamp.Ino, stamp.CTime))
 	}
 	return hashKey(strings.Join(marks, "\n")), partial, true
-}
-
-// marksFingerprint is a folder's receipt marks as one cache token: names and
-// the size and mtime a writer moves, never a receipt's bytes.
-func marksFingerprint(marks []fileMark) string {
-	b, _ := json.Marshal(marks)
-	return hashKey(string(b))
 }
 
 func indexFolder(dir string, old map[string]seenFile) (map[string]seenFile, bool, bool, bool) {
@@ -1341,37 +1335,13 @@ func openMarks(usageDir string, names []string) (map[string][]fileMark, bool) {
 	return out, true
 }
 
-func sameDayMarks(a, b []dayMark) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	for i := range a {
-		if a[i] != b[i] {
-			return false
-		}
-	}
-	return true
-}
-
-func sameFileMarks(a, b []fileMark) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	for i := range a {
-		if a[i] != b[i] {
-			return false
-		}
-	}
-	return true
-}
-
 func sameOpenMarks(a, b map[string][]fileMark) bool {
 	if len(a) != len(b) {
 		return false
 	}
 	for name, marks := range a {
 		other, ok := b[name]
-		if !ok || !sameFileMarks(marks, other) {
+		if !ok || !slices.Equal(marks, other) {
 			return false
 		}
 	}
@@ -1384,8 +1354,8 @@ func sameOpenMarks(a, b map[string][]fileMark) bool {
 // everything else is here (#546).
 func memoMatches(m *monthMemo, dir string, month, today int64, days []dayMark, open map[string][]fileMark, flat []fileMark) bool {
 	return m.Dir == dir && m.Month == month && m.Today == today &&
-		m.Tally != nil && sameDayMarks(m.Days, days) && sameOpenMarks(m.Open, open) &&
-		sameFileMarks(m.Flat, flat)
+		m.Tally != nil && slices.Equal(m.Days, days) && sameOpenMarks(m.Open, open) &&
+		slices.Equal(m.Flat, flat)
 }
 
 // closedBase is every closed day's rows merged, with the identities they
@@ -1400,7 +1370,7 @@ func memoMatches(m *monthMemo, dir string, month, today int64, days []dayMark, o
 // again (#538).
 func closedBase(usageDir string, days []dayMark, listed, readOK bool, monthUnix, todayUnix int64) (map[string]tally, []dayMark, string, bool) {
 	if c, ok := loadCache[monthBase](monthBasePath()); ok && listed && c.Dir == usageDir && c.Month == monthUnix &&
-		c.By != nil && sameDayMarks(c.Days, days) {
+		c.By != nil && slices.Equal(c.Days, days) {
 		return c.By, c.Days, c.Keys, readOK
 	}
 	by := map[string]tally{}

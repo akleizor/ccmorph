@@ -48,8 +48,8 @@ func (w *walker) walk(i, depth int, noDrop bool, mode int, filter bool) int {
 func (w *walker) object(i, depth int, noDrop bool, mode int, _ bool) int {
 	ms, end := Object(w.b, i)
 	typ := ""
-	if sp, ok := lastMember(ms, "type"); ok {
-		typ, _ = str(w.b, sp)
+	if sp, ok := LastMember(ms, "type"); ok {
+		typ, _ = SpanStr(w.b, sp)
 	}
 	toolUse := typ == "tool_use"
 	idIdx, contentIdx, msgIdx, modelIdx := -1, -1, -1, -1
@@ -67,7 +67,7 @@ func (w *walker) object(i, depth int, noDrop bool, mode int, _ bool) int {
 	}
 	if apply && w.answerAs != "" && typ == "message" {
 		if k := lastIndex(ms, "model"); k >= 0 {
-			if m, ok := str(w.b, ms[k].Value); ok && m != w.answerAs {
+			if m, ok := SpanStr(w.b, ms[k].Value); ok && m != w.answerAs {
 				modelIdx = k
 			}
 		}
@@ -108,18 +108,18 @@ func malformedThinking(b []byte, sp Span) bool {
 		return false
 	}
 	ms, _ := Object(b, sp.Start)
-	t, ok := lastMember(ms, "type")
+	t, ok := LastMember(ms, "type")
 	if !ok {
 		return false
 	}
-	if typ, isStr := str(b, t); !isStr || typ != "thinking" {
+	if typ, isStr := SpanStr(b, t); !isStr || typ != "thinking" {
 		return false
 	}
-	if th, ok := lastMember(ms, "thinking"); ok && !falsy(b, th) {
+	if th, ok := LastMember(ms, "thinking"); ok && !falsy(b, th) {
 		return false
 	}
-	if sg, ok := lastMember(ms, "signature"); ok {
-		if s, isStr := str(b, sg); isStr && s != "" {
+	if sg, ok := LastMember(ms, "signature"); ok {
+		if s, isStr := SpanStr(b, sg); isStr && s != "" {
 			return false
 		}
 	}
@@ -306,7 +306,7 @@ func userIDs(d *doc) (inner []byte, user Span, ok bool) {
 		return nil, Span{}, false
 	}
 	ms, _ := Object(d.b, meta.Start)
-	user, found = lastMember(ms, "user_id")
+	user, found = LastMember(ms, "user_id")
 	if !found || d.b[user.Start] != '"' {
 		return nil, Span{}, false
 	}
@@ -330,8 +330,8 @@ func rememberSession(d *doc, session *string) (inner []byte, ms []Member, user S
 		return nil, nil, Span{}, false
 	}
 	ms, _ = Object(inner, skipWS(inner, 0))
-	if sp, found := lastMember(ms, "session_id"); found {
-		if sid, isStr := str(inner, sp); isStr && *session == "" {
+	if sp, found := LastMember(ms, "session_id"); found {
+		if sid, isStr := SpanStr(inner, sp); isStr && *session == "" {
 			*session = sid
 		}
 	}
@@ -345,7 +345,7 @@ func (s *Server) swapDevice(d *doc, session *string) (Edit, bool) {
 	if !ok {
 		return Edit{}, false
 	}
-	dev, ok := lastMember(ms, "device_id")
+	dev, ok := LastMember(ms, "device_id")
 	if !ok || inner[dev.Start] != '"' {
 		return Edit{}, false
 	}

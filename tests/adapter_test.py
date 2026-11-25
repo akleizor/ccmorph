@@ -793,6 +793,9 @@ class AdapterTest(unittest.TestCase):
             # And the config it rendered is a real one, naming a cached model.
             self.assertIn("m-anthropic", out.stdout,
                           "the rendered config must still carry the cached models")
+            # The cache nobody could lock is the cache that served: not rewritten.
+            self.assertEqual(len(json.loads(cache.read_text())["rows"]), expected,
+                             "an unlockable cache must be read, never rewritten")
         finally:
             os.chmod(cache.parent, mode)
 
@@ -1078,7 +1081,7 @@ class AdapterTest(unittest.TestCase):
                                  PATH=f"{self.path_bin}:{os.environ.get('PATH', '')}"))
                 child_pids, seen = [], set()
                 try:
-                    def served():
+                    def served(proc=proc, out=out, tpid=tpid, spid=spid, hooks=hooks, seen=seen):
                         # PORT= follows both children's readiness, so every pid
                         # has reached the tether by then.
                         seen.update(self._tethers(proc.pid))
@@ -1102,7 +1105,7 @@ class AdapterTest(unittest.TestCase):
                     proc.wait(timeout=HANG_TIMEOUT)
                     survivors, tethers, state = [], [], []
 
-                    def cleaned():
+                    def cleaned(proc=proc, seen=seen, child_pids=child_pids, tmp=tmp):
                         nonlocal survivors, tethers, state
                         seen.update(self._tethers(proc.pid))
                         survivors = [p for p in child_pids if self._pid_alive(p)]
@@ -1579,7 +1582,7 @@ class AdapterTest(unittest.TestCase):
         # not die on a verdict the first launch should never have settled.
         Gateway.message_refusal = (402, {"error": {"message":
             "Insufficient balance: top up your account to continue"}})
-        for launch in (1, 2):
+        for _launch in (1, 2):
             out = self.run_adapter("--auto", "--model", "m-anthropic")
             self.assertNotEqual(out.returncode, 0, out.stdout + out.stderr)
             self.assertTrue(out.stdout.startswith("EXIT="), out.stdout)

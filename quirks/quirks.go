@@ -25,6 +25,7 @@ import (
 	"os/exec"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/akleizor/ccmorph/shim"
@@ -117,42 +118,38 @@ func build(affinity, uaTemplate string) (shim.Hooks, error) {
 			return strings.ReplaceAll(uaTemplate, "{version}", m[1])
 		}
 		h.TranslatorUserAgent = func() string {
-			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			defer cancel()
-			out, err := exec.CommandContext(ctx, "claude", "--version").Output()
-			if err != nil {
+			version := claudeVersion()
+			if version == "" {
 				return ""
 			}
-			m := bareSemver.FindSubmatch(out)
-			if m == nil {
-				return ""
-			}
-			return strings.ReplaceAll(uaTemplate, "{version}", string(m[1]))
+			return strings.ReplaceAll(uaTemplate, "{version}", version)
 		}
 	}
 	return h, nil
 }
 
+// claudeVersion is `claude --version`'s semver, read once per process: the
+// launch-time render and the shim subcommand both ask for it (#636).
+var claudeVersion = sync.OnceValue(readClaudeVersion)
+
+func readClaudeVersion() string {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, "claude", "--version").Output()
+	if err != nil {
+		return ""
+	}
+	m := bareSemver.FindSubmatch(out)
+	if m == nil {
+		return ""
+	}
+	return string(m[1])
+}
+
 // --- JSON span helpers -------------------------------------------------------
 
-func member(ms []shim.Member, key string) (shim.Span, bool) {
-	for i := len(ms) - 1; i >= 0; i-- {
-		if ms[i].Key == key {
-			return ms[i].Value, true
-		}
-	}
-	return shim.Span{}, false
-}
-
-func strOf(b []byte, s shim.Span) (string, bool) {
-	if b[s.Start] != '"' {
-		return "", false
-	}
-	return shim.Unquote(b[s.Start:s.End]), true
-}
-
 func isStr(b []byte, s shim.Span, want string) bool {
-	v, ok := strOf(b, s)
+	v, ok := shim.SpanStr(b, s)
 	return ok && v == want
 }
 
@@ -193,20 +190,20 @@ func topObject(b []byte) ([]shim.Member, bool) {
 func declaredToolNames(b []byte, top []shim.Member) map[string]bool {
 	names := map[string]bool{}
 	add := func(ms []shim.Member) {
-		if sp, ok := member(ms, "name"); ok {
-			if n, isString := strOf(b, sp); isString {
+		if sp, ok := shim.LastMember(ms, "name"); ok {
+			if n, isString := shim.SpanStr(b, sp); isString {
 				names[n] = true
 			}
 		}
 	}
-	tools, ok := member(top, "tools")
+	tools, ok := shim.LastMember(top, "tools")
 	if !ok {
 		return names
 	}
 	for _, t := range arrayAt(b, tools) {
 		ms := objectAt(b, t)
 		add(ms)
-		if sp, ok := member(ms, "tools"); ok {
+		if sp, ok := shim.LastMember(ms, "tools"); ok {
 			for _, m := range arrayAt(b, sp) {
 				add(objectAt(b, m))
 			}
@@ -223,34 +220,34 @@ func repairToolReferences(body []byte) ([]byte, bool) {
 	if !ok {
 		return nil, false
 	}
-	msgs, ok := member(top, "messages")
+	msgs, ok := shim.LastMember(top, "messages")
 	if !ok {
 		return nil, false
 	}
 	known := declaredToolNames(body, top)
 	var edits []shim.Edit
 	for _, m := range arrayAt(body, msgs) {
-		blocks, ok := member(objectAt(body, m), "content")
+		blocks, ok := shim.LastMember(objectAt(body, m), "content")
 		if !ok {
 			continue
 		}
 		for _, block := range arrayAt(body, blocks) {
 			ms := objectAt(body, block)
-			if sp, ok := member(ms, "type"); !ok || !isStr(body, sp, "tool_result") {
+			if sp, ok := shim.LastMember(ms, "type"); !ok || !isStr(body, sp, "tool_result") {
 				continue
 			}
-			content, ok := member(ms, "content")
+			content, ok := shim.LastMember(ms, "content")
 			if !ok {
 				continue // string content carries no blocks
 			}
 			for _, inner := range arrayAt(body, content) {
 				ims := objectAt(body, inner)
-				if sp, ok := member(ims, "type"); !ok || !isStr(body, sp, "tool_reference") {
+				if sp, ok := shim.LastMember(ims, "type"); !ok || !isStr(body, sp, "tool_reference") {
 					continue
 				}
 				text := "[tool_reference]"
-				if sp, ok := member(ims, "tool_name"); ok {
-					if name, isString := strOf(body, sp); isString {
+				if sp, ok := shim.LastMember(ims, "tool_name"); ok {
+					if name, isString := shim.SpanStr(body, sp); isString {
 						if known[name] {
 							continue
 						}
@@ -293,23 +290,23 @@ func stripThinking(request []byte, chat map[string]bool) []byte {
 	if !ok {
 		return nil
 	}
-	msgs, ok := member(top, "messages")
+	msgs, ok := shim.LastMember(top, "messages")
 	if !ok {
 		return nil
 	}
 	keepCarrier := false
-	if sp, ok := member(top, "model"); ok {
-		if m, isString := strOf(request, sp); isString {
+	if sp, ok := shim.LastMember(top, "model"); ok {
+		if m, isString := shim.SpanStr(request, sp); isString {
 			keepCarrier = chat[strings.TrimSuffix(m, "[1m]")]
 		}
 	}
 	var edits []shim.Edit
 	for _, m := range arrayAt(request, msgs) {
 		ms := objectAt(request, m)
-		if sp, ok := member(ms, "role"); !ok || !isStr(request, sp, "assistant") {
+		if sp, ok := shim.LastMember(ms, "role"); !ok || !isStr(request, sp, "assistant") {
 			continue
 		}
-		content, ok := member(ms, "content")
+		content, ok := shim.LastMember(ms, "content")
 		if !ok {
 			continue
 		}
@@ -317,8 +314,8 @@ func stripThinking(request []byte, chat map[string]bool) []byte {
 		var kept [][]byte
 		for _, b := range blocks {
 			bm := objectAt(request, b)
-			if sp, ok := member(bm, "type"); ok {
-				t, _ := strOf(request, sp)
+			if sp, ok := shim.LastMember(bm, "type"); ok {
+				t, _ := shim.SpanStr(request, sp)
 				if t == "redacted_thinking" || (t == "thinking" && !(keepCarrier && isCarrier(request, bm))) {
 					continue
 				}
@@ -343,10 +340,10 @@ func stripThinking(request []byte, chat map[string]bool) []byte {
 
 // isCarrier is a block whose signature is the translator's carrier.
 func isCarrier(b []byte, block []shim.Member) bool {
-	sp, ok := member(block, "signature")
+	sp, ok := shim.LastMember(block, "signature")
 	if !ok {
 		return false
 	}
-	s, isString := strOf(b, sp)
+	s, isString := shim.SpanStr(b, sp)
 	return isString && strings.HasPrefix(s, carrierPrefix)
 }

@@ -70,8 +70,10 @@ func UsageRowMain(args []string, stdin io.Reader) int {
 	}
 	// Inside a Remote Control edge the edge's adapter records every response under
 	// the route that served it; a transcript row would charge the same call to
-	// this profile too. A launch that names a profile clears this variable first.
-	if os.Getenv("CCMORPH_EDGE_ROUTE_ENV") != "" {
+	// this profile too. util.InEdge is the cli's own test for the same session,
+	// so a launch that kept the variable (no loopback proxy: not an edge) keeps
+	// its rows here too (#636).
+	if util.InEdge() {
 		return 0
 	}
 	var in struct {
@@ -179,28 +181,34 @@ func RecordTranscript(profile, pricing, path string) int {
 	written := 0
 	// The cursor only passes lines whose row is on disk. A failed write holds it
 	// at that response's first line, so the next Stop retries it; a name every
-	// spill already holds is permanent and must not stall the read.
-	// The cursor is written once, at the end. A pass the hook's timeout stops
-	// writes it from the signal handler instead (see onStop), so a long backlog
-	// drains across Stops rather than rereading from the same offset forever.
-	at := next
+	// spill already holds is permanent and must not stall the read. The pass
+	// publishes one checkpoint (see the type), moves it before the row it writes
+	// and stops moving it at the first failure, and commits it at the end —
+	// a pass the hook's timeout stops commits the same object from the signal
+	// handler (see onStop), so a long backlog drains across Stops rather than
+	// rereading from the same offset forever.
+	cp := &checkpoint{path: cursorPath, since: c.Since}
+	cp.hold(next)
+	progress.Store(cp)
 	held := false
 	for _, key := range order {
 		r := responses[key]
 		if !held {
-			progress.Store(&checkpoint{path: cursorPath, c: cursor{Offset: r.start, Since: c.Since}})
+			cp.hold(r.start) // the row in flight: a kill mid-write retries it
 		}
 		ok, err := writeRow(profile, pricing, r.id, r.model, r.timestamp, r.session, responseToken(r.id, r.request), r.usage)
 		if ok && err == nil {
 			written++
 		}
-		if err != nil && !errors.Is(err, errRowNameTaken) && r.start < at {
-			at = r.start
-			held = true
+		if err != nil && !errors.Is(err, errRowNameTaken) {
+			held = true // the checkpoint stays before this row for the next pass
 		}
 	}
+	if !held {
+		cp.hold(next)
+	}
 	progress.Store(nil)
-	writeCursor(cursorPath, cursor{Offset: at, Since: c.Since})
+	cp.commit()
 	return written
 }
 
@@ -237,20 +245,29 @@ func parseLine(line []byte) (transcriptEntry, usageRow, bool) {
 	return e, usage, true
 }
 
-// writeUsageRow writes one complete row for a response the client itself
-// recorded. turnID makes the write idempotent: the same response always owns
-// the same row, so a re-read replaces it instead of spilling a duplicate.
-// It reports false when the row was deliberately not written: no profile or id,
-// or a row another ccmorph writer already holds for that response.
 // checkpoint is the cursor a stopped pass leaves: before the response being
-// written, so a kill mid-row retries that row and skips the ones already on disk.
+// written, so a kill mid-row retries that row and skips the ones already on
+// disk. It is the pass's only cursor state: published once, moved with the row
+// in flight, and committed by both of the pass's exits — the normal end and
+// onStop — so what a kill leaves is exactly what the pass would have written
+// had it ended there. A plain store of one int64 costs nothing next to the
+// row's own write.
 type checkpoint struct {
-	path string
-	c    cursor
+	path  string
+	since string
+	off   atomic.Int64
+}
+
+// hold moves the checkpoint to just before offset.
+func (cp *checkpoint) hold(offset int64) { cp.off.Store(offset) }
+
+// commit writes the cursor the pass has earned: where the next pass resumes.
+func (cp *checkpoint) commit() {
+	writeCursor(cp.path, cursor{Offset: cp.off.Load(), Since: cp.since})
 }
 
 // progress is the running pass's checkpoint, read by onStop from the signal
-// goroutine. A plain store per row costs nothing next to the row's own write.
+// goroutine. A pass publishes it once and moves one field inside it.
 var progress atomic.Pointer[checkpoint]
 
 // onStop writes the running pass's checkpoint when the hook is stopped. A
@@ -261,7 +278,7 @@ func onStop() {
 	go func() {
 		<-ch
 		if cp := progress.Load(); cp != nil {
-			writeCursor(cp.path, cp.c)
+			cp.commit()
 		}
 		os.Exit(1)
 	}()
@@ -281,6 +298,11 @@ func logScanOnce(err error) {
 	scanNote.Do(func() { fmt.Fprintln(os.Stderr, "ccmorph usage hook:", err) })
 }
 
+// writeUsageRow writes one complete row for a response the client itself
+// recorded. turnID makes the write idempotent: the same response always owns
+// the same row, so a re-read replaces it instead of spilling a duplicate.
+// It reports false when the row was deliberately not written: no profile or id,
+// or a row another ccmorph writer already holds for that response.
 func writeUsageRow(profile, pricing, responseID, model, timestamp, session, turnID string, usage usageRow) (bool, error) {
 	if profile == "" || responseID == "" {
 		return false, nil
@@ -686,9 +708,6 @@ func rowTime(ts string) string {
 	return utcStamp(t.UTC())
 }
 
-// rowFileName is the file a response's row lives in, inside its stamp's day
-// folder, by response id, so a transcript or a gateway error quoting that id
-// joins to it.
 // dirNames holds each day folder's file names, from a listing that succeeded:
 // a hook pass checks thousands of responses against folders of ~20,000 rows.
 // A failed listing is never kept — the caller must not remember the miss
@@ -764,6 +783,9 @@ func spillFileName(responseID, key string) string {
 	return strings.TrimSuffix(rowFileName(responseID), ".json") + "." + hex.EncodeToString(sum[:8]) + ".json"
 }
 
+// rowFileName is the file a response's row lives in, inside its stamp's day
+// folder, by response id, so a transcript or a gateway error quoting that id
+// joins to it.
 func rowFileName(responseID string) string {
 	sum := sha256.Sum256([]byte(responseID))
 	return hex.EncodeToString(sum[:]) + ".json"

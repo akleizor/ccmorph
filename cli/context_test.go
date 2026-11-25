@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/akleizor/ccmorph/ctxwindow"
 )
 
 // GH-370: the set form's warning trusted the discovered table — empty whenever
@@ -137,8 +139,8 @@ func TestTheUnlistedModelWarningNeverCutsAWordAtEightyColumns(t *testing.T) {
 		t.Fatalf("a 140-cell warning must wrap at 80 columns: %q", wrapped)
 	}
 	for _, line := range wrapped {
-		if cells(line) > 80 {
-			t.Errorf("line of %d cells: %q", cells(line), line)
+		if ctxwindow.Cells(line) > 80 {
+			t.Errorf("line of %d cells: %q", ctxwindow.Cells(line), line)
 		}
 	}
 	if got, want := strings.Join(strings.Fields(strings.Join(wrapped, "\n")), " "),

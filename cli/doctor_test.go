@@ -443,3 +443,23 @@ func TestDoctorRefusesAnInvalidDefaultBeforeAnyCaseRescue(t *testing.T) {
 		t.Fatalf("an invalid default must be refused before any check row, rc=%d:\n%s", rc, out)
 	}
 }
+
+// #636: doctor's tool rows listed a path and nothing else, so a reader could
+// not tell what fzf or cliproxyapi was for.
+func TestDoctorToolRowsSayWhatEachEnables(t *testing.T) {
+	bin := t.TempDir()
+	for _, n := range []string{"fzf", "cliproxyapi"} {
+		if err := os.WriteFile(filepath.Join(bin, n), []byte("#!/bin/sh\n"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Setenv("PATH", bin)
+	t.Setenv("HOME", t.TempDir())
+	out, _ := captureStdout(t, func() int { (&launcher{dir: t.TempDir()}).doctorEnvironment(); return 0 })
+	for _, want := range []string{"fzf: " + filepath.Join(bin, "fzf") + " (type-to-search pickers)",
+		"cliproxyapi: " + filepath.Join(bin, "cliproxyapi") + " (dialect translation and provider sign-in)"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("doctor lacks %q:\n%s", want, out)
+		}
+	}
+}

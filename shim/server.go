@@ -53,6 +53,7 @@ import (
 	"time"
 
 	"github.com/akleizor/ccmorph/netroute"
+	"github.com/akleizor/ccmorph/ordjson"
 	"github.com/akleizor/ccmorph/util"
 )
 
@@ -414,21 +415,12 @@ func (s *Server) swapInbound(h http.Header) bool {
 	return true
 }
 
-func allDigits(v string) bool {
-	for i := 0; i < len(v); i++ {
-		if v[i] < '0' || v[i] > '9' {
-			return false
-		}
-	}
-	return v != ""
-}
-
 // readBody reads the request body whole. An ABSENT Content-Length means no body.
 // A PRESENT but unparseable one is rejected, and an empty value is malformed too,
 // not a synonym for absent: either way the body would desync and poison the next
 // request on the reused connection.
 func readBody(rq *request) ([]byte, bool) {
-	if vals, present := rq.r.Header["Content-Length"]; present && !allDigits(strings.TrimSpace(vals[0])) {
+	if vals, present := rq.r.Header["Content-Length"]; present && !ordjson.IsDigits(strings.TrimSpace(vals[0])) {
 		rq.errorBody(http.StatusBadRequest, []byte("invalid Content-Length"))
 		return nil, false
 	}

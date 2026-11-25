@@ -66,6 +66,12 @@ func Main(argv []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		}
 		lines = append(lines, f)
 	}
+	// A read error mid-scan is not an empty tail: say so rather than print a
+	// view that looks complete (#636).
+	if err := sc.Err(); err != nil {
+		fmt.Fprintln(stderr, "ccmorph-core quota: reading profiles:", err)
+		return 1
+	}
 	// Each profile's read waits on its own endpoint or on the receipts, never on
 	// another's, so they run at once and the call takes as long as the slowest.
 	entries := make([]Entry, len(lines))

@@ -121,9 +121,8 @@ var stages = map[string]func(l *launcher, args []string) int{
 		return rc(ok)
 	},
 	// <word>: rc 0 when the installed claude names it
-	"--model-known":   func(l *launcher, args []string) int { return l.modelKnown(args[1], args[2]) }, // <profile> <model>: 0 served, 1 not, 2 cannot tell
-	"--profile-ok":    func(l *launcher, args []string) int { return rc(util.ProfileOK(l.profileDirs, args[1])) },
-	"--cleanup-stale": func(l *launcher, _ []string) int { util.GCStale(l.dir, l.profileDirs, tmpDir()); return 0 },
+	"--model-known": func(l *launcher, args []string) int { return l.modelKnown(args[1], args[2]) }, // <profile> <model>: 0 served, 1 not, 2 cannot tell
+	"--profile-ok":  func(l *launcher, args []string) int { return rc(util.ProfileOK(l.profileDirs, args[1])) },
 	// <op> <profile> [key]: the store's text; the change and materialize argv come
 	// from _CCM_CONFIG_{MODEL,EFFORT,SNAPSHOT,TYPE,ENDPOINT,CREDENTIAL} and _CCM_MATERIALIZE
 	"--config-store": func(l *launcher, args []string) int {
@@ -163,11 +162,6 @@ var stages = map[string]func(l *launcher, args []string) int{
 		}
 		return rc(ok)
 	},
-	"--trigger-env": func(l *launcher, args []string) int { // <KEY=VALUE>...: pct, output reserve, 1M switch
-		pct, maxout, no1m := l.triggerEnv(args[1:])
-		fmt.Printf("%s\n%s\n%s\n", pct, maxout, no1m)
-		return 0
-	},
 	"--probe-nudge": func(l *launcher, args []string) int { l.probeNudge(args[1]); return 0 },
 	"--log":         func(l *launcher, args []string) int { l.log(strings.Join(args[1:], " ")); return 0 },
 }
@@ -195,14 +189,12 @@ var stageOperands = map[string]struct {
 	"--models-json":         {1, "<profile> [base] [key]"},
 	"--model-known":         {2, "<profile> <model>"},
 	"--profile-ok":          {1, "<profile>"},
-	"--cleanup-stale":       {0, ""},
 	"--config-store":        {2, "<op> <profile> [key]"},
 	"--listing-has-unsized": {2, "<profile> <listing json>"},
 	"--gw-models":           {2, "<profile> <picker|catalogue>"},
 	"--claude-subcommand":   {1, "<word>"},
 	"--listing":             {0, "[<base> <key>...]"},
 	"--resume-model":        {1, "<session id>"},
-	"--trigger-env":         {0, "[KEY=VALUE...]"},
 	"--probe-nudge":         {1, "<profile>"},
 	"--log":                 {0, "[message...]"},
 }

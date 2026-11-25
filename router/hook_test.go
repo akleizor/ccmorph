@@ -17,6 +17,9 @@ import (
 
 func TestTheMCPServerListsDelegateAndRefusesAnEmptyPrompt(t *testing.T) {
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	// A worker's environment asks for unrouted subagents (hookEnv does the same):
+	// this test wants the ordinary path, wherever the suite is run from.
+	t.Setenv(WorkerEnv, "")
 	in := strings.Join([]string{
 		`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18"}}`,
 		`{"jsonrpc":"2.0","method":"notifications/initialized"}`,

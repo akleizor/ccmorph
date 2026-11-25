@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"github.com/akleizor/ccmorph/ctxwindow"
 	"github.com/akleizor/ccmorph/util"
+	"os"
 	"strconv"
 	"strings"
 
@@ -19,9 +20,26 @@ func grid(w int, label, value string) {
 	fmt.Printf("  %-*s %s\n", w, label, value)
 }
 
-// inspect is `ccmorph inspect [profile|-i]`: what a profile launches as, each
-// value named with its source.
+// inspect is `ccmorph inspect [profile|-i]`; with no argument it shows the
+// default and names the others, so none reads as missing (#636).
 func (l *launcher) inspect(args []string) int {
+	rc := l.inspectOne(args)
+	if a := l.active(); rc == 0 && len(args) == 0 && a != "" {
+		var others []string
+		for _, n := range l.confNames() {
+			if n != a {
+				others = append(others, n)
+			}
+		}
+		if len(others) > 0 {
+			fmt.Fprintln(os.Stderr, l.dim+"Other profiles: "+strings.Join(others, " ")+" (ccmorph inspect <profile>)"+l.reset)
+		}
+	}
+	return rc
+}
+
+// inspectOne is what a profile launches as, each value named with its source.
+func (l *launcher) inspectOne(args []string) int {
 	active := l.active()
 	name := active
 	if len(args) > 0 {
@@ -50,7 +68,8 @@ func (l *launcher) inspect(args []string) int {
 	fmt.Println(head + l.reset)
 	fmt.Println()
 	if base != "" {
-		grid(10, "endpoint", strings.TrimPrefix(base, "https://"))
+		// Every row names its source, the endpoint included (#636).
+		grid(10, "endpoint", strings.TrimPrefix(base, "https://")+"  "+l.dim+name+".conf"+l.reset)
 	}
 
 	// The conf's own model= line, already read above, is the row's value. The
@@ -123,12 +142,17 @@ func (l *launcher) inspect(args []string) int {
 			}
 			grid(10, "window", ctxwindow.Commas(n)+"  "+l.dim+source+" · compaction target "+pct+"%"+l.reset)
 		} else {
-			grid(10, "window", l.dim+"unknown · compacts early to stay safe"+l.reset)
+			// Why it is unknown, and the command that looks it up (#636).
+			grid(10, "window", l.dim+"unknown: not probed yet, ccmorph probe "+name+" looks it up · compacts early to stay safe"+l.reset)
 		}
 	}
 
 	if _, native := nativeBase(base); native {
-		grid(10, "protocol", "native Anthropic")
+		src := "Anthropic's own endpoint"
+		if base != "" {
+			src = "read from the endpoint address"
+		}
+		grid(10, "protocol", "native Anthropic  "+l.dim+src+l.reset)
 	} else {
 		grid(10, "protocol", "automatic — cached compatibility or validation at launch")
 	}
@@ -161,8 +185,16 @@ func (l *launcher) inspect(args []string) int {
 	// A saved model is what a plain launch of every kind starts (as
 	// ANTHROPIC_MODEL), so the line names it whatever the type, as the model
 	// row above does (#389).
+	// The saved effort rides the same launch as --effort (run.go inserts it
+	// where claude takes the flag), so the line names it too (#636).
+	withEffort := ""
+	if effort != "" {
+		withEffort = " --effort " + effort
+	}
 	if model != "" {
-		fmt.Println("  " + l.dim + "launches as" + l.reset + "  claude --model " + model)
+		fmt.Println("  " + l.dim + "launches as" + l.reset + "  claude --model " + model + withEffort)
+	} else if withEffort != "" {
+		fmt.Println("  " + l.dim + "launches as" + l.reset + "  claude" + withEffort + " " + l.dim + "(" + unsavedModelWords(typ, base) + ")" + l.reset)
 	} else {
 		// The same words the model row above reads (#381): what a launch of
 		// this profile does with no model saved.

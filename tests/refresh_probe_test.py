@@ -17,16 +17,10 @@ without sending anything, so the classification can be trusted before it is paid
 from __future__ import annotations
 
 import os
-import pathlib
-import io
 import json
-import shutil
-import sys
 import tempfile
 import unittest
 import unittest.mock
-import urllib.error
-import urllib.request
 from pathlib import Path
 
 from support import HANG_TIMEOUT, helper_cmd, needs_loopback

@@ -128,6 +128,14 @@ func IsFile(path string) bool {
 	return err == nil && fi.Mode().IsRegular()
 }
 
+// IsRegularFile reports whether path itself is a regular file: one Lstat, so
+// a symlink is never followed and never counts. It answers what IsFile and
+// !IsSymlink answered together with two system calls (#636).
+func IsRegularFile(path string) bool {
+	fi, err := os.Lstat(path)
+	return err == nil && fi.Mode().IsRegular()
+}
+
 // IsSymlink reports whether path itself is a symbolic link (a link to a
 // directory is a symlink, not a directory).
 func IsSymlink(path string) bool {

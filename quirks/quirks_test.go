@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -155,6 +156,8 @@ func TestTranslatorUserAgent(t *testing.T) {
 			os.WriteFile(filepath.Join(dir, "claude"), []byte("#!/bin/sh\n"+script+"\n"), 0o755)
 		}
 		t.Setenv("PATH", dir)
+		claudeVersion = sync.OnceValue(readClaudeVersion) // a new claude, a new read
+		t.Cleanup(func() { claudeVersion = sync.OnceValue(readClaudeVersion) })
 	}
 	fake(`echo "2.1.301 (Claude Code)"`)
 	if got := h.TranslatorUserAgent(); got != "claude-cli/2.1.301 (external, cli)" {
@@ -190,5 +193,31 @@ func TestCompatOffGivesNoHooks(t *testing.T) {
 	h, err := FromEnv()
 	if err != nil || h.OutboundHeaders != nil || h.UserAgent != nil || h.TranslatorUserAgent != nil || h.RepairRequest != nil || h.ResendBody != nil {
 		t.Fatal(h, err)
+	}
+}
+
+// TestTranslatorUserAgentExecsOnce pins #636: the render and the shim both ask,
+// and each ask started a `claude --version` process.
+func TestTranslatorUserAgentExecsOnce(t *testing.T) {
+	h, err := build("", "claude-cli/{version} (external, cli)")
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	count := filepath.Join(dir, "runs")
+	if err := os.WriteFile(filepath.Join(dir, "claude"), []byte("#!/bin/sh\necho x >> "+count+"\necho \"2.1.301 (Claude Code)\"\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir)
+	claudeVersion = sync.OnceValue(readClaudeVersion)
+	t.Cleanup(func() { claudeVersion = sync.OnceValue(readClaudeVersion) })
+	for i := 0; i < 2; i++ {
+		if got := h.TranslatorUserAgent(); got != "claude-cli/2.1.301 (external, cli)" {
+			t.Fatalf("call %d: %q", i, got)
+		}
+	}
+	body, _ := os.ReadFile(count)
+	if got := strings.Count(string(body), "\n"); got != 1 {
+		t.Fatalf("claude ran %d times, want once", got)
 	}
 }

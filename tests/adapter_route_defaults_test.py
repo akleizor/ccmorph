@@ -20,7 +20,6 @@ from pathlib import Path
 import shutil
 import signal
 import subprocess
-import tempfile
 
 import fake_adapter
 import pytest

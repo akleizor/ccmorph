@@ -98,3 +98,37 @@ func useRefresh(t *testing.T, f func(string) error) {
 	refreshAuthDir = f
 	t.Cleanup(func() { refreshAuthDir = prev })
 }
+
+// TestAntigravityAReplyWithoutModelsIsUnreadable pins #636: a 200 error object
+// unmarshalled clean and read as "no plan windows reported".
+func TestAntigravityAReplyWithoutModelsIsUnreadable(t *testing.T) {
+	for body, want := range map[string]string{
+		`{"error":{"code":400}}`: "unreadable usage reply",
+		`{"models":{}}`:          "no plan windows reported",
+	} {
+		if _, err := antigravityReading([]byte(body)); err == nil || err.Error() != want {
+			t.Fatalf("%s: err %v, want %q", body, err, want)
+		}
+	}
+}
+
+// TestAntigravityAnUnreadableReplyKeepsTheStaleWindows pins the second half of
+// #636: the error path kept no merge, so one bad reply erased the last reading.
+func TestAntigravityAnUnreadableReplyKeepsTheStaleWindows(t *testing.T) {
+	useClock(t, time.Date(2026, 11, 19, 9, 0, 0, 0, time.UTC))
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	dir := t.TempDir()
+	cred := `{"type":"antigravity","access_token":"live","project_id":"p-1","expired":"2026-11-19T10:00:00Z"}`
+	if err := os.WriteFile(filepath.Join(dir, "a.json"), []byte(cred), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	useTransport(t, func(*http.Request) (*http.Response, error) { return reply(200, antigravityReply), nil })
+	if e := readAntigravity(httpClient(), "gp", dir); e.Error != "" || len(e.Windows) != 2 {
+		t.Fatalf("first read: %+v", e)
+	}
+	useTransport(t, func(*http.Request) (*http.Response, error) { return reply(200, `{"error":{}}`), nil })
+	e := readAntigravity(httpClient(), "gp", dir)
+	if !e.Stale || len(e.Windows) != 2 || !strings.Contains(e.Error, "unreadable usage reply") {
+		t.Fatalf("a bad reply did not keep the stale windows: %+v", e)
+	}
+}
