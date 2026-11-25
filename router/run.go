@@ -97,7 +97,7 @@ func Decide(c Config, r Request) (Decision, error) {
 	}
 	profiles, notes := Profiles(c, r.Refresh, !r.Deadline.IsZero(), r.Only)
 	if len(profiles) == 0 {
-		return d, errors.New("no ccmorph profiles")
+		return d, errors.New("no ccmorph profiles. Next: ccmorph add <name>, then ccmorph set <name> model")
 	}
 	d.Notes = append(d.Notes, notes...)
 	pin := Pin{Profile: r.Profile, Model: r.Model, Order: c.Order}

@@ -333,6 +333,24 @@ func TestNoPickNamesANextStep(t *testing.T) {
 	}
 }
 
+// TestNoProfilesNamesANextStep pins #636: dispatch with no profile at all said
+// only "no ccmorph profiles", naming nothing to do about it.
+func TestNoProfilesNamesANextStep(t *testing.T) {
+	t.Setenv("CCMORPH_STATE_DIR", t.TempDir())
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	t.Setenv(WorkerEnv, "")
+	for _, dry := range []bool{true, false} {
+		args := []string{"dispatch", "--no-decider", "--kind", "code", "--tier", "mid", "fix it"}
+		if dry {
+			args = append([]string{"dispatch", "--dry-run"}, args[1:]...)
+		}
+		var out, errb bytes.Buffer
+		if rc := Main(args, strings.NewReader(""), &out, &errb); rc == 0 || !strings.Contains(errb.String(), "Next: ccmorph add <name>") {
+			t.Fatalf("dry-run=%v: rc=%d stderr=%q, want non-zero and a next step", dry, rc, errb.String())
+		}
+	}
+}
+
 // TestProfileNamesKeepAGlobCharacterInTheRoot pins #636: the routing pool read
 // its confs with a raw glob, so a `[` in the profile root made every profile
 // silently vanish from it.
