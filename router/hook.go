@@ -81,6 +81,7 @@ var hookBudget = 16 * time.Second
 // call left as written. The hook never denies a call. An explicit model or a fork stays the caller's.
 func PreToolUse(in io.Reader, w io.Writer) {
 	var ev struct {
+		SessionID string         `json:"session_id"`
 		ToolName  string         `json:"tool_name"`
 		ToolInput map[string]any `json:"tool_input"`
 		ToolUseID string         `json:"tool_use_id"`
@@ -143,14 +144,14 @@ func PreToolUse(in io.Reader, w io.Writer) {
 	// session's own subagent, its requests sent to the picked profile. The Agent
 	// tool takes only Claude's aliases, so the model is left to the proxy.
 	if alias == "" {
-		if word, ok := edgeWord(d.Pick.Profile, deadline); ok && leavePick(str("prompt"), word, d.Pick.Model) == nil {
+		if word, ok := edgeWord(d.Pick.Profile, deadline); ok && leavePick(ev.SessionID, str("prompt"), word, d.Pick.Model) == nil {
 			route("", Row{"tool_use_id": ev.ToolUseID, "native": true, "edge": word}, " (through the edge)")
 			return
 		}
 		// Any other ccmorph session runs behind the launcher's agent proxy,
 		// which serves the profiles whose sign-in it can carry.
 		if dir := os.Getenv(agentproxy.DirEnv); dir != "" && proxyServes(d.Pick.Profile) &&
-			agentproxy.LeavePick(dir, str("prompt"), agentproxy.Pick{Word: d.Pick.Profile, Model: d.Pick.Model}) == nil {
+			agentproxy.LeavePick(dir, ev.SessionID, str("prompt"), agentproxy.Pick{Word: d.Pick.Profile, Model: d.Pick.Model}) == nil {
 			route("", Row{"tool_use_id": ev.ToolUseID, "native": true, "proxy": d.Pick.Profile}, " (through the agent proxy)")
 			return
 		}

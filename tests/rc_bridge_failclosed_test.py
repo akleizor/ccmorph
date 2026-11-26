@@ -283,8 +283,9 @@ def test_a_picked_subagent_is_served_by_its_pick_through_a_real_proxy(tmp_path):
     seen = []
     account, route = stub("account", seen), stub("route", seen)
     rc = _launcher()
+    session = "s1"
     (tmp_path / "inference").write_text("account\n")
-    pending = tmp_path / "agents" / "pending"
+    pending = tmp_path / "agents" / "pending" / session
     pending.mkdir(parents=True)
     (pending / f"{hashlib.sha256(b'Fix parse()').hexdigest()}.json").write_text('{"word": "route", "model": "kimi-k3"}')
     key_file = tmp_path / "route-key"
@@ -304,7 +305,8 @@ def test_a_picked_subagent_is_served_by_its_pick_through_a_real_proxy(tmp_path):
         urllib.request.ProxyHandler({"http": f"http://127.0.0.1:{port}"}))
 
     def post(agent, text):
-        headers = {"authorization": "Bearer ACCOUNT", "content-type": "application/json"}
+        headers = {"authorization": "Bearer ACCOUNT", "content-type": "application/json",
+                   "x-claude-code-session-id": session}
         if agent:
             headers["x-claude-code-agent-id"] = agent
         body = {"model": "claude-opus-5-5", "messages": [{"role": "user", "content": [

@@ -93,6 +93,7 @@ func send(t *testing.T, c *http.Client, agent, prompt string) {
 	if agent != "" {
 		req.Header.Set(AgentHeader, agent)
 	}
+	req.Header.Set(SessionHeader, "s1")
 	resp, err := c.Do(req)
 	if err != nil {
 		t.Fatal(err)
@@ -125,7 +126,7 @@ func TestMainThreadPassesThroughUntouched(t *testing.T) {
 
 func TestPickedAgentGoesToItsProfile(t *testing.T) {
 	p, c, first, gw, _ := harness(t)
-	if err := LeavePick(p.Dir, "  write the report \n", Pick{Word: "ds", Model: "deepseek-v5"}); err != nil {
+	if err := LeavePick(p.Dir, "s1", "  write the report \n", Pick{Word: "ds", Model: "deepseek-v5"}); err != nil {
 		t.Fatal(err)
 	}
 	send(t, c, "agent1", "write the report")
@@ -156,6 +157,37 @@ func TestPickedAgentGoesToItsProfile(t *testing.T) {
 	DropAgent(p.Dir, "agent1")
 	send(t, c, "agent1", "after stop")
 	<-first
+}
+
+// #959: a pick names the session that left it, so two sessions sending one
+// prompt leave two picks, a claim reads only its own session's folder, and a
+// request that names no session claims nothing.
+func TestAPickIsClaimedOnlyByItsSessionsAgent(t *testing.T) {
+	dir := t.TempDir()
+	body := []byte(`{"messages":[{"content":"Fix parse()"}]}`)
+	for session, word := range map[string]string{"s1": "gw1", "s2": "gw2"} {
+		if err := LeavePick(dir, session, "Fix parse()", Pick{Word: word, Model: "m-" + word}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if p, ok := Claim(dir, "", "x", body, time.Now()); ok {
+		t.Fatalf("a claim with no session bound %+v", p)
+	}
+	if HasPending(dir, "") {
+		t.Fatal("a pick with no session to name parked a request")
+	}
+	if p, ok := Claim(dir, "s3", "a3", body, time.Now()); ok {
+		t.Fatalf("a foreign session's agent bound %+v", p)
+	}
+	if p, ok := Claim(dir, "s1", "a1", body, time.Now()); !ok || p.Word != "gw1" {
+		t.Fatalf("session 1's agent bound %+v %v", p, ok)
+	}
+	if p, ok := Claim(dir, "s2", "a2", body, time.Now()); !ok || p.Word != "gw2" {
+		t.Fatalf("session 2's agent bound %+v %v", p, ok)
+	}
+	if err := LeavePick(dir, "", "Fix parse()", Pick{Word: "gw"}); err == nil {
+		t.Fatal("a pick with no session to name was left")
+	}
 }
 
 func TestOtherHostsAreTunnelledNotDecrypted(t *testing.T) {

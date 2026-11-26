@@ -2044,19 +2044,25 @@ profile still runs as Claude Code's own subagent. The Agent tool takes only
 Claude's aliases, so the pick travels beside the call: the hook has the edge's
 proxy hold the profile (`ccmorph-rc <profile> --switch --rehand`, which changes
 no switch word), writes `{word, model}` to
-`.rc-bridge/agents/pending/<sha256 of the stripped prompt>.json`, and leaves the
-call's model unset. Every subagent request carries `X-Claude-Code-Agent-Id`;
-the proxy parks a new agent's first request on a port nothing answers (fail
-closed), reads the prompt from its first message, renames the pending pick to
-`agents/<agent id>.json`, and sends that request and every later one of that
-agent to the pick with the pick's model. SubagentStop removes the binding; a
-pick unclaimed after ten minutes is swept. When the proxy cannot hold the
-profile, the hook falls back to the session's native aliases.
+`.rc-bridge/agents/pending/<session id>/<sha256 of the stripped prompt>.json`
+(the session id the request carries in `X-Claude-Code-Session-Id`), and leaves the
+call's model unset. Every subagent request carries `X-Claude-Code-Agent-Id` and
+its session's header; the proxy parks a new agent's first request on a port
+nothing answers (fail closed), reads the prompt from its first message, renames
+the pending pick from that session's own folder to `agents/<agent id>.json`, and
+sends that request and every later one of that agent to the pick with the pick's
+model. A pick binds only an agent of the session that left it: two sessions
+sending one prompt leave two picks, and in a same-session fan-out the later agent
+finds none and runs on the session's own models. SubagentStop removes the
+binding; a pick unclaimed after ten minutes is swept. When the proxy cannot hold
+the profile, the hook falls back to the session's native aliases.
 
 Every other session the launcher opens with the router on runs behind the
 launcher's agent proxy (`agentproxy/`, wired in `cli/agentproxy.go`), which
-keeps the same pick protocol in `run/agent-proxy.<launcher pid>/agents` and
-names that dir to the session in `CCMORPH_AGENT_PROXY`. Each Claude Code run
+keeps the same session-scoped pick protocol in `run/agent-proxy.<launcher pid>/agents`
+and names that dir to the session in `CCMORPH_AGENT_PROXY`. Its proxy reads the
+request's `X-Claude-Code-Session-Id` as the edge's does, so an agent claims only
+a pick its own session left. Each Claude Code run
 gets its own proxy, stopped when that run exits. A session on Anthropic's own endpoint keeps
 `api.anthropic.com` as its base URL, so Claude Code keeps its first-party
 behaviour, and reaches it through the proxy as `HTTPS_PROXY`: the proxy
