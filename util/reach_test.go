@@ -265,6 +265,64 @@ func TestReachListingPrintsProgressAndGivesUpOnASilentGateway(t *testing.T) {
 	}
 }
 
+// GH-935: the stop is the call's deadline, but a starved scheduler can hold
+// cmd.Start into it: the request then gets less than half its window, or none
+// at all. Main killed it anyway and named a reachable gateway dead — a loaded
+// run measured a 136 ms start against a 142 ms window, the stop firing with
+// 38 ms of curl's own run and no answer. A request the scheduler never let run
+// is not evidence of silence: the probe returns no verdict and the launch goes
+// on. The call's deadline still holds; the probe returns within it plus the
+// reap grace.
+func TestReachListingDoesNotBlameAGatewayForAStarvedStart(t *testing.T) {
+	for _, held := range []time.Duration{700 * time.Millisecond, 1200 * time.Millisecond} {
+		t.Run(held.String(), func(t *testing.T) {
+			reachCurl(t, "exec sleep 30")
+			t.Setenv("CCMORPH_REACH_PROGRESS", "0.02")
+			t.Setenv("CCMORPH_REACH_BOUND", "1")
+			saved := reachStart
+			t.Cleanup(func() { reachStart = saved })
+			reachStart = func(cmd *exec.Cmd) error {
+				time.Sleep(held) // the scheduler held the start into the bound
+				return cmd.Start()
+			}
+			start := time.Now()
+			r := ReachListing("http://127.0.0.1:9", "k", "", nil, nil)
+			if took, limit := time.Since(start), time.Second+reachWaitDelay; took > limit {
+				t.Fatalf("returned after %v, past the call's 1 s deadline plus the %v wait delay", took, reachWaitDelay)
+			}
+			if r != (Reach{}) {
+				t.Fatalf("got %+v, want nothing to say: the request never got half its window", r)
+			}
+		})
+	}
+}
+
+// GH-935 (gate finding): the call's deadline still holds. A silent gateway
+// behind a start the scheduler held 2 s against a 2.5 s bound is not named
+// late: the probe returns at main's deadline — 2.375 s from the call plus the
+// reap grace — never after a fresh bound counted from curl's own start. Less
+// than half the window is left, so it has no evidence and says nothing.
+func TestReachListingKeepsTheCallsDeadlineForASilentGatewayBehindASlowStart(t *testing.T) {
+	reachCurl(t, "exec sleep 30")
+	t.Setenv("CCMORPH_REACH_PROGRESS", "0.1")
+	t.Setenv("CCMORPH_REACH_BOUND", "2.5")
+	saved := reachStart
+	t.Cleanup(func() { reachStart = saved })
+	const held = 2 * time.Second
+	reachStart = func(cmd *exec.Cmd) error {
+		time.Sleep(held) // the scheduler held the start, but not past the bound
+		return cmd.Start()
+	}
+	start := time.Now()
+	r := ReachListing("http://10.255.255.1:8080", "k", "", nil, nil)
+	if took, limit := time.Since(start), 2500*time.Millisecond+reachWaitDelay; took > limit {
+		t.Fatalf("returned after %v, past the call's 2.5 s bound plus the %v wait delay", took, reachWaitDelay)
+	}
+	if r != (Reach{}) {
+		t.Fatalf("got %+v, want no verdict: less than half the window was left", r)
+	}
+}
+
 // An instant failure is named at once, with no progress line, and is not a
 // wait the launch must end on. What is under test is what the probe says, not
 // when its timers fire, so they are held (holdReachTimers): a loaded machine
