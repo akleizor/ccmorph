@@ -252,10 +252,12 @@ func readRows(path string) []Row {
 }
 
 func (r Row) matches(id string) bool {
-	return id != "" && (r["id"] == id || r["tool_use_id"] == id || r["agent_id"] == id)
+	return id != "" && (r["id"] == id || r["tool_use_id"] == id || r["agent_id"] == id || r["caller_id"] == id)
 }
 
-// ledgerUpdate merges fields into the one row the id names, keeping every other line.
+// ledgerUpdate merges fields into the newest row the id names, keeping every
+// other line. A caller's id names each attempt of a retried run; the newest is
+// the one whose answer the caller got.
 func ledgerUpdate(id string, fields Row) bool {
 	found := false
 	withLock(func() {
@@ -264,7 +266,8 @@ func ledgerUpdate(id string, fields Row) bool {
 			return
 		}
 		lines := bytes.SplitAfter(b, []byte("\n"))
-		for i, line := range lines {
+		for i := len(lines) - 1; i >= 0; i-- {
+			line := lines[i]
 			var r Row
 			if json.Unmarshal(line, &r) != nil || !r.matches(id) {
 				continue

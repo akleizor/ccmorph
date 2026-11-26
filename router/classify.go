@@ -6,7 +6,6 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
-	"math"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -284,18 +283,23 @@ func labelModel(model string, d *Decider, timeout time.Duration) Label {
 	return l
 }
 
-// checkResult asks the decider whether the answer did the brief; nil when it cannot say.
-func checkResult(d *Decider, brief, result string) *bool {
+// verdicts are the three things a finished answer can be. A format problem is
+// the right work in the wrong shape: the model is not wrong, so it is not escalated.
+var verdicts = map[string]string{
+	"pass":   "The result does what the brief asked.",
+	"wrong":  "The result is wrong, incomplete or does not do what the brief asked.",
+	"format": "The work is right but its shape is not what the brief asked (format, length, language, missing wrapper).",
+}
+
+// checkResult asks the decider for the answer's verdict; "" when it cannot say.
+// The decider read the answer, not its effect, so its verdict is weak evidence:
+// an accepted result (merged, tests passed) outranks it in the ledger.
+func checkResult(d *Decider, brief, result string) string {
 	a, err := d.ask(map[string]any{"brief": clipped(brief), "result": clipped(result)}, map[string]any{
-		"pass": map[string]any{"type": "noul", "instructions": "Did the result do the brief? Pass if it did; fail if it did not."},
+		"verdict": choice("Did the result do the brief?", verdicts),
 	}, 3*time.Second)
-	if err != nil || a["pass"].Noul == nil {
-		return nil
+	if err != nil || verdicts[a["verdict"].Choice] == "" {
+		return ""
 	}
-	v := *a["pass"].Noul
-	if math.IsNaN(v) || v < 0 || v > 1 {
-		return nil
-	}
-	pass := v >= 0.5
-	return &pass
+	return a["verdict"].Choice
 }

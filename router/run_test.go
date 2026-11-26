@@ -24,13 +24,12 @@ func fakeWorker(t *testing.T, body string) {
 	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
 }
 
-// fakeGrader answers every decider question with the same pass score; the raw
-// answer is what a passing grade needs.
-func fakeGrader(t *testing.T, score float64) *Decider {
+// fakeGrader answers every decider question with the same verdict.
+func fakeGrader(t *testing.T, verdict string) *Decider {
 	t.Helper()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("content-type", "application/json")
-		fmt.Fprintf(w, `{"answers":{"pass":{"noul":%g}}}`, score)
+		fmt.Fprintf(w, `{"answers":{"verdict":{"choice":%q}}}`, verdict)
 	}))
 	t.Cleanup(srv.Close)
 	return &Decider{URL: srv.URL}
@@ -38,26 +37,29 @@ func fakeGrader(t *testing.T, score float64) *Decider {
 
 // Delegate has no PostToolUse caller to carry complete()'s hint, so the
 // dispatch answer itself must say the run failed quality; a passing answer
-// stays byte-identical.
-func TestDispatchCarriesTheQualityFailEscalationAndLeavesAPassingAnswerAlone(t *testing.T) {
+// stays byte-identical. A format problem is recorded apart from a wrong answer
+// and is not escalated: the model did the work. The caller's --id names the
+// run, and its later acceptance is recorded on that row.
+func TestDispatchRecordsTheVerdictEscalatesOnlyAWrongAnswerAndTakesAcceptance(t *testing.T) {
 	for _, tc := range []struct {
-		name      string
-		score     float64
-		escalates bool
-		flags     []string
+		name, verdict string
+		escalates     bool
+		quality       any
+		flags         []string
 	}{
-		{"quality fail", 0.1, true, nil},
-		{"pass", 0.9, false, nil},
-		{"no decider", 0.1, false, []string{"--no-decider"}}, // the caller judges the outcome itself (harness-doctor)
+		{"wrong", "wrong", true, false, nil},
+		{"pass", "pass", false, true, nil},
+		{"format", "format", false, nil, nil},
+		{"no decider", "wrong", false, nil, []string{"--no-decider"}}, // the caller judges the outcome itself (harness-doctor)
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			hookEnv(t, true)
 			fakeWorker(t, "printf '%s' 'a decent answer'")
-			if err := writeJSON(ConfigPath(), Config{Enabled: true, Decider: fakeGrader(t, tc.score)}); err != nil {
+			if err := writeJSON(ConfigPath(), Config{Enabled: true, Decider: fakeGrader(t, tc.verdict)}); err != nil {
 				t.Fatal(err)
 			}
 			var out, errOut bytes.Buffer
-			args := append(append([]string{"dispatch"}, tc.flags...), "--kind", "code", "--tier", "mid", "fix the bug")
+			args := append(append([]string{"dispatch", "--id", "job-7"}, tc.flags...), "--kind", "code", "--tier", "mid", "fix the bug")
 			if code := Main(args, strings.NewReader(""), &out, &errOut); code != 0 {
 				t.Fatalf("dispatch exit %d: %s", code, errOut.String())
 			}
@@ -65,9 +67,42 @@ func TestDispatchCarriesTheQualityFailEscalationAndLeavesAPassingAnswerAlone(t *
 				t.Fatalf("the worker's answer changed: %q", got)
 			}
 			if strings.Contains(errOut.String(), "Escalate once") != tc.escalates {
-				t.Fatalf("escalation note on stderr is %q, want it only on a quality fail", errOut.String())
+				t.Fatalf("escalation note on stderr is %q, want it only on a wrong answer", errOut.String())
+			}
+			rows := readRows(ledgerPath())
+			if len(rows) != 1 {
+				t.Fatalf("ledger rows: %v", rows)
+			}
+			row := rows[0]
+			wantVerdict := any(tc.verdict)
+			if tc.flags != nil {
+				wantVerdict = nil
+			}
+			if row["verdict"] != wantVerdict || row["quality"] != tc.quality || row["finished"] == nil || row["exit_code"] != 0.0 {
+				t.Fatalf("settled row %v, want verdict %v quality %v with finish time and exit", row, wantVerdict, tc.quality)
+			}
+			out.Reset()
+			if code := Main([]string{"accept", "job-7", "pass", "--by", "merged"}, strings.NewReader(""), &out, &errOut); code != 0 {
+				t.Fatalf("accept exit %d: %s", code, errOut.String())
+			}
+			row = readRows(ledgerPath())[0]
+			if row["accepted"] != true || row["accepted_by"] != "merged" {
+				t.Fatalf("acceptance not recorded: %v", row)
 			}
 		})
+	}
+}
+
+// An id the ledger never saw is refused, not silently dropped.
+func TestAcceptRefusesAnUnknownRoute(t *testing.T) {
+	hookEnv(t, true)
+	ledgerAppend(Row{"id": "route-1", "outcome": "completed"})
+	var out, errOut bytes.Buffer
+	if code := Main([]string{"accept", "nope", "pass"}, strings.NewReader(""), &out, &errOut); code != 1 {
+		t.Fatalf("exit %d, want 1: %s", code, errOut.String())
+	}
+	if code := Main([]string{"accept", "route-1", "maybe"}, strings.NewReader(""), &out, &errOut); code != 2 {
+		t.Fatalf("a verdict other than pass or fail was taken: %d", code)
 	}
 }
 

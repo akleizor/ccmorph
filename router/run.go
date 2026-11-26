@@ -27,6 +27,7 @@ type Request struct {
 	Kind, Tier             string
 	Profile, Model, Effort string
 	Family                 string
+	ID                     string // the caller's name for this run (--id), for `router accept`
 	NoDecider, Refresh     bool
 	Timeout                float64           // seconds for the whole dispatch, retry included; 0 keeps router.json's
 	ClaudeArgs             []string          // passed to the worker's claude before -p
@@ -241,7 +242,11 @@ func Dispatch(ctx context.Context, r Request, cwd string) Outcome {
 			break
 		}
 		job := newID("delegate")
-		reserve(job, d, prompt, nil)
+		var caller Row
+		if r.ID != "" {
+			caller = Row{"caller_id": r.ID} // the caller's name for the run, so `router accept` can settle it later
+		}
+		reserve(job, d, prompt, caller)
 		w := runWorker(ctx, d.Pick, prompt, cwd, job, deadline, r.ClaudeArgs)
 		if ctx.Err() == context.DeadlineExceeded {
 			w.status = 124
@@ -468,7 +473,7 @@ func complete(c Config, id, text, hard string) string {
 	if hard != "" && !(len(ps) == 1 && ps[0].Class == "subscription") {
 		// One broken model must not pause its siblings; an error is retried, not a verdict.
 		markUnavailable(profile+"/"+model, now+modelBackoff)
-		ledgerUpdate(id, Row{"outcome": hard})
+		ledgerUpdate(id, Row{"outcome": hard, "finished": now})
 		return fmt.Sprintf("router: %s/%s backed off after %s; retry the same brief at the same tier.", profile, model, hard)
 	}
 	if hard != "" {
@@ -482,18 +487,25 @@ func complete(c Config, id, text, hard string) string {
 			}
 		}
 		markUnavailable(profile, until)
-		ledgerUpdate(id, Row{"outcome": hard})
+		ledgerUpdate(id, Row{"outcome": hard, "finished": now})
 		return fmt.Sprintf("router: %s unavailable until reset after %s; retry the same brief at the same tier on the next profile.", profile, hard)
 	}
-	var passed *bool
+	verdict := ""
 	if c.Decider != nil {
-		passed = checkResult(c.Decider, fmt.Sprint(row["brief"]), text)
+		verdict = checkResult(c.Decider, fmt.Sprint(row["brief"]), text)
 	}
 	outcome := "completed"
-	if passed != nil && !*passed {
+	if verdict == "wrong" {
 		outcome = "quality_fail"
 	}
-	ledgerUpdate(id, Row{"outcome": outcome, "quality": passed})
+	settled := Row{"outcome": outcome, "quality": nil, "finished": now}
+	if verdict != "" {
+		settled["verdict"], settled["evidence"] = verdict, "decider"
+		if verdict != "format" { // a format problem says nothing about whether the work was right
+			settled["quality"] = verdict == "pass"
+		}
+	}
+	ledgerUpdate(id, settled)
 	if outcome == "completed" {
 		return ""
 	}

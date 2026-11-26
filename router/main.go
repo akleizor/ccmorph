@@ -15,7 +15,7 @@ import (
 	"syscall"
 )
 
-const Usage = "ccmorph router [on|off|status|dispatch [--dry-run]|report]"
+const Usage = "ccmorph router [on|off|status|dispatch [--dry-run]|accept|report]"
 
 // TaskHelp is `ccmorph router dispatch --help`: every flag stated with the
 // effect it has, on a run and on --dry-run, because a flag that is parsed and
@@ -47,6 +47,8 @@ the ledger without running anything.
                 router.json's timeout); the worker reads its end, in epoch
                 seconds, from CCMORPH_DEADLINE
   --cwd DIR     run the worker in DIR (default: this directory)
+  --id ID       name the run ID; once its effect is known (merged, tests
+                passed), ccmorph router accept ID pass|fail records it
   -- FLAGS      pass FLAGS to the worker's claude; --model, --effort, -p
                 and a second -- belong to the dispatch and are refused there
 A failed run is retried once, on the next profile, only when the account
@@ -85,6 +87,8 @@ func Main(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		return status(stdout, stderr)
 	case "dispatch":
 		return task(args, stdin, stdout, stderr)
+	case "accept":
+		return accept(args, stdout, stderr)
 	case "report":
 		return report(args, stdout, stderr)
 	case "mcp":
@@ -178,7 +182,7 @@ func task(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	// The flags that take a value. Nothing, or another flag, in the value's
 	// place is refused: --profile --dry-run would otherwise run for real (#784).
 	values := map[string]*string{"--effort": &r.Effort, "--kind": &r.Kind, "--tier": &r.Tier,
-		"--profile": &r.Profile, "--model": &r.Model, "--family": &r.Family, "--cwd": &cwd}
+		"--profile": &r.Profile, "--model": &r.Model, "--family": &r.Family, "--cwd": &cwd, "--id": &r.ID}
 	for i := 0; i < len(args); i++ {
 		a := args[i]
 		if dst, ok := values[a]; ok {
@@ -313,6 +317,42 @@ func show(w io.Writer, d Decision, explain bool) {
 			fmt.Fprintln(w, "  dropped: "+r)
 		}
 	}
+}
+
+// accept records whether a run's result held once its effect is known: a
+// merged PR, a passing test run. That is the strongest evidence a route has,
+// above the decider's read of the answer.
+func accept(args []string, stdout, stderr io.Writer) int {
+	by := ""
+	var words []string
+	for i := 0; i < len(args); i++ {
+		switch a := args[i]; {
+		case a == "--by":
+			if i+1 >= len(args) || strings.HasPrefix(args[i+1], "-") {
+				return needsValue(stderr, a)
+			}
+			i++
+			by = args[i]
+		case strings.HasPrefix(a, "-"):
+			return refuse(stderr, a)
+		default:
+			words = append(words, a)
+		}
+	}
+	if len(words) != 2 || words[1] != "pass" && words[1] != "fail" {
+		fmt.Fprintln(stderr, "usage: ccmorph router accept ID pass|fail [--by SIGNAL]")
+		return 2
+	}
+	fields := Row{"accepted": words[1] == "pass", "accepted_at": nowSec()}
+	if by != "" {
+		fields["accepted_by"] = by
+	}
+	if !ledgerUpdate(words[0], fields) {
+		fmt.Fprintf(stderr, "ccmorph: router: no route %s in the ledger\n", words[0])
+		return 1
+	}
+	fmt.Fprintf(stdout, "Route %s: accepted %s.\n", words[0], words[1])
+	return 0
 }
 
 // report checks real traffic against the router's promises; non-zero when one fails.
