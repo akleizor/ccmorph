@@ -72,3 +72,32 @@ def pytest_configure(config):
     # reads (pytest-timeout exposes no public per-run method hook).
     if hasattr(config, "workerinput"):
         config._env_timeout_method = "thread"
+
+
+# GH-919: every worker's OWN descendant tree is read while each test runs, by a
+# watcher process outside that tree (proc_pressure_test.RunTreeWatch); a test
+# whose tree passes RUN_SHARE of the per-user cap fails at its teardown, named.
+@pytest.fixture(scope="session", autouse=True)
+def run_tree_watch():
+    import proc_pressure_test as probe
+    cap = probe.per_user_cap()
+    if cap is None:  # no finite cap: the in-file probes skip and say why
+        yield None
+        return
+    watch = probe.RunTreeWatch(cap[0], probe.RUN_SHARE, f"the {cap[1]} cap").start()
+    try:
+        yield watch
+    finally:
+        watch.stop()
+
+
+@pytest.fixture(autouse=True)
+def run_tree_verdict(request, run_tree_watch):
+    if run_tree_watch is None:
+        yield
+        return
+    run_tree_watch.begin(request.node.nodeid)
+    yield
+    message = run_tree_watch.end()
+    if message:
+        pytest.fail(message, pytrace=False)
