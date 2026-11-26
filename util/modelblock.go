@@ -58,7 +58,7 @@ func UnservedTier(name, tier, origin string, served []string) string {
 // without a terminal, and the fix: the adapter's refusal and doctor's note.
 func NoModelReason(name string) string {
 	return name + " has no saved model, and this gateway's model list does not say which request format its models use; list them: ccmorph models " + name +
-		", then save one: ccmorph set " + name + " model <model-id> (the next launch sends that model one short test message to learn its format, which may cost a little)"
+		", then save one: ccmorph set " + name + " model <model-id> (the next launch may send a few short test requests to learn its format and may incur a charge)"
 }
 
 // ExclusionsLeaveNone is whether excluded_models removes every chat model a
@@ -84,4 +84,10 @@ func ExclusionsFix(name, conf string) string {
 // ExclusionsRefusal is the launch's refusal for that state, and doctor's row.
 func ExclusionsRefusal(name, conf string) string {
 	return "no cached or served picker models remain after excluded_models, which removes every model this gateway serves; " + ExclusionsFix(name, conf)
+}
+
+// NoUsableModel is run's refusal when the gateway answers with a list that
+// leaves no picker row: an empty list, or rows that are not chat models.
+func NoUsableModel(name string) string {
+	return "'" + name + "' endpoint returned no usable model list"
 }

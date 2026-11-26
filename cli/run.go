@@ -282,19 +282,23 @@ func (l *launcher) resolveLaunch(name string, interactive, native bool, argv []s
 	// The picker could only fail on a gateway just named unreachable, and only
 	// a terminal opens it: skipping it keeps the terminal launch on the path
 	// the no-terminal one takes, so both end on the same words (#260).
+	// A key Claude Code was told to refuse stops the launch at keyApproval; no
+	// picker may fetch with that key first and bury the login repair (#862).
+	keyRefused := name != "" && routeKey != "" &&
+		util.KeyResponse(filepath.Join(l.profileDirs, name), routeKey) == util.KeyRefused
 	// A saved alias this gateway maps to no model stops at adapterModel; in a
 	// terminal the picker opens instead, saying why, and saves nothing (#862).
 	unserved := ""
 	if needsAdapter && explicit == "" && defaultModel != "" && l.unmappedTier(name, defaultModel) != "" {
 		unserved = defaultModel
 	}
-	if needsAdapter && askMissing && !subcommand && explicit == "" && (defaultModel == "" || unserved != "") && reachWhy == "" && isTTY(0) && isTTY(2) {
+	if needsAdapter && askMissing && !subcommand && explicit == "" && (defaultModel == "" || unserved != "") && reachWhy == "" && !keyRefused && isTTY(0) && isTTY(2) {
 		if unserved != "" {
 			l.err(util.UnservedTier(name, util.TierWord(unserved), l.modelOrigin(name), nil))
 		}
 		interactive = true
 	}
-	if interactive && explicit == "" && routed {
+	if interactive && explicit == "" && routed && !keyRefused {
 		if name == "" {
 			l.err("-i needs an profile: name one, or set a default with ccmorph use <profile>")
 			return nil, 2

@@ -65,7 +65,7 @@ func TestUnservedTier(t *testing.T) {
 
 func TestNoModelReason(t *testing.T) {
 	got := NoModelReason("demo")
-	for _, want := range []string{"demo has no saved model", "ccmorph models demo", "ccmorph set demo model <model-id>"} {
+	for _, want := range []string{"demo has no saved model", "ccmorph models demo", "ccmorph set demo model <model-id>", "a few short test requests", "may incur a charge"} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("%q does not name %q", got, want)
 		}

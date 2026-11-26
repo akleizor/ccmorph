@@ -538,3 +538,94 @@ func TestDoctorAndRunNameTheSameCauseAndFixIssue862(t *testing.T) {
 		})
 	}
 }
+
+// GH-862 review: a key Claude Code was told to refuse is the launch's first
+// stop. The automatic alias picker must not ask the gateway with that key or
+// present model advice in place of keyApproval's login repair.
+func TestRunRefusedKeyDoesNotOpenTheAliasPickerIssue862(t *testing.T) {
+	state, profiles, libexec, calls := gw862(t, "", `{"model":"opus"}`)
+	l := &launcher{dir: state, profileDirs: profiles}
+	f, ok := l.readRaw("gw862")
+	if !ok {
+		t.Fatal("the fixture conf could not be read")
+	}
+	tail := f["api_key"]
+	if len(tail) > 20 {
+		tail = tail[len(tail)-20:]
+	}
+	if err := os.WriteFile(filepath.Join(profiles, "gw862", ".claude.json"),
+		[]byte(`{"customApiKeyResponses":{"approved":[],"rejected":["`+tail+`"]}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("TERM", "xterm-256color")
+	_, sawFile := fakeFzf862(t)
+	count := countingCurl(t)
+	rc, out := launchAs(t, true, state, profiles, libexec, "gw862", nil)
+	if rc != 1 {
+		t.Fatalf("rc %d, want 1:\n%s", rc, out)
+	}
+	if want := keyRefusedMsg("gw862"); !strings.Contains(out, want) {
+		t.Fatalf("the launch lost the login repair\nwant: %s\ngot:\n%s", want, out)
+	}
+	if strings.Contains(out, "is a Claude model alias") {
+		t.Fatalf("the picker's model advice buried the login repair:\n%s", out)
+	}
+	if paths.Exists(sawFile) {
+		t.Fatal("the alias picker opened for a key the person refused")
+	}
+	if got := count(); got != 0 {
+		t.Fatalf("the launch sent %d listing request(s) with a refused key", got)
+	}
+	if c := calls(); strings.Contains(c, "adapter-start") {
+		t.Fatalf("an adapter started:\n%s", c)
+	}
+}
+
+// GH-862 review: the launch stops at the picker before an adapter starts, so
+// doctor's verdict names the exclusions repair, not a translator install that
+// cannot clear that stop. The adapter row still reports its own fault.
+func TestDoctorExclusionsOutrankTheAdapterRowIssue862(t *testing.T) {
+	state, profiles, _, _ := gw862(t, "\nexcluded_models=model-a,model-b\n", "")
+	t.Setenv("LISTING", `{"data":[{"id":"model-a","supported_endpoints":["/v1/chat/completions"]},{"id":"model-b","supported_endpoints":["/v1/chat/completions"]}]}`)
+	old := translatorInstalled
+	translatorInstalled = func() bool { return false }
+	t.Cleanup(func() { translatorInstalled = old })
+	conf := filepath.Join(state, "gw862.conf")
+	out, rc := doctorOutput(t, &launcher{dir: state, profileDirs: profiles}, "gw862")
+	exRow := "FAIL model: " + util.ExclusionsRefusal("gw862", conf)
+	adRow := "FAIL adapter: this endpoint needs a translator; cliproxyapi is not installed; install it: " + util.ClipInstallStep()
+	if !strings.Contains(out, exRow+"\n") || !strings.Contains(out, adRow+"\n") {
+		t.Fatalf("doctor lost a row\nwant model row: %s\nwant adapter row: %s\ngot:\n%s", exRow, adRow, out)
+	}
+	if strings.Index(out, exRow) > strings.Index(out, adRow) {
+		t.Fatalf("the adapter row came before the launch's first stop:\n%s", out)
+	}
+	if rc != 1 || !strings.HasSuffix(strings.TrimSpace(out), "FAIL not ready: "+util.ExclusionsFix("gw862", conf)) {
+		t.Fatalf("doctor rc %d, want 1 ending with the exclusions repair:\n%s", rc, out)
+	}
+}
+
+// GH-862 review: an empty usable listing leaves no picker row. Doctor must not
+// promise a picker that will not open; the verdict for a profile never launched
+// stays ready, as before, and the gateway row already names models: 0. A
+// terminal launch stops at the picker with the sentence util.NoUsableModel.
+func TestDoctorDoesNotPromiseAPickerWithNoModelToPickIssue862(t *testing.T) {
+	state, profiles, libexec, _ := gw862(t, "", "")
+	t.Setenv("LISTING", `{"data":[]}`)
+	out, rc := doctorOutput(t, &launcher{dir: state, profileDirs: profiles}, "gw862")
+	if strings.Contains(out, "INFO model:") {
+		t.Fatalf("doctor promised a picker with no row to pick:\n%s", out)
+	}
+	if rc != 0 || !strings.HasSuffix(strings.TrimSpace(out), "OK ready: start it with ccmorph run gw862") {
+		t.Fatalf("doctor rc %d, want 0 ending ready:\n%s", rc, out)
+	}
+	t.Setenv("TERM", "xterm-256color")
+	_, sawFile := fakeFzf862(t)
+	runRC, stderr := launchAs(t, true, state, profiles, libexec, "gw862", nil)
+	if runRC != 1 || !strings.Contains(stderr, util.NoUsableModel("gw862")) {
+		t.Fatalf("run rc %d, want 1 with %q:\n%s", runRC, util.NoUsableModel("gw862"), stderr)
+	}
+	if paths.Exists(sawFile) {
+		t.Fatal("the picker opened without a row to pick")
+	}
+}

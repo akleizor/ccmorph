@@ -353,6 +353,10 @@ func (l *launcher) config(args []string) int {
 	if rc != 0 {
 		return 1
 	}
+	// The model this pass started from: keeping it through the prompts is not
+	// a model preference, so the store keeps the imported model_source marker
+	// a connection-only edit must not erase (#862).
+	savedModel := model
 	effort, rc := l.configStore("get", name, "effort")
 	if rc != 0 {
 		return 1
@@ -443,7 +447,11 @@ func (l *launcher) config(args []string) int {
 	}
 	say("Model: " + valueOrUnsaved(model, "model", typ, endpoint) + " · Effort: " + valueOrUnsaved(effort, "effort", typ, endpoint))
 	save := l.storeArgs("configure", name, "")
-	save.Change = util.StoreChange{Model: model, Effort: effort, Snapshot: snapshot, Type: typ, Endpoint: endpoint, Credential: credential}
+	change := util.StoreChange{Effort: effort, Snapshot: snapshot, Type: typ, Endpoint: endpoint, Credential: credential}
+	if model != savedModel {
+		change.Model = model // only an actual change is a saved model preference (#862)
+	}
+	save.Change = change
 	if _, rc := l.runStore(save, os.Stderr); rc != 0 {
 		return 1
 	}

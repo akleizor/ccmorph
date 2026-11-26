@@ -201,7 +201,7 @@ func (l *launcher) valueRows(slot, name string, preview ...string) (string, bool
 				if util.ExclusionsLeaveNone(l.conf(name), listing) {
 					l.err(util.ExclusionsRefusal(name, l.conf(name)))
 				} else {
-					l.err("'" + name + "' endpoint returned no usable model list")
+					l.err(util.NoUsableModel(name))
 				}
 				return "", false
 			}

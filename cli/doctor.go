@@ -666,23 +666,26 @@ func (l *launcher) doctor(name string, verbose bool) int {
 			report("OK", "api key: Claude Code will use it without asking")
 		}
 	}
+	// Run's model stops, asked of the listing above (#862). They come before
+	// the adapter row because a launch stops at the picker before any adapter
+	// starts: the model repair, not a translator install, is the first stop the
+	// verdict names. The no-model note promises a terminal picker, so it is
+	// printed only when the listing leaves a row to pick.
+	if typ == "apikey" && !util.NativeBase(base) && listing != "" {
+		_, pickable := util.GwModels(conf, true, listing)
+		switch {
+		case util.ExclusionsLeaveNone(conf, listing):
+			report("FAIL", "model: "+util.ExclusionsRefusal(name, conf), util.ExclusionsFix(name, conf))
+			failed = 1
+		case savedModel == "" && !need(listing).Known && pickable:
+			report("INFO", "model: none saved; in a terminal, ccmorph run asks which model first, and without one it stops: "+util.NoModelReason(name))
+		}
+	}
 	if bad {
 		failed = 1
 	}
 	for _, r := range rows {
 		report(r.Kind, r.Msg, r.Fix)
-	}
-	// Run's two other model stops, asked of the listing above (#862): an
-	// excluded_models that leaves nothing stops every launch, and no saved model
-	// with no known protocol stops a launch that has no terminal.
-	if typ == "apikey" && !util.NativeBase(base) && listing != "" {
-		switch {
-		case util.ExclusionsLeaveNone(conf, listing):
-			report("FAIL", "model: "+util.ExclusionsRefusal(name, conf), util.ExclusionsFix(name, conf))
-			failed = 1
-		case savedModel == "" && !need(listing).Known:
-			report("INFO", "model: none saved; in a terminal, ccmorph run asks which model first, and without one it stops: "+util.NoModelReason(name))
-		}
 	}
 	l.doctorCompinit(l.doctorCompletion())
 	// A masking mismatch is a privacy gap, not a start failure: the profile
