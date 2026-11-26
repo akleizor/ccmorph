@@ -176,6 +176,13 @@ func shellWord(s string) string {
 // read as a working completion. A variable so the test can shorten it.
 var completionProbeDeadline = 5 * time.Second
 
+// completionProbeAnswer is completionBound's test seam: when non-nil it
+// answers the probe in place of the login shell, so a check can pin what a
+// new zsh would say and bind its verdict to that answer instead of to a
+// clock (#929). Production never sets it; every real probe keeps the
+// deadline above and the fail-safe row that answers for a shell which cannot.
+var completionProbeAnswer func(zdot string) (bound, answered bool)
+
 // completionBound asks a new zsh the only question that matters: does that
 // shell have a completion bound to the ccmorph command? It starts the login
 // shell a new terminal would ($SHELL, or zsh from PATH) with ZDOTDIR forced to
@@ -187,6 +194,9 @@ var completionProbeDeadline = 5 * time.Second
 // shell may write a zcompdump or touch nothing else a terminal's shells do
 // not; nothing of the person's is edited.
 func (l *launcher) completionBound(zdot string) (bound, answered bool) {
+	if completionProbeAnswer != nil {
+		return completionProbeAnswer(zdot)
+	}
 	shell := os.Getenv("SHELL")
 	if shell == "" {
 		if p, err := exec.LookPath("zsh"); err == nil {
