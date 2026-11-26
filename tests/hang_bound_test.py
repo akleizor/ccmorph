@@ -140,8 +140,8 @@ _SCAN = None
 
 
 def _scan():
-    """Read and parse each test file once; both checks below share the result."""
-    literals, silent, unbounded = [], [], []
+    """Read and parse each test file once; the checks below share the result."""
+    literals, silent, unbounded, reach = [], [], [], []
     for path in sorted(TESTS.glob("*_test.py")):
         text = path.read_text()
         tree = ast.parse(text)
@@ -149,7 +149,8 @@ def _scan():
         if "HANG_TIMEOUT" not in text and spawns_a_process(tree):
             silent.append(path.name)
         unbounded += [f"{path.name}:{line}" for line in unbounded_spawns(tree)]
-    return literals, silent, unbounded
+        reach += [f"{path.name}:{line}" for line in literal_reach_seconds(tree)]
+    return literals, silent, unbounded, reach
 
 
 def scan():
@@ -160,7 +161,7 @@ def scan():
 
 
 def test_no_literal_process_bound_in_the_suite():
-    offenders, _, _ = scan()
+    offenders, _, _, _ = scan()
     assert not offenders, (
         "a test bounds a real process or its socket by a literal or a counted sleep "
         "loop, not the shared bound:\n"
@@ -168,13 +169,50 @@ def test_no_literal_process_bound_in_the_suite():
 
 
 def test_every_spawned_process_is_bounded_by_the_shared_bound():
-    _, silent, unbounded = scan()
+    _, silent, unbounded, _ = scan()
     assert not silent, (
         "a test spawns a real process and never reads HANG_TIMEOUT from support:\n"
         + "\n".join(silent))
     assert not unbounded, (
         "a test spawns a process with no timeout at all; pass timeout=HANG_TIMEOUT:\n"
         + "\n".join(unbounded))
+
+
+# The launch's reach probe states a measured second it is free to cap: the
+# sentence is counted from the call and clamped to the bound the launch
+# promised plus curl's one-second reap grace (util/reach.go, #891), so a
+# saturated scheduler legitimately changes the number. A test that pins one
+# literal second therefore asserts the scheduler's mood, not the product; #943
+# found the #260 twin doing exactly that. Doctor's own rows are exempt: their
+# count is curl's complaint ("after 2003 ms"), read by a probe with no bound of
+# its own, which the scheduler cannot rewrite.
+REACH_SECOND = re.compile(r"\bno answer\b[^\n]*\bafter [0-9]+ seconds?\b")
+
+
+def literal_reach_seconds(tree):
+    """Line numbers of string literals that pin a reach verdict's measured second."""
+    return [node.lineno for node in ast.walk(tree)
+            if isinstance(node, ast.Constant) and isinstance(node.value, str)
+            and "WARN gateway:" not in node.value
+            and REACH_SECOND.search(node.value)]
+
+
+def test_the_reach_second_guard_reports_a_literal():
+    sentence = 'no answer from gw.example port 443 after ' + '1 second'
+    assert literal_reach_seconds(ast.parse(f"want = {sentence!r}\n")) == [1]
+
+
+def test_the_reach_second_guard_leaves_doctors_own_complaint_alone():
+    sentence = 'WARN gateway: no answer from 10.255.255.1 port 8080 after ' + '2 seconds'
+    assert literal_reach_seconds(ast.parse(f"want = {sentence!r}\n")) == []
+
+
+def test_no_test_file_pins_a_reach_verdicts_measured_second():
+    reach = scan()[3]
+    assert not reach, (
+        "a test pins a reach verdict's measured second as a literal; the probe may cap it "
+        "at the caller's claim, so read the class and bound the number (util/reach.go, #891):\n"
+        + "\n".join(reach))
 
 
 # The zsh suites carry python inline, so the same rule is matched per line: a
