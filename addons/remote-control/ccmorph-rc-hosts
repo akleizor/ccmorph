@@ -116,7 +116,7 @@ HERE = Path(__file__).resolve().parent
 # install, exec) -- and naming a file must not load the launcher (#845: a
 # partial install's reload must survive).
 sys.path.insert(0, str(HERE))
-from rc_route import edge_name, safe_part  # noqa: E402
+from rc_route import edge_name, proc_started, safe_part  # noqa: E402
 STATE_ROOT = Path(os.environ.get("CCMORPH_STATE_DIR") or
                   Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config") / "ccmorph")
 LOGS = STATE_ROOT / "profiles" / ".rc-bridge" / "logs"
@@ -125,12 +125,14 @@ INFERENCE = STATE_ROOT / "profiles" / ".rc-bridge" / "inference"   # ccmorph-rc 
 WANTED = STATE_ROOT / "profiles" / ".rc-bridge" / "inference-wanted"   # the inference= value last applied, as written
 SWITCH_WORD = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]*")   # a profile word, as rc_route reads one
 SESSION_WORDS = INFERENCE.parent / "sessions"      # one session's own word: ccmorph-rc --switch --session
-# {"routes": what parse() hosts, "overrides": the tier. pins}: the answer this
-# supervisor alone can give, written at every config load for `ccmorph doctor`
-# (#881). The grammar is parse()'s own -- a reader that re-parsed rc-hosts in
-# another language missed one shape in each of three review rounds -- and a
-# record left by a supervisor that stopped cleanly is removed, so a stale file
-# never speaks for a supervisor that is gone.
+# {"routes": what parse() hosts, "overrides": the tier. pins, "supervisor": who
+# wrote it}: the answer this supervisor alone can give, written at every config
+# load for `ccmorph doctor` (#881). The grammar is parse()'s own -- a reader
+# that re-parsed rc-hosts in another language missed one shape in each of three
+# review rounds -- and a record left by a supervisor that stopped cleanly is
+# removed. A supervisor killed past that stop (SIGKILL, a crash loop, a reboot
+# before login) leaves the file, so it also carries the writer's identity and
+# `ccmorph doctor` believes it only while that exact process runs (#926).
 HOSTED = STATE_ROOT / "profiles" / ".rc-bridge" / "hosted.json"
 
 
@@ -530,10 +532,19 @@ ALIAS_ENV = {"fable": "ANTHROPIC_DEFAULT_FABLE_MODEL",
 
 
 def hosted_record(routes, text: str) -> dict:
-    """What publish_hosted writes: the routes hosted, sorted, and the config's
-    `tier.` overrides for the aliases a host exports (route_tiers' filter)."""
+    """What publish_hosted writes: the routes hosted, sorted, the config's
+    `tier.` overrides for the aliases a host exports (route_tiers' filter),
+    and the supervisor's own identity -- its pid and the kernel's mark of when
+    it started (#926). The record outlives a supervisor killed past its clean
+    stop (SIGKILL, a config parse() that keeps dying under KeepAlive, a reboot
+    before any login), so the stamp is what lets `ccmorph doctor` drop a hosted
+    claim only the dead process could still make. Both halves are the identity:
+    the OS hands a dead pid's number to a later process, and kill answers that
+    one just the same (#206)."""
+    pid = os.getpid()
     return {"routes": sorted(routes),
-            "overrides": {a: m for a, m in tier_map(text).items() if a in ALIAS_ENV}}
+            "overrides": {a: m for a, m in tier_map(text).items() if a in ALIAS_ENV},
+            "supervisor": {"pid": pid, "started": proc_started(pid)}}
 
 
 _hosted_unwritten = False   # a failed publish was logged; cleared when one lands

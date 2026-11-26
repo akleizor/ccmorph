@@ -180,7 +180,8 @@ its own Claude family, as `ccmorph get <route> --json` reports them); a
 `tier.<alias>=<model>` line in `rc-hosts` overrides one. A pinned tier names the route's
 model on that bare alias, so under another target pick that model by its full id instead.
 At every config load the supervisor publishes the routes it hosts and those overrides to
-`profiles/.rc-bridge/hosted.json` (removed when it stops cleanly), and `ccmorph doctor
+`profiles/.rc-bridge/hosted.json` (removed when it stops cleanly), stamped with its pid
+and start so a record a killed supervisor left behind is never believed; `ccmorph doctor
 <profile>` compares that profile's edge against it.
 
 ## How it works

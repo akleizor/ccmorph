@@ -1191,7 +1191,7 @@ RC_GATEWAY_CONF = ("type=apikey\nbase_url=https://example.test\napi_key=k\n"
 RC_HOSTS = "route=demo\n~/proj\npermission=bypassPermissions\n"
 
 
-def rc_state(hosts=RC_HOSTS, tiers=None, route="demo"):
+def rc_state(hosts=RC_HOSTS, tiers=None, route="demo", supervisor=None):
     """A setup callback for run_doctor: an rc-hosts config, the hosted record the
     supervisor publishes for it, and the edge record its launcher wrote pinning
     `tiers` (None: none yet).
@@ -1199,7 +1199,11 @@ def rc_state(hosts=RC_HOSTS, tiers=None, route="demo"):
     `hosted.json` is built by the add-on's own parse() and hosted_record(),
     loaded from addons/remote-control/ccmorph-rc-hosts -- never written by
     hand -- so a fixture cannot assert a hosting rule the supervisor does not
-    have. The state dir is this fixture's own, exported for the load only."""
+    have. The state dir is this fixture's own, exported for the load only.
+
+    `supervisor` replaces the stamp hosted_record writes (#926). None keeps the
+    publisher's own -- this test process, which is alive -- and a callable
+    builds one, so a case can name a process demonstrably gone."""
     def setup(state):
         if hosts is not None:
             (state / "rc-hosts").write_text(hosts)
@@ -1208,12 +1212,51 @@ def rc_state(hosts=RC_HOSTS, tiers=None, route="demo"):
             bridge = state / "profiles" / ".rc-bridge"
             bridge.mkdir(parents=True, exist_ok=True)
             record = m.hosted_record({r for r, _ in m.parse(hosts).values()}, hosts)
+            if callable(supervisor):
+                record["supervisor"] = supervisor()
+            elif supervisor is not None:
+                record["supervisor"] = supervisor
             (bridge / "hosted.json").write_text(json.dumps(record))
         if tiers is not None:
             edges = state / "profiles" / ".rc-bridge" / "edges"
             edges.mkdir(parents=True, exist_ok=True)
             (edges / "demo.json").write_text(
                 json.dumps({"pid": 4242, "port": 8443, "route": route, "tiers": tiers}))
+    return setup
+
+
+def rc_start_mark(pid):
+    """rc_route.proc_started, loaded by path: the stamp's own reader, so a fixture
+    builds the same record on the tree before #926, where rc-hosts does not
+    re-export it -- the regression must fail on what doctor prints, never on a
+    fixture that could not build its case."""
+    return load_script(RC_HOSTS_SCRIPT.parent / "rc_route.py", "rc_route").proc_started(pid)
+
+
+def a_gone_supervisor():
+    """A supervisor identity that is demonstrably gone (#926): the start mark of a
+    real child read while it lived, then the child stopped. If the OS hands the
+    number to a later process, that holder's mark is not this one; if it hands it
+    to nobody, no process holds the pid at all -- either way the process the
+    record names does not run (the #206 lesson: identity is pid + start)."""
+    child = subprocess.Popen(["/bin/sleep", "10"])
+    started = rc_start_mark(child.pid)
+    child.terminate()
+    child.wait()
+    assert started, "the child's start mark must be readable while it lives"
+    return {"pid": child.pid, "started": started}
+
+
+def without_the_stamp(make):
+    """A record from a supervisor older than #926: no supervisor key at all, so
+    doctor keeps the behavior the record had before the stamp existed. pop, not
+    delete: on the tree before the stamp the key is already absent."""
+    def setup(state):
+        make(state)
+        path = state / "profiles" / ".rc-bridge" / "hosted.json"
+        record = json.loads(path.read_text())
+        record.pop("supervisor", None)
+        path.write_text(json.dumps(record))
     return setup
 
 
@@ -1267,6 +1310,11 @@ def test_doctor_names_the_tiers_a_hosted_edge_pins_wrong_gh_881(tmp_path, hosts,
     "nothing-published",    # a stale edge record with no hosted.json speaks for nobody
     "fifo-published",       # a FIFO under hosted.json: refused, never waited on
     "damaged-published",    # hosted.json that is not JSON: no row
+    "dead-supervisor",      # #926: the stamped writer is gone, so nothing claims hosted
+    "dead-supervisor-no-edge",   # #926: nor does it claim "no edge record to compare"
+    "dead-supervisor-other",     # #926: a dead record naming another route is not this profile's
+    "recycled-supervisor",  # #926: the pid lives but its start mark is another process's
+    "no-stamp",             # #926: a record from an older supervisor keeps today's row
 ])
 def test_doctor_reports_a_hosted_edge_only_when_its_pins_are_the_question_gh_881(tmp_path, case):
     conf = RC_GATEWAY_CONF + "env.ANTHROPIC_DEFAULT_OPUS_MODEL=claude-opus-5-5\n"
@@ -1322,11 +1370,39 @@ def test_doctor_reports_a_hosted_edge_only_when_its_pins_are_the_question_gh_881
         setup = with_files(fifo_record=True)
     elif case == "damaged-published":
         setup = with_files(record="{not json")
+    elif case == "dead-supervisor":
+        setup = rc_state(hosts=hosts, tiers=tiers, supervisor=a_gone_supervisor)
+    elif case == "dead-supervisor-no-edge":
+        setup = rc_state(hosts=hosts, tiers=None, supervisor=a_gone_supervisor)
+    elif case == "dead-supervisor-other":
+        setup = rc_state(hosts="route=other\n~/proj\n", tiers=tiers,
+                         supervisor=a_gone_supervisor)
+    elif case == "recycled-supervisor":
+        # The number answers, but the process holding it is not the supervisor
+        # the record names: its start mark is another process's (#206).
+        setup = rc_state(hosts=hosts, tiers=tiers,
+                         supervisor={"pid": os.getpid(), "started": "stale:0"})
+    elif case == "no-stamp":
+        setup = without_the_stamp(rc_state(hosts=hosts, tiers=tiers))
     result, _, _ = run_doctor(tmp_path, conf, OK_CURL, setup=setup)
     assert result.returncode == 0, result.stdout
     rows = [line for line in result.stdout.splitlines() if "remote control:" in line]
     if case == "matching-pins":
+        # The publisher's own stamp is a live process (#926): the row stays.
         assert rows == ["OK remote control: hosted; the edge pins the tiers this profile maps"], rows
+    elif case == "no-stamp":
+        # A record from before the stamp existed keeps exactly today's row.
+        assert rows == ["OK remote control: hosted; the edge pins the tiers this profile maps"], rows
+    elif case == "dead-supervisor-other":
+        assert rows == [], result.stdout   # not this profile's record: no row at all
+    elif case in ("dead-supervisor", "dead-supervisor-no-edge", "recycled-supervisor"):
+        # A record whose supervisor is demonstrably gone must not claim hosted:
+        # one INFO names the stale writer and the repair, and no row vouches for
+        # the route (the tiers are never compared against a dead supervisor's map).
+        assert len(rows) == 1, rows
+        assert rows[0].startswith("INFO remote control: not hosted; the record was left by supervisor "), rows
+        assert "launchctl kickstart -k gui/$(id -u)/com.ccmorph.rc-hosts" in rows[0], rows
+        assert "remote control: hosted" not in result.stdout, result.stdout
     elif case == "twin-record":
         assert rows == ["INFO remote control: hosted; no edge record to compare "
                         "(a running edge publishes one)"], rows
