@@ -5,14 +5,33 @@
 # install for its author, so `tar` over it would package live credentials.
 # `git archive` only ever sees tracked files at a named ref, which makes that
 # mistake unrepresentable rather than merely discouraged.
+#
+# Every release's record lands on main via chore/sync-05NN; check-version's
+# newest-tag guard is what notices when a sync skips.
+# The guard reads ancestry, not the record: main lands squashed, so a tag cut
+# off main stays off it after its sync lands, and check-version (and dist,
+# through tag-on-main) stays red until a release is tagged on a commit
+# origin/main contains.
 
 SHELL := /bin/sh
 VERSION := $(shell grep -m1 '^_CCMORPH_VERSION=' lib/ccmorph.sh | cut -d'"' -f2)
 TAG := v$(VERSION)
+# The one name both release guards read for main (check-version, tag-on-main).
+MAIN_REF := refs/remotes/origin/main
+# Release refs are read by their exact full name, never through git's revision
+# lookup (#928). rev-parse, merge-base and archive try refs/heads/<name> and
+# refs/remotes/<name> too, so a branch spelled like a tag (`v0.9.0`, or
+# `refs/tags/v0.9.0` kept under refs/heads/) stood in for a tag that does not
+# exist. `git show-ref --verify` matches only the full ref it is given, and every
+# later step takes the commit id read here, never the name again.
+# exact_commit REF prints the commit REF peels to, or nothing.
+exact_commit = $(shell oid=$$(git show-ref --verify --hash '$(1)' 2>/dev/null) && git rev-parse -q --verify "$$oid^{commit}" 2>/dev/null)
+override TAG_COMMIT := $(call exact_commit,refs/tags/$(TAG))
+override MAIN_COMMIT := $(call exact_commit,$(MAIN_REF))
 DIST := dist
 TARBALL := $(DIST)/ccmorph-$(TAG).tar.gz
 
-.PHONY: help shim test test-go gate gate-launch gate-install gate-configure gate-py check-version dist release clean
+.PHONY: help shim test test-go gate gate-launch gate-install gate-configure gate-py check-version tag-on-main dist release clean
 
 help:
 	@echo "ccmorph $(VERSION)"
@@ -116,6 +135,15 @@ gate-py:
 # `## Unreleased`; the next one must be TAG's. The
 # `head -20` window this replaced held zero slack once v0.5.13 landed, and the
 # next Unreleased bullet would have blocked `make release` (#610).
+#
+# The tag main carries is not the newest release: a skipped sync leaves
+# `_CCMORPH_VERSION` behind and every check above agrees with itself (#928).
+# Resolve the newest v* tag in version order and pass only when that tag's
+# commit is reachable from origin/main. Main carrying the tag's version and its
+# `## vX` section is not enough: main lands squashed, so a release record
+# (chore/sync-05NN) can carry the section while the release commit stays off
+# main. There is no fallback to HEAD when origin/main is missing; the guard
+# refuses and names the fetch.
 check-version:
 	@test -n "$(VERSION)" || { echo "no _CCMORPH_VERSION in lib/ccmorph.sh"; exit 1; }
 	@grep -q '^## $(TAG) ' CHANGELOG.md || { \
@@ -123,9 +151,28 @@ check-version:
 	@awk '/^## /{ if (!n++ && $$0 == "## Unreleased") next; print; exit }' CHANGELOG.md | \
 	  grep -q '^## $(TAG) ' || { \
 	  echo "'## $(TAG)' is not the newest CHANGELOG entry"; exit 1; }
-	@git rev-parse -q --verify "refs/tags/$(TAG)" >/dev/null || { \
+	@test -n "$(TAG_COMMIT)" || { \
 	  echo "tag $(TAG) does not exist — create it before releasing:"; \
 	  echo "  git tag $(TAG)"; exit 1; }
+	@test -n "$(MAIN_COMMIT)" || { \
+	  echo "origin/main does not resolve — fetch it first:"; \
+	  echo "  git fetch origin main --tags"; exit 1; }
+	@set -- $$(git for-each-ref --sort=-v:refname --count=1 --format='%(objectname) %(refname)' 'refs/tags/v*'); \
+	newest=$${2#refs/tags/}; \
+	commit=$$(git rev-parse -q --verify "$$1^{commit}" 2>/dev/null); \
+	if [ -n "$$newest" ] && ! { [ -n "$$commit" ] && git merge-base --is-ancestor "$$commit" "$(MAIN_COMMIT)"; }; then \
+	  n=$${newest#v}; \
+	  echo "tag $$newest is not on main — record the release:"; \
+	  if [ "$$n" = "$(VERSION)" ] && grep -q "^## $$newest " CHANGELOG.md; then \
+	    echo "  main records $$newest's version and changelog, but not its commit"; \
+	    echo "  (main lands squashed, so a tag cut off main never joins it): cut the"; \
+	    echo "  next release from a commit on origin/main; never move a shipped tag"; \
+	  else \
+	    echo "  land $$newest's version and CHANGELOG section on main via"; \
+	    echo "  chore/sync-$$(echo $$n | tr -d .), then cut the next release from origin/main"; \
+	  fi; \
+	  exit 1; \
+	fi
 	@echo "version $(VERSION): source, changelog and tag agree"
 
 # Built from the TAG, never from the working tree — see the note at the top.
@@ -141,9 +188,23 @@ check-version:
 PLATFORMS := darwin/arm64 darwin/amd64 linux/arm64 linux/amd64
 STAGE := $(DIST)/stage/ccmorph-$(TAG)
 
-dist:
+# dist archives only a tag origin/main contains (#928): a tag off main ships a
+# tree main never carried, which is how `make dist` on main kept packaging
+# v0.5.13. This checks TAG, not the newest release, so a deliberate rebuild of
+# an older tag on main stays possible. It reads TAG_COMMIT and MAIN_COMMIT,
+# resolved once by exact ref above, and dist archives TAG_COMMIT itself: a
+# branch spelled like the tag never satisfies the check or the archive.
+tag-on-main:
+	@test -n "$(TAG_COMMIT)" || { echo "tag $(TAG) does not exist"; exit 1; }
+	@test -n "$(MAIN_COMMIT)" || { \
+	  echo "origin/main does not resolve — fetch it first:"; \
+	  echo "  git fetch origin main --tags"; exit 1; }
+	@git merge-base --is-ancestor "$(TAG_COMMIT)" "$(MAIN_COMMIT)" || { \
+	  echo "tag $(TAG) is not on main — make dist archives only a tag origin/main contains"; exit 1; }
+
+dist: tag-on-main
 	@rm -rf $(DIST)/stage && mkdir -p $(STAGE)
-	git archive --format=tar $(TAG) | tar -x -C $(STAGE)
+	git archive --format=tar "$(TAG_COMMIT)" | tar -x -C $(STAGE)
 	@pids=""; fail=0; for p in $(PLATFORMS); do \
 	  os=$${p%/*}; arch=$${p#*/}; \
 	  (cd $(STAGE) && CGO_ENABLED=0 GOOS=$$os GOARCH=$$arch \
