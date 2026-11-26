@@ -12703,6 +12703,23 @@ run_test test_one_interactive_flag_is_the_only_way_to_ask
 run_test test_every_credential_type_states_how_it_authenticates
 
 # Bootstrap must observe the projected cache, not race a background refresh.
+# The launch asks the gateway more than once: the reach probe first
+# (util/reach.go, a five-second bound), the key probe next (util/fetch.go
+# probeListing), and the picker's own listing fetch later (LaunchListing).
+# Under load any request's stub exec can fail. A reach-probe failure does NOT
+# produce this test's failure: an unclassified failure is no cause and not
+# down, so the launch continues and a healthy listing fetch still projects; a
+# reach timeout ends the launch at exit 75 before claude runs. It is the
+# separate listing fetch failing that leaves ProjectPicker with no listing — it
+# returns done without projecting — so claude opens on the stale cache and only
+# its assertion fails, which is the load-only run this test once hid behind a
+# bare status (verified by injecting each request alone: #895). The stub warms
+# its first exec outside every bound (#875) and traces each request; the failure
+# print below shows the launch's own words, the fake claude's check and which
+# requests ran, so the mechanism is named from any future run instead of
+# guessed. The stub keeps each request's own exit status and logs "request
+# answered" only when the command succeeded, so the trace never calls a failed
+# listing a success.
 test_picker_projection_is_complete_before_claude_entry() {
   local test_home; test_home=$(mktemp -d); setup_home "$test_home"
   printf '%s\n' 'type=proxy' 'base_url=http://gw.invalid' 'api_key=test-key' 'model=opaque-model' > "$HOME/.config/ccmorph/gw.conf"
@@ -12710,18 +12727,35 @@ test_picker_projection_is_complete_before_claude_entry() {
   printf '%s\n' '{"additionalModelOptionsCache":[{"value":"opaque-model","label":"Cosmetic","description":"stale"}]}' > "$HOME/.config/ccmorph/profiles/gw/.claude.json"
   printf '%s\n' \
     '#!/bin/sh' \
+    '{ printf "curl" ; for a do printf " %s" "$a"; done ; printf "\n"; } >> "$HOME/curl.calls"' \
     'for a do case "$a" in *http_code*) printf 200; exit 0 ;; esac; done' \
     'sleep 1' \
     'cat <<JSON' \
     '{"object":"list","data":[{"id":"opaque-model","display_name":"Cosmetic","capabilities":{"chat_completion":true}}]}' \
     'JSON' \
+    'listing_rc=$?' \
+    'if [ "$listing_rc" -eq 0 ]; then printf "  request answered\n"; else printf "  request failed (exit %s)\n" "$listing_rc"; fi >> "$HOME/curl.calls"' \
+    'exit "$listing_rc"' \
     > "$HOME/bin/curl"
   chmod +x "$HOME/bin/curl"
-  printf '%s\n' '#!/bin/sh' 'python3 -c '\''import json,os,sys; d=json.load(open(os.environ["CLAUDE_CONFIG_DIR"]+"/.claude.json")); assert all(r["label"] == r["value"] for r in d["additionalModelOptionsCache"])'\'' ' > "$HOME/bin/claude"
+  warm_curl_stub
+  printf '%s\n' '#!/bin/sh' \
+    'python3 -c '\''import json,os,sys; d=json.load(open(os.environ["CLAUDE_CONFIG_DIR"]+"/.claude.json")); rows=d["additionalModelOptionsCache"]; bad=[r for r in rows if r["label"] != r["value"]]; print("picker rows at claude entry:", json.dumps(rows)); sys.exit(("unprojected picker rows at claude entry: "+json.dumps(bad)) if bad else 0)'\'' > "$HOME/fake-claude.check" 2>&1' \
+    > "$HOME/bin/claude"
   chmod +x "$HOME/bin/claude"
   source "$CCMORPH_SOURCE"
-  _ccm_launch -a gw prompt
-  local rc=$?
+  local out rc=0
+  out=$(_ccm_launch -a gw prompt 2>&1) || rc=$?
+  if (( rc != 0 )); then
+    local said="" calls=""
+    [[ -f "$HOME/fake-claude.check" ]] && said=$(<"$HOME/fake-claude.check")
+    [[ -f "$HOME/curl.calls" ]] && calls=$(<"$HOME/curl.calls")
+    print -u2 -- "the picker launch failed (exit $rc); its output:"
+    print -u2 -- "${out:-<none>}"
+    print -u2 -- "the fake claude's check said: ${said:-<not run>}"
+    print -u2 -- "the launch's curl requests (the reach probe carries -N; the picker's listing fetch does not):"
+    print -u2 -- "${calls:-<none>}"
+  fi
   rm -rf "$test_home"
   return $rc
 }
