@@ -24,7 +24,7 @@ import (
 	"unicode/utf8"
 )
 
-// #767. Kind (.github/REVIEW.md): a reader that turns unparseable input into a
+// #767. Kind (REVIEW.md): a reader that turns unparseable input into a
 // confident verdict. A 200 body that is not a listing (a proxy's error
 // envelope) has no data list; a reader that takes the "data" key itself reads
 // it as an empty listing, and `ccmorph context` then says the model "is not on
