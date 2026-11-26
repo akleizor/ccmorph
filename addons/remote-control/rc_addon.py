@@ -113,47 +113,131 @@ def _mine(h: dict) -> bool:
                           and h.get("edge_started", PARENT_STARTED) == PARENT_STARTED)
 
 
+def _endpoint(h) -> tuple[str, str, dict] | None:
+    """The endpoint a parsed handoff carries, or None. Without upstream and key
+    there is nothing to route to: such a file holds a credential for nothing, and
+    the take removes it without recording (issue #900)."""
+    try:
+        return (h["upstream"], h["key"], h.get("tiers") or {})
+    except (TypeError, KeyError):                # not a dict, or missing a field
+        return None
+
+
+_GONE = object()                                 # a table entry this profile never had
+
+
+def _unrecord(profile: str, was, held_was) -> None:
+    """Put back what a take wrote before it when the take did not end up consuming
+    its own handoff: a handoff still standing — or standing again — behind a
+    switched endpoint is issue #900 read backwards. No other take of this profile
+    runs beside it (_TAKE), so restoring these two entries restores the record."""
+    for table, prev in ((SWITCHED, was), (HELD, held_was)):
+        if prev is _GONE:
+            table.pop(profile, None)
+        else:
+            table[profile] = prev
+
+
+class _LastLook:
+    """The take's rename destination, recording the handoff as the syscall
+    resolves its arguments. os.rename converts both paths before it makes the
+    system call: this object's __fspath__ runs after every moment a writer could
+    have replaced the handoff and before the kernel moves it, so the record
+    covers the publication the rename actually takes, not only the one the take
+    read first (#900 review). It records nothing it cannot route and nothing
+    another edge's: the checks at the taken name settle those, as ever. The look
+    is idempotent — a take no writer raced re-records what it already read."""
+
+    def __init__(self, path: Path, hand: Path, profile: str) -> None:
+        self.path = path
+        self.hand = hand
+        self.profile = profile
+
+    def __fspath__(self) -> str:
+        try:
+            h = json.loads(self.hand.read_text())
+        except (OSError, ValueError):
+            return str(self.path)               # gone or garbage: the taken-name checks decide
+        entry = _endpoint(h)
+        if entry is not None and _mine(h):
+            SWITCHED[self.profile] = entry
+            HELD[self.profile] = h.get("id")
+        return str(self.path)
+
+
 def _switched(profile: str) -> tuple[str, str, dict] | None:
     """A profile's endpoint: a new handoff file replaces the one in memory (it was
     brought up again). Only a handoff for this proxy's own edge is taken: another
     edge's proxy is the one --switch waits for.
 
     The take is a rename of the handoff to taken.<this pid>.<OWN_TAG>.<profile>.json,
-    so what this proxy reads, holds and removes is the one publication it took.
-    Reading the path and unlinking it later removed whatever stood there by then: a
-    replacement edge's handoff, published meanwhile, that its own proxy never got
+    so what this proxy reads, holds and removes is the one publication it took
     (issue #595 review). OWN_TAG is this proxy's own start, so a sweep can tell it,
-    killed mid-take, from a later process given its pid. A gone handoff alone proves
-    nothing; --switch waits for held.<pid>.json to name it."""
+    killed mid-take, from a later process given its pid.
+
+    The record of the handoff it read lands before the rename makes that handoff
+    gone, so "gone" never runs ahead of the record (issue #900, CI run 45562448374).
+    The rename moves whatever stands on the name by the time the kernel runs, so
+    the take looks once more where the syscall resolves its destination
+    (_LastLook): after any writer's replace and before the move. That last look
+    records the publication being taken, and the moved file decides anyway: its
+    endpoint is recorded before held.<pid>.json names it and before this returns,
+    which is the "taken" --switch waits for. A rename that fails, or moves another
+    edge's publication (put back) or something that routes nothing, restores the
+    record as it was before this take.
+
+    A handoff that routes nothing (does not parse, or lacks upstream or key) is
+    moved aside and removed with no record, whichever edge it claims: its key must
+    not linger to be re-polled every half second. A held.<pid>.json that cannot be
+    written never cuts the take short (#900 review)."""
     if not INFERENCE:
         return SWITCHED.get(profile)
     hand = Path(INFERENCE).parent / f"switch-{profile}.json"
     taken = hand.with_name(f"taken.{os.getpid()}.{OWN_TAG}.{profile}.json")
     with _TAKE:                  # one take at a time, so held.<pid>.json never loses one
         try:
-            if not _mine(json.loads(hand.read_text())):
-                return SWITCHED.get(profile)     # another edge's: never touched, not even moved
-            os.rename(hand, taken)               # from here, only this publication is ours
-        except (OSError, ValueError, TypeError, AttributeError):
+            h = json.loads(hand.read_text())
+        except OSError:
+            return SWITCHED.get(profile)
+        except ValueError:
+            h = None                            # garbage: removed below, never recorded
+        entry = _endpoint(h)
+        if entry is not None and not _mine(h):
+            return SWITCHED.get(profile)        # another edge's: never touched, not even moved
+        was = SWITCHED.get(profile, _GONE)
+        held_was = HELD.get(profile, _GONE)
+        if entry is not None:
+            SWITCHED[profile] = entry           # recorded while the handoff still stands
+            HELD[profile] = h.get("id")
+        try:
+            os.rename(hand, _LastLook(taken, hand, profile))   # the last look, inside the
+        except OSError:                                        # syscall's path resolution
+            _unrecord(profile, was, held_was)   # nothing taken: the state as it was
             return SWITCHED.get(profile)
         try:
-            h = json.loads(taken.read_text())
-            if not _mine(h):
-                # Another edge's publication replaced ours between the look and the
-                # rename: put it back unless a newer one stands there already.
+            try:
+                moved = json.loads(taken.read_text())
+            except (OSError, ValueError):
+                moved = None
+            me = _endpoint(moved)               # what the rename actually moved decides
+            if me is None:
+                _unrecord(profile, was, held_was)       # routes nothing: removed, unrecorded
+            elif not _mine(moved):
                 try:
-                    os.link(taken, hand)
+                    os.link(taken, hand)        # another edge's: put back unless a newer stands
                 except OSError:
                     pass
-                return SWITCHED.get(profile)
-            SWITCHED[profile] = (h["upstream"], h["key"], h.get("tiers") or {})
-            HELD[profile] = h.get("id")
-            _publish_held()
-        except (OSError, ValueError, KeyError, TypeError, AttributeError):
-            pass
+                _unrecord(profile, was, held_was)
+            else:
+                SWITCHED[profile] = me          # the moved one, recorded before any word names it
+                HELD[profile] = moved.get("id")
+                try:
+                    _publish_held()
+                except OSError:
+                    pass                        # an unwritten word never loses the take
         finally:
             try:
-                taken.unlink()                   # the key lives in memory only now
+                taken.unlink()                  # the key lives in memory only now
             except OSError:
                 pass
     return SWITCHED.get(profile)

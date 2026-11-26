@@ -1572,6 +1572,262 @@ def test_the_proxy_takes_a_handoff_without_waiting_for_a_request(tmp_path, monke
     assert addon.SWITCHED["gw"] == ("http://127.0.0.1:54505", "k2", {})
 
 
+def test_a_taken_handoff_is_recorded_before_it_can_be_seen_gone(tmp_path, monkeypatch):
+    """issue #900: the take removed the handoff before its record landed, so the one
+    signal that says "taken" — the file is gone — could be read with nothing
+    switched: the poller's own watcher caught SWITCHED empty a statement after its
+    wait passed (CI run 45562448374). Hook the removal itself: every path that makes
+    a valid handoff vanish, by unlink or by the take's rename, must find the record
+    already in SWITCHED."""
+    import json
+    addon, _, state = _hot_addon(monkeypatch, tmp_path)
+    hand = state / "switch-gw.json"
+    hand.write_text(json.dumps({"upstream": "http://127.0.0.1:54505", "key": "k2", "tiers": {}}))
+
+    expect = ["http://127.0.0.1:54505"]     # the upstream the record holds at each removal
+    def recorded(what):                     # the hook fires while the name still stands
+        assert addon.SWITCHED.get("gw", (None,))[0] == expect[0], \
+            f"the {what} removed the handoff before recording it"
+
+    class WatchedPath(type(addon.Path())):  # the handoff removed by name (issue #900's read)
+        def unlink(self, missing_ok=False):
+            if self.name == "switch-gw.json":
+                recorded("unlink")
+            return super().unlink(missing_ok=missing_ok)
+
+    real = addon.os                         # and the rename is what a take makes gone
+    class WatchedOs:
+        def __getattr__(self, name):
+            return getattr(real, name)
+
+        def rename(self, src, dst):
+            if Path(src).name == "switch-gw.json":
+                recorded("rename")
+            return real.rename(src, dst)
+
+    monkeypatch.setattr(addon, "Path", WatchedPath)
+    monkeypatch.setattr(addon, "os", WatchedOs())
+    assert addon._switched("gw") == ("http://127.0.0.1:54505", "k2", {})
+    assert not hand.exists()                # the take happened, hooks and all
+    # A re-hand over an endpoint already held: at the removal the record is the new
+    # one, not merely the old one still standing.
+    expect[0] = "http://127.0.0.1:54506"
+    hand.write_text(json.dumps({"upstream": "http://127.0.0.1:54506", "key": "k3", "tiers": {}}))
+    assert addon._switched("gw") == ("http://127.0.0.1:54506", "k3", {})
+    assert not hand.exists()
+
+
+@pytest.mark.parametrize("body", [
+    pytest.param('{"upstream": "http://127.0.0.1:54505"}', id="parses-but-holds-no-key"),
+    pytest.param('{"key": "k2"}', id="parses-but-holds-no-upstream"),
+    pytest.param("not json", id="does-not-parse"),
+])
+def test_a_handoff_holding_no_endpoint_is_removed_without_recording_anything(
+        tmp_path, monkeypatch, body):
+    """A switch-<profile>.json that can route nothing — it does not parse (the
+    publish is atomic, so this is garbage, not a half write), or lacks the upstream
+    or key an endpoint needs — is a credential held for nothing: one look removes it
+    and records nothing, and it never lingers to be re-polled every half second
+    (issue #900: pin the hygiene choice — today the fieldless one is already gone
+    silently and the unparseable one stays forever)."""
+    addon, _, state = _hot_addon(monkeypatch, tmp_path)
+    hand = state / "switch-gw.json"
+    hand.write_text(body)
+    assert addon._switched("gw") is None
+    assert not hand.exists()
+    assert not list(state.glob("switch-*")) and not list(state.glob("taken.*"))
+    assert addon.SWITCHED == {} and getattr(addon, "HELD", {}) == {}   # HELD: the #595 record
+
+
+def test_a_failed_handoff_rename_leaves_the_endpoint_untouched(tmp_path, monkeypatch):
+    """#900 review: the record runs ahead of the rename so a gone handoff always
+    has its record — but a take that moved nothing must not leave a switched
+    endpoint behind a handoff that still stands. A failed rename restores the
+    endpoint and the held word: the switch's wait ends in its own cleanup as if
+    nothing had happened, and every later look finds the state as it was."""
+    import json
+    addon, _, state = _hot_addon(monkeypatch, tmp_path)
+    hand = state / "switch-gw.json"
+    hand.write_text(json.dumps({"upstream": "http://127.0.0.1:54505", "key": "k1",
+                                "tiers": {}, "id": "h1"}))
+    assert addon._switched("gw") == ("http://127.0.0.1:54505", "k1", {})    # the baseline
+    real = addon.os
+    class RenamesRefused:
+        def __getattr__(self, name):
+            return getattr(real, name)
+
+        def rename(self, src, dst, *args, **kw):
+            raise OSError("rename refused")
+    monkeypatch.setattr(addon, "os", RenamesRefused())
+    hand.write_text(json.dumps({"upstream": "http://127.0.0.1:54599", "key": "k2",
+                                "tiers": {}, "id": "h2"}))
+    assert addon._switched("gw") == ("http://127.0.0.1:54505", "k1", {})    # not the new one
+    assert addon.SWITCHED["gw"] == ("http://127.0.0.1:54505", "k1", {})     # endpoint unchanged
+    assert addon.HELD["gw"] == "h1"                                         # and the same word held
+    assert hand.exists()                                                    # stands there for a retry
+    assert not list(state.glob("taken.*"))
+    # A profile with no prior entry: the failed take restores "absent" — pops its
+    # own record rather than leaving a None behind one that never switches.
+    (state / "switch-no.json").write_text(json.dumps({"upstream": "http://127.0.0.1:54598",
+                                                      "key": "k9", "tiers": {}, "id": "h9"}))
+    assert addon._switched("no") is None
+    assert "no" not in addon.SWITCHED and "no" not in addon.HELD
+
+
+def test_a_take_that_puts_another_edge_handoff_back_switches_nothing(tmp_path, monkeypatch):
+    """The same rule on the take's other failed path (#900 review): when the rename
+    moved a replacement edge's publication, that one is put back — and the record
+    written before the rename goes back too. What this proxy took was not its own,
+    so the endpoint, the held word and held.<pid>.json all stay exactly as they were."""
+    import json
+    addon, bridge = _proxy_addon(monkeypatch, tmp_path, 500, "start-500")
+    hand = bridge / "switch-oli.json"
+    def payload(start, upstream, id_):
+        return json.dumps({"upstream": upstream, "key": "k", "tiers": {}, "id": id_,
+                           "edge": 500, "edge_started": start})
+    hand.write_text(payload("start-500", "u1", "h1"))
+    assert addon._switched("oli") == ("u1", "k", {})            # the baseline
+    real = addon.os
+    class PublishedMeanwhile:
+        def __getattr__(self, name):
+            return getattr(real, name)
+
+        def rename(self, src, dst, *args, **kw):
+            Path(src).write_text(json.dumps({"upstream": "other", "key": "k", "tiers": {},
+                                             "id": "h600", "edge": 600,
+                                             "edge_started": "start-600"}))
+            return real.rename(src, dst)                        # the take moves theirs
+    monkeypatch.setattr(addon, "os", PublishedMeanwhile())
+    hand.write_text(payload("start-500", "u2", "h2"))
+    assert addon._switched("oli") == ("u1", "k", {})            # ours was replaced: nothing switched
+    assert addon.SWITCHED["oli"] == ("u1", "k", {})
+    assert addon.HELD["oli"] == "h1"
+    assert json.loads(hand.read_text())["id"] == "h600"         # theirs stands, taken by its proxy
+    assert not list(bridge.glob("taken.*"))
+    assert json.loads((bridge / "held.500.json").read_text())["profiles"] == {"oli": "h1"}
+
+
+@pytest.mark.parametrize("first", [
+    pytest.param("valid", id="read-an-older-handoff-of-this-edge"),
+    pytest.param("garbage", id="read-garbage"),
+])
+def test_a_same_edge_replacement_the_take_moves_is_recorded_before_it_is_acknowledged(
+        tmp_path, monkeypatch, first):
+    """#900 review: a publication for this very edge can land on the name between
+    the take's read and its rename, so the rename moves one the take never read. No
+    take by name can record it before that syscall (no proxy code runs between the
+    writer's replace and the rename). What the take does: the moved file decides,
+    its endpoint and id are recorded before held.<pid>.json names it and before
+    _switched returns, and it is acknowledged once. ccmorph-rc's .switch.lock keeps
+    its own publishes from replacing a standing handoff."""
+    import json
+    addon, bridge = _proxy_addon(monkeypatch, tmp_path, 500, "start-500")
+    hand = bridge / "switch-oli.json"
+    def payload(upstream, id_):
+        return json.dumps({"upstream": upstream, "key": "k", "tiers": {}, "id": id_,
+                           "edge": 500, "edge_started": "start-500"})
+    hand.write_text(payload("old", "h1") if first == "valid" else "not json")
+    pending = bridge / "newer"
+    pending.write_text(payload("new", "h2"))           # the next publication, about to land
+    real = addon.os
+    at_move = []                                       # SWITCHED right after the move
+    class ReplacedBeforeTheRename:
+        def __getattr__(self, name):
+            return getattr(real, name)
+
+        def rename(self, src, dst, *args, **kw):
+            if os.fspath(src) == str(hand) and pending.exists():
+                real.replace(pending, hand)             # same edge, published mid-take
+            result = real.rename(src, dst, *args, **kw)
+            at_move.append(addon.SWITCHED.get("oli"))
+            return result
+    monkeypatch.setattr(addon, "os", ReplacedBeforeTheRename())
+    says = []                                          # each acknowledgement, and the record then
+    real_publish = addon._publish_held
+    def publish():
+        says.append((dict(addon.HELD), addon.SWITCHED.get("oli")))
+        real_publish()
+    monkeypatch.setattr(addon, "_publish_held", publish)
+    assert addon._switched("oli") == ("new", "k", {})   # the moved one is the one taken
+    # At the move the record is the publication the rename itself moved: the take's
+    # last look resolves inside the syscall, after any writer's replace.
+    assert at_move == [("new", "k", {})]
+    assert says == [({"oli": "h2"}, ("new", "k", {}))]  # recorded before the only word names it
+    assert addon.HELD["oli"] == "h2"
+    assert not hand.exists()
+    assert list(bridge.glob("switch-*")) == [] and not list(bridge.glob("taken.*"))
+    assert json.loads((bridge / "held.500.json").read_text())["profiles"] == {"oli": "h2"}
+
+
+@pytest.mark.parametrize("meanwhile", [
+    pytest.param("withdrawn", id="the-switch-withdrew-it"),
+    pytest.param("garbage", id="replaced-by-garbage"),
+])
+def test_a_take_that_moved_nothing_of_its_own_leaves_the_endpoint_untouched(
+        tmp_path, monkeypatch, meanwhile):
+    """#900 review: the record runs ahead of the rename, so a take whose rename then
+    finds the handoff withdrawn (FileNotFoundError), or moves garbage that replaced
+    it, must put the endpoint and the held word back as they were."""
+    import json
+    addon, bridge = _proxy_addon(monkeypatch, tmp_path, 500, "start-500")
+    hand = bridge / "switch-oli.json"
+    def payload(upstream, id_):
+        return json.dumps({"upstream": upstream, "key": "k", "tiers": {}, "id": id_,
+                           "edge": 500, "edge_started": "start-500"})
+    hand.write_text(payload("old", "h1"))
+    assert addon._switched("oli") == ("old", "k", {})            # the baseline
+    hand.write_text(payload("new", "h2"))
+    real = addon.os
+    class ChangedBeforeTheRename:
+        def __getattr__(self, name):
+            return getattr(real, name)
+
+        def rename(self, src, dst, *args, **kw):
+            if os.fspath(src) == str(hand):
+                if meanwhile == "withdrawn":
+                    real.unlink(hand)
+                else:
+                    hand.write_text("not json")
+            return real.rename(src, dst, *args, **kw)
+    monkeypatch.setattr(addon, "os", ChangedBeforeTheRename())
+    assert addon._switched("oli") == ("old", "k", {})
+    assert addon.SWITCHED["oli"] == ("old", "k", {}) and addon.HELD["oli"] == "h1"
+    assert list(bridge.glob("switch-*")) == [] and not list(bridge.glob("taken.*"))
+    assert json.loads((bridge / "held.500.json").read_text())["profiles"] == {"oli": "h1"}
+
+
+def test_another_edges_handoff_holding_no_endpoint_is_removed_after_one_look(tmp_path, monkeypatch):
+    """#900 review: a handoff tagged for another edge that carries no endpoint is no
+    publication any proxy can wait behind: one look removes it, nothing recorded.
+    One that does carry an endpoint is still never touched."""
+    import json
+    addon, bridge = _proxy_addon(monkeypatch, tmp_path, 500, "start-500")
+    hand = bridge / "switch-oli.json"
+    hand.write_text(json.dumps({"key": "k", "edge": 600, "edge_started": "start-600"}))
+    assert addon._switched("oli") is None
+    assert not hand.exists() and not list(bridge.glob("taken.*"))
+    assert addon.SWITCHED == {} and addon.HELD == {}
+    hand.write_text(json.dumps({"upstream": "u", "key": "k", "id": "h6",
+                                "edge": 600, "edge_started": "start-600"}))
+    assert addon._switched("oli") is None and hand.exists()      # theirs, untouched
+
+
+def test_a_held_record_that_cannot_be_written_never_cuts_the_take_short(tmp_path, monkeypatch):
+    """#900 review: an OSError writing held.<pid>.json must not escape _switched,
+    where it would end the take poller's thread; the endpoint taken stays held."""
+    import json
+    addon, bridge = _proxy_addon(monkeypatch, tmp_path, 500, "start-500")
+    hand = bridge / "switch-oli.json"
+    hand.write_text(json.dumps({"upstream": "u", "key": "k", "tiers": {}, "id": "h1",
+                                "edge": 500, "edge_started": "start-500"}))
+    def refused():
+        raise PermissionError("cannot publish held record")
+    monkeypatch.setattr(addon, "_publish_held", refused)
+    assert addon._switched("oli") == ("u", "k", {})
+    assert addon.HELD["oli"] == "h1"
+    assert not hand.exists() and not list(bridge.glob("taken.*"))
+
+
 def test_a_handoff_no_proxy_takes_is_removed_and_nothing_changes(tmp_path, monkeypatch):
     """A proxy started before the handoff poller never reads a handoff no request
     asks for: the switch removes its key file again and puts the word back."""
