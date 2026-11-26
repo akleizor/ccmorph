@@ -63,7 +63,7 @@ def requestheaders(flow, s) -> None:
     agent = req.headers.get(AGENT_HEADER)
     if pick := agent_target(_agents(s), agent):
         return _route(flow, s, pick["word"], " (agent)", pick["model"])
-    if agent and has_pending(_agents(s)):
+    if agent and has_pending(_agents(s), req.headers.get(SESSION_HEADER)):
         # Its prompt, in the body, may name a pick: decided in `request`.
         flow.metadata["rc_parked"] = (req.scheme, req.host, req.port)
         req.scheme, req.host, req.port = PARKED
@@ -126,7 +126,8 @@ def _claim(flow, s) -> None:
         payload = json.loads(req.content or b"null")
     except ValueError:
         payload = None
-    if pick := claim_agent(_agents(s), req.headers.get(AGENT_HEADER), payload, time.time()):
+    if pick := claim_agent(_agents(s), req.headers.get(AGENT_HEADER), payload, time.time(),
+                           req.headers.get(SESSION_HEADER)):
         return _route(flow, s, pick["word"], " (agent)", pick["model"])
     _route(flow, s)
 

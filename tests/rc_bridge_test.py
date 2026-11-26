@@ -2765,10 +2765,11 @@ def test_a_sessions_note_names_the_session_switch(tmp_path, monkeypatch):
 # prompt's key; the proxy binds the subagent whose first request carries that
 # prompt, and sends every request of that agent to the pick.
 
-def _pending(agents, prompt, word, model):
+def _pending(agents, prompt, word, model, session):
     from rc_route import prompt_key
-    (agents / "pending").mkdir(parents=True, exist_ok=True)
-    (agents / "pending" / f"{prompt_key(prompt)}.json").write_text(json.dumps({"word": word, "model": model}))
+    folder = agents / "pending" / session
+    folder.mkdir(parents=True, exist_ok=True)
+    (folder / f"{prompt_key(prompt)}.json").write_text(json.dumps({"word": word, "model": model}))
 
 
 def _first_request(prompt):
@@ -2786,33 +2787,81 @@ def test_the_pending_key_is_the_routers():
 def test_a_pick_binds_the_one_agent_whose_prompt_it_names(tmp_path):
     from rc_route import agent_target, claim_agent, has_pending
     agents = tmp_path / "agents"
-    _pending(agents, "Fix parse()", "kathy", "claude-sonnet-5-5")
-    assert has_pending(str(agents))
-    assert claim_agent(str(agents), "a1", _first_request("other work"), time.time()) is None
-    assert claim_agent(str(agents), "a1", _first_request("Fix parse()\n"), time.time()) == \
+    _pending(agents, "Fix parse()", "kathy", "claude-sonnet-5-5", "s1")
+    assert has_pending(str(agents), "s1")
+    assert claim_agent(str(agents), "a1", _first_request("other work"), time.time(), "s1") is None
+    assert claim_agent(str(agents), "a1", _first_request("Fix parse()\n"), time.time(), "s1") == \
         {"word": "kathy", "model": "claude-sonnet-5-5"}
-    assert not has_pending(str(agents))
+    assert not has_pending(str(agents), "s1")
     assert agent_target(str(agents), "a1")["word"] == "kathy"
-    # The pick was taken: a second agent with the same prompt is not bound to it.
-    assert claim_agent(str(agents), "a2", _first_request("Fix parse()"), time.time()) is None
+    # Same-session fan-out, identical prompt: the pick went to the first agent;
+    # the second finds none and falls through to the session's own route (#959).
+    assert claim_agent(str(agents), "a2", _first_request("Fix parse()"), time.time(), "s1") is None
     for bad in ("../a1", "a/1", "", None):
         assert agent_target(str(agents), bad) is None
+
+
+def test_two_sessions_picks_for_one_prompt_never_cross(tmp_path):
+    """#959 probe arm 1: the pick's name held no session, so session 2's pick
+    overwrote session 1's and session 1's agent bound to session 2's profile.
+    Each pick now names its session and a claim reads only its own folder."""
+    from rc_route import agent_target, claim_agent, has_pending
+    agents = tmp_path / "agents"
+    _pending(agents, "Review the diff before merge", "gw1", "m1", "s1")
+    _pending(agents, "Review the diff before merge", "gw2", "m2", "s2")
+    assert has_pending(str(agents), "s1") and has_pending(str(agents), "s2")
+    assert claim_agent(str(agents), "agent1a", _first_request("Review the diff before merge"),
+                       time.time(), "s1") == {"word": "gw1", "model": "m1"}
+    assert claim_agent(str(agents), "agent2a", _first_request("Review the diff before merge"),
+                       time.time(), "s2") == {"word": "gw2", "model": "m2"}
+    assert agent_target(str(agents), "agent1a")["word"] == "gw1"
+    assert agent_target(str(agents), "agent2a")["word"] == "gw2"
+
+
+def test_a_foreign_stale_pick_never_binds_a_later_agent(tmp_path):
+    """#959 probe arm 2: a routed call that died before its agent's first request
+    left its pick waiting; any later Agent call with the same prompt bound it,
+    even one the router never routed. A pick binds only an agent of the session
+    that left it, so a foreign later call falls through to its own session."""
+    from rc_route import claim_agent, has_pending
+    agents = tmp_path / "agents"
+    _pending(agents, "Review the diff before merge", "gw9", "m9", "s1")
+    assert has_pending(str(agents), "s1") and not has_pending(str(agents), "s2")
+    assert claim_agent(str(agents), "agentB", _first_request("Review the diff before merge"),
+                       time.time(), "s2") is None
+    # The foreign claim took nothing: the pick still waits for session 1's agent.
+    assert has_pending(str(agents), "s1")
+    assert claim_agent(str(agents), "agentA", _first_request("Review the diff before merge"),
+                       time.time(), "s1") == {"word": "gw9", "model": "m9"}
+
+
+@pytest.mark.parametrize("session", [None, "", "../s1", "a/b", " s1"])
+def test_a_claim_without_a_named_session_binds_nothing(tmp_path, session):
+    """A request that names no session cannot claim a pick: nothing ties it to one."""
+    from rc_route import claim_agent, has_pending
+    agents = tmp_path / "agents"
+    _pending(agents, "Fix parse()", "kathy", "m", "s1")
+    assert has_pending(str(agents), session) is False
+    assert claim_agent(str(agents), "a1", _first_request("Fix parse()"), time.time(), session) is None
+    assert has_pending(str(agents), "s1")
 
 
 def test_a_pick_nobody_claims_is_swept(tmp_path):
     from rc_route import PENDING_TTL, claim_agent, has_pending
     agents = tmp_path / "agents"
-    _pending(agents, "late", "kathy", "m")
+    _pending(agents, "late", "kathy", "m", "s1")
     old = time.time() - PENDING_TTL - 5
-    os.utime(next((agents / "pending").iterdir()), (old, old))
-    assert claim_agent(str(agents), "a1", _first_request("late"), time.time()) is None
-    assert not has_pending(str(agents))
+    os.utime(next((agents / "pending" / "s1").iterdir()), (old, old))
+    assert claim_agent(str(agents), "a1", _first_request("late"), time.time(), "s2") is None
+    assert not has_pending(str(agents), "s1")
 
 
-def _agent_flow(agent, body):
+def _agent_flow(agent, body, session=None):
     flow = _Flow()
     if agent:
         flow.request.headers["x-claude-code-agent-id"] = agent
+    if session:
+        flow.request.headers["x-claude-code-session-id"] = session
     flow.request.content = json.dumps(body).encode()
     return flow
 
@@ -2824,13 +2873,18 @@ def test_a_picked_subagent_is_parked_then_sent_to_its_pick(tmp_path, monkeypatch
     headers alone, and the main thread never waits on a pick."""
     import asyncio
     addon = _addon(monkeypatch, tmp_path, "account")
-    _pending(tmp_path / "agents", "Fix parse()", "route", "kimi-k3")
+    _pending(tmp_path / "agents", "Fix parse()", "route", "kimi-k3", "s1")
 
-    main = _agent_flow(None, _first_request("Fix parse()"))
+    main = _agent_flow(None, _first_request("Fix parse()"), "s1")
     addon.requestheaders(main)
     assert main.metadata.get(ACCOUNT_METADATA) is True               # the session's own word
 
-    flow = _agent_flow("a1", _first_request("Fix parse()"))
+    # Another session's agent with the same prompt is never parked on this pick.
+    foreign = _agent_flow("b1", _first_request("Fix parse()"), "s2")
+    addon.requestheaders(foreign)
+    assert foreign.metadata.get(ACCOUNT_METADATA) is True
+
+    flow = _agent_flow("a1", _first_request("Fix parse()"), "s1")
     addon.requestheaders(flow)
     assert (flow.request.scheme, flow.request.host, flow.request.port) == ("http", "127.0.0.1", 9)
     asyncio.run(addon.request(flow))
@@ -2839,11 +2893,17 @@ def test_a_picked_subagent_is_parked_then_sent_to_its_pick(tmp_path, monkeypatch
     assert flow.request.headers["x-api-key"] == "route-key"
     assert json.loads(flow.request.content)["model"] == "kimi-k3"
 
-    later = _agent_flow("a1", {"model": "claude-sonnet-5-5", "messages": [{"role": "user", "content": "go on"}]})
+    # Same-session fan-out, identical prompt: the first agent took the pick, so
+    # the second is not parked and falls through to the session's own route.
+    fanout = _agent_flow("a3", _first_request("Fix parse()"), "s1")
+    addon.requestheaders(fanout)
+    assert fanout.metadata.get(ACCOUNT_METADATA) is True               # no pick left: not parked
+
+    later = _agent_flow("a1", {"model": "claude-sonnet-5-5", "messages": [{"role": "user", "content": "go on"}]}, "s1")
     addon.requestheaders(later)
     assert later.metadata["rc_route"] is True and "rc_parked" not in later.metadata
 
-    other = _agent_flow("a2", _first_request("unrelated"))
+    other = _agent_flow("a2", _first_request("unrelated"), "s1")
     addon.requestheaders(other)
     assert other.metadata.get(ACCOUNT_METADATA) is True               # no pick waits: not parked
 

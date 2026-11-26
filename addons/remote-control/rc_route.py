@@ -265,10 +265,12 @@ def session_target(sessions: str | None, session: str | None) -> str | None:
 
 # A subagent's every request carries X-Claude-Code-Agent-Id; the main thread's never
 # does. The router's PreToolUse hook picks a profile for an Agent call and leaves the
-# pick in <agents>/pending/<prompt_key(prompt)>.json ({"word", "model"}): the Agent
-# tool takes only Claude's own aliases, so the pick cannot ride in the call. The
-# agent's first request carries its prompt as a text block of its first message;
-# claim_agent matches it and moves the pick to <agents>/<agent id>.json, which every
+# pick in <agents>/pending/<session id>/<prompt_key(prompt)>.json ({"word", "model"}):
+# the Agent tool takes only Claude's own aliases, so the pick cannot ride in the call.
+# The folder names the session that left the pick, so two sessions sending one prompt
+# leave two picks and neither can take the other's. The agent's first request carries
+# its prompt as a text block of its first message; claim_agent matches it at the same
+# X-Claude-Code-Session-Id and moves the pick to <agents>/<agent id>.json, which every
 # later request of that agent reads (agent_target). The router removes it on SubagentStop.
 AGENT_HEADER = "x-claude-code-agent-id"
 AGENT_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,127}")
@@ -279,6 +281,16 @@ BOUND_TTL = 7 * 86400      # a binding whose agent never stopped is swept after 
 def prompt_key(prompt: str) -> str:
     """The pending file name for an Agent prompt: sha256 of its stripped text."""
     return hashlib.sha256(prompt.strip().encode()).hexdigest()
+
+
+def pending_dir(agents: str | None, session: str | None) -> str | None:
+    """The one folder `session`'s unanswered picks wait in; None outside a named
+    session. A pick names the session that left it (#959): two sessions sending one
+    prompt leave two picks, a claim reads only its own session's folder, and a pick
+    left by another session can never bind this one's agent."""
+    if not agents or not session or not SESSION_ID.fullmatch(session):
+        return None
+    return f"{agents}/pending/{session}"
 
 
 def _pick(path: str) -> dict | None:
@@ -300,22 +312,28 @@ def agent_target(agents: str | None, agent: str | None) -> dict | None:
     return _pick(f"{agents}/{agent}.json")
 
 
-def has_pending(agents: str | None) -> bool:
-    """Whether any pick waits for its agent: only then is a new agent's body read."""
+def has_pending(agents: str | None, session: str | None) -> bool:
+    """Whether a pick waits for this session's agent: only then is a new agent's
+    body read. Another session's pick never parks this session's request."""
+    folder = pending_dir(agents, session)
     try:
-        return any(n.endswith(".json") for n in os.listdir(f"{agents}/pending")) if agents else False
+        return bool(folder) and any(n.endswith(".json") for n in os.listdir(folder))
     except OSError:
         return False
 
 
-def claim_agent(agents: str | None, agent: str | None, payload: object, now: float) -> dict | None:
-    """Bind `agent` to the pick its prompt names, from the first message of its request
-    body; None when no pending pick matches. A rename takes the pick, so one pick binds
-    one agent. Stale picks and bindings are swept here."""
-    if not agents or not agent or not AGENT_ID.fullmatch(agent) or not isinstance(payload, dict):
+def claim_agent(agents: str | None, agent: str | None, payload: object, now: float,
+                session: str | None) -> dict | None:
+    """Bind `agent` to the pick its prompt names in ITS session's pending folder,
+    from the first message of its request body; None when no pending pick matches.
+    A rename takes the pick, so one pick binds one agent. Same-session fan-out with
+    one prompt: the first agent takes the pick and the others find none, falling
+    through to the session's own route -- under-routing, never a foreign pick.
+    Stale picks and bindings are swept here."""
+    folder = pending_dir(agents, session)
+    if not folder or not agent or not AGENT_ID.fullmatch(agent) or not isinstance(payload, dict):
         return None
-    pending = f"{agents}/pending"
-    _sweep(pending, now - PENDING_TTL)
+    _sweep_pending(f"{agents}/pending", now - PENDING_TTL)
     _sweep(agents, now - BOUND_TTL)
     messages = payload.get("messages")
     first = messages[0] if isinstance(messages, list) and messages else None
@@ -327,11 +345,28 @@ def claim_agent(agents: str | None, agent: str | None, payload: object, now: flo
             continue
         bound = f"{agents}/{agent}.json"
         try:
-            os.rename(f"{pending}/{prompt_key(text)}.json", bound)
+            os.rename(f"{folder}/{prompt_key(text)}.json", bound)
         except OSError:
             continue
         return _pick(bound)
     return None
+
+
+def _sweep_pending(pending: str, before: float) -> None:
+    """Sweep unanswered picks in every session's folder; a folder left empty goes too."""
+    try:
+        entries = list(os.scandir(pending))
+    except OSError:
+        return
+    for entry in entries:
+        try:
+            if entry.is_dir(follow_symlinks=False):
+                _sweep(entry.path, before)
+                os.rmdir(entry.path)
+            elif entry.name.endswith(".json") and entry.stat(follow_symlinks=False).st_mtime < before:
+                os.unlink(entry.path)          # a pick from before the session folders existed
+        except OSError:
+            pass
 
 
 def _sweep(folder: str, before: float) -> None:

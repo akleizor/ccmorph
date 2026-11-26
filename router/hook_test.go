@@ -132,7 +132,7 @@ func quotaSnapshot(t *testing.T, used map[string]float64) {
 	}
 }
 
-const agentCall = `{"tool_name":"Agent","tool_use_id":"tu1","tool_input":{"prompt":"Fix the bug in parse()","description":"fix"}}`
+const agentCall = `{"session_id":"s1","tool_name":"Agent","tool_use_id":"tu1","tool_input":{"prompt":"Fix the bug in parse()","description":"fix"}}`
 
 func TestPreToolUseRunsASameProfilePickNativelyAndAnotherProfilesPickFallsBackToTheSessionsOwn(t *testing.T) {
 	hookEnv(t, true)
@@ -449,7 +449,7 @@ func TestPreToolUseInAnEdgeSessionRunsTheRoutesPickThroughTheEdge(t *testing.T) 
 	if !strings.Contains(out.String(), "→ gate · kimi-k3") || !strings.Contains(out.String(), "through the edge") {
 		t.Fatalf("the route's pick runs through the edge: %q", out.String())
 	}
-	b, err := os.ReadFile(filepath.Join(root, "profiles", ".rc-bridge", "agents", "pending", promptKey("Fix the bug in parse()")+".json"))
+	b, err := os.ReadFile(filepath.Join(root, "profiles", ".rc-bridge", "agents", "pending", "s1", promptKey("Fix the bug in parse()")+".json"))
 	if err != nil || string(b) != `{"model":"kimi-k3","word":"route"}` {
 		t.Fatalf("the pick names the route word and its model: %s %v", b, err)
 	}
@@ -501,7 +501,7 @@ func TestPreToolUseHandsAnotherProfilesPickToTheEdgeProxy(t *testing.T) {
 	if !slices.Equal(held, []string{"there@here"}) {
 		t.Fatalf("the proxy is asked to hold the pick's profile for the account: %v", held)
 	}
-	pending := filepath.Join(root, "profiles", ".rc-bridge", "agents", "pending", promptKey(" Fix the bug in parse()\n")+".json")
+	pending := filepath.Join(root, "profiles", ".rc-bridge", "agents", "pending", "s1", promptKey(" Fix the bug in parse()\n")+".json")
 	var pick map[string]string
 	if b, err := os.ReadFile(pending); err != nil || json.Unmarshal(b, &pick) != nil || pick["word"] != "there" || pick["model"] == "" {
 		t.Fatalf("the pick waits for its agent under the prompt's key: %v %v", pick, err)
@@ -567,5 +567,33 @@ func TestPreToolUseHandsAnotherProfilesPickToTheAgentProxy(t *testing.T) {
 func TestPromptKeyMatchesTheProxys(t *testing.T) {
 	if got := promptKey("  say hi\n"); got != "53eae7058490affdf5ca03d9cc9f08b34b7f408f21f6f8a5e397068709243ede" {
 		t.Fatal(got)
+	}
+}
+
+// #959: the pending file names the session that left it, so two edge sessions
+// sending one prompt leave two picks instead of one overwriting the other. A
+// pick with no valid session to name is never left at all.
+func TestTheEdgePickNamesItsSession(t *testing.T) {
+	root := hookEnv(t, true)
+	prompt := " Fix the bug in parse()\n"
+	key := promptKey(prompt)
+	want := map[string]string{"s1": "m1", "s2": "m2"}
+	for session, model := range want {
+		if err := leavePick(session, prompt, "there", model); err != nil {
+			t.Fatalf("leave the pick for %s: %v", session, err)
+		}
+	}
+	for session, model := range want {
+		path := filepath.Join(root, "profiles", ".rc-bridge", "agents", "pending", session, key+".json")
+		var pick map[string]string
+		if b, err := os.ReadFile(path); err != nil || json.Unmarshal(b, &pick) != nil ||
+			pick["word"] != "there" || pick["model"] != model {
+			t.Fatalf("pick for %s waits in its session's folder: %v %v", session, pick, err)
+		}
+	}
+	for _, session := range []string{"", "../s1", "a/b", "s 1"} {
+		if err := leavePick(session, prompt, "there", "m"); err == nil {
+			t.Fatalf("a pick with session %q must not be left: no claim could match it", session)
+		}
 	}
 }

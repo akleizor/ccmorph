@@ -16,7 +16,8 @@ import (
 // writes {word, model} to <dir>/pending/<sha256 of the agent's prompt>.json;
 // the proxy binds it to the agent whose first request carries that prompt by
 // renaming it to <dir>/<agent id>.json; SubagentStop removes the binding. The
-// Remote Control proxy (rc_route.claim_agent) keeps the same protocol.
+// Remote Control proxy (rc_route.claim_agent) keeps the same pick shape and
+// prompt key in one pending folder per session.
 
 // AgentHeader names the subagent a request comes from.
 const AgentHeader = "x-claude-code-agent-id"

@@ -3,10 +3,12 @@ package router
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"github.com/akleizor/ccmorph/agentproxy"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 
@@ -83,10 +85,33 @@ func promptKey(prompt string) string { return agentproxy.PromptKey(prompt) }
 
 func edgeAgents() string { return filepath.Join(rcBridge(), "agents") }
 
-// leavePick leaves the pick for the agent whose prompt this is, where the proxy
-// claims it on that agent's first request.
-func leavePick(prompt, word, model string) error {
-	return agentproxy.LeavePick(edgeAgents(), prompt, agentproxy.Pick{Word: word, Model: model})
+// sessionID is the shape a PreToolUse event's session_id and the request header
+// X-Claude-Code-Session-Id share: rc_route.SESSION_ID keeps the same rule. A pick's
+// folder is this value, so only a value that is one file-name part can name one.
+var sessionID = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$`)
+
+// pickDir is where session's unanswered picks wait. The session is part of the
+// name (#959): two sessions that send one prompt leave two picks, and the proxy
+// binds an agent only to a pick its own session left.
+func pickDir(session string) (string, bool) {
+	if !sessionID.MatchString(session) {
+		return "", false
+	}
+	return filepath.Join(edgeAgents(), "pending", session), true
+}
+
+// leavePick leaves the pick for the agent whose prompt this is, in its session's
+// folder, where the proxy claims it on that agent's first request.
+func leavePick(session, prompt, word, model string) error {
+	dir, ok := pickDir(session)
+	if !ok {
+		return errors.New("the hook event names no session for the pick")
+	}
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return err
+	}
+	b, _ := json.Marshal(map[string]string{"word": word, "model": model})
+	return paths.AtomicWrite(paths.WriteIn{Path: filepath.Join(dir, promptKey(prompt)+".json"), Temp: ".pick.*.tmp", Data: b, NoChmod: true})
 }
 
 // dropAgent removes a stopped agent's binding (rc_route.agent_target).
