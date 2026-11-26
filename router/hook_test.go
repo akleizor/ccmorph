@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/akleizor/ccmorph/agentproxy"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -100,6 +101,7 @@ func hookEnv(t *testing.T, enabled bool) string {
 	t.Setenv("CCMORPH_EDGE_ROUTE_ENV", "") // the suite may itself run inside an edge session
 	t.Setenv("HTTPS_PROXY", "")
 	t.Setenv("https_proxy", "")
+	t.Setenv(agentproxy.DirEnv, "") // or inside a session behind the agent proxy
 	for _, a := range []string{"OPUS", "SONNET", "HAIKU"} {
 		t.Setenv(util.TierEnvKey(a), "")
 	}
@@ -522,6 +524,41 @@ func TestPreToolUseHandsAnotherProfilesPickToTheEdgeProxy(t *testing.T) {
 	SubagentStop(strings.NewReader(`{"agent_type":"general-purpose","agent_id":"a1b2","last_assistant_message":"done"}`), io.Discard)
 	if _, err := os.Stat(bound); !os.IsNotExist(err) {
 		t.Fatalf("a stopped agent's binding is removed: %v", err)
+	}
+}
+
+func TestPreToolUseHandsAnotherProfilesPickToTheAgentProxy(t *testing.T) {
+	root := hookEnv(t, true)
+	dir := filepath.Join(t.TempDir(), "agents")
+	t.Setenv(agentproxy.DirEnv, dir)
+	quotaSnapshot(t, map[string]float64{"here": 0.9, "there": 0.1})
+	if err := os.WriteFile(filepath.Join(root, "there.conf"), []byte("type=token\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	var out bytes.Buffer
+	PreToolUse(strings.NewReader(agentCall), &out)
+	if !strings.Contains(out.String(), "→ there · ") || !strings.Contains(out.String(), "through the agent proxy") ||
+		strings.Contains(out.String(), `"model":`) {
+		t.Fatalf("the pick goes through the agent proxy with no alias: %s", out.String())
+	}
+	if p, ok := agentproxy.Claim(dir, "a1", []byte(`{"messages":[{"content":"Fix the bug in parse()"}]}`), time.Now()); !ok || p.Word != "there" || p.Model == "" {
+		t.Fatalf("the proxy claims the pick from the agent's prompt: %+v %v", p, ok)
+	}
+	SubagentStop(strings.NewReader(`{"agent_type":"general-purpose","agent_id":"a1","last_assistant_message":"done"}`), io.Discard)
+	if _, ok := agentproxy.Bound(dir, "a1"); ok {
+		t.Fatal("a stopped agent's binding is removed")
+	}
+
+	// A sign-in the proxy cannot carry (another subscription account) keeps the
+	// session's own alias.
+	if err := os.WriteFile(filepath.Join(root, "there.conf"), []byte("type=sub\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	out.Reset()
+	PreToolUse(strings.NewReader(agentCall), &out)
+	if !strings.Contains(out.String(), `"model":"sonnet"`) || strings.Contains(out.String(), "agent proxy") {
+		t.Fatalf("an unservable profile falls back to the session's alias: %s", out.String())
 	}
 }
 

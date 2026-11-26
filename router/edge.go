@@ -2,15 +2,15 @@ package router
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
+	"github.com/akleizor/ccmorph/agentproxy"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
 
+	"github.com/akleizor/ccmorph/ctxwindow"
 	"github.com/akleizor/ccmorph/util"
 	"github.com/akleizor/ccmorph/util/paths"
 )
@@ -79,39 +79,29 @@ func edgeWord(profile string, deadline time.Time) (string, bool) {
 }
 
 // promptKey names a pending pick: rc_route.prompt_key.
-func promptKey(prompt string) string {
-	sum := sha256.Sum256([]byte(strings.TrimSpace(prompt)))
-	return hex.EncodeToString(sum[:])
-}
+func promptKey(prompt string) string { return agentproxy.PromptKey(prompt) }
+
+func edgeAgents() string { return filepath.Join(rcBridge(), "agents") }
 
 // leavePick leaves the pick for the agent whose prompt this is, where the proxy
 // claims it on that agent's first request.
 func leavePick(prompt, word, model string) error {
-	dir := filepath.Join(rcBridge(), "agents", "pending")
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return err
-	}
-	b, _ := json.Marshal(map[string]string{"word": word, "model": model})
-	tmp, err := os.CreateTemp(dir, ".pick.*.tmp")
-	if err != nil {
-		return err
-	}
-	_, err = tmp.Write(b)
-	if cerr := tmp.Close(); err == nil {
-		err = cerr
-	}
-	if err == nil {
-		err = os.Rename(tmp.Name(), filepath.Join(dir, promptKey(prompt)+".json"))
-	}
-	if err != nil {
-		os.Remove(tmp.Name())
-	}
-	return err
+	return agentproxy.LeavePick(edgeAgents(), prompt, agentproxy.Pick{Word: word, Model: model})
 }
 
 // dropAgent removes a stopped agent's binding (rc_route.agent_target).
-func dropAgent(agent string) {
-	if agent != "" && !strings.ContainsAny(agent, `/\.`) {
-		os.Remove(filepath.Join(rcBridge(), "agents", agent+".json"))
+func dropAgent(agent string) { agentproxy.DropAgent(edgeAgents(), agent) }
+
+// proxyServes is whether the launcher's agent proxy can carry profile's sign-in:
+// a subscription token or an API key (cli.agentProxyServes keeps the same list).
+func proxyServes(profile string) bool {
+	path, err := ctxwindow.ProfilePath(profile)
+	if err != nil {
+		return false
 	}
+	_, f, err := ctxwindow.ReadConf(path)
+	if err != nil {
+		return false
+	}
+	return f["type"] == "token" || f["type"] == "apikey" || f["type"] == "proxy"
 }

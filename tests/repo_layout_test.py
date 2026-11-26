@@ -21,7 +21,7 @@ LAUNCH_SURFACE = {
     "REVIEW.md",
     "install.sh", "pytest.ini", "pyproject.toml", "go.mod", "go.sum",
     "adapter", "addons", "ordjson", "profile", "cli", "ctxwindow", "settingscompose", "assets", "bin", "cmd", "docs", "lib", "libexec", "scripts",
-    "netroute", "quirks", "quota", "router", "shim", "share", "tests", "util",
+    "agentproxy", "netroute", "quirks", "quota", "router", "shim", "share", "tests", "util",
 }
 
 

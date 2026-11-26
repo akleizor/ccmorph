@@ -55,6 +55,7 @@ type launcher struct {
 	providerPort            string
 	providerKey             string
 	usageHook               string
+	agents                  *agentHop // the agent proxy, once a session needed it
 
 	mu        sync.Mutex
 	child     *os.Process
@@ -266,6 +267,8 @@ func (l *launcher) signals(ch chan os.Signal) {
 func (l *launcher) stopHelpers() {
 	l.providerStop()
 	l.adapterStop()
+	l.agents.stop()
+	l.agents = nil
 }
 
 // core runs a ccmorph-core verb as the zsh did: stdout with trailing newlines

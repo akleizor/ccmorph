@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"encoding/json"
 	"fmt"
+	"github.com/akleizor/ccmorph/agentproxy"
 	"io"
 	"os"
 	"path/filepath"
@@ -146,6 +147,13 @@ func PreToolUse(in io.Reader, w io.Writer) {
 			route("", Row{"tool_use_id": ev.ToolUseID, "native": true, "edge": word}, " (through the edge)")
 			return
 		}
+		// Any other ccmorph session runs behind the launcher's agent proxy,
+		// which serves the profiles whose sign-in it can carry.
+		if dir := os.Getenv(agentproxy.DirEnv); dir != "" && proxyServes(d.Pick.Profile) &&
+			agentproxy.LeavePick(dir, str("prompt"), agentproxy.Pick{Word: d.Pick.Profile, Model: d.Pick.Model}) == nil {
+			route("", Row{"tool_use_id": ev.ToolUseID, "native": true, "proxy": d.Pick.Profile}, " (through the agent proxy)")
+			return
+		}
 	}
 	if alias == "" && session != "" { // decide again among what this session runs natively
 		d2, err := Decide(c, Request{Prompt: str("prompt"), Effort: str("effort"), Kind: d.Task.Kind, Tier: d.Task.Tier, Only: []string{session},
@@ -248,6 +256,7 @@ func SubagentStop(in io.Reader, w io.Writer) {
 		hard = "error"
 	}
 	dropAgent(ev.AgentID)
+	agentproxy.DropAgent(os.Getenv(agentproxy.DirEnv), ev.AgentID)
 	if hint := complete(c, id, text, hard); hint != "" {
 		hookOut(w, map[string]any{"systemMessage": hint})
 	}

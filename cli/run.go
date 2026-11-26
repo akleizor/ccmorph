@@ -608,6 +608,9 @@ func (l *launcher) runLaunch(p *launchPlan) (*relayNext, int) {
 				setLayers = append(setLayers, k)
 			}
 		}
+		if opensSession {
+			penv = l.agentProxyEnv(penv)
+		}
 		env := append(append(penv, "CCMORPH_SET_ENV="+strings.Join(setLayers, " ")), common...)
 		// The last line before claude starts: the person's first-run answers are
 		// carried into this profile (#258), and on a hop that crossed profiles,
