@@ -744,3 +744,78 @@ func TestReachListingCountsAListingCutShortAsAnAnswer(t *testing.T) {
 		t.Fatalf("got %+v, want nothing to say about a gateway that was answering", r)
 	}
 }
+
+// GH-947: a probe the scheduler holds across its stop must read the exit the
+// child has already given, not kill nothing and call it silence. On a loaded
+// machine the stop fires while the probe process was not running, the child has
+// long since exited with its answer, and the old verdict turned a healthy route
+// into the gateway-down class (75). The stub here exits 1 -- a failure the probe
+// steps aside for -- only after the test opens its FIFO read end, and a
+// grandchild holds the probe's pipes open so cmd.Wait cannot deliver that exit
+// before the stop: the select sees the stop first, exactly as a descheduled
+// probe does. The exit it then reads must not become "no answer".
+func TestReachListingKeepsAnAnswerThatArrivedBeforeTheStop(t *testing.T) {
+	dir := t.TempDir()
+	fifo := filepath.Join(dir, "exit")
+	if err := syscall.Mkfifo(fifo, 0o600); err != nil {
+		t.Skipf("mkfifo: %v", err)
+	}
+	// Opening the read end blocks until the test's stop runs; the shell then
+	// forks a holder of the probe's stdout and stderr and exits, closing its
+	// own read end. sleep outlives the one-second WaitDelay so the exit the
+	// probe eventually reads is ErrWaitDelay, never before the stop.
+	reachCurlScript(t, `
+		exec 3<"$REACH_EXIT_FIFO"
+		( exec 3<&-; exec sleep 2 ) &
+		exit 1
+	`)
+	t.Setenv("REACH_EXIT_FIFO", fifo)
+	saved := reachStop
+	t.Cleanup(func() { reachStop = saved })
+	const giveUp = 20 * time.Second
+	// A write end opened without blocking fails with ENXIO exactly while no
+	// reader holds the FIFO: the stub's own read end tells whether it is gone.
+	reader := func() bool {
+		f, err := os.OpenFile(fifo, os.O_WRONLY|syscall.O_NONBLOCK, 0)
+		if err != nil {
+			if !errors.Is(err, syscall.ENXIO) {
+				t.Fatalf("open %s: %v", fifo, err)
+			}
+			return false
+		}
+		f.Close()
+		return true
+	}
+	waitFor := func(want bool, doing string) {
+		t.Helper()
+		for deadline := time.Now().Add(giveUp); ; {
+			if reader() == want {
+				return
+			}
+			if time.Now().After(deadline) {
+				t.Fatalf("the stub never %s", doing)
+			}
+			time.Sleep(time.Millisecond)
+		}
+	}
+	reachStop = func(time.Duration) (<-chan time.Time, func() bool) {
+		// The stub is waiting on the FIFO's read end: opening its write end is
+		// the go-ahead, and the read end closing is the stub's own exit.
+		waitFor(true, "opened its read end")
+		f, err := os.OpenFile(fifo, os.O_WRONLY|syscall.O_NONBLOCK, 0)
+		if err != nil {
+			t.Fatalf("open %s: %v", fifo, err)
+		}
+		if _, err := f.Write([]byte("go")); err != nil {
+			t.Fatalf("write %s: %v", fifo, err)
+		}
+		f.Close()
+		waitFor(false, "exited")
+		fire := make(chan time.Time, 1)
+		fire <- time.Now()
+		return fire, func() bool { return true }
+	}
+	if r := ReachListing("http://127.0.0.1:9", "k", "", nil, nil); r != (Reach{}) {
+		t.Fatalf("got %+v, want nothing to say about a command that answered before the stop", r)
+	}
+}
