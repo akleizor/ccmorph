@@ -1,5 +1,6 @@
 import getpass
 import http.server
+import os
 import socketserver
 
 import pytest
@@ -8,6 +9,11 @@ import pytest
 # of 5 makes macOS reset the overflow, which the adapter reads as a transport
 # error and the tests saw as a randomly missing model.
 socketserver.TCPServer.request_queue_size = 128
+
+# #892: the ceiling probes in timeout_verdict_test.py sleep past the 60 s
+# ceiling by design, so the suite never even collects them — they run only
+# when CCMORPH_TIMEOUT_REPRO names them.
+collect_ignore = [] if os.environ.get("CCMORPH_TIMEOUT_REPRO") else ["timeout_verdict_test.py"]
 
 
 # HTTPServer.server_bind resolves its own address with socket.getfqdn, a reverse
@@ -44,3 +50,25 @@ def pytest_cmdline_main(config):
             and config.option.numprocesses is None):
         config.option.numprocesses = "auto"
         config.option.dist = "worksteal"
+
+
+@pytest.hookimpl(trylast=True)  # after pytest-timeout's own pytest_configure
+def pytest_configure(config):
+    # #892: pytest-timeout's signal method calls pytest.fail() wherever the
+    # main thread happens to be. A test finishing just under the ceiling gets
+    # it raised inside report construction (`TestReport.from_item_and_call`,
+    # outside the runner's exception protection); the failure then escapes the
+    # worker's protocol loop instead of becoming a FAILED line, the worker
+    # never reports `runtest_protocol_complete`, and the controller's
+    # bookkeeping asserts (`worker_workerfinished` → `assert not crashitem`):
+    # the whole xdist session dies with counts and a traceback but no named
+    # failure. On a worker the thread method is the safe verdict — its
+    # os._exit surfaces as one FAILED naming the crashed test, and xdist
+    # replaces the worker and finishes the session. The controller and serial
+    # runs (CI's no-xdist install, `-n0`) keep signal: there the handler lands
+    # as an ordinary per-test FAILED and there is no dsession to collapse.
+    # Workers rebuild their config from the command line, so the choice has
+    # to be made inside each worker, on the attribute `_get_item_settings`
+    # reads (pytest-timeout exposes no public per-run method hook).
+    if hasattr(config, "workerinput"):
+        config._env_timeout_method = "thread"
