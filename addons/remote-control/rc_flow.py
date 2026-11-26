@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import ipaddress
 import json
 import subprocess
 import tempfile
@@ -55,8 +56,11 @@ def requestheaders(flow, s) -> None:
         # model) is read back to the account's own model for that alias.
         flow.metadata[ACCOUNT_METADATA] = True
         flow.metadata["rc_account_tiers"] = _account_tiers(s)
+        flow.metadata["rc_word"] = "account"      # the word, kept apart from what serves it
+        flow.metadata["rc_via"] = "account"
         s.log(f"account   {req.method} {route}{via}")
         return
+    flow.metadata["rc_word"] = target             # the word Stark set, before any fallback
     upstream, key, tiers = s.upstream, s.key, s.tiers
     if target != "route":
         if alt := s.switched(target):
@@ -77,6 +81,7 @@ def requestheaders(flow, s) -> None:
         req.headers[k] = v
     req.scheme, req.host, req.port = scheme, host, port
     flow.metadata["rc_route"] = True
+    flow.metadata["rc_via"] = target              # what routed it: the route after a fallback
     s.log(f"route     {req.method} {route}" + ("" if target == "route" else f" via {target}") + via)
 
 
@@ -125,12 +130,61 @@ async def request(flow, s) -> None:
             s.log(f"events    {len(content)} -> {len(slim)} bytes")
 
 
+def _answered(flow) -> tuple[str, tuple[str, int] | None]:
+    """Where the reply came from: the connection that answered, named as served-by,
+    with its (host, port); None for the address when the hook cannot see the
+    connection (a replay, an older flow), and the request's destination stands in."""
+    addr = getattr(getattr(flow, "server_conn", None), "address", None)
+    try:
+        host, port = str(addr[0]), int(addr[1])
+    except (TypeError, IndexError, KeyError, ValueError):
+        return f"{flow.request.host}:{flow.request.port}", None
+    return f"{host}:{port}", (host, port)
+
+
+def _reached(host: str, port: int, answered: tuple[str, int] | None) -> bool:
+    """Whether the answering connection is the endpoint the request was sent to. A
+    hostname is never compared: the connection names the resolver's address, so only
+    a literal (a loopback adapter, an IP upstream) is matched exactly. An unreadable
+    connection cannot prove a mismatch and leaves the destination as the evidence."""
+    if answered is None:
+        return True
+    if int(port) != answered[1]:
+        return False
+    try:
+        ipaddress.ip_address(host)
+    except ValueError:
+        return True
+    return host == answered[0]
+
+
 def responseheaders(flow, s) -> None:
     flow.response.stream = True          # SSE and bridge long-polls pass through live
-    if not flow.metadata.get("rc_route"):
+    asked = flow.metadata.get("rc_word")
+    if asked is None:                    # never an inference turn: nothing to answer for
         return
-    # Anthropic stamps its organization on every response; a routed call must not
-    # carry it. This is the proof the call left first-party, not an assumption.
+    # Anthropic stamps its organization on every response; that is the proof of which
+    # upstream answered, matched against the word the turn went out under (#920:
+    # requested-vs-served, per session turn — the profile Stark set must be the one
+    # that replies, and a turn answered by anything else says so, never a quiet
+    # success). A routed call must not carry it; an account call must.
     first_party = "anthropic-organization-id" in flow.response.headers
-    served = "ANTHROPIC (not routed!)" if first_party else f"{flow.request.host}:{flow.request.port}"
-    s.log(f"route     <- {flow.response.status_code} {flow.request.path.split('?', 1)[0]} served-by={served}")
+    account = bool(flow.metadata.get(ACCOUNT_METADATA))
+    served, answered = _answered(flow)
+    # The word the pick set is `asked`; `via` is what routed the turn. A profile the
+    # proxy holds no endpoint for falls back to the edge's route (issue #595), and
+    # the reply is then the route's, not the pick's: a miss, with the fallback's own
+    # warning above it. A routed reply is the pick's only when it left for that
+    # endpoint, came back from that same endpoint, and carries no Anthropic signature.
+    via = flow.metadata.get("rc_via", asked)
+    if account:
+        extra, ok = "", first_party
+        where = "ANTHROPIC" if first_party else f"{served} (no Anthropic signature)"
+    else:
+        ok = via == asked and not first_party and _reached(
+            str(flow.request.host), flow.request.port, answered)
+        extra = f" via={via}" if via != asked else ""
+        where = "ANTHROPIC (not routed!)" if first_party else served
+    s.log(("miss      " if not ok else "account   " if account else "route     ")
+          + f"<- {flow.response.status_code} {flow.request.path.split('?', 1)[0]} "
+            f"asked={asked}{extra} served-by={where}")
