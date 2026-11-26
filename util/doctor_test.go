@@ -24,7 +24,7 @@ func TestDoctorEmptySubscriptionFromKeychain(t *testing.T) {
 	readSigninKeychain = func(string, string) ([]byte, error) {
 		return []byte(`{"claudeAiOauth":{"accessToken":"","refreshToken":""}}`), nil
 	}
-	rows, failed, _ := DoctorRoute("test", "sub", "", "", "", nil, "", t.TempDir(), false)
+	rows, failed, _, _ := DoctorRoute("test", "sub", "", "", "", nil, "", t.TempDir(), false)
 	if !failed || len(rows) != 1 || rows[0].Kind != "FAIL" || rows[0].Msg != "credentials: signed out of Claude; sign in again: ccmorph login test" || rows[0].Fix != "sign in again: ccmorph login test" {
 		t.Fatalf("unexpected doctor result: failed=%v rows=%+v", failed, rows)
 	}
@@ -39,7 +39,7 @@ func TestDoctorRefreshOnlySubscriptionFromKeychain(t *testing.T) {
 	readSigninKeychain = func(string, string) ([]byte, error) {
 		return []byte(`{"claudeAiOauth":{"accessToken":"","refreshToken":"refresh"}}`), nil
 	}
-	rows, failed, _ := DoctorRoute("test", "sub", "", "", "", nil, "", t.TempDir(), false)
+	rows, failed, _, _ := DoctorRoute("test", "sub", "", "", "", nil, "", t.TempDir(), false)
 	if failed || len(rows) != 1 || rows[0].Kind != "WARN" || !strings.Contains(rows[0].Msg, "not checked") {
 		t.Fatalf("unexpected doctor result: failed=%v rows=%+v", failed, rows)
 	}
@@ -65,7 +65,7 @@ func TestDoctorReadsSubscriptionFromKeychain(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", dir)
-	rows, failed, _ := DoctorRoute("test", "sub", "", "", "", nil, "", home, false)
+	rows, failed, _, _ := DoctorRoute("test", "sub", "", "", "", nil, "", home, false)
 	if failed || len(rows) != 1 || rows[0].Kind != "OK" || !strings.Contains(rows[0].Msg, "accepted the stored sign-in") {
 		t.Fatalf("unexpected doctor result: failed=%v rows=%+v", failed, rows)
 	}
@@ -116,7 +116,7 @@ func TestDoctorRouteAdapterLine(t *testing.T) {
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			stepPATH(t, c.brew)
-			rows, failed, _ := DoctorRoute("doctor-route-verdict", "apikey",
+			rows, failed, _, _ := DoctorRoute("doctor-route-verdict", "apikey",
 				"https://example.test", "", "", func(string) TranslatorNeed { return c.need }, "", "", false)
 			var line *DoctorRow
 			for i := range rows {

@@ -69,5 +69,8 @@ effort=medium
 
 # ── 5. Machine-written — never edit ─────────────────────────────────────────
 # model_defaults=1         this profile owns its model defaults (written once)
+# model_source=claude-settings
+#                          the saved model came from ~/.claude/settings.json;
+#                          dropped when you save a model (set or config)
 # context_discovered={...} legacy inline limits; moved to profiles/<name>/models.json
 #                          on next use, never written here again

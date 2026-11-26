@@ -175,6 +175,18 @@ func (l *launcher) accountModel(name string) string {
 	return v
 }
 
+// modelSource is the conf's model_source marker; "" when none or unreadable.
+func (l *launcher) modelSource(name string) string {
+	v, rc := l.configStoreQ("get", name, "model_source")
+	if rc != 0 {
+		return ""
+	}
+	return v
+}
+
+// modelOrigin is where the profile's shown model came from, in every screen's words (#862).
+func (l *launcher) modelOrigin(name string) string { return util.ModelOrigin(l.modelSource(name)) }
+
 func providerLabel(p string) string { return profile.ProviderName(p) }
 
 func (l *launcher) accountsHint() {

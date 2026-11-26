@@ -461,6 +461,14 @@ func TestCanonicalConfGroupsKeysKeepsCommentsAndValues(t *testing.T) {
 	}
 }
 
+// GH-862: model_source travels with the machine-written keys, right after
+// model_defaults, with no blank line between them.
+func TestCanonicalConfKeepsTheModelSourceWithTheMachineKeysIssue862(t *testing.T) {
+	if got := CanonicalConf("model_source=claude-settings\nmodel=m\nmodel_defaults=1\n"); got != "model=m\n\nmodel_defaults=1\nmodel_source=claude-settings\n" {
+		t.Fatalf("got %q", got)
+	}
+}
+
 func TestARemovedRoleKeyIsNotLaidOutWithTheModelKeys(t *testing.T) {
 	if got := CanonicalConf("model=m\nrole=r\neffort=high\n"); got != "model=m\neffort=high\n\nrole=r\n" {
 		t.Fatalf("got %q", got)

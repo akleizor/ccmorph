@@ -954,6 +954,34 @@ func TestAModelMustBeNamedWhenTheGatewayOffersNoList(t *testing.T) { // issue #3
 	}
 }
 
+// GH-862: a launch with no saved model and no known protocol must name what is
+// missing in plain words and both commands, not internal terms.
+func TestAutoLaunchWithNoModelAndNoKnownProtocolNamesTheFixIssue862(t *testing.T) {
+	dir := t.TempDir()
+	os.MkdirAll(filepath.Join(dir, ".adapter-cache"), 0o755)
+	swap(t, &profileDirs, dir)
+	stubProfile(t, map[string]string{"ANTHROPIC_API_KEY": "k", "ANTHROPIC_BASE_URL": "https://gateway"})
+	swap(t, &classifyFn, func(_, _, _, _ string, _ bool) ([]Row, error) { return nil, nil })
+	swap(t, &frontDirectlyFn, func(_ *cliArgs, _, _, _ string, _ []Row, _ map[string]string, _ bool, _ map[string]any) int {
+		panic("nothing is served")
+	})
+	stdio := captureStdio(t)
+	var status int
+	exits(t, func() { status = Main([]string{"demo", "--auto"}) })
+	if status != 1 {
+		t.Fatalf("Main = %d, want 1", status)
+	}
+	out := stdio()
+	if !strings.Contains(out, "EXIT="+util.NoModelReason("demo")) {
+		t.Fatalf("the refusal must be util.NoModelReason, got: %s", out)
+	}
+	for _, never := range []string{"declared", "compatibility check"} {
+		if strings.Contains(out, never) {
+			t.Fatalf("the refusal still says %q: %s", never, out)
+		}
+	}
+}
+
 func TestARefusedListingNamesItsTrueCause(t *testing.T) { // issues #357, #374
 	// A rejected key is not an absent model list: the refusal must name the
 	// credential and its repair, never a model-setting step that cannot fix it —

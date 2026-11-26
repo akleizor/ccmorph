@@ -1422,6 +1422,39 @@ class PickerTTYTest(unittest.TestCase):
         self.assertEqual(rc, 0, out)
         self.assertEqual(self.field('keepme', 'model'), 'native-model')
 
+    def test_config_saves_a_typed_model_as_the_profiles_own_gh_862(self):
+        """GH-862: a model the person answers at config's model step is theirs,
+        even when it is the id ~/.claude/settings.json gave the profile: the
+        model_source marker goes, so list and inspect stop naming that file.
+        Keeping the model (the Keep row) leaves the marker."""
+        env = self.env(fzf=True)
+        for name in ('typed', 'kept'):
+            (self.state / f'{name}.conf').write_text(
+                'type=apikey\nbase_url=https://old.example\napi_key=test-key\n'
+                'model=opus\nmodel_source=claude-settings\nmodel_defaults=1\n')
+            (self.state / 'profiles' / name).mkdir(parents=True, exist_ok=True)
+
+        self.spec('Default model=@custom')
+        rc, out, missed = run_pty('ccmorph config typed', env, [
+            (b'Settings', b'\r'),
+            (b'Custom model ID (Enter keeps current):', b'opus\n'),
+            (b'Default effort', b'\r'),
+        ])
+        self.assertIsNone(missed, out)
+        self.assertEqual(rc, 0, out)
+        self.assertEqual(self.field('typed', 'model'), 'opus')
+        self.assertIsNone(self.field('typed', 'model_source'), (self.state / 'typed.conf').read_text())
+
+        self.spec('Default model=@keep')
+        rc, out, missed = run_pty('ccmorph config kept', env, [
+            (b'Settings', b'\r'),
+            (b'Default effort', b'\r'),
+        ])
+        self.assertIsNone(missed, out)
+        self.assertEqual(rc, 0, out)
+        self.assertEqual(self.field('kept', 'model'), 'opus')
+        self.assertEqual(self.field('kept', 'model_source'), 'claude-settings')
+
     def test_config_names_a_rejected_key_before_the_fallback_picker(self):
         env = self.env(fzf=True, curl='401')
         self.profile()

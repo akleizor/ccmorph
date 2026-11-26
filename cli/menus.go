@@ -60,6 +60,8 @@ func (l *launcher) describeProfiles(active string, types []string, accept func(m
 			d.detail = l.accountModel(n)
 			if d.detail == "" {
 				d.detail = "Browser login"
+			} else {
+				d.detail += ", " + l.modelOrigin(n) // #862
 			}
 		case "apikey":
 			d.detail = f["base_url"]
@@ -67,7 +69,7 @@ func (l *launcher) describeProfiles(active string, types []string, accept func(m
 				d.detail = "api.anthropic.com"
 			}
 			if m := l.accountModel(n); m != "" {
-				d.detail += " → " + m
+				d.detail += " → " + m + ", " + l.modelOrigin(n)
 			}
 		}
 		d.private = f["private"] == "1"
@@ -194,7 +196,13 @@ func (l *launcher) valueRows(slot, name string, preview ...string) (string, bool
 			}
 			rows, ok := util.GwModels(l.conf(name), true, listing)
 			if !ok {
-				l.err("'" + name + "' endpoint returned no usable model list")
+				// The exclusions, not the endpoint, are what removed every model;
+				// say so and name the list to shorten (#862).
+				if util.ExclusionsLeaveNone(l.conf(name), listing) {
+					l.err(util.ExclusionsRefusal(name, l.conf(name)))
+				} else {
+					l.err(util.NoUsableModel(name))
+				}
 				return "", false
 			}
 			return modelRows(rows), true
@@ -260,9 +268,13 @@ func (l *launcher) pickValue(slot, name string) (string, bool) {
 // the Keep row `set model -i` opens on, so Enter alone means the saved model
 // (#377). The custom-ID escape stays with the commands that can save one; a
 // profile with nothing saved opens the plain catalogue, titled so.
-func (l *launcher) pickLaunchModel(name, saved string) (string, bool) {
+// unserved, when set, is a saved model the gateway cannot serve: the heading names it.
+func (l *launcher) pickLaunchModel(name, saved, unserved string) (string, bool) {
 	heading := "Model — " + name
-	if saved == "" {
+	switch {
+	case unserved != "":
+		heading += " (" + unserved + " is not served here)"
+	case saved == "":
 		heading += " (none saved)"
 	}
 	return l.pickRows("model", name, saved, "labels", func(rows string) (string, string) {
@@ -345,26 +357,28 @@ func menuRows(slot, current, typ, base, rows string, keep, custom bool) []string
 // the catalogue without it, and a custom-ID escape for models. keep offers the
 // keep row even when nothing is set, as config can keep the unsaved state —
 // worded as what keeping it means at launch (#381).
-func (l *launcher) valueMenu(slot, name, current, typ, base, rows string, keep bool) (string, bool) {
+// kept is true when the answer keeps current — the Keep row, or Enter at the
+// custom-ID prompt — rather than naming a value (#862).
+func (l *launcher) valueMenu(slot, name, current, typ, base, rows string, keep bool) (value string, kept, ok bool) {
 	menu := menuRows(slot, current, typ, base, rows, keep, true)
 	choice, rc := chooseValue(slot, "Default "+slot+" — "+name, strings.Join(menu, "\n"), "labels")
 	if rc != 0 {
-		return "", false
+		return "", false, false
 	}
 	switch choice {
 	case "@keep":
-		return current, true
+		return current, true, true
 	case "@custom":
 		answer, rc := uiInput("Custom model ID (Enter keeps current): ", false)
 		if rc != 0 {
-			return "", false
+			return "", false, false
 		}
 		if answer == "" {
-			answer = current
+			return current, true, true
 		}
-		return answer, true
+		return answer, false, true
 	}
-	return choice, true
+	return choice, false, true
 }
 
 // pickModelDefault is the picker of `set <profile> model`: the same list, opened
@@ -377,7 +391,8 @@ func (l *launcher) pickModelDefault(name string) (string, bool) {
 	}
 	current := l.accountModel(name)
 	// A leave is answered by the picker's own Cancelled line (#280): no usage line here.
-	return l.valueMenu("model", name, current, f["type"], f["base_url"], l.defaultRows("model", name, f["type"]), current != "")
+	v, _, ok := l.valueMenu("model", name, current, f["type"], f["base_url"], l.defaultRows("model", name, f["type"]), current != "")
+	return v, ok
 }
 
 func say(msg string) { fmt.Fprintln(os.Stderr, msg) }
