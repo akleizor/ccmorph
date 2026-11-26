@@ -6,6 +6,8 @@ else lives under docs/ or .github/. The guard sits on the repo's own
 product/machine-local line (the .gitignore header): a name at the root that is
 not gitignored is product and must be in the list; one that is gitignored
 (`dist/` from `make release`, `rc-hosts`) is this machine's, not the surface.
+REVIEW.md is on the surface because the nightly ledger promoter reads
+`git show origin/main:REVIEW.md` — only the root path keeps the ledger alive.
 """
 import subprocess
 from pathlib import Path
@@ -16,6 +18,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 LAUNCH_SURFACE = {
     "AGENTS.md", "CHANGELOG.md", "INTENT.md", "LICENSE", "Makefile", "README.md",
+    "REVIEW.md",
     "install.sh", "pytest.ini", "pyproject.toml", "go.mod", "go.sum",
     "adapter", "addons", "ordjson", "profile", "cli", "ctxwindow", "settingscompose", "assets", "bin", "cmd", "docs", "lib", "libexec", "scripts",
     "netroute", "quirks", "quota", "router", "shim", "share", "tests", "util",
