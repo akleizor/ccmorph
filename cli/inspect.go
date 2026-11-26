@@ -65,9 +65,9 @@ func (l *launcher) inspect(args []string) int {
 		}
 		model = merged
 	}
-	from := "profile default"
-	if model == "" {
-		from = ""
+	from := ""
+	if model != "" {
+		from = l.modelOrigin(name) // #862: this profile's, or ~/.claude/settings.json's
 	}
 	if model != "" {
 		grid(10, "model", model+"  "+l.dim+from+l.reset)
@@ -92,6 +92,11 @@ func (l *launcher) inspect(args []string) int {
 		for _, r := range util.EffortRows(ms) {
 			fmt.Printf("  effort:%s %s  (profile override)\n", r.Model, r.Effort)
 		}
+	}
+
+	// The picker's exclusions, read where a session that misbehaves is diagnosed (#862).
+	if ex := f["excluded_models"]; ex != "" {
+		grid(10, "excluded", strings.ReplaceAll(ex, ",", ", ")+"  "+l.dim+"excluded_models — left out of every model picker"+l.reset)
 	}
 
 	// Window only when it is a probed fact about a routed model: an unprobed

@@ -90,6 +90,11 @@
   its bridge cannot start.** Doctor now asks the launch's own check: with
   `cliproxyapi` missing it fails and names the install step, and a missing or
   symlinked auth directory fails with the launch's own words (#787).
+- **A model alias from ~/.claude/settings.json no longer leaves a gateway profile
+  unstartable behind a ready doctor.** `list` and `inspect` say where the shown
+  model came from, `doctor` fails with run's own sentence and the command that
+  picks a served model, a terminal launch offers the model picker instead of
+  stopping, and `inspect` lists `excluded_models` (#862).
 - **Remote Control hosts pin the route profile's tiers.** `ccmorph-rc-hosts` kept
   its own tier map in `tier.<alias>=` lines, which drifted from the profile: an alias
   the profile mapped to a gateway model went out as the native Claude id, which the

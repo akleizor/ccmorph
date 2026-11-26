@@ -42,8 +42,9 @@ type TranslatorNeed struct {
 // modelMap are the profile's saved default and map, so a reachable listing can
 // adjudicate the default (#267). verbose adds a running adapter's processes and
 // ports; the default report says only what launch will do, which is what a
-// reader can act on. Nothing is started and nothing is written.
-func DoctorRoute(name, typ, base, model, modelMap string, need func(listing string) TranslatorNeed, key, home string, verbose bool) (rows []DoctorRow, failed, keyRejected bool) {
+// reader can act on. Nothing is started and nothing is written. listed is the
+// listing body when the gateway answered with one, "" otherwise.
+func DoctorRoute(name, typ, base, model, modelMap string, need func(listing string) TranslatorNeed, key, home string, verbose bool) (rows []DoctorRow, failed, keyRejected bool, listed string) {
 	row := func(kind, msg string, fix ...string) {
 		if kind == "FAIL" {
 			failed = true
@@ -125,7 +126,7 @@ func DoctorRoute(name, typ, base, model, modelMap string, need func(listing stri
 		}
 		// Launch starts no adapter on a native endpoint, so there is no
 		// adapter row to print.
-		return rows, failed, keyRejected
+		return rows, failed, keyRejected, ""
 	}
 
 	listing := ""
@@ -239,7 +240,7 @@ func DoctorRoute(name, typ, base, model, modelMap string, need func(listing stri
 			}
 		}
 	}
-	return rows, failed, keyRejected
+	return rows, failed, keyRejected, listing
 }
 
 // adapterLine is the one adapter row, or none (kind ""). running is

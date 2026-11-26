@@ -222,7 +222,7 @@ func readStoreState(a StoreArgs) (*storeState, error) {
 	}
 	defaults := ordjson.New()
 	for _, name := range fields.Keys() {
-		if name == "model" || name == "effort" || strings.HasPrefix(name, "effort.") || mapped[name] {
+		if name == "model" || name == "model_source" || name == "effort" || strings.HasPrefix(name, "effort.") || mapped[name] {
 			v, _ := fields.Get(name)
 			defaults.Set(name, v)
 		}
@@ -261,12 +261,21 @@ func readStoreState(a StoreArgs) (*storeState, error) {
 		if env == nil {
 			env = ordjson.New()
 		}
-		chosen := getKey(env, "ANTHROPIC_MODEL")
-		if !ordjson.Truthy(chosen) {
-			chosen = getKey(native, "model")
-		}
+		// GH-862: a model taken from the shared ~/.claude/settings.json, and not
+		// from this profile's own layer, is marked so every screen can name its source.
+		docEnv := asObj(getKey(doc, "env"))
+		chosen, fromShared := getKey(env, "ANTHROPIC_MODEL"), false
 		if ordjson.Truthy(chosen) {
-			setDefault("model", chosen)
+			fromShared = docEnv == nil || !ordjson.Truthy(getKey(docEnv, "ANTHROPIC_MODEL"))
+		} else {
+			chosen = getKey(native, "model")
+			fromShared = !ordjson.Truthy(getKey(doc, "model"))
+		}
+		if ordjson.Truthy(chosen) && !defaults.Has("model") {
+			defaults.Set("model", chosen)
+			if fromShared {
+				defaults.Set("model_source", profile.ModelSourceSettings)
+			}
 		}
 		if lvl := getKey(env, "CLAUDE_CODE_EFFORT_LEVEL"); ordjson.Truthy(lvl) {
 			setDefault("effort", lvl)
@@ -427,6 +436,9 @@ func configStoreRun(a StoreArgs, out, errw io.Writer) (int, string, error) {
 			return 0, "", refuse("effort must be %s", profile.EffortList())
 		}
 		defaults.Set(name, value)
+		if name == "model" {
+			defaults.Set("model_source", "") // a saved model is the person's own choice; the imported marker goes
+		}
 	}
 	switch op {
 	case "set", "configure", "seed-model-defaults", "prepare-launch", "migrate-native":

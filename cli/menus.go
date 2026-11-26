@@ -60,6 +60,8 @@ func (l *launcher) describeProfiles(active string, types []string, accept func(m
 			d.detail = l.accountModel(n)
 			if d.detail == "" {
 				d.detail = "Browser login"
+			} else {
+				d.detail += ", " + l.modelOrigin(n) // #862
 			}
 		case "apikey":
 			d.detail = f["base_url"]
@@ -67,7 +69,7 @@ func (l *launcher) describeProfiles(active string, types []string, accept func(m
 				d.detail = "api.anthropic.com"
 			}
 			if m := l.accountModel(n); m != "" {
-				d.detail += " → " + m
+				d.detail += " → " + m + ", " + l.modelOrigin(n)
 			}
 		}
 		d.private = f["private"] == "1"
@@ -194,7 +196,13 @@ func (l *launcher) valueRows(slot, name string, preview ...string) (string, bool
 			}
 			rows, ok := util.GwModels(l.conf(name), true, listing)
 			if !ok {
-				l.err("'" + name + "' endpoint returned no usable model list")
+				// The exclusions, not the endpoint, are what removed every model;
+				// say so and name the list to shorten (#862).
+				if util.ExclusionsLeaveNone(l.conf(name), listing) {
+					l.err(util.ExclusionsRefusal(name, l.conf(name)))
+				} else {
+					l.err(util.NoUsableModel(name))
+				}
 				return "", false
 			}
 			return modelRows(rows), true
@@ -260,9 +268,13 @@ func (l *launcher) pickValue(slot, name string) (string, bool) {
 // the Keep row `set model -i` opens on, so Enter alone means the saved model
 // (#377). The custom-ID escape stays with the commands that can save one; a
 // profile with nothing saved opens the plain catalogue, titled so.
-func (l *launcher) pickLaunchModel(name, saved string) (string, bool) {
+// unserved, when set, is a saved model the gateway cannot serve: the heading names it.
+func (l *launcher) pickLaunchModel(name, saved, unserved string) (string, bool) {
 	heading := "Model — " + name
-	if saved == "" {
+	switch {
+	case unserved != "":
+		heading += " (" + unserved + " is not served here)"
+	case saved == "":
 		heading += " (none saved)"
 	}
 	return l.pickRows("model", name, saved, "labels", func(rows string) (string, string) {

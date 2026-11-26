@@ -205,7 +205,7 @@ Model and effort settings select behavior; none of those facts changes the
 credential type.
 
 Recognised keys: `type`, `email`, `token`, `base_url`, `api_key`, `model`,
-`effort`, `effort.<model>`, `model_defaults`, `model_map` (apikey only), `adapter`,
+`effort`, `effort.<model>`, `model_defaults`, `model_source`, `model_map` (apikey only), `adapter`,
 `context_window.<model>`, and `env.<NAME>` for the model-behaviour variables listed in
 `ProfileEnv`.
 
@@ -1767,6 +1767,10 @@ existing effective native model settings once, retaining explicit conf values.
 `model_defaults=1` marks the ownership transition, including intentionally absent
 defaults. Subsequent native writes are not re-imported. Explicit setters use the
 same transaction, and read-only inspection does not mutate a profile.
+`model_source=claude-settings` records that the seeded model came from the shared
+`~/.claude/settings.json`, and a saved model drops it. Doctor applies run's three
+model stops, in run's words: an unmapped alias, exclusions that leave nothing,
+and no saved model without a terminal.
 
 Claude Code's `/model` and `/effort` still write native preferences and may display
 “saved as default.” Those writes are not the ccmorph defaults. Launch preparation

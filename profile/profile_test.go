@@ -174,6 +174,18 @@ func TestReadLoadsTheBudgetAndKeepsTheAdapterDeclaration(t *testing.T) {
 	}
 }
 
+// GH-862: model_source marks that the conf's model was imported from
+// ~/.claude/settings.json; only that one marker loads.
+func TestReadAcceptsOnlyTheClaudeSettingsModelSourceIssue862(t *testing.T) {
+	f, _, err := read(t, "type=apikey\napi_key=k\nmodel_source=claude-settings\n")
+	if err != nil || f["model_source"] != "claude-settings" {
+		t.Fatalf("model_source=claude-settings refused: %v %v", f, err)
+	}
+	if _, _, err := read(t, "type=apikey\napi_key=k\nmodel_source=mine\n"); err == nil || !strings.Contains(err.Error(), "invalid model source marker") {
+		t.Fatalf("model_source=mine: %v", err)
+	}
+}
+
 func TestRemovedKeysWarnAndAreDropped(t *testing.T) {
 	f, warned, err := read(t, "type=apikey\napi_key=k\ntransport=x\n")
 	if err != nil || len(warned) != 1 || !strings.Contains(warned[0], "transport= was removed") || f["transport"] != "" {

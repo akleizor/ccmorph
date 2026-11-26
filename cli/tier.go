@@ -43,3 +43,19 @@ func resolveTier(model string, env func(key string) (string, bool), alias func(t
 	}
 	return model, true
 }
+
+// unmappedTier is the tier word model names when this profile maps no gateway
+// model to it — the model adapterModel refuses — read from the conf's env keys
+// and the saved alias as doctor reads them; "" when model resolves or is no tier word.
+func (l *launcher) unmappedTier(name, model string) string {
+	f, ok := l.readQuiet(name)
+	if !ok {
+		return ""
+	}
+	if _, ok := resolveTier(model,
+		func(key string) (string, bool) { v, ok := f["env."+key]; return v, ok },
+		func(tier string) (string, bool) { return l.tierAlias(name, tier) }); ok {
+		return ""
+	}
+	return util.TierWord(model)
+}

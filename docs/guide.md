@@ -396,6 +396,7 @@ install at `"$(brew --prefix ccmorph)/libexec/share/profile.conf.example"`, and
 | `window_sources=<name>` | Shipped catalogue to size this route by |
 | `context_window.<model>` | Pinned token limit; beats discovery |
 | `model_defaults=1` | This profile owns its model defaults (written once; keep it) |
+| `model_source=claude-settings` | Written by ccmorph: the saved model was imported from `~/.claude/settings.json`; `list`, `inspect`, `doctor` and `run` name that source. Dropped when you save a model |
 | `api_key=keychain:<name>.api_key` | On macOS the key lives in the login keychain; ccmorph moves a plain key there on first use |
 
 The model-mapping keys in the table are the `env.ANTHROPIC_*` names listed in the
@@ -416,6 +417,12 @@ row. See ARCHITECTURE.md, "What a tier mapping does".
 On first launch or explicit save, existing effective model settings are
 imported once, preserving current defaults. `model_defaults=1` records that the
 profile has adopted this separation; keep that marker when editing defaults.
+
+A Claude model alias such as `opus` that the profile maps to no gateway model
+stops `ccmorph run` — in a terminal the model picker opens instead, for that
+session only — and fails `ccmorph doctor`. Both name the alias, say where it came
+from (`~/.claude/settings.json` or this profile) and print the command that saves
+a served one: `ccmorph set <profile> model -i`.
 
 Other Claude preferences live in the profile's layer,
 `~/.config/ccmorph/profiles/<profile>/settings.profile.json`. At each launch ccmorph
@@ -453,7 +460,9 @@ when discovery is offline. An exclusion that leaves no rows stops launch rather
 than accidentally restoring Claude's unrestricted picker. That refusal is for a
 gateway that answered; a gateway that answers nothing gets the wait and the
 retry-later exit status (75) that names the unreachable route instead — its
-silence is never reported as a picker to revise.
+silence is never reported as a picker to revise. When the list removes every
+model the gateway serves, `run` and `doctor` both say so and name the list to
+shorten; `ccmorph inspect` shows the exclusions on its `excluded` row.
 
 This is picker configuration, not gateway access control. It does not delete model
 metadata or silently change the saved default. Remove the `.conf` field to stop
