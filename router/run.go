@@ -251,7 +251,7 @@ func Dispatch(ctx context.Context, r Request, cwd string) Outcome {
 		if ctx.Err() == context.DeadlineExceeded {
 			w.status = 124
 		} else if ctx.Err() != nil {
-			ledgerUpdate(job, Row{"outcome": "error", "failure": "aborted"})
+			ledgerUpdate(job, Row{"outcome": "error", "failure": "aborted", "finished": nowSec()})
 			return Outcome{Aborted: true, Out: w.out, Status: 130}
 		}
 		hard := ""

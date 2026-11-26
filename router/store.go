@@ -252,37 +252,56 @@ func readRows(path string) []Row {
 }
 
 func (r Row) matches(id string) bool {
-	return id != "" && (r["id"] == id || r["tool_use_id"] == id || r["agent_id"] == id || r["caller_id"] == id)
+	return id != "" && (r["id"] == id || r["tool_use_id"] == id || r["agent_id"] == id)
 }
 
-// ledgerUpdate merges fields into the newest row the id names, keeping every
-// other line. A caller's id names each attempt of a retried run; the newest is
-// the one whose answer the caller got.
+// ledgerUpdate merges fields into the one row the id names, keeping every other line.
 func ledgerUpdate(id string, fields Row) bool {
-	found := false
-	withLock(func() {
-		b, err := os.ReadFile(ledgerPath())
-		if err != nil {
+	found, _ := ledgerRewrite(func(r Row) bool { return r.matches(id) }, false, fields)
+	return found
+}
+
+var errLedgerLocked = errors.New("the ledger stayed locked")
+
+// ledgerRewrite merges fields into the first row match accepts, or the last
+// when newest, keeping every other line. found is whether a row matched; err
+// is a lock or write that failed, so nothing was recorded.
+func ledgerRewrite(match func(Row) bool, newest bool, fields Row) (found bool, err error) {
+	locked := withLock(func() {
+		var b []byte
+		if b, err = os.ReadFile(ledgerPath()); err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				err = nil
+			}
 			return
 		}
 		lines := bytes.SplitAfter(b, []byte("\n"))
-		for i := len(lines) - 1; i >= 0; i-- {
-			line := lines[i]
+		at := -1
+		for i := range lines {
 			var r Row
-			if json.Unmarshal(line, &r) != nil || !r.matches(id) {
+			if json.Unmarshal(lines[i], &r) != nil || !match(r) {
 				continue
 			}
-			for k, v := range fields {
-				r[k] = v
+			at = i
+			if !newest {
+				break
 			}
-			out, _ := json.Marshal(r)
-			lines[i] = append(out, '\n')
-			found = true
-			break
 		}
-		if found {
-			_ = paths.AtomicWrite(paths.WriteIn{Path: ledgerPath(), Temp: ".ledger-*", Data: bytes.Join(lines, nil), Mode: 0o600, Mkdir: 0o700})
+		if at < 0 {
+			return
 		}
+		var r Row
+		_ = json.Unmarshal(lines[at], &r)
+		for k, v := range fields {
+			r[k] = v
+		}
+		out, _ := json.Marshal(r)
+		lines[at] = append(out, '\n')
+		found = true
+		err = paths.AtomicWrite(paths.WriteIn{Path: ledgerPath(), Temp: ".ledger-*", Data: bytes.Join(lines, nil), Mode: 0o600, Mkdir: 0o700})
 	})
-	return found
+	if !locked && err == nil {
+		err = errLedgerLocked
+	}
+	return found, err
 }

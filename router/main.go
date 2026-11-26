@@ -343,12 +343,23 @@ func accept(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "usage: ccmorph router accept ID pass|fail [--by SIGNAL]")
 		return 2
 	}
-	fields := Row{"accepted": words[1] == "pass", "accepted_at": nowSec()}
+	// All three fields every time: a second accept replaces the first whole,
+	// so a new verdict never carries the old one's source.
+	fields := Row{"accepted": words[1] == "pass", "accepted_at": nowSec(), "accepted_by": nil}
 	if by != "" {
 		fields["accepted_by"] = by
 	}
-	if !ledgerUpdate(words[0], fields) {
-		fmt.Fprintf(stderr, "ccmorph: router: no route %s in the ledger\n", words[0])
+	// The caller's id names every attempt of a retried run; the newest is the
+	// one whose answer the caller got. Only accept reads caller_id: a hook's
+	// tool or agent id never settles a dispatch row.
+	id := words[0]
+	found, err := ledgerRewrite(func(r Row) bool { return r["caller_id"] == id || r["id"] == id }, true, fields)
+	if err != nil {
+		fmt.Fprintf(stderr, "ccmorph: router: could not record %s: %v\n", id, err)
+		return 1
+	}
+	if !found {
+		fmt.Fprintf(stderr, "ccmorph: router: no route %s in the ledger\n", id)
 		return 1
 	}
 	fmt.Fprintf(stdout, "Route %s: accepted %s.\n", words[0], words[1])

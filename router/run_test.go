@@ -93,16 +93,47 @@ func TestDispatchRecordsTheVerdictEscalatesOnlyAWrongAnswerAndTakesAcceptance(t 
 	}
 }
 
-// An id the ledger never saw is refused, not silently dropped.
-func TestAcceptRefusesAnUnknownRoute(t *testing.T) {
+// accept settles the newest attempt the caller's id names and leaves the
+// older one alone; a second accept replaces the first whole, source included;
+// a hook's tool id that equals a caller id never reaches the dispatch row; an
+// id the ledger never saw, or a write that fails, is refused, not confirmed.
+func TestAcceptSettlesTheNewestAttemptAndNeverClaimsAWriteItLost(t *testing.T) {
 	hookEnv(t, true)
-	ledgerAppend(Row{"id": "route-1", "outcome": "completed"})
-	var out, errOut bytes.Buffer
-	if code := Main([]string{"accept", "nope", "pass"}, strings.NewReader(""), &out, &errOut); code != 1 {
-		t.Fatalf("exit %d, want 1: %s", code, errOut.String())
+	ledgerAppend(Row{"id": "delegate-1", "caller_id": "job-7", "outcome": "error"})
+	ledgerAppend(Row{"id": "delegate-2", "caller_id": "job-7", "outcome": "completed"})
+	run := func(args ...string) (int, string) {
+		var out, errOut bytes.Buffer
+		code := Main(append([]string{"accept"}, args...), strings.NewReader(""), &out, &errOut)
+		return code, errOut.String()
 	}
-	if code := Main([]string{"accept", "route-1", "maybe"}, strings.NewReader(""), &out, &errOut); code != 2 {
+	if code, err := run("job-7", "pass", "--by", "tests"); code != 0 {
+		t.Fatalf("accept exit %d: %s", code, err)
+	}
+	if code, err := run("job-7", "fail"); code != 0 {
+		t.Fatalf("second accept exit %d: %s", code, err)
+	}
+	rows := readRows(ledgerPath())
+	if _, touched := rows[0]["accepted"]; touched {
+		t.Fatalf("the older attempt took the acceptance: %v", rows[0])
+	}
+	if rows[1]["accepted"] != false || rows[1]["accepted_by"] != nil {
+		t.Fatalf("the newest attempt keeps the old verdict or its source: %v", rows[1])
+	}
+	if ledgerUpdate("job-7", Row{"verdict": "wrong"}) {
+		t.Fatal("a hook id equal to a caller id settled the dispatch row")
+	}
+	if code, _ := run("nope", "pass"); code != 1 {
+		t.Fatalf("an unknown id was accepted: %d", code)
+	}
+	if code, _ := run("job-7", "maybe"); code != 2 {
 		t.Fatalf("a verdict other than pass or fail was taken: %d", code)
+	}
+	if err := os.Chmod(routerDir(), 0o500); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(routerDir(), 0o700) })
+	if code, err := run("job-7", "pass"); code != 1 || !strings.Contains(err, "could not record") {
+		t.Fatalf("a failed write was confirmed: exit %d, %q", code, err)
 	}
 }
 
