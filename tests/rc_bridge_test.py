@@ -1572,6 +1572,65 @@ def test_the_proxy_takes_a_handoff_without_waiting_for_a_request(tmp_path, monke
     assert addon.SWITCHED["gw"] == ("http://127.0.0.1:54505", "k2", {})
 
 
+def test_a_taken_handoff_is_recorded_before_it_can_be_seen_gone(tmp_path, monkeypatch):
+    """issue #900: the take removed the handoff before its record landed, so the one
+    signal that says "taken" — the file is gone — could be read with nothing
+    switched: the poller's own watcher caught SWITCHED empty a statement after its
+    wait passed (CI run 45562448374). Hook the removal itself: every path that makes
+    a valid handoff vanish, by unlink or by the take's rename, must find the record
+    already in SWITCHED."""
+    import json
+    addon, _, state = _hot_addon(monkeypatch, tmp_path)
+    hand = state / "switch-gw.json"
+    hand.write_text(json.dumps({"upstream": "http://127.0.0.1:54505", "key": "k2", "tiers": {}}))
+
+    def recorded(what):                     # the hook fires while the name still stands
+        assert "gw" in addon.SWITCHED, f"the {what} removed the handoff before recording it"
+
+    class WatchedPath(addon.Path):          # the handoff removed by name (issue #900's read)
+        def unlink(self, missing_ok=False):
+            if self.name == "switch-gw.json":
+                recorded("unlink")
+            return super().unlink(missing_ok=missing_ok)
+
+    real = addon.os                         # and the rename is what a take makes gone
+    class WatchedOs:
+        def __getattr__(self, name):
+            return getattr(real, name)
+
+        def rename(self, src, dst):
+            if Path(src).name == "switch-gw.json":
+                recorded("rename")
+            return real.rename(src, dst)
+
+    monkeypatch.setattr(addon, "Path", WatchedPath)
+    monkeypatch.setattr(addon, "os", WatchedOs())
+    assert addon._switched("gw") == ("http://127.0.0.1:54505", "k2", {})
+    assert not hand.exists()                # the take happened, hooks and all
+
+
+@pytest.mark.parametrize("body", [
+    pytest.param('{"upstream": "http://127.0.0.1:54505"}', id="parses-but-holds-no-key"),
+    pytest.param('{"key": "k2"}', id="parses-but-holds-no-upstream"),
+    pytest.param("not json", id="does-not-parse"),
+])
+def test_a_handoff_holding_no_endpoint_is_removed_without_recording_anything(
+        tmp_path, monkeypatch, body):
+    """A switch-<profile>.json that can route nothing — it does not parse (the
+    publish is atomic, so this is garbage, not a half write), or lacks the upstream
+    or key an endpoint needs — is a credential held for nothing: one look removes it
+    and records nothing, and it never lingers to be re-polled every half second
+    (issue #900: pin the hygiene choice — today the fieldless one is already gone
+    silently and the unparseable one stays forever)."""
+    addon, _, state = _hot_addon(monkeypatch, tmp_path)
+    hand = state / "switch-gw.json"
+    hand.write_text(body)
+    assert addon._switched("gw") is None
+    assert not hand.exists()
+    assert not list(state.glob("switch-*")) and not list(state.glob("taken.*"))
+    assert addon.SWITCHED == {} and getattr(addon, "HELD", {}) == {}   # HELD: the #595 record
+
+
 def test_a_handoff_no_proxy_takes_is_removed_and_nothing_changes(tmp_path, monkeypatch):
     """A proxy started before the handoff poller never reads a handoff no request
     asks for: the switch removes its key file again and puts the word back."""

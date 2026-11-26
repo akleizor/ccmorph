@@ -113,6 +113,16 @@ def _mine(h: dict) -> bool:
                           and h.get("edge_started", PARENT_STARTED) == PARENT_STARTED)
 
 
+def _endpoint(h) -> tuple[str, str, dict] | None:
+    """The endpoint a parsed handoff carries, or None. Without upstream and key
+    there is nothing to route to: such a file holds a credential for nothing, and
+    the take removes it without recording (issue #900)."""
+    try:
+        return (h["upstream"], h["key"], h.get("tiers") or {})
+    except (TypeError, KeyError):                # not a dict, or missing a field
+        return None
+
+
 def _switched(profile: str) -> tuple[str, str, dict] | None:
     """A profile's endpoint: a new handoff file replaces the one in memory (it was
     brought up again). Only a handoff for this proxy's own edge is taken: another
@@ -124,21 +134,47 @@ def _switched(profile: str) -> tuple[str, str, dict] | None:
     replacement edge's handoff, published meanwhile, that its own proxy never got
     (issue #595 review). OWN_TAG is this proxy's own start, so a sweep can tell it,
     killed mid-take, from a later process given its pid. A gone handoff alone proves
-    nothing; --switch waits for held.<pid>.json to name it."""
+    nothing; --switch waits for held.<pid>.json to name it.
+
+    The record lands while the handoff still stands, before the rename makes it
+    gone: "gone" is the signal --switch and the take poller read as taken, and a
+    removal that outran the record let the watcher see a taken switch with nothing
+    switched (issue #900, CI run 45562448374). Whatever the rename actually moved is
+    then checked at its taken name: another edge's is put back, a newer one of ours
+    re-lands the record, so the record always covers the publication that was taken.
+    A handoff that cannot route — it does not parse (the publish is atomic, so that
+    is garbage, never a half write), or lacks the endpoint's two fields — is moved
+    aside and removed with no record: its key must not linger to be re-polled every
+    half second (issue #900)."""
     if not INFERENCE:
         return SWITCHED.get(profile)
     hand = Path(INFERENCE).parent / f"switch-{profile}.json"
     taken = hand.with_name(f"taken.{os.getpid()}.{OWN_TAG}.{profile}.json")
     with _TAKE:                  # one take at a time, so held.<pid>.json never loses one
         try:
-            if not _mine(json.loads(hand.read_text())):
-                return SWITCHED.get(profile)     # another edge's: never touched, not even moved
-            os.rename(hand, taken)               # from here, only this publication is ours
-        except (OSError, ValueError, TypeError, AttributeError):
+            h = json.loads(hand.read_text())
+        except OSError:
+            return SWITCHED.get(profile)
+        except ValueError:
+            h = None                            # does not parse; whose it is cannot be told
+        entry = _endpoint(h)
+        ident = None
+        if entry is not None:
+            if not _mine(h):
+                return SWITCHED.get(profile)    # another edge's: never touched, not even moved
+            SWITCHED[profile] = entry           # the record lands while the handoff still
+            HELD[profile] = ident = h.get("id") # stands: gone from here on implies recorded
+        try:
+            os.rename(hand, taken)              # from here, only this publication is ours
+        except OSError:
             return SWITCHED.get(profile)
         try:
-            h = json.loads(taken.read_text())
-            if not _mine(h):
+            _publish_held()                     # it says it holds what it recorded; killed
+            try:                                # from here the sweep takes taken.* (#595)
+                moved = json.loads(taken.read_text())
+            except (OSError, ValueError):
+                moved = None
+            if isinstance(moved, dict) and not _mine(moved):
                 # Another edge's publication replaced ours between the look and the
                 # rename: put it back unless a newer one stands there already.
                 try:
@@ -146,14 +182,14 @@ def _switched(profile: str) -> tuple[str, str, dict] | None:
                 except OSError:
                     pass
                 return SWITCHED.get(profile)
-            SWITCHED[profile] = (h["upstream"], h["key"], h.get("tiers") or {})
-            HELD[profile] = h.get("id")
-            _publish_held()
-        except (OSError, ValueError, KeyError, TypeError, AttributeError):
-            pass
+            me = _endpoint(moved)               # garbage: removed with the taken file, below
+            if me is not None and (me, moved.get("id")) != (entry, ident):
+                SWITCHED[profile] = me          # a newer handoff of ours took the rename;
+                HELD[profile] = moved.get("id") # the record follows what was actually taken
+                _publish_held()
         finally:
             try:
-                taken.unlink()                   # the key lives in memory only now
+                taken.unlink()                  # the key lives in memory only now
             except OSError:
                 pass
     return SWITCHED.get(profile)
