@@ -401,6 +401,17 @@ func ReleaseLive(profiles, name string) {
 	}
 }
 
+// LiveFile is the descriptor this process holds for the profile's live lock,
+// or nil when it holds none. A whole-file writer run in this process — the
+// project picker's rewrite, the settings fold — upgrades that same descriptor
+// instead of opening a second one: flock locks the open file description, so a
+// fresh descriptor would wait on this process's own shared lock (#939).
+func LiveFile(profiles, name string) *os.File {
+	liveMu.Lock()
+	defer liveMu.Unlock()
+	return liveFDs[LiveLockPath(profiles, name)]
+}
+
 // RemoveLive takes a profile's live lock file away with the profile (GH-837).
 // It drops this process's own hold first, then removes the file only when no
 // other process holds it: a running launch's lock is its cover (#185), and

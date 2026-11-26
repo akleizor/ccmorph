@@ -1054,6 +1054,123 @@ func locked(profileDir string, fn func()) {
 	fn()
 }
 
+// liveLockWait bounds a fold's or a projection's wait for the profile's live
+// lock, as util's lockWait bounds the launch path's: a holder stuck on a
+// stalled volume defers the write to the next launch instead of hanging the
+// session (INTENT promise 8). Tests shorten it.
+var liveLockWait = 2 * time.Second
+
+// SetLiveLockWait replaces how long settingscompose waits for the live lock,
+// for tests in other packages; the returned func restores the previous value.
+func SetLiveLockWait(d time.Duration) (restore func()) {
+	old := liveLockWait
+	liveLockWait = d
+	return func() { liveLockWait = old }
+}
+
+// errLiveBusy is why a fold or a projection did not run: another session,
+// launch or whole-file writer holds the profile's live lock past the bounded
+// wait, so renaming the layer now could lose that holder's edit (#939).
+var errLiveBusy = errors.New("another session or launch of the profile holds its live lock")
+
+// liveLockFor names a profile's live lock from its profile dir, as
+// util.LiveLockPath builds it: the profiles dir is the profile dir's parent
+// and the locks live beside it. settingscompose cannot import util (util
+// imports this package), so the two lines are spelled here; the test that
+// races the picker and the fold keeps the two spellings one path (#939).
+func liveLockFor(profileDir string) string {
+	return filepath.Join(filepath.Dir(filepath.Dir(profileDir)), ".locks", filepath.Base(profileDir)+".live")
+}
+
+// liveLockTries bounds the open-lock-check loop that keeps a take off an inode
+// the path no longer names (GH-837), as util's liveLockTries does. Five is slack.
+const liveLockTries = 5
+
+// lockWithin takes how on f, retrying without blocking until liveLockWait
+// expires; false means someone else holds the lock past the wait.
+func lockWithin(f *os.File, how int) bool {
+	deadline := time.Now().Add(liveLockWait)
+	for {
+		if syscall.Flock(int(f.Fd()), how|syscall.LOCK_NB) == nil {
+			return true
+		}
+		if !time.Now().Before(deadline) {
+			return false
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+// lockNamesFile reports whether f still names what path names: a lock on an
+// inode the path no longer names covers nothing, and a removal may unlink the
+// file between the open and the flock (GH-837).
+func lockNamesFile(f *os.File, path string) bool {
+	fi, err := f.Stat()
+	if err != nil {
+		return false
+	}
+	pi, err := os.Lstat(path)
+	if err != nil {
+		return false
+	}
+	return os.SameFile(fi, pi)
+}
+
+// takeLiveLock takes the profile's live lock exclusively and returns its
+// release. held is the descriptor this process already holds for that lock — a
+// launch's shared one — upgraded in place and handed back shared: flock locks
+// the open file description, so a second descriptor in the same process would
+// wait on its own lock (#939). nil opens the lock at the profile's path, as
+// util's HoldLive does. A holder that outlasts the wait returns nil: the caller
+// must leave the layer alone.
+func takeLiveLock(profileDir string, held *os.File) (func(), error) {
+	path := liveLockFor(profileDir)
+	if held != nil {
+		if !lockWithin(held, syscall.LOCK_EX) {
+			// A failed conversion can leave the descriptor without its shared
+			// lock (Linux drops SH before trying EX), so take the launch's
+			// coverage back before saying the layer was left alone (#205).
+			if !lockWithin(held, syscall.LOCK_SH) {
+				return nil, fmt.Errorf("%s: %w, and this launch's shared lock was lost", path, errLiveBusy)
+			}
+			return nil, fmt.Errorf("%s: %w", path, errLiveBusy)
+		}
+		return func() { syscall.Flock(int(held.Fd()), syscall.LOCK_SH) }, nil
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return nil, err
+	}
+	for attempt := 0; attempt < liveLockTries; attempt++ {
+		f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY|syscall.O_NOFOLLOW, 0o600)
+		if err != nil {
+			return nil, err
+		}
+		if !lockWithin(f, syscall.LOCK_EX) {
+			f.Close()
+			return nil, fmt.Errorf("%s: %w", path, errLiveBusy)
+		}
+		if !lockNamesFile(f, path) {
+			f.Close()
+			continue
+		}
+		return func() { f.Close() }, nil
+	}
+	return nil, errors.New(path + ": the live lock file was replaced while it was being taken")
+}
+
+// withLiveLock runs fn holding the profile's live lock exclusively. A holder
+// that outlasts the wait leaves fn unrun and returns errLiveBusy, so the layer
+// is untouched.
+func withLiveLock(profileDir string, held *os.File, fn func()) error {
+	release, err := takeLiveLock(profileDir, held)
+	if release == nil {
+		return err
+	}
+	defer release()
+	fn()
+	return nil
+}
+
 // capture is the profile layer with every edit made to settings.json since it was generated.
 func capture(profileDir string, current, canonical *obj, mapping map[string]bool) *obj {
 	layerPath, basePath := join(profileDir, layerFile), join(profileDir, baseFile)
@@ -1158,24 +1275,55 @@ func saveLayer(profileDir string, layer *obj) {
 	}
 }
 
-func foldOnly(profileDir, canonicalPath string, mapping map[string]bool) {
+func foldOnly(profileDir, canonicalPath string, mapping map[string]bool, live *os.File, afterRead func()) {
 	refuseSymlinks(profileDir)
-	locked(profileDir, func() {
-		settle(profileDir)
-		raw, current := readCurrent(join(profileDir, "settings.json"))
-		saveLayer(profileDir, capture(profileDir, current, canonicalFor(profileDir, canonicalPath), mapping))
-		// The saved copy now matches the layer, so the same edits are never folded twice.
-		if raw != nil && paths.Exists(join(profileDir, baseFile)) {
-			saveBase(profileDir, raw)
-		}
+	err := withLiveLock(profileDir, live, func() {
+		locked(profileDir, func() {
+			settle(profileDir)
+			raw, current := readCurrent(join(profileDir, "settings.json"))
+			layer := capture(profileDir, current, canonicalFor(profileDir, canonicalPath), mapping)
+			if afterRead != nil {
+				afterRead()
+			}
+			saveLayer(profileDir, layer)
+			// The saved copy now matches the layer, so the same edits are never folded twice.
+			if raw != nil && paths.Exists(join(profileDir, baseFile)) {
+				saveBase(profileDir, raw)
+			}
+		})
 	})
+	if err != nil {
+		valueFail("%s: %v; the settings layer was left as it was", join(profileDir, layerFile), err)
+	}
 }
 
-func materialize(profileDir, canonicalPath string, saved *obj, strip, mapping map[string]bool, acwArg *string, usageHook string) {
+// Fold is foldOnly without Main's exit path: it folds the profile layer under
+// the profile's live lock, exclusively, from the layer's read to its rename.
+// live is the descriptor this process already holds for that lock (a launch's
+// shared one), nil when it holds none; afterRead, nil in production, runs
+// inside the locked window before the save, so a test can land the picker's
+// rewrite there (#939). The error says why nothing was written.
+func Fold(profileDir, canonicalPath string, mapping map[string]bool, live *os.File, afterRead func()) error {
+	if fail := catch(func() { foldOnly(profileDir, canonicalPath, mapping, live, afterRead) }); fail != nil {
+		return errors.New(fail.msg)
+	}
+	return nil
+}
+
+func materialize(profileDir, canonicalPath string, saved *obj, strip, mapping map[string]bool, acwArg *string, usageHook string, live *os.File) {
 	target := join(profileDir, "settings.json")
 	basePath, pending := join(profileDir, baseFile), join(profileDir, pendingFile)
 	refuseSymlinks(profileDir)
 	done := false
+	// The generated settings.json is written whether or not the profile's live
+	// lock can be taken: a launch must get the settings its policy requires.
+	// Only the layer is the guarded whole-file write — a live session of the
+	// profile leaves settings.profile.json exactly as it was (#939).
+	release, _ := takeLiveLock(profileDir, live)
+	layerWrite := release != nil
+	if layerWrite {
+		defer release()
+	}
 	locked(profileDir, func() {
 		settle(profileDir)
 		for i := 0; i < 3; i++ {
@@ -1201,7 +1349,9 @@ func materialize(profileDir, canonicalPath string, saved *obj, strip, mapping ma
 			if !bytes.Equal(onDisk, currentBytes) || (onDisk == nil) != (currentBytes == nil) {
 				continue
 			}
-			saveLayer(profileDir, layer)
+			if layerWrite {
+				saveLayer(profileDir, layer)
+			}
 			cur := current
 			if cur == nil {
 				cur = ordjson.New()
@@ -1343,6 +1493,14 @@ func parseArgs(args []string) (*options, string) {
 
 // Main runs `settings-compose <materialize|fold> ...` and returns its exit code.
 func Main(args []string, stderr io.Writer) int {
+	return MainWithLive(args, stderr, nil)
+}
+
+// MainWithLive is Main with the descriptor this process already holds for the
+// profile's live lock (nil when it holds none), so a projection or fold run
+// inside a launch upgrades the launch's own lock instead of waiting on it
+// (#939).
+func MainWithLive(args []string, stderr io.Writer, live *os.File) int {
 	o, bad := parseArgs(args)
 	if bad == "help" {
 		fmt.Fprintln(stderr, "usage: settings-compose [-h] {materialize,fold} ...")
@@ -1353,7 +1511,7 @@ func Main(args []string, stderr io.Writer) int {
 	}
 	fail := catch(func() {
 		if o.command == "fold" {
-			foldOnly(o.profileDir, o.canonical, profile.SetOf(o.mapping))
+			foldOnly(o.profileDir, o.canonical, profile.SetOf(o.mapping), live, nil)
 			return
 		}
 		savedV, err := ordjson.Parse([]byte(o.saved))
@@ -1367,7 +1525,7 @@ func Main(args []string, stderr io.Writer) int {
 		if o.acw != nil && *o.acw != "none" && !ordjson.IsDigits(*o.acw) {
 			valueFail("--acw must be a token count or none")
 		}
-		materialize(o.profileDir, o.canonical, saved, profile.SetOf(o.strip), profile.SetOf(o.mapping), o.acw, o.usageHook)
+		materialize(o.profileDir, o.canonical, saved, profile.SetOf(o.strip), profile.SetOf(o.mapping), o.acw, o.usageHook, live)
 	})
 	if fail == nil {
 		return 0

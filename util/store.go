@@ -128,6 +128,25 @@ type StoreArgs struct {
 	Mapping                         []string
 	Materialize                     string
 	Change                          StoreChange
+	// Live is the descriptor this process holds for the profile's live lock,
+	// nil when it holds none: a projection run inside a launch upgrades the
+	// launch's own lock instead of waiting on it (#939).
+	Live *os.File
+}
+
+// layerProfileDir is the profile dir a layer path names, "" when the path is
+// not one of the three spellings a profile's layer has. A whole-file write of
+// it derives the profile's live lock from this (#939).
+func layerProfileDir(path string) string {
+	switch filepath.Base(path) {
+	case "settings.json", "settings.profile.json":
+		return filepath.Dir(path)
+	case "settings.base.json":
+		if filepath.Base(filepath.Dir(path)) == "cache" {
+			return filepath.Dir(filepath.Dir(path))
+		}
+	}
+	return ""
 }
 
 // ConfigStore runs the operation. The result is its text and its status: 0 done,
@@ -135,7 +154,28 @@ type StoreArgs struct {
 func ConfigStore(a StoreArgs, errw io.Writer) (string, int) {
 	op, materialize := a.Op, a.Materialize
 	var out strings.Builder
-	exit, projectedJSON, err := configStoreRun(a, &out, errw)
+	// A prepare-launch reads the profile layer and may remove model and
+	// effortLevel from it. That whole-file write holds the profile's live lock
+	// exclusively from the read to the rename; under a live session the lock is
+	// busy, so the layer is left as it was and only the conf saves (#939).
+	layerWrite := true
+	var release func()
+	if op == "prepare-launch" {
+		if dir := layerProfileDir(a.Settings); dir != "" {
+			var why error
+			release, why = liveExclusiveLock(filepath.Dir(dir), filepath.Base(dir))
+			layerWrite = release != nil
+			if release == nil && why != nil && !errors.Is(why, ErrProfileInUse) {
+				fmt.Fprintf(errw, "ccmorph: %v; the settings layer was left as it was\n", why)
+			}
+		}
+	}
+	exit, projectedJSON, err := func() (int, string, error) {
+		if release != nil {
+			defer release()
+		}
+		return configStoreRun(a, layerWrite, &out, errw)
+	}()
 	if err != nil {
 		var r *refusal
 		if errors.As(err, &r) {
@@ -151,7 +191,7 @@ func ConfigStore(a StoreArgs, errw io.Writer) (string, int) {
 	// settings-compose's own statuses, shifted past the store's: exit 1 still means
 	// "the store failed, do not start".
 	argv := append(strings.Split(materialize, "\n"), "--saved", projectedJSON)
-	if rc := settingscompose.Main(argv, errw); rc != 0 {
+	if rc := settingscompose.MainWithLive(argv, errw, a.Live); rc != 0 {
 		return out.String(), 10 + rc
 	}
 	return out.String(), 0
@@ -378,7 +418,7 @@ func ConfigStoreRead(a StoreArgs) (StoreRead, error) {
 	return r, nil
 }
 
-func configStoreRun(a StoreArgs, out, errw io.Writer) (int, string, error) {
+func configStoreRun(a StoreArgs, layerWrite bool, out, errw io.Writer) (int, string, error) {
 	op, key, materialize, mappingKeys := a.Op, a.Key, a.Materialize, a.Mapping
 	conf, settings := a.Conf, a.Settings
 	if op == "snapshot" {
@@ -510,7 +550,7 @@ func configStoreRun(a StoreArgs, out, errw io.Writer) (int, string, error) {
 				env.Delete(name)
 			}
 		}
-		if originals[1] != nil {
+		if layerWrite && originals[1] != nil {
 			orig, _ := ordjson.Parse(ordjson.StripBOM(originals[1]))
 			if !ordjson.Equal(doc, orig) {
 				targets = append(targets, target{settings, originals[1], []byte(string(ordjson.Marshal(doc, true)) + "\n")})
@@ -556,8 +596,10 @@ func configStoreRun(a StoreArgs, out, errw io.Writer) (int, string, error) {
 		if c, err := content(conf); err != nil || !sameBytes(c, originals[0]) {
 			return errors.Join(err, errors.New("profile changed while configuring; nothing saved"))
 		}
-		if c, err := content(settings); err != nil || !sameBytes(c, originals[1]) {
-			return errors.Join(err, errors.New("profile changed while configuring; nothing saved"))
+		if layerWrite {
+			if c, err := content(settings); err != nil || !sameBytes(c, originals[1]) {
+				return errors.Join(err, errors.New("profile changed while configuring; nothing saved"))
+			}
 		}
 		for _, p := range pending {
 			if c, err := content(p.path); err != nil || !sameBytes(c, p.before) {
