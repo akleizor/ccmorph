@@ -2682,31 +2682,52 @@ test_launch_interactive_with_an_account_asks_only_the_model() {
 # #377: the launch picker must open on the profile's saved model, marked the
 # way `set model -i` marks it — the Keep row first — so Enter alone keeps it.
 # fake_fzf takes the first offered row, which is Enter alone.
+#
+# The profile is a native key, not a gateway: a gateway launch runs the #260
+# reach probe before the picker, and its five seconds include the fake curl's
+# own process start. Under gate load that start outlasts the bound, the probe
+# correctly names a silent gateway, and the launch ends before fzf (#901).
+# CCMORPH_REACH_BOUND may only shorten by #260's contract, so a picker test
+# must not race the probe it is not testing; a native key is still routed (the
+# picker and its listing run) and starts no adapter. The probe's abort stays
+# pinned by TestRunInteractiveOnAnUnreachableGatewayEndsOnTheRouteCheck.
 test_launch_interactive_opens_on_the_saved_model_issue_377() {
   local test_home
   test_home=$(mktemp -d)
   setup_home "$test_home"
   fake_gateway
   fake_fzf
-  write_apikey_conf alpha 'api_key=sk-test-alpha' 'base_url=https://gateway.invalid' 'model=zeta-chat'
+  write_apikey_conf alpha 'api_key=sk-test-alpha' 'base_url=https://api.anthropic.com' 'model=zeta-chat'
   source "$CCMORPH_SOURCE"
 
-  local rc=0
-  ccmorph run alpha -i prompt 2> "$HOME/launch.err" || rc=1
+  local rc=0 run_rc=0 launch_err=""
+  ccmorph run alpha -i prompt 2> "$HOME/launch.err" || run_rc=$?
+  # Keep the run's own status and words before the scratch home takes them: a red
+  # here must name why the launch never reached the picker, never an empty log
+  # (#901). A nonzero status is a failure even when the log and the picker rows
+  # still match, and the status stays for the print below. The print waits until
+  # every assertion has run.
+  (( run_rc == 0 )) || rc=1
+  launch_err="$(<"$HOME/launch.err")"
   local actual="$(<"$CCMORPH_TEST_LOG")"
   assert_contains "$actual" 'MODEL_ENV=zeta-chat' \
     'Enter alone in the launch picker must keep the saved model' || rc=1
   # Keeping the default is not a pick to keep: the session-only note (#360)
   # would send a person to save what is already saved.
-  assert_not_contains "$(<"$HOME/launch.err")" 'this session only' \
+  assert_not_contains "$launch_err" 'this session only' \
     'keeping the saved model must not be announced as session-only' || rc=1
-  local rows="$(<"$HOME/fzf.input")"
+  local rows=""
+  [[ -f "$HOME/fzf.input" ]] && rows="$(<"$HOME/fzf.input")"
   assert_contains "$rows" $'@keep\tKeep zeta-chat' \
     'the launch picker must mark the saved model as the Keep row' || rc=1
-  [[ "$(head -n 1 "$HOME/fzf.input")" == @keep$'\t'* ]] || {
+  [[ -f "$HOME/fzf.input" && "$(head -n 1 "$HOME/fzf.input")" == @keep$'\t'* ]] || {
     print -u2 -- 'the launch picker must offer the Keep row first, so the cursor opens on it'
     rc=1
   }
+  if (( rc != 0 )); then
+    print -u2 -- "the interactive launch failed (exit $run_rc); its stderr was:"
+    print -u2 -- "${launch_err:-<empty>}"
+  fi
   rm -rf "$test_home"
   return $rc
 }
