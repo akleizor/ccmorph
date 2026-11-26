@@ -424,12 +424,16 @@ func (l *launcher) config(args []string) int {
 		l.err(err.Error())
 		return 1
 	}
+	// Only a model the person answered, even the same id, is saved as theirs:
+	// keeping it (Enter, the Keep row, or a connection-only edit) leaves an
+	// imported model's model_source marker in place (#862).
+	modelKept := true
 	if section != "connection" {
 		preview := []string{endpoint, credential}
-		if model, ok = l.promptDefault("model", name, model, typ, endpoint, preview); !ok {
+		if model, modelKept, ok = l.promptDefault("model", name, model, typ, endpoint, preview); !ok {
 			return 1
 		}
-		if effort, ok = l.promptDefault("effort", name, effort, typ, endpoint, preview); !ok {
+		if effort, _, ok = l.promptDefault("effort", name, effort, typ, endpoint, preview); !ok {
 			return 1
 		}
 	}
@@ -443,7 +447,11 @@ func (l *launcher) config(args []string) int {
 	}
 	say("Model: " + valueOrUnsaved(model, "model", typ, endpoint) + " · Effort: " + valueOrUnsaved(effort, "effort", typ, endpoint))
 	save := l.storeArgs("configure", name, "")
-	save.Change = util.StoreChange{Model: model, Effort: effort, Snapshot: snapshot, Type: typ, Endpoint: endpoint, Credential: credential}
+	change := util.StoreChange{Effort: effort, Snapshot: snapshot, Type: typ, Endpoint: endpoint, Credential: credential}
+	if !modelKept {
+		change.Model = model
+	}
+	save.Change = change
 	if _, rc := l.runStore(save, os.Stderr); rc != 0 {
 		return 1
 	}
@@ -454,7 +462,8 @@ func (l *launcher) config(args []string) int {
 // promptDefault is _ccm_prompt_default: keep the current value by default, and
 // allow a custom model id when the catalogue is unavailable. Nothing saved
 // shows as the none it keeps with the words for what that means at launch.
-func (l *launcher) promptDefault(slot, name, current, typ, base string, preview []string) (string, bool) {
+// kept is true when the answer keeps current (Enter, or the menu's keep) (#862).
+func (l *launcher) promptDefault(slot, name, current, typ, base string, preview []string) (value string, kept, ok bool) {
 	shown := current
 	if shown == "" {
 		shown = unsavedLabel(slot, typ, base)
@@ -462,12 +471,12 @@ func (l *launcher) promptDefault(slot, name, current, typ, base string, preview 
 	if !isTTY(0) {
 		answer, rc := uiInput("Default "+slot+" ["+shown+"]: ", false)
 		if rc != 0 {
-			return "", false
+			return "", false, false
 		}
 		if answer == "" {
-			answer = current
+			return current, true, true
 		}
-		return answer, true
+		return answer, false, true
 	}
 	return l.valueMenu(slot, name, current, typ, base, l.defaultRows(slot, name, typ, preview...), true)
 }

@@ -182,3 +182,31 @@ func TestProjectPickerTreatsA200ThatIsNotAListingAsNoListing(t *testing.T) {
 		})
 	}
 }
+
+// GH-862: an excluded_models that removes every served model is the list's
+// fault, not the endpoint's: the refusal names the list and its fix.
+func TestProjectPickerNamesTheExclusionsFixIssue862(t *testing.T) {
+	root := t.TempDir()
+	home := filepath.Join(root, "home")
+	if err := os.MkdirAll(home, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	conf := filepath.Join(root, "gw862.conf")
+	confText := "type=apikey\nbase_url=http://gw.invalid\napi_key=k\nexcluded_models=model-a,model-b\n"
+	if err := os.WriteFile(conf, []byte(confText), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(home, ".claude.json"), []byte("{}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var errw strings.Builder
+	res := ProjectPicker(PickerIn{Home: home, Conf: conf, Tag: "Gateway", Profile: "gw862",
+		Layer:      filepath.Join(home, "settings.profile.json"),
+		ModelsJSON: `{"data":[{"id":"model-a"},{"id":"model-b"}]}`}, &errw)
+	if res != PickerRefused {
+		t.Fatalf("result %v, want PickerRefused", res)
+	}
+	if want := "ccmorph: " + ExclusionsRefusal("gw862", conf) + "\n"; errw.String() != want {
+		t.Fatalf("errw %q, want %q", errw.String(), want)
+	}
+}

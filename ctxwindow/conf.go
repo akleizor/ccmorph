@@ -717,7 +717,7 @@ var confSections = [][]string{
 		"env.ANTHROPIC_SMALL_FAST_MODEL", "env.CLAUDE_CODE_SUBAGENT_MODEL", "excluded_models"},
 	{"private", "usage_route", "env.*"},
 	{"window_sources", "context_window.*"},
-	{"model_defaults", "context_discovered"},
+	{"model_defaults", "model_source", "context_discovered"},
 }
 
 type rank struct {

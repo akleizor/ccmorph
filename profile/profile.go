@@ -93,12 +93,15 @@ func effortMsg(name, value string) string {
 // refuses names the same value and levels as the conf reader (GH-839).
 func EffortError(name, value string) error { return fail("%s", effortMsg(name, value)) }
 
+// ModelSourceSettings is the model_source value: the conf's model was imported from ~/.claude/settings.json.
+const ModelSourceSettings = "claude-settings"
+
 var (
 	nameRE   = regexp.MustCompile(`^[A-Za-z0-9_]+$`)
 	budgetRE = regexp.MustCompile(`^([0-9]+\.?[0-9]*|\.[0-9]+)$`)
 	digits   = regexp.MustCompile(`^[0-9]+$`)
 	modelID  = regexp.MustCompile(`^[A-Za-z0-9._:\[\]()@/-]+$`)
-	common   = []string{"type", "model", "model_defaults", "private", "monthly_budget_usd", "effort", "effort.*", "context_discovered"}
+	common   = []string{"type", "model", "model_defaults", "model_source", "private", "monthly_budget_usd", "effort", "effort.*", "context_discovered"}
 	perType  = map[string][]string{
 		"sub":      {"email", "usage_route"},
 		"token":    {"token", "usage_route"},
@@ -278,6 +281,10 @@ func checkKey(name, k, v string, lists Lists) error {
 	case k == "model_defaults":
 		if v != "1" {
 			return fail("invalid model defaults marker")
+		}
+	case k == "model_source":
+		if v != ModelSourceSettings {
+			return fail("invalid model source marker")
 		}
 	case k == "private":
 		if v != "1" {
