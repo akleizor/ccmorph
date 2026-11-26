@@ -34,7 +34,7 @@ a smoke test.
 
 ## Review
 
-Reviewers read [REVIEW.md](REVIEW.md) first (what a real bug looks like here).
+Reviewers read [REVIEW.md](../REVIEW.md) first (what a real bug looks like here).
 
 ## Commits
 
