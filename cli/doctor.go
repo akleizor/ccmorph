@@ -691,6 +691,7 @@ func (l *launcher) doctor(name string, verbose bool) int {
 		l.status("WARN", "masking: env.CCMORPH_MASK="+f["env.CCMORPH_MASK"]+
 			" is set but nothing is masked — this route reaches its backend without ccmorph's shim; masking covers gateway (apikey) routes only")
 	}
+	l.doctorRemoteControl(name, f)
 	// The verdict is the report's last line and answers the only question a
 	// person has: is this profile ready to run, or what must be fixed first.
 	switch {
@@ -706,4 +707,118 @@ func (l *launcher) doctor(name string, verbose bool) int {
 		l.status("OK", "ready: start it with ccmorph run "+name)
 	}
 	return failed
+}
+
+// doctorRemoteControl compares the tiers a hosted edge publishes it pins against
+// the ones this profile itself maps (GH-881): until #815 the hosts supervisor
+// kept its own hand-kept copy of the route profile's tier map, and a drifted
+// copy served phone sessions model ids the route does not serve — the gateway
+// 400 reached Alex as an adapter error on the phone before any machine said a
+// word. The supervisor reconciles pins per tick now, so a row that still
+// disagrees names a state the loop cannot clear (a stopped supervisor, a route
+// profile whose read keeps failing): requested-vs-served for Remote Control,
+// on the check that promises a plain reason for a broken route. The requested
+// side is resolveTier, the one spelling launch uses (#517), overlaid by the
+// `tier.` overrides the supervisor published. What is hosted is the
+// supervisor's own parse() answer, read from hosted.json, because a Go copy of
+// that grammar missed a shape in each of three review rounds — the supervisor
+// publishes what only it knows (#881).
+// An alias mapped to its own Claude family is not a pin (the native id is what
+// the phone sends and the route serves), a `[1m]` marker names one model with
+// or without it (ccmorph-rc's pinned_tiers), and a record naming another route
+// is not this edge (#846). A drift warns without weighing on the verdict — the
+// profile itself still launches, only the hosted route is stale (the masking
+// rule of #293).
+func (l *launcher) doctorRemoteControl(name string, f map[string]string) {
+	raw, err := paths.ReadRegularFile(filepath.Join(l.dir, "profiles", ".rc-bridge", "hosted.json"))
+	if err != nil {
+		return // nothing published (no supervisor ran, or it stopped cleanly), or no regular file: no row, no waiting
+	}
+	var hosted struct {
+		Routes    []string          `json:"routes"`
+		Overrides map[string]string `json:"overrides"`
+	}
+	if json.Unmarshal(raw, &hosted) != nil || !slices.Contains(hosted.Routes, name) {
+		return
+	}
+	overrides := hosted.Overrides
+	// The served side is what the launcher published about its own edge; a
+	// record naming another route is that route's, never this one's (#846).
+	// Read through the store's nonblocking regular-file reader: a FIFO left
+	// under either name must not hold doctor's verdict (the #654 rule).
+	published := false
+	served := map[string]string{}
+	if b, err := paths.ReadRegularFile(filepath.Join(l.dir, "profiles", ".rc-bridge", "edges", name+".json")); err == nil {
+		var rec map[string]any
+		if json.Unmarshal(b, &rec) == nil {
+			if r, named := rec["route"].(string); !named || r == name {
+				if tiers, ok := rec["tiers"].(map[string]any); ok {
+					published = true
+					for alias, model := range tiers {
+						if m, ok := model.(string); ok {
+							served[alias] = m
+						}
+					}
+				}
+			}
+		}
+	}
+	pin := func(m string) string { return strings.TrimSuffix(m, "[1m]") }
+	want := map[string]string{}
+	for _, tier := range util.TierWords {
+		if m, ok := resolveTier(tier,
+			func(key string) (string, bool) { v, ok := f["env."+key]; return v, ok },
+			func(t string) (string, bool) { return l.tierAlias(name, t) }); ok &&
+			!strings.HasPrefix(strings.ToLower(m), "claude-"+tier) {
+			want[tier] = m
+		}
+	}
+	for alias, model := range overrides {
+		if slices.Contains(util.TierWords, alias) {
+			want[alias] = model
+		}
+	}
+	aliases := make([]string, 0, len(want)+len(served))
+	for alias := range want {
+		aliases = append(aliases, alias)
+	}
+	for alias := range served {
+		if _, held := want[alias]; !held {
+			aliases = append(aliases, alias)
+		}
+	}
+	slices.Sort(aliases)
+	if !published {
+		// Nothing to compare: no edge has published for this route (or only a
+		// twin's record, which is no one's live edge), and a fresh edge starts
+		// on the current map — nothing is stale yet.
+		l.status("INFO", "remote control: hosted; no edge record to compare (a running edge publishes one)")
+		return
+	}
+	drifted := 0
+	for _, alias := range aliases {
+		w, wanted := want[alias]
+		s, pinned := served[alias]
+		w, s = pin(w), pin(s)
+		switch {
+		case wanted && pinned && w != s:
+			l.status("WARN", "remote control: the hosted edge pins "+alias+"="+s+
+				"; this profile maps "+alias+"="+w+" — phone sessions start on the old map")
+			drifted++
+		case wanted && !pinned:
+			l.status("WARN", "remote control: the hosted edge pins no "+alias+" model; this profile maps "+
+				alias+"="+w+" — phone sessions send the native id instead")
+			drifted++
+		case pinned && !wanted:
+			l.status("WARN", "remote control: the hosted edge pins "+alias+"="+s+
+				"; this profile maps no "+alias+" model — phone sessions get a model the profile does not name")
+			drifted++
+		}
+	}
+	if drifted > 0 {
+		l.status("WARN", "remote control: restart the supervisor to repin every host: "+
+			"launchctl kickstart -k gui/$(id -u)/com.ccmorph.rc-hosts")
+		return
+	}
+	l.status("OK", "remote control: hosted; the edge pins the tiers this profile maps")
 }
