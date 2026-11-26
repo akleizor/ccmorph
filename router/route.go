@@ -84,6 +84,9 @@ type Pin struct {
 	Profile, Model, Effort string
 	Only                   []string
 	Order                  []string
+	// AnyTier keeps every usable model whatever its tier or family rank: the
+	// shadow picker's pool. Usability (disabled, quota, modality) still filters.
+	AnyTier bool
 }
 
 func drawsOn(w Window, model string) bool {
@@ -192,7 +195,7 @@ func Options(t Task, profiles []Profile, labels func(profile, model string) (Lab
 			switch {
 			case !ok || l.Family == "" || Efforts[l.Tier] == "":
 				reason = "no family/tier label"
-			case l.Tier != t.Tier && !chosen:
+			case l.Tier != t.Tier && !chosen && !pin.AnyTier:
 				reason = "not " + t.Tier + " tier"
 			case (t.Kind == "search" || t.Kind == "x" || t.Kind == "image_gen") && !slices.Contains(capable, l.Family):
 				reason = "no " + t.Kind + " capability in config"
@@ -202,7 +205,7 @@ func Options(t Task, profiles []Profile, labels func(profile, model string) (Lab
 				reason = "cannot read images"
 			// Mechanical work wants the cheapest families, which many profiles
 			// do not serve at all: its order ranks a top pick, never empties it.
-			case t.Tier == "top" && t.Kind != "mechanical" && len(order) > 0 && !slices.Contains(order[:min(2, len(order))], l.Family):
+			case t.Tier == "top" && t.Kind != "mechanical" && !pin.AnyTier && len(order) > 0 && !slices.Contains(order[:min(2, len(order))], l.Family):
 				reason = "outside the kind's top two families"
 			case poolSpent(p, m, now):
 				reason = "its quota pool is used up"
@@ -211,7 +214,13 @@ func Options(t Task, profiles []Profile, labels func(profile, model string) (Lab
 				dropped = append(dropped, p.Name+"/"+m+": "+reason)
 				continue
 			}
-			prev, seen := newest[l.Family]
+			// One model per family, the newest; across tiers a family's small and
+			// top lines are different models, not versions of one.
+			key := l.Family
+			if pin.AnyTier {
+				key += "/" + l.Tier
+			}
+			prev, seen := newest[key]
 			// The user's order outranks a newer version of the same family:
 			// when both are ordered, the earlier entry wins; a newer model
 			// only decides between two the order says nothing about.
@@ -226,12 +235,12 @@ func Options(t Task, profiles []Profile, labels func(profile, model string) (Lab
 			if seen {
 				dropped = append(dropped, p.Name+"/"+prev.model+": older served model")
 			} else {
-				families = append(families, l.Family)
+				families = append(families, key)
 			}
-			newest[l.Family] = pick{m, l.Family}
+			newest[key] = pick{m, l.Family}
 		}
-		for _, f := range families {
-			m := newest[f].model
+		for _, k := range families {
+			m, f := newest[k].model, newest[k].family
 			l, _ := labels(p.Name, m)
 			rank := slices.Index(order, f) + 1
 			if rank == 0 {

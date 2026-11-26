@@ -42,6 +42,9 @@ type Decision struct {
 	Shortlist []Option `json:"shortlist"`
 	Dropped   []string `json:"dropped"`
 	Notes     []string `json:"notes"`
+	// Shadow is the bandit's pick over every usable model, any tier or family.
+	// It is recorded, never run.
+	Shadow *Shadow `json:"shadow,omitempty"`
 }
 
 // Decide picks where one task runs.
@@ -119,6 +122,16 @@ func Decide(c Config, r Request) (Decision, error) {
 		opts = slices.DeleteFunc(opts, func(o Option) bool { return !r.Keep(o) })
 	}
 	d.Dropped = dropped
+	pin.AnyTier = true
+	if all, _, err := Options(d.Task, profiles, labeler(c, profiles, decider, r.Deadline), c.Kinds, nowSec(), pin); err == nil {
+		if r.Family != "" {
+			all = slices.DeleteFunc(all, func(o Option) bool { return o.Family != r.Family })
+		}
+		if r.Keep != nil {
+			all = slices.DeleteFunc(all, func(o Option) bool { return !r.Keep(o) })
+		}
+		d.Shadow = shadowPick(c, all, d.Task, loadBanditStats(readRows(ledgerPath())), shadowRand)
+	}
 	d.Shortlist = Choose(opts, c.Order)
 	if len(d.Shortlist) > 0 {
 		d.Pick = &d.Shortlist[0]
@@ -139,6 +152,9 @@ func reserve(id string, d Decision, brief string, extra Row) {
 		"brief": brief, "outcome": nil}
 	if d.Task.Lang != "" {
 		row["lang"] = d.Task.Lang
+	}
+	if d.Shadow != nil {
+		row["shadow"] = d.Shadow
 	}
 	for k, v := range extra {
 		row[k] = v

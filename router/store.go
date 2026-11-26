@@ -42,6 +42,8 @@ type Config struct {
 	Order  []string            `json:"order,omitempty"`
 	Only   map[string][]string `json:"only,omitempty"`
 	Labels map[string]Label    `json:"labels,omitempty"`
+	// TimeValue is US dollars per minute of waiting for the shadow picker; 0 keeps TimeValue.
+	TimeValue float64 `json:"time_value,omitempty"`
 }
 
 var defaultKinds = map[string][]string{

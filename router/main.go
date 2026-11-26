@@ -442,6 +442,9 @@ func report(args []string, stdout, stderr io.Writer) int {
 			}
 		}
 	}
+	if line := shadowSummary(rows); line != "" {
+		fmt.Fprintln(stdout, line)
+	}
 	if failed*5 > finished {
 		failures = append(failures, fmt.Sprintf("%d/%d finished routes failed (exceeds 20%%)", failed, finished))
 	}
