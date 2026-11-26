@@ -1813,6 +1813,10 @@ release_clone() {  # $1 = source repo, $2 = clone dir, $3 = tag
   (( rc == 0 )) || { print -r -- "git tag $tag in $dest failed rc=$rc: $err"; return 1; }
   git -C "$dest" rev-parse --verify -q "refs/tags/$tag" >/dev/null 2>&1 \
     || { print -r -- "tag $tag absent in $dest after git tag rc=$rc"; return 1; }
+  # make dist archives only a tag origin/main contains (#928); the throwaway
+  # tag sits on the clone's HEAD, so the clone's origin/main is moved there.
+  err=$(git -C "$dest" update-ref refs/remotes/origin/main HEAD 2>&1) \
+    || { print -r -- "pointing $dest's origin/main at its HEAD failed: $err"; return 1; }
   return 0
 }
 
