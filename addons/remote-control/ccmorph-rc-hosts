@@ -125,6 +125,13 @@ INFERENCE = STATE_ROOT / "profiles" / ".rc-bridge" / "inference"   # ccmorph-rc 
 WANTED = STATE_ROOT / "profiles" / ".rc-bridge" / "inference-wanted"   # the inference= value last applied, as written
 SWITCH_WORD = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]*")   # a profile word, as rc_route reads one
 SESSION_WORDS = INFERENCE.parent / "sessions"      # one session's own word: ccmorph-rc --switch --session
+# {"routes": what parse() hosts, "overrides": the tier. pins}: the answer this
+# supervisor alone can give, written at every config load for `ccmorph doctor`
+# (#881). The grammar is parse()'s own -- a reader that re-parsed rc-hosts in
+# another language missed one shape in each of three review rounds -- and a
+# record left by a supervisor that stopped cleanly is removed, so a stale file
+# never speaks for a supervisor that is gone.
+HOSTED = STATE_ROOT / "profiles" / ".rc-bridge" / "hosted.json"
 
 
 _unread_edges: set[str] = set()   # routes whose edge read failed and was logged
@@ -520,6 +527,46 @@ ALIAS_ENV = {"fable": "ANTHROPIC_DEFAULT_FABLE_MODEL",
              "opus": "ANTHROPIC_DEFAULT_OPUS_MODEL",
              "sonnet": "ANTHROPIC_DEFAULT_SONNET_MODEL",
              "haiku": "ANTHROPIC_DEFAULT_HAIKU_MODEL"}
+
+
+def hosted_record(routes, text: str) -> dict:
+    """What publish_hosted writes: the routes hosted, sorted, and the config's
+    `tier.` overrides for the aliases a host exports (route_tiers' filter)."""
+    return {"routes": sorted(routes),
+            "overrides": {a: m for a, m in tier_map(text).items() if a in ALIAS_ENV}}
+
+
+_hosted_unwritten = False   # a failed publish was logged; cleared when one lands
+
+
+def publish_hosted(record: dict) -> bool:
+    """HOSTED, atomically (a unique temp beside it, then os.replace). False, the
+    temp removed and one log line per failure episode, when it cannot be written;
+    the caller retries next tick and the tick goes on (#845)."""
+    global _hosted_unwritten
+    tmp = None
+    try:
+        HOSTED.parent.mkdir(parents=True, exist_ok=True)
+        fd, tmp = tempfile.mkstemp(dir=HOSTED.parent, prefix=HOSTED.name + ".", suffix=".tmp")
+        with os.fdopen(fd, "w") as fh:
+            json.dump(record, fh)
+        os.replace(tmp, HOSTED)
+    except OSError as e:
+        if tmp is not None:
+            with suppress(OSError):
+                os.unlink(tmp)
+        if not _hosted_unwritten:
+            _hosted_unwritten = True
+            log(f"cannot publish {HOSTED} ({e}); ccmorph doctor sees no hosted routes until it lands")
+        return False
+    _hosted_unwritten = False
+    return True
+
+
+def unpublish_hosted() -> None:
+    """A clean stop hosts nothing: the record goes with the hosts."""
+    with suppress(OSError):
+        HOSTED.unlink(missing_ok=True)
 
 
 class Host:
@@ -2539,6 +2586,7 @@ def main(argv: list[str]) -> int:
     inference_routes: set[str] = set()   # routes the loaded config names: their profiles' tiers reload too
     clock = Clock()
     stopping = []
+    pending = None   # a hosted record not yet written
     signal.signal(signal.SIGTERM, lambda *_: stopping.append(1))
     signal.signal(signal.SIGINT, lambda *_: stopping.append(1))
     log(f"watching {config}")
@@ -2606,6 +2654,7 @@ def main(argv: list[str]) -> int:
                         log(f"edge: {route} refused, {owner} already owns the name "
                             f"{edge_name(owner)}{why}; its folders are not hosted")
                         refused.add(route)
+                pending = hosted_record(routes - refused, text)
                 for route in sorted(routes):   # edges first: bridges start only once theirs is up
                     if route not in refused and f"edge:{route}" not in hosts:
                         e = Host(str(EDGES.parent), route, tiers=tiers[route])
@@ -2623,6 +2672,8 @@ def main(argv: list[str]) -> int:
         # or read-only config is retried rather than abandoned (the state is
         # in-memory: a supervisor restarted before it lands starts that one
         # conversation again, #355).
+        if pending is not None and publish_hosted(pending):
+            pending = None
         for folder in sorted(unrecorded):
             after = edit_config(config, folder, loaded=text)
             if after is None:                  # unreadable or read-only still: retry next tick
@@ -2683,6 +2734,7 @@ def main(argv: list[str]) -> int:
         time.sleep(TICK)
     for h in hosts.values():
         h.stop()
+    unpublish_hosted()
     return 0
 
 

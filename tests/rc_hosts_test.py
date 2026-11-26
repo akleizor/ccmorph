@@ -749,14 +749,16 @@ class _ScriptedTime:
 
 def run_main(m, monkeypatch, tmp_path, cfg, start, sleep=None,
              edge_ready=lambda route: True, clock=None, args=None, logs=True,
-             profile_tiers=lambda route: {}):
+             profile_tiers=lambda route: {}, exits=True):
     """Drive m.main() over cfg until the scripted sleep raises SystemExit: logs
     under tmp_path, Host.start faked by `start`, the clock read from `clock`
     when given. `args` replaces the `--config` argument list main() gets.
     Without a `sleep`, main() stops on its fifth sleep. `logs=False` leaves
     tmp_path/logs absent: a fresh state dir whose first reload reaches the
     switch bring-up before any Host.start created LOGS (issue #596).
-    `profile_tiers` answers for `ccmorph get <route> --json`'s tier map."""
+    `profile_tiers` answers for `ccmorph get <route> --json`'s tier map.
+    `exits=False` lets main() return its own exit code instead: a tick that
+    asks for a clean stop (the SIGTERM handler) ends the loop and returns."""
     monkeypatch.setattr(m, "LOGS", tmp_path / "logs")
     monkeypatch.setattr(m, "read_profile_tiers", profile_tiers, raising=False)
     if logs:
@@ -770,8 +772,11 @@ def run_main(m, monkeypatch, tmp_path, cfg, start, sleep=None,
             if ticks[0] > 4:
                 raise SystemExit
     monkeypatch.setattr(m, "time", _ScriptedTime(m.time, clock, sleep))
+    argv = args if args is not None else ["--config", str(cfg)]
+    if not exits:
+        return m.main(argv)
     with pytest.raises(SystemExit):
-        m.main(args if args is not None else ["--config", str(cfg)])
+        m.main(argv)
 
 
 def test_the_attached_config_spelling_names_the_file_watched(tmp_path, monkeypatch):
@@ -1499,6 +1504,109 @@ def test_the_profile_tiers_are_read_from_ccmorph_get(monkeypatch):
     assert seen[0][1:] == ["cli", "get", "gw", "--json"]
     monkeypatch.setattr(m.subprocess, "run", lambda cmd, **kw: SimpleNamespace(returncode=1, stdout=""))
     assert m.read_profile_tiers("gw") is None
+
+
+def test_hosted_record_is_the_routes_and_the_tier_overrides_gh_881():
+    """GH-881: what the supervisor alone knows -- the routes its parse() hosts
+    and the `tier.` pins -- in one record `ccmorph doctor` reads, so no other
+    reader re-parses rc-hosts. Routes are sorted; only the aliases a host
+    exports survive; the one line rule (cut at `#`, strip) reads `tier. haiku = y`."""
+    m = load()
+    assert m.hosted_record({"other", "demo"},
+                           "tier.opus=gpt-6-astra\ntier.bogus=x\ntier. haiku = y # note\n") == {
+        "routes": ["demo", "other"], "overrides": {"opus": "gpt-6-astra", "haiku": "y"}}
+    assert m.hosted_record(set(), "") == {"routes": [], "overrides": {}}
+
+
+def test_main_publishes_the_routes_it_hosts_at_every_config_load_gh_881(tmp_path, monkeypatch):
+    """The publisher's real test: a load with a case-twin route (refused, so it
+    starts no edge and hosts no folder) and a NBSP-ended own route publishes
+    exactly what the supervisor hosts; a config edit republishes on the next
+    load; a stop that was not clean leaves the record for the next doctor read."""
+    m = load()
+    a, b, c, d = (tmp_path / n for n in "abcd")
+    cfg = tmp_path / "rc-hosts"
+    cfg.write_text(f"route=gw\n{a}\n{d}\n{c} route=GW\n{b} route=demo  -- -c\n"
+                   "tier.opus=gpt-6-astra\n")
+    monkeypatch.setattr(m, "cycle", lambda *args: False)
+    monkeypatch.setattr(m.Host, "stop", lambda self: None)
+
+    def start(self):
+        self.proc, self.started = FakeProc(), m.time.time()
+
+    seen = []
+    ticks = [0]
+
+    def sleep(_):
+        ticks[0] += 1
+        seen.append(json.loads(m.HOSTED.read_text()))
+        if ticks[0] == 2:
+            cfg.write_text(f"route=other\n{a} -- route=demo\n")
+            os.utime(cfg, (1, 1))
+        if ticks[0] > 2:
+            raise SystemExit
+
+    run_main(m, monkeypatch, tmp_path, cfg, start, sleep=sleep)
+    assert seen[0] == {"routes": ["demo", "gw"], "overrides": {"opus": "gpt-6-astra"}}
+    assert seen[-1] == {"routes": ["other"], "overrides": {}}   # the forwarded route= hosts nothing
+    assert m.HOSTED.exists()                                    # a stop that was not clean leaves it
+
+
+def test_a_publish_that_cannot_land_is_logged_once_and_retried_each_tick_gh_881(
+        tmp_path, monkeypatch, capsys):
+    """A blocked record directory must not end the tick or repeat the complaint
+    every second: one log line per failure episode, the tick goes on, the record
+    lands on the first tick after the block clears, and no temp file is left."""
+    m = load()
+    blocker = tmp_path / "blocker"
+    blocker.write_text("")              # a regular file where the record's directory belongs
+    monkeypatch.setattr(m, "HOSTED", blocker / "hosted.json")
+    a = tmp_path / "a"
+    cfg = tmp_path / "rc-hosts"
+    cfg.write_text(f"route=gw\n{a}\n")
+    monkeypatch.setattr(m, "cycle", lambda *args: False)
+    monkeypatch.setattr(m.Host, "stop", lambda self: None)
+
+    def start(self):
+        self.proc, self.started = FakeProc(), m.time.time()
+
+    ticks = [0]
+
+    def sleep(_):
+        ticks[0] += 1
+        if ticks[0] == 3:
+            blocker.unlink()            # the block clears; the next tick's retry lands
+        if ticks[0] > 4:
+            raise SystemExit
+
+    run_main(m, monkeypatch, tmp_path, cfg, start, sleep=sleep)
+    assert capsys.readouterr().out.count("cannot publish") == 1
+    assert json.loads(m.HOSTED.read_text()) == {"routes": ["gw"], "overrides": {}}
+    assert sorted(p.name for p in m.HOSTED.parent.iterdir()) == ["hosted.json"]
+
+
+def test_a_clean_stop_takes_the_published_record_with_it_gh_881(tmp_path, monkeypatch):
+    """SIGTERM ends the loop at the top, the hosts stop, and the record goes: a
+    supervisor that is gone must not speak for a profile in doctor's report."""
+    m = load()
+    a = tmp_path / "a"
+    cfg = tmp_path / "rc-hosts"
+    cfg.write_text(f"route=gw\n{a}\n")
+    monkeypatch.setattr(m, "cycle", lambda *args: False)
+    monkeypatch.setattr(m.Host, "stop", lambda self: None)
+
+    def start(self):
+        self.proc, self.started = FakeProc(), m.time.time()
+
+    published = []
+
+    def sleep(_):
+        published.append(m.HOSTED.exists())
+        m.signal.getsignal(m.signal.SIGTERM)(m.signal.SIGTERM, None)
+
+    assert run_main(m, monkeypatch, tmp_path, cfg, start, sleep=sleep, exits=False) == 0
+    assert published == [True]
+    assert not m.HOSTED.exists()
 
 
 @pytest.mark.parametrize("ambient_opus", [None, "parent-pinned-opus"],
