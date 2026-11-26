@@ -128,6 +128,10 @@ type StoreArgs struct {
 	Mapping                         []string
 	Materialize                     string
 	Change                          StoreChange
+	// Live is the descriptor this process holds for the profile's live lock,
+	// nil when it holds none: a projection run inside a launch upgrades the
+	// launch's own lock instead of waiting on it (#939).
+	Live *os.File
 }
 
 // ConfigStore runs the operation. The result is its text and its status: 0 done,
@@ -151,7 +155,7 @@ func ConfigStore(a StoreArgs, errw io.Writer) (string, int) {
 	// settings-compose's own statuses, shifted past the store's: exit 1 still means
 	// "the store failed, do not start".
 	argv := append(strings.Split(materialize, "\n"), "--saved", projectedJSON)
-	if rc := settingscompose.Main(argv, errw); rc != 0 {
+	if rc := settingscompose.MainWithLive(argv, errw, a.Live); rc != 0 {
 		return out.String(), 10 + rc
 	}
 	return out.String(), 0

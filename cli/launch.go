@@ -603,7 +603,8 @@ func withEnv(set, drop []string, f func()) {
 }
 
 func (l *launcher) storeArgs(verb, name, key string) util.StoreArgs {
-	return util.StoreArgs{Op: verb, Conf: l.conf(name), Settings: l.profileLayer(name), Key: key, Shared: l.canonical(), Mapping: l.mapping}
+	return util.StoreArgs{Op: verb, Conf: l.conf(name), Settings: l.profileLayer(name), Key: key, Shared: l.canonical(),
+		Mapping: l.mapping, Live: util.LiveFile(l.profileDirs, name)}
 }
 
 // runStore is a store operation: its text without trailing newlines and its status;
