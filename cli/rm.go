@@ -27,16 +27,45 @@ func (l *launcher) locked(key string, args []string) (int, bool) {
 	return runRC(cmd), true
 }
 
+// lockKey is the `--locked` operand for these profiles: each name escaped so a
+// comma inside a profile's own name stays part of it, then joined. A skipped
+// conf's name may hold one, and the lock takes the name as it is spelled on
+// disk, not as fragments of it (GH-915).
+func lockKey(names ...string) string {
+	esc := make([]string, len(names))
+	for i, n := range names {
+		esc[i] = strings.NewReplacer(`\`, `\\`, `,`, `\,`).Replace(n)
+	}
+	return strings.Join(esc, ",")
+}
+
+// afterDashDash is args with a leading separator removed — the form a name a
+// shell would read as a flag is printed in (GH-915).
+func afterDashDash(args []string) []string {
+	if len(args) > 0 && args[0] == "--" {
+		return args[1:]
+	}
+	return args
+}
+
 // rm is `ccmorph rm <profile>`: conf, private state, keychain item and lock.
 func (l *launcher) rm(args []string) int {
+	raw := args
+	args = afterDashDash(args)
 	name := ""
 	if len(args) > 0 {
 		name = args[0]
 	}
 	// rm is the one verb that accepts the pre-#373 length: a profile made before
 	// the limit can still be addressed and so must still be removable (#449).
-	// Its refusal names its own, wider bound, not ValidName's (#551).
-	if !profile.RemovableName(name) {
+	// Its refusal names its own, wider bound, not ValidName's (#551). And a
+	// word that is exactly a conf on disk names the skipped profile every
+	// listing prints a delete hint for: the hint runs here, whatever the name
+	// rule makes of it (GH-915) — every other verb still answers it with the
+	// one refusal. A stem with no private state of its own ("" from .conf, "."
+	// from ..conf) is never one of them: rm must not reach the profiles
+	// directory, and an empty operand stays the usage fault it always was.
+	if !profile.RemovableName(name) && !(profile.OwnStateName(name) && l.hasConfName(name)) {
 		return l.rmBadName("rm", name)
 	}
 	// A name that differs only by case is refused before the leftover branch:
@@ -45,7 +74,9 @@ func (l *launcher) rm(args []string) int {
 		l.noProfile(name)
 		return 1
 	}
-	if rc, done := l.locked(name, append([]string{"rm"}, args...)); done {
+	// The re-exec keeps the separator a flag-shaped name came with: the inner
+	// rm must read the same name, not a flag.
+	if rc, done := l.locked(lockKey(name), append([]string{"rm"}, raw...)); done {
 		return rc
 	}
 	// What rm offers is what it will remove (GH-837): a leftover from a
@@ -270,14 +301,23 @@ func moveBridgeFiles(root, from, to string) bool {
 
 // mv is `ccmorph mv <old> <new>`, rolled back whole on any failure.
 func (l *launcher) mv(args []string) int {
+	raw := args
+	args = afterDashDash(args)
 	if len(args) < 2 {
 		l.err("usage: " + usageLine("mv"))
 		return 1
 	}
-	for _, n := range args[:2] {
-		if !profile.ValidName(n) {
-			return l.badName("mv", n)
+	// A word the validator refuses can still name a conf on disk — the skipped
+	// conf every listing prints a rename hint for — and a rename to a valid
+	// name is the repair that makes it load again (GH-915). Only the old name
+	// takes that path, and only one that has private state of its own: a new
+	// name must always be one every reader can read back, so every other word
+	// keeps the one refusal.
+	for i, n := range args[:2] {
+		if profile.ValidName(n) || (i == 0 && profile.OwnStateName(n) && l.hasConfName(n)) {
+			continue
 		}
+		return l.badName("mv", n)
 	}
 	from, to := args[0], args[1]
 	// A volume that ignores letter case cannot hold both names while the rename
@@ -286,7 +326,7 @@ func (l *launcher) mv(args []string) int {
 		l.err("'" + to + "' differs from '" + from + "' only by letter case; a rename cannot change only the case. Choose another name.")
 		return 1
 	}
-	if rc, done := l.locked(from+","+to, append([]string{"mv"}, args...)); done {
+	if rc, done := l.locked(lockKey(from, to), append([]string{"mv"}, raw...)); done {
 		return rc
 	}
 	if !l.exists(from) {

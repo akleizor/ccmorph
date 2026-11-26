@@ -156,6 +156,34 @@ func TestRmClearsTheDefaultItRemovedWhateverTheNameLength(t *testing.T) {
 	}
 }
 
+// GH-915: `.conf` and `..conf` are listed by the scanner under the stems ""
+// and ".", and a removal that admitted either resolved <profiles>/"" and
+// <profiles>/. to the profiles directory itself — one attempt deleted every
+// profile's private state. A missing or empty operand is a usage fault before
+// the destructive path, and a stem that has no private state of its own is
+// never one rm removes.
+func TestRmNeverReachesTheProfilesDirForAStemWithoutState(t *testing.T) {
+	for _, stem := range []string{"", "."} {
+		l := storeTestLauncher(t, "work", "type=apikey\napi_key=k\n", `{"env":{}}`)
+		settings := filepath.Join(l.profileDirs, "work", "settings.profile.json")
+		conf := filepath.Join(l.dir, stem+".conf")
+		if err := os.WriteFile(conf, []byte("type=apikey\napi_key=k\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		answerRmPrompt(t, "y\n")
+		msg, rc := rmStderr(t, l, stem)
+		if rc == 0 {
+			t.Fatalf("stem %q: rm must refuse, not remove (printed %q)", stem, msg)
+		}
+		if _, err := os.Stat(settings); err != nil {
+			t.Fatalf("stem %q: rm removed a profile's private state: %v", stem, err)
+		}
+		if _, err := os.Stat(conf); err != nil {
+			t.Fatalf("stem %q: rm removed the conf it refused: %v", stem, err)
+		}
+	}
+}
+
 // GH-551: rm's case-twin guard asked a reader that filtered candidates through
 // ValidName, so a legacy-length twin was invisible and the refusal fell through
 // to the leftover-state branch — on a volume that ignores letter case, the one

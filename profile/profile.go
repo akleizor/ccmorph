@@ -49,7 +49,46 @@ func Repair(err error, name string) string {
 	if r := RepairOf(err); r != "" {
 		return r
 	}
-	return "fix " + name + ".conf, or delete it: ccmorph rm " + name
+	return "fix " + name + ".conf, or delete it: " + rmHint(name)
+}
+
+// rmHint is the ccmorph removal a repair prints for a name. A flag-shaped name
+// is put after `--`, so the line names the profile rather than opening help or
+// turning into a flag (GH-915); the name itself is shell-quoted when a shell
+// would rewrite it.
+func rmHint(name string) string {
+	if strings.HasPrefix(name, "-") {
+		return "ccmorph rm -- " + ShellWord(name)
+	}
+	return "ccmorph rm " + ShellWord(name)
+}
+
+// shellSafeWord is a word a shell runs literally: no glob, quote or separator
+// rune needs quoting for it.
+var shellSafeWord = regexp.MustCompile(`^[A-Za-z0-9_@%+=:,./-]+$`)
+
+// ShellWord is a word as a printed command should carry it (GH-915): a word a
+// shell runs literally stays bare — every name the validator accepts is one —
+// and anything else is single-quoted so the line a listing prints can be
+// pasted back into bash or zsh unchanged. A leading `=` is quoted even though
+// the rune is safe elsewhere: zsh expands an unquoted `=word` to the command's
+// path, so `ccmorph rm =ls` would reach ccmorph as `/usr/bin/ls`.
+func ShellWord(s string) string {
+	if s != "" && s[0] != '=' && shellSafeWord.MatchString(s) {
+		return s
+	}
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
+}
+
+// OwnStateName reports whether name can spell private state of its own: a
+// single path element that is not the state directory itself. The scanner
+// lists a conf under any stem the directory holds — "", "." and ".." from
+// .conf, ..conf and ...conf — but those three collapse onto the profiles
+// directory, the state root, or nothing at all. rm and mv act on such a
+// name's conf only, never on a directory it would share with every profile
+// (GH-915).
+func OwnStateName(name string) bool {
+	return name != "" && name != "." && name != ".." && !strings.ContainsRune(name, '/')
 }
 
 // RepairOf is the repair a refusal carries, or "" when it names none (GH-839).

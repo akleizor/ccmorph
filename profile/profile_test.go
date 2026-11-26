@@ -1,6 +1,7 @@
 package profile
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -113,6 +114,40 @@ func TestRepairKeepsTheRepairTheRefusalAlreadyNames(t *testing.T) {
 	_, _, err = read(t, "type=token\n")
 	if got := RepairOf(err); got != "" {
 		t.Fatalf("RepairOf on a refusal with no repair %q", got)
+	}
+}
+
+// GH-915: the delete hint a listing prints must run as printed. A skipped
+// conf's name can hold characters the shell would otherwise eat — zsh stops
+// at a bare `my[proj]` before ccmorph is ever reached — so a name that is not
+// a word every shell runs literally rides single-quoted, and every name the
+// validator accepts, being [A-Za-z0-9_]+, stays bare (the GH-839 wording).
+func TestRepairQuotesANameTheShellWouldEat(t *testing.T) {
+	if got := Repair(errors.New("x"), "vp"); got != "fix vp.conf, or delete it: ccmorph rm vp" {
+		t.Fatalf("a valid name must print unquoted: %q", got)
+	}
+	if got := Repair(errors.New("x"), "my[proj]"); got != "fix my[proj].conf, or delete it: ccmorph rm 'my[proj]'" {
+		t.Fatalf("a name holding a glob must print single-quoted: %q", got)
+	}
+	// A quote inside the name survives the quoting, so the line still parses
+	// when pasted back.
+	if got := Repair(errors.New("x"), "it's"); got != `fix it's.conf, or delete it: ccmorph rm 'it'\''s'` {
+		t.Fatalf("a name holding a quote must survive quoting: %q", got)
+	}
+	// zsh expands an unquoted word starting with `=`, so a conf named =ls.conf
+	// must not print a command that reaches ccmorph as /usr/bin/ls (GH-915).
+	if got := Repair(errors.New("x"), "=ls"); got != "fix =ls.conf, or delete it: ccmorph rm '=ls'" {
+		t.Fatalf("a name zsh would expand must be quoted: %q", got)
+	}
+	// A flag-shaped name is put after `--`: the printed command removes the
+	// conf instead of opening help (GH-915).
+	for _, name := range []string{"--help", "-h", "-*"} {
+		if got := Repair(errors.New("x"), name); !strings.Contains(got, "ccmorph rm -- ") {
+			t.Fatalf("a flag-shaped name must follow --: %q", got)
+		}
+	}
+	if got := Repair(errors.New("x"), "--help"); got != "fix --help.conf, or delete it: ccmorph rm -- --help" {
+		t.Fatalf("a help-shaped name must print unambiguously: %q", got)
 	}
 }
 
