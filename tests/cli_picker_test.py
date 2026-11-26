@@ -307,6 +307,71 @@ chmod +x "$HOME/core/ccmorph-core"
 _CCMORPH_LIBEXEC_DIR="$HOME/core"
 '''
 
+# GH-260's endings for an unreachable gateway, as a launch states them: the
+# refused port named, or the bounded no-answer sentence. The launch's probe may
+# stop curl at its bound before curl's own refusal is reaped, so a refused stub
+# can end in the bounded class; and the seconds it states are measured from the
+# call and capped at the claim the progress line promised plus curl's reap
+# grace (util/reach.go, #891), never the at-rest count. Any other cause, or a
+# count past the claim, is no ending GH-260 promised (#943).
+REACH_REFUSED = 'connection refused: old.example port 443'
+REACH_NO_ANSWER = re.compile(r'no answer from old\.example port 443 after ([0-9]+) seconds?')
+
+
+def reach_ending(text, claim_seconds):
+    """('refused'|'silent'|None, seconds) for a launch's ending in `text`.
+
+    'refused' names the refused port; 'silent' is the bounded no-answer class,
+    with the seconds it claimed, which must not pass the caller's claim. Any
+    other ending is (None, None), so a wrong class still reddens the twin.
+    """
+    if REACH_REFUSED in text:
+        return 'refused', None
+    m = REACH_NO_ANSWER.search(text)
+    if m and 1 <= int(m.group(1)) <= claim_seconds:
+        return 'silent', int(m.group(1))
+    return None, None
+
+
+def reach_claim_seconds(bound):
+    """The most the probe may claim it waited for `bound`: its bound plus the
+    one-second grace curl is given to be reaped, rounded to whole seconds the
+    way util/reach.go states it (#891)."""
+    return max(int(bound + 1 + 0.5), 1)
+
+
+class ReachEndingTest(unittest.TestCase):
+    """The #260 twin's reading of a launch's ending (#943).
+
+    Scheduler saturation can stop the probe at its bound before curl's refusal
+    is reaped, and can carry the silent verdict's count to the claim the
+    launch promised. The twin must read those as GH-260's classes, and any
+    other cause or a count past the claim as a failure, so its assertions are
+    pinned here without a terminal.
+    """
+    def test_the_ending_reads_the_class_and_bounds_the_claim(self):
+        claim = reach_claim_seconds(0.8)  # two seconds
+        silence = ('no answer from old.example port 443 after {} seconds '
+                   '(if it is an internal endpoint, connect your private network)')
+        for text, want in (
+                ("could not reach 'https://old.example' — "
+                 "connection refused: old.example port 443", ('refused', None)),
+                (silence.format(1), ('silent', 1)),
+                (silence.format(2), ('silent', 2)),
+        ):
+            with self.subTest(want=want):
+                self.assertEqual(reach_ending(text, claim), want)
+        for text in (
+                silence.format(3),                                 # past the claim
+                'name not found: old.example port 443',            # another named cause
+                'secure connection failed: old.example port 443',  # another named cause
+                'the endpoint https://old.example did not answer', # the route refusal
+                'no answer from old.example port 443',             # a count-less silence
+        ):
+            with self.subTest(text=text):
+                self.assertEqual(reach_ending(text, claim), (None, None))
+
+
 class PickerTTYTest(unittest.TestCase):
     def setUp(self):
         self.tmp = Path(tempfile.mkdtemp(prefix='ccmorph-picker-'))
@@ -452,21 +517,42 @@ class PickerTTYTest(unittest.TestCase):
         # model opened the model picker on that gateway and ended on one sentence,
         # while the launch with no terminal ended on another. Both now end on the
         # same words: a refused port is named and the launch goes on to its
-        # adapter without a picker; silence is named after a progress line and
-        # ends the launch in the gateway class.
-        def last_lines(text, n):
+        # adapter without a picker; silence is the bounded no-answer class and
+        # ends the launch in the gateway class. The probe may state any second up
+        # to the claim its progress line promised plus curl's reap grace, never
+        # one at-rest second, so the silent ending's count is bounded rather than
+        # pinned (#891, #943). The progress line itself is the probe's own timer
+        # and can lose the same race, so it is not asserted; a waited verdict's
+        # route-check line is, by the last-lines comparison below.
+        def last_lines(text):
             plain = re.sub(r'\x1b\[[0-9;?]*[A-Za-z]', '', text).replace('\r', '')
-            return [line.rstrip() for line in plain.split('\n') if line.strip()][-n:]
+            lines = [line.rstrip() for line in plain.split('\n') if line.strip()][-2:]
+            # The probe's capped count is the scheduler's, not the terminal's:
+            # compare the sentence, not the number it was free to state.
+            return [re.sub(r' after [0-9]+ seconds?', ' after the claim', line) for line in lines]
 
         refused = ("printf '%s\\n' 'curl: (7) Failed to connect to old.example port 443: "
                    "Connection refused' >&2; exit 7")
-        for case, curl, want, rc_want in (
-                ('refused', refused, 'connection refused: old.example port 443', None),
-                ('silent', 'exec sleep 30', 'no answer from old.example port 443 after 1 second', 75)):
+        # The refused probe keeps the full five-second promise the product makes
+        # (#875, #901), so an instant refusal sits far inside it and both shapes
+        # name the port. Silence is shortened to 0.8 s so the case stays quick;
+        # its claim then caps at two seconds.
+        for case, curl, bound, rc_want in (
+                ('refused', refused, '5', None),
+                ('silent', 'exec sleep 30', '0.8', 75)):
             with self.subTest(case=case):
+                claim = reach_claim_seconds(float(bound))
                 env = self.env(fzf=True)
-                env.update(CCMORPH_REACH_PROGRESS='0.2', CCMORPH_REACH_BOUND='0.8')
-                (self.tmp / 'bin/curl').write_text('#!/bin/sh\n' + curl + '\n')
+                env.update(CCMORPH_REACH_PROGRESS='0.2', CCMORPH_REACH_BOUND=bound)
+                stub = self.tmp / 'bin/curl'
+                stub.write_text('#!/bin/sh\n' + curl + '\n')
+                if case == 'refused':
+                    # Pay the stub's first exec outside the probe's bound: macOS
+                    # validates a fresh executable on first use, and a scheduler
+                    # that queues that scan past the bound is #875's load-only
+                    # "no answer" for a route that answered.
+                    subprocess.run([str(stub)], env=env, stdin=subprocess.DEVNULL,
+                                   capture_output=True, timeout=HANG_TIMEOUT)
                 self.profile()
                 (self.state / 'profiles/demo/settings.json').write_text('{}')
                 (self.tmp / 'fzf.log').unlink(missing_ok=True)
@@ -477,18 +563,24 @@ class PickerTTYTest(unittest.TestCase):
                     ['zsh', '-fc', 'source "$1"\n' + command, 'test', str(CCMORPH)],
                     env=env, stdin=subprocess.DEVNULL, capture_output=True, text=True,
                     timeout=HANG_TIMEOUT)
-                self.assertIn(want, out)
-                self.assertFalse((self.tmp / 'fzf.log').exists(), out)  # no picker opened
-                self.assertNotIn('network' if case == 'refused' else 'did not answer', out)
-                if rc_want is None:
+                ending, seconds = reach_ending(out, claim)
+                self.assertIsNotNone(ending, out)
+                self.assertEqual(ending, reach_ending(headless.stderr, claim)[0], headless.stderr)
+                if case == 'refused':
+                    self.assertEqual(ending, 'refused', out)  # the port is named
                     self.assertIn('SELECTED=<>', out)  # the launch went on to its adapter
                     self.assertIn('SELECTED=<>', headless.stderr)
+                    self.assertNotIn('network', out)  # an answered failure is no network problem
                 else:
+                    self.assertEqual(ending, 'silent', out)
+                    self.assertGreaterEqual(seconds, 1, out)
+                    self.assertLessEqual(seconds, claim, out)
                     self.assertEqual(rc, rc_want, out)
-                    self.assertIn("Checking 'demo' gateway", out)
+                    self.assertNotIn('did not answer', out)  # not the route refusal's generic fallback (cli/run.go routeRefusal)
                     self.assertNotIn('SELECTED=', out)
+                self.assertFalse((self.tmp / 'fzf.log').exists(), out)  # no picker opened
                 self.assertEqual(rc, headless.returncode, out + headless.stderr)
-                self.assertEqual(last_lines(out, 2), last_lines(headless.stderr, 2), out + headless.stderr)
+                self.assertEqual(last_lines(out), last_lines(headless.stderr), out + headless.stderr)
 
     # GH-932: two `run_pty` children (`ccmorph run demo`), each a zsh that
     # sources lib/ccmorph.sh and is HANG_TIMEOUT (120 s) bounded; on the night
