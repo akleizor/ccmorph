@@ -1007,8 +1007,17 @@ class AdapterTest(unittest.TestCase):
         return True
 
     def _tethers(self, adapter_pid):
-        """The `ccmorph-core tether <adapter_pid> ...` processes running now."""
-        out = subprocess.run(["ps", "-A", "-o", "pid=,command="],
+        """The `ccmorph-core tether <adapter_pid> ...` processes running now.
+
+        -ww because ps truncates its command column to $COLUMNS when it is
+        not a tty -- pytest's capture exports COLUMNS=80, and on a host whose
+        checkout path is long (CI runners are ~55 chars; a nomad rig worker's
+        is ~110) the default 80-column line cuts off before `tether <pid>`,
+        so the readiness wait below could never see its own tether (#892
+        gate investigation, 2026-11-26: the Linux-rig failure was this, not
+        a leaked process).
+        """
+        out = subprocess.run(["ps", "-ww", "-A", "-o", "pid=,command="],
                              capture_output=True, text=True, check=True,
                              timeout=HANG_TIMEOUT).stdout
         pattern = re.compile(rf"\stether {adapter_pid}(\s|$)")
