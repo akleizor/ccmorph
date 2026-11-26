@@ -75,7 +75,7 @@ func TestTheProfileMenuRowsCarryTheListingsMarksIssue489(t *testing.T) {
 	want := map[string]string{
 		"work": "work\tClaude account\tdemo@example.com\t",
 		"tok":  "tok\tClaude token\t· private\tdefault",
-		"gw":   "gw\tAPI key\thttps://gw.example → gw-model\t",
+		"gw":   "gw\tAPI key\thttps://gw.example → gw-model, saved in this profile\t",
 		"cx":   "cx\tCodex\tBrowser login\t",
 	}
 	if len(rows) != len(want) {
@@ -203,5 +203,100 @@ func TestBothModelMenusMarkTheSavedModelAsTheKeepRowIssue377(t *testing.T) {
 	set := menuRows("model", "picker-beta", "", "", rows, true, true)
 	if launch[0] != set[0] || launch[0] != "@keep\tKeep picker-beta" {
 		t.Errorf("the launch menu marks the saved model as %q, the set menu as %q", launch[0], set[0])
+	}
+}
+
+// GH-862: list and the profile menu showed a model taken from
+// ~/.claude/settings.json as the profile's own. Each row now says where its
+// model came from, and reading the rows writes nothing.
+func TestProfileRowsSayWhereTheModelCameFromIssue862(t *testing.T) {
+	type fixture struct {
+		shared string
+		confs  map[string]string
+		layers map[string]string
+		want   map[string]string
+	}
+	gw := "type=apikey\napi_key=k\nbase_url=https://gw.example\n"
+	for name, fx := range map[string]fixture{
+		"a model in ~/.claude/settings.json": {
+			shared: `{"model":"opus"}`,
+			confs: map[string]string{
+				"gwshared": gw,
+				"gwseeded": gw + "model=opus\nmodel_source=claude-settings\nmodel_defaults=1\n",
+				"gwown":    gw + "model=model-a\n",
+				"gwlayer":  gw,
+			},
+			layers: map[string]string{"gwlayer": `{"model":"mine"}`},
+			want: map[string]string{
+				"gwshared": "gwshared\tAPI key\thttps://gw.example → opus, from ~/.claude/settings.json\t",
+				"gwseeded": "gwseeded\tAPI key\thttps://gw.example → opus, from ~/.claude/settings.json\t",
+				"gwown":    "gwown\tAPI key\thttps://gw.example → model-a, saved in this profile\t",
+				"gwlayer":  "gwlayer\tAPI key\thttps://gw.example → mine, saved in this profile\t",
+			},
+		},
+		"no ~/.claude/settings.json": {
+			confs: map[string]string{
+				"cx":     "type=provider\nprovider=codex\n",
+				"cxm":    "type=provider\nprovider=codex\n",
+				"gwnone": gw,
+			},
+			layers: map[string]string{"cxm": `{"model":"codex-model"}`},
+			want: map[string]string{
+				"cx":     "cx\tCodex\tBrowser login\t",
+				"cxm":    "cxm\tCodex\tcodex-model, saved in this profile\t",
+				"gwnone": "gwnone\tAPI key\thttps://gw.example\t",
+			},
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			root := t.TempDir()
+			t.Setenv("HOME", root)
+			state, profiles := filepath.Join(root, "state"), filepath.Join(root, "profiles")
+			for _, d := range []string{state, profiles, filepath.Join(root, ".claude")} {
+				if err := os.MkdirAll(d, 0o700); err != nil {
+					t.Fatal(err)
+				}
+			}
+			shared := filepath.Join(root, ".claude", "settings.json")
+			if fx.shared != "" {
+				if err := os.WriteFile(shared, []byte(fx.shared), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			for n, body := range fx.confs {
+				if err := os.WriteFile(filepath.Join(state, n+".conf"), []byte(body), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			for n, body := range fx.layers {
+				if err := os.MkdirAll(filepath.Join(profiles, n), 0o700); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(filepath.Join(profiles, n, "settings.json"), []byte(body), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			before := map[string]string{shared: readBack(t, shared)}
+			for n := range fx.confs {
+				p := filepath.Join(state, n+".conf")
+				before[p] = readBack(t, p)
+			}
+			l := &launcher{dir: state, profileDirs: profiles}
+			rows := map[string]string{}
+			for _, r := range l.profileRows("", nil, nil) {
+				n, _, _ := strings.Cut(r, "\t")
+				rows[n] = r
+			}
+			for n, want := range fx.want {
+				if rows[n] != want {
+					t.Errorf("the row for %s is %q, want %q", n, rows[n], want)
+				}
+			}
+			for p, b := range before {
+				if got := readBack(t, p); got != b {
+					t.Errorf("reading the rows changed %s:\n%s\n->\n%s", p, b, got)
+				}
+			}
+		})
 	}
 }

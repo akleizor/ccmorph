@@ -581,11 +581,9 @@ func (l *launcher) doctor(name string, verbose bool) int {
 		}
 	}
 	if tierMissing != "" {
-		// Launch's own refusal (adapterModel): a gateway tier with nothing mapped
-		// to it stops at adapter start. The report says so instead of leaving the
-		// row to an unresolved model's silence (#475).
-		report("FAIL", "model: no gateway model is mapped to tier '"+tierMissing+"'; a launch would stop at adapter start",
-			"choose an explicit model: ccmorph set "+name+" model <model-id>")
+		// Launch's own refusal (adapterModel), in its words: the alias, where it
+		// came from, and the one command that picks a served model (#475, #862).
+		report("FAIL", "model: "+util.UnservedTier(name, tierMissing, l.modelOrigin(name), nil), util.UnservedTierFix(name))
 		failed = 1
 	}
 	// The route rows are computed before the api-key lines print, because the
@@ -614,7 +612,7 @@ func (l *launcher) doctor(name string, verbose bool) int {
 		needed, known := adapter.TranslatorVerdict(base, l.profileDirs, classified, listing)
 		return util.TranslatorNeed{Known: known, Needed: needed, Installed: translatorInstalled()}
 	}
-	rows, bad, keyRejected := util.DoctorRoute(name, typ, base, model, f["model_map"], need, key, home, verbose)
+	rows, bad, keyRejected, listing := util.DoctorRoute(name, typ, base, model, f["model_map"], need, key, home, verbose)
 	if key != "" {
 		// The endpoint refused it (a FAIL row below): "present" would call a
 		// rejected credential fine above its FAIL (GH-272).
@@ -673,6 +671,18 @@ func (l *launcher) doctor(name string, verbose bool) int {
 	}
 	for _, r := range rows {
 		report(r.Kind, r.Msg, r.Fix)
+	}
+	// Run's two other model stops, asked of the listing above (#862): an
+	// excluded_models that leaves nothing stops every launch, and no saved model
+	// with no known protocol stops a launch that has no terminal.
+	if typ == "apikey" && !util.NativeBase(base) && listing != "" {
+		switch {
+		case util.ExclusionsLeaveNone(conf, listing):
+			report("FAIL", "model: "+util.ExclusionsRefusal(name, conf), util.ExclusionsFix(name, conf))
+			failed = 1
+		case savedModel == "" && !need(listing).Known:
+			report("INFO", "model: none saved; in a terminal, ccmorph run asks which model first, and without one it stops: "+util.NoModelReason(name))
+		}
 	}
 	l.doctorCompinit(l.doctorCompletion())
 	// A masking mismatch is a privacy gap, not a start failure: the profile

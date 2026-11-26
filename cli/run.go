@@ -282,7 +282,16 @@ func (l *launcher) resolveLaunch(name string, interactive, native bool, argv []s
 	// The picker could only fail on a gateway just named unreachable, and only
 	// a terminal opens it: skipping it keeps the terminal launch on the path
 	// the no-terminal one takes, so both end on the same words (#260).
-	if needsAdapter && askMissing && !subcommand && explicit == "" && defaultModel == "" && reachWhy == "" && isTTY(0) && isTTY(2) {
+	// A saved alias this gateway maps to no model stops at adapterModel; in a
+	// terminal the picker opens instead, saying why, and saves nothing (#862).
+	unserved := ""
+	if needsAdapter && explicit == "" && defaultModel != "" && l.unmappedTier(name, defaultModel) != "" {
+		unserved = defaultModel
+	}
+	if needsAdapter && askMissing && !subcommand && explicit == "" && (defaultModel == "" || unserved != "") && reachWhy == "" && isTTY(0) && isTTY(2) {
+		if unserved != "" {
+			l.err(util.UnservedTier(name, util.TierWord(unserved), l.modelOrigin(name), nil))
+		}
 		interactive = true
 	}
 	if interactive && explicit == "" && routed {
@@ -297,7 +306,11 @@ func (l *launcher) resolveLaunch(name string, interactive, native bool, argv []s
 			fmt.Fprintf(os.Stderr, "  Check the route: ccmorph doctor %s\n", name)
 			return nil, 1
 		}
-		picked, ok := l.pickLaunchModel(name, defaultModel)
+		keep := defaultModel
+		if unserved != "" {
+			keep = "" // a Keep row would offer the alias that cannot start (#862)
+		}
+		picked, ok := l.pickLaunchModel(name, keep, unserved)
 		if !ok {
 			return nil, 1
 		}
@@ -1170,6 +1183,9 @@ func (l *launcher) tierAlias(name, tier string) (string, bool) {
 // listingKey is the memo's one key for a route's listing.
 func listingKey(base, key string) string { return base + "\x1f" + key }
 
+// listed is the listing this pass already holds for (base, key); "" when none. It sends no request.
+func (l *launcher) listed(base, key string) string { return l.memo[listingKey(base, key)] }
+
 // listing is _ccm_models_listing: one /v1/models answer per (base, key) per run.
 func (l *launcher) listing(base, key string) (string, bool) {
 	if base == "" || key == "" {
@@ -1769,7 +1785,12 @@ func (l *launcher) adapterModel(name string, penv []string, explicit, defaultMod
 		func(key string) (string, bool) { return envGet(penv, key) },
 		func(tier string) (string, bool) { return l.tierAlias(name, tier) })
 	if !ok {
-		l.err("no gateway model is mapped to tier '" + util.TierWord(model) + "'; choose an explicit --model id")
+		origin := l.modelOrigin(name)
+		if explicit != "" {
+			origin = "given with --model"
+		}
+		base, _ := envGet(penv, "ANTHROPIC_BASE_URL")
+		l.err(util.UnservedTier(name, util.TierWord(model), origin, util.ServedSample(l.conf(name), l.listed(base, authKey(penv)))))
 		return "", false
 	}
 	return resolved, true
