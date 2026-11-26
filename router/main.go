@@ -328,8 +328,11 @@ func accept(args []string, stdout, stderr io.Writer) int {
 	for i := 0; i < len(args); i++ {
 		switch a := args[i]; {
 		case a == "--by":
-			if i+1 >= len(args) || strings.HasPrefix(args[i+1], "-") {
+			if i+1 >= len(args) || args[i+1] == "--" {
 				return needsValue(stderr, a)
+			}
+			if strings.HasPrefix(args[i+1], "-") {
+				return needsValueNotOption(stderr, a, args[i+1])
 			}
 			i++
 			by = args[i]

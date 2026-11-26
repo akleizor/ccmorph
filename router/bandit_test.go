@@ -33,7 +33,7 @@ func TestEvidenceWeighsAcceptanceAboveTheDeciderAndSkipsWhatIsNotTheModels(t *te
 		{"auth", Row{"outcome": "auth"}, false, 0, false},
 		{"unsettled", Row{"outcome": nil}, false, 0, false},
 	} {
-		pass, weight, counts := evidence(tc.row)
+		pass, weight, counts := banditRows(t, tc.row)[0].evidence()
 		if pass != tc.pass || weight != tc.weight || counts != tc.counts {
 			t.Errorf("%s: evidence = %v %v %v, want %v %v %v", tc.name, pass, weight, counts, tc.pass, tc.weight, tc.counts)
 		}
@@ -47,7 +47,7 @@ func TestARefusedOrCancelledRouteIsNotTimed(t *testing.T) {
 	for range 30 {
 		rows = append(rows, Row{"model": "m", "kind": "code", "tier": "mid", "ts": 0.0, "finished": 1.0, "outcome": "error", "failure": "aborted"})
 	}
-	if got := loadBanditStats(rows).minutes(arm{"m", "code", "mid"}); got < 9.9 {
+	if got := loadBanditStats(banditRows(t, rows...)).minutes(arm{"m", "code", "mid"}); got < 9.9 {
 		t.Fatalf("cancels timed the model at %.2f min", got)
 	}
 }
@@ -106,7 +106,7 @@ func TestAModelServedTwiceDrawsOnce(t *testing.T) {
 // route's reservation is written whole.
 func TestAnInfiniteShadowCostNeverCostsTheReservation(t *testing.T) {
 	hookEnv(t, true)
-	s := loadBanditStats([]Row{{"model": "m", "kind": "code", "tier": "mid", "ts": 0.0, "finished": 120.0}})
+	s := loadBanditStats(banditRows(t, Row{"model": "m", "kind": "code", "tier": "mid", "ts": 0.0, "finished": 120.0}))
 	opts := []Option{{Profile: "gw", Model: "m", Class: "free"}}
 	sh := shadowPick(Config{TimeValue: 1e308}, opts, Task{Kind: "code", Tier: "mid"}, s, rand.New(rand.NewPCG(1, 1)))
 	if sh != nil {
@@ -143,7 +143,7 @@ func TestShadowPickTakesTheCheapestExpectedPass(t *testing.T) {
 		rows = append(rows, Row{"model": "good", "kind": "code", "tier": "mid", "accepted": true, "ts": 0.0, "finished": 60.0})
 		rows = append(rows, Row{"model": "bad", "kind": "code", "tier": "mid", "accepted": false, "ts": 0.0, "finished": 60.0})
 	}
-	s := loadBanditStats(rows)
+	s := loadBanditStats(banditRows(t, rows...))
 	rng := rand.New(rand.NewPCG(1, 2))
 	for range 50 {
 		if got := shadowPick(Config{}, []Option{free("bad"), free("good")}, task, s, rng); got.Model != "good" {
@@ -168,7 +168,7 @@ func TestAFewShortRunsDoNotMakeAModelLookFast(t *testing.T) {
 	for range 2 {
 		rows = append(rows, Row{"model": "lucky", "kind": "code", "tier": "mid", "ts": 0.0, "finished": 60.0})
 	}
-	s := loadBanditStats(rows)
+	s := loadBanditStats(banditRows(t, rows...))
 	lucky, slow := s.minutes(arm{"lucky", "code", "mid"}), s.minutes(arm{"slow", "code", "mid"})
 	if lucky < 3.5 || slow < 9.5 {
 		t.Fatalf("lucky %.2f min, slow %.2f min: two short runs outweighed the kind's record", lucky, slow)
@@ -206,4 +206,14 @@ func TestDecideRecordsAShadowPickAcrossTiersAndActsOnTheRealOne(t *testing.T) {
 	if sh, _ := rows[len(rows)-1]["shadow"].(map[string]any); sh["model"] != "claude-haiku-5-5" {
 		t.Fatalf("the ledger did not record the shadow pick: %v", rows[len(rows)-1])
 	}
+}
+
+// banditRows reads rows the way the bandit reads the ledger: through JSON.
+func banditRows(t *testing.T, rows ...Row) []banditRow {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "ledger.jsonl")
+	for _, r := range rows {
+		appendLine(path, r)
+	}
+	return readBanditRows(path)
 }

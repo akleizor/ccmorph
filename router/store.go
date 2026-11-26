@@ -227,8 +227,9 @@ func appendLine(path string, row Row) {
 		return
 	}
 	defer f.Close()
-	b, _ := json.Marshal(row)
-	_, _ = f.Write(append(b, '\n'))
+	if b, err := json.Marshal(row); err == nil {
+		_, _ = f.Write(append(b, '\n'))
+	}
 }
 
 func ledgerAppend(row Row) { withLock(func() { appendLine(ledgerPath(), row) }) }
@@ -265,9 +266,9 @@ func ledgerUpdate(id string, fields Row) bool {
 
 var errLedgerLocked = errors.New("the ledger stayed locked")
 
-// ledgerRewrite merges fields into the first row match accepts, or the last
-// when newest, keeping every other line. found is whether a row matched; err
-// is a lock or write that failed, so nothing was recorded.
+// ledgerRewrite merges fields into the first row match accepts (the one
+// complete reads), or the last when newest, keeping every other line. found is whether a row matched; err is a lock, encode or
+// write that failed, so nothing was recorded.
 func ledgerRewrite(match func(Row) bool, newest bool, fields Row) (found bool, err error) {
 	locked := withLock(func() {
 		var b []byte
@@ -278,29 +279,25 @@ func ledgerRewrite(match func(Row) bool, newest bool, fields Row) (found bool, e
 			return
 		}
 		lines := bytes.SplitAfter(b, []byte("\n"))
-		at := -1
-		for i := range lines {
+		for n := range lines {
+			i := n
+			if newest {
+				i = len(lines) - 1 - n
+			}
 			var r Row
 			if json.Unmarshal(lines[i], &r) != nil || !match(r) {
 				continue
 			}
-			at = i
-			if !newest {
-				break
+			maps.Copy(r, fields)
+			var out []byte
+			if out, err = json.Marshal(r); err != nil {
+				return
 			}
-		}
-		if at < 0 {
+			lines[i] = append(out, '\n')
+			found = true
+			err = paths.AtomicWrite(paths.WriteIn{Path: ledgerPath(), Temp: ".ledger-*", Data: bytes.Join(lines, nil), Mode: 0o600, Mkdir: 0o700})
 			return
 		}
-		var r Row
-		_ = json.Unmarshal(lines[at], &r)
-		for k, v := range fields {
-			r[k] = v
-		}
-		out, _ := json.Marshal(r)
-		lines[at] = append(out, '\n')
-		found = true
-		err = paths.AtomicWrite(paths.WriteIn{Path: ledgerPath(), Temp: ".ledger-*", Data: bytes.Join(lines, nil), Mode: 0o600, Mkdir: 0o700})
 	})
 	if !locked && err == nil {
 		err = errLedgerLocked

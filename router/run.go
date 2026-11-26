@@ -111,38 +111,34 @@ func Decide(c Config, r Request) (Decision, error) {
 	if only, ok := c.Only[d.Task.Tier]; ok && r.Model == "" {
 		pin.Only = append([]string{}, only...) // no fallback outside them; [] allows none
 	}
-	opts, dropped, err := Options(d.Task, profiles, labeler(c, profiles, decider, r.Deadline), c.Kinds, nowSec(), pin)
+	labels := labeler(c, profiles, decider, r.Deadline)
+	opts, dropped, err := Options(d.Task, profiles, labels, c.Kinds, nowSec(), pin)
 	if err != nil {
 		return d, err
 	}
-	if r.Family != "" {
-		opts = slices.DeleteFunc(opts, func(o Option) bool { return o.Family != r.Family })
-	}
-	if r.Keep != nil {
-		opts = slices.DeleteFunc(opts, func(o Option) bool { return !r.Keep(o) })
-	}
+	opts = slices.DeleteFunc(opts, r.drops)
 	d.Dropped = dropped
 	d.Shortlist = Choose(opts, c.Order)
-	if len(d.Shortlist) > 0 {
-		d.Pick = &d.Shortlist[0]
+	if len(d.Shortlist) == 0 {
+		return d, nil
 	}
+	d.Pick = &d.Shortlist[0]
 	d.Shortlist = d.Shortlist[:min(8, len(d.Shortlist))]
 	pin.AnyTier = true
 	task := d.Task // the caller may change d after a hook stops waiting
 	d.Shadow = shadowWithin(r.Deadline, func() *Shadow {
-		all, _, err := Options(task, profiles, labeler(c, profiles, decider, r.Deadline), c.Kinds, nowSec(), pin)
+		all, _, err := Options(task, profiles, labels, c.Kinds, nowSec(), pin)
 		if err != nil {
 			return nil
 		}
-		if r.Family != "" {
-			all = slices.DeleteFunc(all, func(o Option) bool { return o.Family != r.Family })
-		}
-		if r.Keep != nil {
-			all = slices.DeleteFunc(all, func(o Option) bool { return !r.Keep(o) })
-		}
-		return shadowPick(c, all, task, loadBanditStats(readRows(ledgerPath())), newShadowRand())
+		return shadowPick(c, slices.DeleteFunc(all, r.drops), task, loadBanditStats(readBanditRows(ledgerPath())), shadowRand())
 	})
 	return d, nil
+}
+
+// drops is an option the request's family or keep filter rules out.
+func (r Request) drops(o Option) bool {
+	return r.Family != "" && o.Family != r.Family || r.Keep != nil && !r.Keep(o)
 }
 
 // shadowWithin runs the shadow picker after the real pick is made. A hook's
@@ -161,6 +157,9 @@ func shadowWithin(deadline time.Time, pick func() *Shadow) *Shadow {
 		return nil
 	}
 }
+
+// accountRefusal is a hard failure the account caused (quota, auth), not the model.
+func accountRefusal(hard string) bool { return hard == "quota" || hard == "auth" }
 
 func newID(prefix string) string {
 	b := make([]byte, 6)
@@ -315,7 +314,7 @@ func Dispatch(ctx context.Context, r Request, cwd string) Outcome {
 			if o.Status == 0 {
 				o.Status = 1
 			}
-			if hard != "quota" && hard != "auth" || w.toolRan {
+			if !accountRefusal(hard) || w.toolRan {
 				break // the model answered, ran out of time, or acted: a second run would pay twice or repeat it
 			}
 			continue
@@ -503,7 +502,7 @@ func complete(c Config, id, text, hard string) string {
 	profile, model := fmt.Sprint(row["profile"]), fmt.Sprint(row["model"])
 	now := nowSec()
 	var ps []Profile
-	if hard == "quota" || hard == "auth" {
+	if accountRefusal(hard) {
 		ps, _ = Profiles(c, false, true, []string{profile})
 	}
 	// Only a subscription's refusal is the account's: a gateway's 403 or 429 names

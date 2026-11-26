@@ -1,9 +1,13 @@
 package router
 
 import (
+	"bufio"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"math"
 	"math/rand/v2"
+	"os"
 	"slices"
 )
 
@@ -33,9 +37,9 @@ const (
 // are per 1M tokens, and a delegated task reads and writes on this order.
 const tokensPerCall = 50_000
 
-// newShadowRand gives each decision its own generator: a *rand.Rand is not
-// safe to share between two concurrent Decides. A test seeds its own.
-var newShadowRand = func() *rand.Rand { return rand.New(rand.NewPCG(rand.Uint64(), rand.Uint64())) }
+// shadowRand is one decision's generator: a *rand.Rand is not safe to share
+// between two concurrent Decides.
+func shadowRand() *rand.Rand { return rand.New(rand.NewPCG(rand.Uint64(), rand.Uint64())) }
 
 type arm struct{ model, kind, tier string }
 
@@ -46,7 +50,7 @@ type belief struct{ pass, fail float64 }
 type banditStats struct {
 	beliefs map[arm]belief
 	took    map[arm]durations
-	task    map[arm]durations // keyed with model "": every model's routes of that kind and tier
+	task    map[[2]string]durations // every model's routes of that kind and tier
 	all     durations
 }
 
@@ -60,7 +64,7 @@ func (d *durations) add(m float64) { d.sum += m; d.n++ }
 // look fast. 1 when nothing at all is timed.
 func (s banditStats) minutes(a arm) float64 {
 	base := 1.0
-	if t := s.task[arm{"", a.kind, a.tier}]; t.n > 0 {
+	if t := s.task[[2]string{a.kind, a.tier}]; t.n > 0 {
 		base = t.sum / t.n
 	} else if s.all.n > 0 {
 		base = s.all.sum / s.all.n
@@ -69,30 +73,58 @@ func (s banditStats) minutes(a arm) float64 {
 	return (d.sum + base) / (d.n + 1)
 }
 
-func loadBanditStats(rows []Row) banditStats {
-	s := banditStats{beliefs: map[arm]belief{}, took: map[arm]durations{}, task: map[arm]durations{}}
+// banditRow is the part of a ledger row the bandit reads. Decoding only
+// these fields skips each row's brief, the bulk of the ledger.
+type banditRow struct {
+	Model    string   `json:"model"`
+	Kind     string   `json:"kind"`
+	Tier     string   `json:"tier"`
+	TS       *float64 `json:"ts"`
+	Finished float64  `json:"finished"`
+	Outcome  string   `json:"outcome"`
+	Failure  string   `json:"failure"`
+	Verdict  string   `json:"verdict"`
+	Accepted *bool    `json:"accepted"`
+	Quality  *bool    `json:"quality"`
+}
+
+// readBanditRows reads the ledger at path as bandit rows. A field of an
+// unexpected type is left at its zero value; a line that is not JSON is skipped.
+func readBanditRows(path string) []banditRow {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil
+	}
+	defer f.Close()
+	var rows []banditRow
+	sc := bufio.NewScanner(f)
+	sc.Buffer(make([]byte, 64<<10), 16<<20)
+	for sc.Scan() {
+		var r banditRow
+		var typeErr *json.UnmarshalTypeError
+		if err := json.Unmarshal(sc.Bytes(), &r); err == nil || errors.As(err, &typeErr) {
+			rows = append(rows, r)
+		}
+	}
+	return rows
+}
+
+func loadBanditStats(rows []banditRow) banditStats {
+	s := banditStats{beliefs: map[arm]belief{}, took: map[arm]durations{}, task: map[[2]string]durations{}}
 	for _, r := range rows {
-		model, _ := r["model"].(string)
-		kind, _ := r["kind"].(string)
-		tier, _ := r["tier"].(string)
-		if model == "" || kind == "" || tier == "" {
-			continue
+		if r.Model == "" || r.Kind == "" || r.Tier == "" || r.notTheModels() {
+			continue // a refusal or a cancel: neither its time nor its result is the model's
 		}
-		if notTheModels(r) {
-			continue // neither its time nor its result is the model's
+		a, k := arm{r.Model, r.Kind, r.Tier}, [2]string{r.Kind, r.Tier}
+		if r.TS != nil && r.Finished > *r.TS {
+			m := (r.Finished - *r.TS) / 60
+			d, t := s.took[a], s.task[k]
+			d.add(m)
+			t.add(m)
+			s.took[a], s.task[k] = d, t
+			s.all.add(m)
 		}
-		a := arm{model, kind, tier}
-		if fin, ok := r["finished"].(float64); ok {
-			if ts, ok := r["ts"].(float64); ok && fin > ts {
-				m := (fin - ts) / 60
-				d, t := s.took[a], s.task[arm{"", kind, tier}]
-				d.add(m)
-				t.add(m)
-				s.took[a], s.task[arm{"", kind, tier}] = d, t
-				s.all.add(m)
-			}
-		}
-		pass, weight, ok := evidence(r)
+		pass, weight, ok := r.evidence()
 		if !ok {
 			continue
 		}
@@ -107,41 +139,31 @@ func loadBanditStats(rows []Row) banditStats {
 	return s
 }
 
-// notTheModels is a route the account refused (quota, auth) or the caller
-// cancelled: it says nothing about the model, whatever else the row holds.
-func notTheModels(r Row) bool {
-	for _, k := range []string{"outcome", "failure"} {
-		if v, _ := r[k].(string); v == "quota" || v == "auth" || v == "aborted" {
-			return true
-		}
-	}
-	return false
+// notTheModels is a route the account refused or the caller cancelled: it
+// says nothing about the model, whatever else the row holds.
+func (r banditRow) notTheModels() bool {
+	return accountRefusal(r.Outcome) || accountRefusal(r.Failure) || r.Outcome == "aborted" || r.Failure == "aborted"
 }
 
 // evidence reads one settled row: whether it passed, and how much that counts.
 // Acceptance overrides the decider; a format problem without acceptance, a
 // refusal and an unsettled row count nothing.
-func evidence(r Row) (pass bool, weight float64, ok bool) {
-	if notTheModels(r) {
+func (r banditRow) evidence() (pass bool, weight float64, ok bool) {
+	switch {
+	case r.notTheModels():
 		return false, 0, false
-	}
-	if a, isBool := r["accepted"].(bool); isBool {
-		return a, acceptedWeight, true
-	}
-	switch r["outcome"] {
-	case "timeout", "empty", "error":
+	case r.Accepted != nil:
+		return *r.Accepted, acceptedWeight, true
+	case r.Outcome == "timeout" || r.Outcome == "empty" || r.Outcome == "error":
 		return false, acceptedWeight, true
-	}
-	switch r["verdict"] {
-	case "pass":
+	case r.Verdict == "pass":
 		return true, deciderWeight, true
-	case "wrong":
+	case r.Verdict == "wrong":
 		return false, deciderWeight, true
-	case "format":
+	case r.Verdict == "format":
 		return false, 0, false
-	}
-	if q, isBool := r["quality"].(bool); isBool { // a row settled before verdicts
-		return q, deciderWeight, true
+	case r.Quality != nil: // a row settled before verdicts
+		return *r.Quality, deciderWeight, true
 	}
 	return false, 0, false
 }
@@ -240,8 +262,7 @@ func gammaSample(rng *rand.Rand, k float64) float64 {
 }
 
 // shadowSummary is report's line on the shadow picker: how often it agreed
-// with the real pick, and the expected cost of a passed task each would have
-// paid on the routes it saw. "" when no route carries a shadow pick.
+// with the real pick. "" when no route carries a shadow pick.
 func shadowSummary(rows []Row) string {
 	n, same := 0, 0
 	for _, r := range rows {
