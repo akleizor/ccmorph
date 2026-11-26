@@ -43,7 +43,7 @@ func watchChildSignals(pid int) (*sigWatch, error) {
 	// A zero timeout: kevent processes the change and returns at once. A nil
 	// timeout would wait for the first event, which is the TERM this watch
 	// exists to catch: the attach would block the test before the stop.
-	n, err := syscall.Kevent(kq, []syscall.Kevent_t{ch}, events, &syscall.Timespec{})
+	n, err := kevent(kq, []syscall.Kevent_t{ch}, events)
 	if err == nil && n > 0 && events[0].Flags&syscall.EV_ERROR != 0 {
 		err = fmt.Errorf("EVFILT_PROC %d: %v", pid, syscall.Errno(events[0].Data))
 	}
@@ -59,7 +59,7 @@ func watchChildSignals(pid int) (*sigWatch, error) {
 // this child only TERM before recA reads, so a queued NOTE_SIGNAL is that TERM.
 func (w *sigWatch) pending() (uint64, error) {
 	events := make([]syscall.Kevent_t, 8)
-	n, err := syscall.Kevent(w.kq, nil, events, &syscall.Timespec{})
+	n, err := kevent(w.kq, nil, events)
 	if err != nil {
 		return 0, err
 	}
@@ -78,6 +78,18 @@ func (w *sigWatch) pending() (uint64, error) {
 // blocked is not readable on macOS; the witness does not need it.
 func (w *sigWatch) blocked() (uint64, error) {
 	return 0, errors.New("no other process's blocked set on macOS")
+}
+
+// kevent is a zero-timeout kevent retried on EINTR: Go's runtime preempts a
+// busy test with SIGURG, which interrupts the call before it reads the queue.
+// Re-adding an EV_ADD filter is idempotent, so a retried attach is safe.
+func kevent(kq int, changes, events []syscall.Kevent_t) (int, error) {
+	for {
+		n, err := syscall.Kevent(kq, changes, events, &syscall.Timespec{})
+		if err != syscall.EINTR {
+			return n, err
+		}
+	}
 }
 
 func (w *sigWatch) close() { syscall.Close(w.kq) }
