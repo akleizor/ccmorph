@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strconv"
 
+	"github.com/akleizor/ccmorph/settingscompose"
 	"github.com/akleizor/ccmorph/util"
 	"github.com/akleizor/ccmorph/util/paths"
 	"os"
@@ -377,19 +378,17 @@ func (l *launcher) prepareAndProject(name string, acwArg, penv []string) int {
 
 func (l *launcher) projectSettings(name, saved string, acwArg, penv []string) int {
 	argv := l.settingsArgv("materialize", name, append([]string{"--saved", saved}, projectionArgs(acwArg, penv)...)...)
-	cmd := exec.Command(filepath.Join(l.libexec, "ccmorph-core"), append([]string{"settings-compose"}, argv...)...)
-	cmd.Stdout, cmd.Stderr = os.Stdout, os.Stderr
-	err := cmd.Run()
-	// The compose child writes the settings the store reads — for a profile
+	// The projection writes the profile layer, so it takes the profile's live
+	// lock — the launch's own descriptor when it holds one — rather than a
+	// second process's wait on it (#939).
+	rc := settingscompose.MainWithLive(argv, os.Stderr, util.LiveFile(l.profileDirs, name))
+	// The projection writes the settings the store reads — for a profile
 	// never launched, the generated settings are its layer — so the memoized
 	// reads read them again (#478).
 	l.storeReads = nil
-	if err != nil {
+	if rc != 0 {
 		l.err("could not generate settings for '" + name + "'")
-		if ee, ok := err.(*exec.ExitError); ok && ee.ExitCode() > 0 {
-			return ee.ExitCode()
-		}
-		return 1
+		return rc
 	}
 	return 0
 }

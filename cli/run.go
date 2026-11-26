@@ -1376,7 +1376,14 @@ func (l *launcher) setupDir(name, typ string, policy livePolicy) bool {
 	}
 	if file := l.profileLayer(name); paths.IsFile(file) {
 		if fi, err := os.Lstat(file); err == nil && fi.Mode().IsRegular() {
-			util.UnwireStatusline(file, filepath.Join(l.dir, "statusline"), filepath.Join(l.libDir, "statusline"))
+			// The unwire rewrites the layer whole, so it holds the profile's
+			// live lock exclusively across its read and rename; a live session
+			// of the profile leaves the old status line in place (#939).
+			if ok, why := util.LiveExclusive(l.profileDirs, name, func() {
+				util.UnwireStatusline(file, filepath.Join(l.dir, "statusline"), filepath.Join(l.libDir, "statusline"))
+			}); !ok {
+				l.log("settings status line for '" + name + "' left in place: " + why.Error())
+			}
 		}
 	}
 	return true
@@ -1465,7 +1472,17 @@ func (l *launcher) foldSettings(name string) bool {
 		strings.TrimRight(string(s), "\n") == strings.TrimRight(string(base), "\n") {
 		return false
 	}
-	l.core(nil, "", append([]string{"settings-compose"}, l.settingsArgv("fold", name)...)...)
+	// The fold writes the profile layer the store reads, so the memoized reads
+	// read it again (#478).
+	l.storeReads = nil
+	err = settingscompose.Fold(dir, l.canonical(), profile.SetOf(l.mapping), util.LiveFile(l.profileDirs, name), nil)
+	if err != nil {
+		// A fold that cannot take the profile's live lock is skipped, never a
+		// failed launch: another session of the profile keeps the settings it
+		// has and the next launch folds again (#939, promise 8).
+		l.log("settings fold for '" + name + "' skipped: " + err.Error())
+		return false
+	}
 	return true
 }
 

@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 
@@ -234,12 +235,22 @@ func v046ListingHasUnsized(args []string, in io.Reader, _, _ io.Writer) int {
 }
 
 // v046UnwireStatusline is 6860fb5's util unwire-statusline: <file>, the commands
-// ccmorph once wired in _CCM_SL_OWNED.
+// ccmorph once wired in _CCM_SL_OWNED. The rewrite holds the profile's live lock
+// exclusively; a live session of the profile leaves the file as it was (#939).
 func v046UnwireStatusline(args []string, _ io.Reader, _, _ io.Writer) int {
 	if len(args) != 1 {
 		return 2
 	}
-	if UnwireStatusline(args[0], v046Lines(os.Getenv("_CCM_SL_OWNED"))...) != nil {
+	var err error
+	unwire := func() { err = UnwireStatusline(args[0], v046Lines(os.Getenv("_CCM_SL_OWNED"))...) }
+	if dir := layerProfileDir(args[0]); dir != "" {
+		if ok, _ := LiveExclusive(filepath.Dir(dir), filepath.Base(dir), unwire); !ok {
+			return 0
+		}
+	} else {
+		unwire()
+	}
+	if err != nil {
 		return 1
 	}
 	return 0
