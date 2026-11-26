@@ -6696,21 +6696,38 @@ test_adapter_launch_uses_current_process_tree() {
     'api_key=sk_prod_test' 'base_url=https://gateway.invalid' 'adapter=true'
   source "$CCMORPH_SOURCE"
 
-  local rc=0
+  local rc=0 run_rc=0 launch_err="" launch_out=""
   mkdir -p "$HOME/not-shared-tmp"
+  # Keep the launch's own status and words before the scratch home takes them:
+  # a red here must name why the launch started no adapter, never an empty
+  # trace (#935, the #901 pattern). The launch's output used to go to
+  # /dev/null, which threw away the only evidence of the cause.
   TMPDIR="$HOME/not-shared-tmp" \
-    _ccm_launch -a gw prompt >/dev/null 2>&1 || {
+    _ccm_launch -a gw prompt >"$HOME/launch.out" 2>"$HOME/launch.err" || run_rc=$?
+  (( run_rc == 0 )) || {
     print -u2 -- 'the adapter must launch locally in every process tree'
     rc=1
   }
+  launch_err="$(<"$HOME/launch.err")"
+  launch_out="$(<"$HOME/launch.out")"
   [[ ! -e "$HOME/tmux.argv" ]] || {
     print -u2 -- 'adapter launch must not cross the process-tree boundary'
     rc=1
   }
-  assert_contains "$(<"$HOME/adapter.argv")" 'gw' \
+  local actual=""
+  [[ -f "$HOME/adapter.argv" ]] && actual="$(<"$HOME/adapter.argv")"
+  assert_contains "$actual" 'gw' \
     'the local adapter must receive the profile name' || rc=1
-  assert_contains "$(<"$CCMORPH_TEST_LOG")" 'BASE_URL=http://127.0.0.1:45999' \
+  actual=""
+  [[ -f "$CCMORPH_TEST_LOG" ]] && actual="$(<"$CCMORPH_TEST_LOG")"
+  assert_contains "$actual" 'BASE_URL=http://127.0.0.1:45999' \
     'the launched Claude process must use the local adapter port' || rc=1
+  if (( rc != 0 )); then
+    print -u2 -- "the local adapter launch failed (exit $run_rc); its stderr was:"
+    print -u2 -- "${launch_err:-<empty>}"
+    print -u2 -- "its stdout was:"
+    print -u2 -- "${launch_out:-<empty>}"
+  fi
   rm -rf "$test_home"
   return $rc
 }

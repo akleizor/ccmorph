@@ -243,6 +243,23 @@ func holdReachTimers(t *testing.T) {
 	}
 }
 
+// reachStarted records how long after mark the probe's curl actually ran. A
+// test whose subject is when the probe returns must measure from there, not
+// from the call: the scheduler's fork/exec is not part of the probe's promise
+// (#935). The duration is filled in when ReachListing returns.
+func reachStarted(t *testing.T, mark time.Time) *time.Duration {
+	t.Helper()
+	saved := reachStart
+	t.Cleanup(func() { reachStart = saved })
+	delay := new(time.Duration)
+	reachStart = func(cmd *exec.Cmd) error {
+		err := cmd.Start()
+		*delay = time.Since(mark)
+		return err
+	}
+	return delay
+}
+
 // GH-260: a gateway that never answers gets a progress line after the
 // progress bound and a give-up at the bound, and the verdict says it waited.
 func TestReachListingPrintsProgressAndGivesUpOnASilentGateway(t *testing.T) {
@@ -251,17 +268,55 @@ func TestReachListingPrintsProgressAndGivesUpOnASilentGateway(t *testing.T) {
 	t.Setenv("CCMORPH_REACH_BOUND", "0.8")
 	said := 0
 	start := time.Now()
+	started := reachStarted(t, start)
 	r := ReachListing("http://10.255.255.1:8080", "k", "", nil, func() { said++ })
-	took := time.Since(start)
+	// The stop is the request's own bound: measure from the start, not the call
+	// (#935). The scheduler's fork/exec is stated, never held against the bound.
+	requestFor := time.Since(start) - *started
 	if said != 1 {
 		t.Fatalf("progress ran %d times, want once", said)
 	}
-	if took < 700*time.Millisecond || took > 3*time.Second {
-		t.Fatalf("gave up after %v, want the 0.8s bound", took)
+	if requestFor < 700*time.Millisecond || requestFor > 3*time.Second {
+		t.Fatalf("gave up %v after the request started, want the 0.8s bound (the start took %v)", requestFor, *started)
 	}
 	if !r.Waited || !strings.HasPrefix(r.Why, "no answer from 10.255.255.1 port 8080 after 1 second") ||
 		!strings.Contains(r.Why, "private network") {
 		t.Fatalf("verdict %+v, want a waited no-answer naming the host and port", r)
+	}
+}
+
+// GH-935: cmd.Start blocks through the scheduler's fork/exec, and a starved
+// host can hold it past the whole bound. The stop used to be computed from the
+// call, so after such a start it fired at once: a stub that was about to
+// answer was killed first, and a reachable gateway was named dead — the red
+// the gate saw on test_adapter_launch_uses_current_process_tree at load
+// 155-203. The stop is the request's own bound now, so the healthy stub
+// answers however late the scheduler let it run.
+func TestReachListingDoesNotChargeAStarvedStartToTheGateway(t *testing.T) {
+	reachCurl(t, "exit 0")
+	t.Setenv("CCMORPH_REACH_PROGRESS", "0.02")
+	// Four seconds leave 3.8 s after the start: a descheduled test goroutine
+	// would have to lose more than that between Start and the stop's setup to
+	// read as the old bug (#935's own load class is seconds, not tens of them).
+	t.Setenv("CCMORPH_REACH_BOUND", "4")
+	savedStart, savedStop := reachStart, reachStop
+	t.Cleanup(func() { reachStart, reachStop = savedStart, savedStop })
+	const held = 5 * time.Second
+	reachStart = func(cmd *exec.Cmd) error {
+		time.Sleep(held) // the scheduler held the start past the whole bound
+		return cmd.Start()
+	}
+	var stopAfter time.Duration
+	never := make(chan time.Time)
+	reachStop = func(d time.Duration) (<-chan time.Time, func() bool) {
+		stopAfter = d
+		return never, func() bool { return true }
+	}
+	if r := ReachListing("http://127.0.0.1:9", "k", "", nil, nil); r != (Reach{}) {
+		t.Fatalf("got %+v, want nothing to say: the stub answered once it ran", r)
+	}
+	if stopAfter <= 0 {
+		t.Fatalf("the stop deadline is %v after a %v start: the scheduler's fork/exec was charged to the gateway, so the probe kills a healthy request before it can answer", stopAfter, held)
 	}
 }
 
@@ -607,16 +662,17 @@ func TestReachBoundsOnlyShorten(t *testing.T) {
 
 // GH-260 (gate finding): with the knobs asking for more than the contract and
 // a curl that ignores its own --max-time, the progress line still comes after
-// the product's one second and within two, and the probe has returned,
-// curl stopped and reaped, within doctor's five counted from the call. Start
-// and the reap are the scheduler's, so the wall-clock promise the test holds
-// is the bound plus curl's one-second WaitDelay (6 s), and the verdict may
-// claim no more than that (#891).
+// the product's one second and within two, and the probe has returned, curl
+// stopped and reaped, within doctor's five counted from the request's own
+// start (#935). The reap is the scheduler's, so the request's wall clock is
+// the bound plus curl's one-second WaitDelay (6 s), and the verdict may claim
+// no more than that (#891).
 func TestReachListingReturnsWithinDoctorsBoundWhenCurlIgnoresItsOwn(t *testing.T) {
 	reachCurl(t, "exec sleep 30")
 	t.Setenv("CCMORPH_REACH_PROGRESS", "2.1")
 	t.Setenv("CCMORPH_REACH_BOUND", "5.1")
 	start := time.Now()
+	started := reachStarted(t, start)
 	var progressAt time.Duration
 	said := 0
 	r := ReachListing("http://10.255.255.1:8080", "k", "", nil, func() { said++; progressAt = time.Since(start) })
@@ -625,8 +681,8 @@ func TestReachListingReturnsWithinDoctorsBoundWhenCurlIgnoresItsOwn(t *testing.T
 	if said != 1 || progressAt < 900*time.Millisecond || progressAt > 2*time.Second {
 		t.Fatalf("progress ran %d time(s), at %v of %v; want once, between 0.9 s and 2 s", said, progressAt, took)
 	}
-	if took > 5*time.Second+reachWaitDelay {
-		t.Fatalf("gave up after %v, past doctor's 5 s bound plus curl's %v wait delay", took, reachWaitDelay)
+	if requestFor := took - *started; requestFor > 5*time.Second+reachWaitDelay {
+		t.Fatalf("gave up %v after the request started, past doctor's 5 s bound plus curl's %v wait delay (start delay %v)", requestFor, reachWaitDelay, *started)
 	}
 	if !r.Waited || !strings.HasPrefix(r.Why, "no answer from 10.255.255.1 port 8080 after ") ||
 		(!strings.Contains(r.Why, "after 5 seconds") && !strings.Contains(r.Why, "after 6 seconds")) {
@@ -635,17 +691,19 @@ func TestReachListingReturnsWithinDoctorsBoundWhenCurlIgnoresItsOwn(t *testing.T
 }
 
 // A shortened bound is kept the same way: the probe returns within it and its
-// WaitDelay. The bound counts from the call, so curl's start and reap are the
-// scheduler's: 2.5 s keeps the stop at 2.375 s and allows one more second for
-// the reap, still well inside the 5 s default it shortened (#891).
+// WaitDelay, counted from the request's own start. The scheduler's fork/exec
+// is the scheduler's (#935): 2.5 s keeps the stop at 2.375 s after curl runs
+// and allows one more second for the reap, still well inside the 5 s default
+// it shortened (#891).
 func TestReachListingReturnsBeforeAShortenedBound(t *testing.T) {
 	reachCurl(t, "exec sleep 30")
 	t.Setenv("CCMORPH_REACH_PROGRESS", "0.2")
 	t.Setenv("CCMORPH_REACH_BOUND", "2.5")
 	start := time.Now()
+	started := reachStarted(t, start)
 	r := ReachListing("http://10.255.255.1:8080", "k", "", nil, nil)
-	if took, limit := time.Since(start), 2500*time.Millisecond+reachWaitDelay; took > limit || !r.Waited {
-		t.Fatalf("returned after %v with %+v, want a waited verdict within the 2.5 s bound plus the %v wait delay", took, r, reachWaitDelay)
+	if requestFor, limit := time.Since(start)-*started, 2500*time.Millisecond+reachWaitDelay; requestFor > limit || !r.Waited {
+		t.Fatalf("returned %v after the request started with %+v, want a waited verdict within the 2.5 s bound plus the %v wait delay (start delay %v)", requestFor, r, reachWaitDelay, *started)
 	}
 }
 

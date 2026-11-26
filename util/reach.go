@@ -81,9 +81,9 @@ func whyUnreachable(endpoint string, exit int, complaint string, waited time.Dur
 
 // whyUnreachableWithin is whyUnreachable with claim, the longest wait the
 // caller's own progress line promised and its reaping grace allow: 0 when the
-// caller promised none. waited counts from the call, so scheduler delay can
-// carry it past that promise; the sentence then states no more than claim,
-// never a number the launch never advertised (#891).
+// caller promised none. waited counts from the request's start; a complaint
+// may still carry curl's own larger count, so the sentence states no more than
+// claim, never a number the launch never advertised (#891).
 func whyUnreachableWithin(endpoint string, exit int, complaint string, waited time.Duration, viaProxy bool, claim time.Duration) string {
 	host, port := hostPort(endpoint)
 	where := ""
@@ -231,9 +231,9 @@ func reachProgressAfter() time.Duration {
 func reachBound() time.Duration { return min(envDuration("CCMORPH_REACH_BOUND", 5), 5*time.Second) }
 
 // reachWaitDelay is the grace the probe gives curl to be reaped after it
-// stops it at the bound (cmd.WaitDelay). A loaded scheduler can also delay
-// Start, so the verdict may claim the bound plus this grace, never the
-// scheduler's own delay (#891).
+// stops it at the bound (cmd.WaitDelay). It is the only slack the verdict
+// claims past the bound: the scheduler's fork/exec happens before the
+// request's clock starts, never inside it (#891, #935).
 const reachWaitDelay = time.Second
 
 func envDuration(name string, def float64) time.Duration {
@@ -249,10 +249,16 @@ func ReachBoundSeconds() int {
 	return max(int((reachBound()+time.Second-1)/time.Second), 1)
 }
 
+// reachStart starts curl. A package var, like reachStop and connectProbe, so a
+// test can hold the start the way a saturated scheduler does and prove that
+// delay is not charged to the gateway (#935).
+var reachStart = func(cmd *exec.Cmd) error { return cmd.Start() }
+
 // reachStop is the probe's stop: a timer that fires after d, what is left of
-// the bound counted from the call. A package var, like connectProbe, so a test
-// about what the probe reads from a curl it stopped can stop curl once its stub
-// has answered, not when a loaded scheduler lets the timer win (#891).
+// the bound counted from the request's own start. A package var, like
+// connectProbe, so a test about what the probe reads from a curl it stopped can
+// stop curl once its stub has answered, not when a loaded scheduler lets the
+// timer win (#891).
 var reachStop = func(d time.Duration) (<-chan time.Time, func() bool) {
 	t := time.NewTimer(d)
 	return t.C, t.Stop
@@ -320,18 +326,26 @@ func ReachListing(base, key, via string, strip []string, progress func()) Reach 
 		})
 		cmd.Env = env
 	}
-	if err := cmd.Start(); err != nil {
+	if err := reachStart(cmd); err != nil {
 		return Reach{}
 	}
+	// The request's clock starts when curl is running, never at the call above:
+	// cmd.Start blocks through the scheduler's fork/exec, and a starved host can
+	// hold it past the whole bound. That delay is the scheduler's, not the
+	// gateway's silence, and charging it to the gateway named a reachable
+	// endpoint dead under gate load (#935, #891: "a start measured near 0.8 s at
+	// load 274"). Doctor's own request is measured the same way: curl's
+	// --connect-timeout and --max-time start when curl runs.
+	requestStart := time.Now()
 	done := make(chan error, 1)
 	go func() { done <- cmd.Wait() }()
-	// Both timers count from the call, not from curl's start. curl is stopped
-	// with a twentieth of the bound to spare, so the probe has returned, curl
-	// reaped, within the bound: never later than doctor's own request.
+	// The progress line still counts from the call: it tells a person how long
+	// they have been waiting, and the scheduler can hold the call itself. The
+	// stop is the request's: curl gets the bound's answer time once it runs.
 	tick := time.NewTimer(reachProgressAfter() - time.Since(start))
 	defer tick.Stop()
 	ticked := reachProgressTick(tick)
-	stop, stopTimer := reachStop(bound - bound/20 - time.Since(start))
+	stop, stopTimer := reachStop(bound - bound/20 - time.Since(requestStart))
 	defer stopTimer()
 	killed, said := false, false
 	var err error
@@ -365,7 +379,7 @@ func ReachListing(base, key, via string, strip []string, progress func()) Reach 
 	if killed && got > 0 {
 		return Reach{} // stopped once the gateway had begun to answer: a slow answer, as above
 	}
-	why := whyUnreachableWithin(base, exit, complaint.String(), time.Since(start), viaProxy, bound+reachWaitDelay)
+	why := whyUnreachableWithin(base, exit, complaint.String(), time.Since(requestStart), viaProxy, bound+reachWaitDelay)
 	return Reach{Why: why, Waited: why != "" && (exit == 28 || exit == -1)}
 }
 
