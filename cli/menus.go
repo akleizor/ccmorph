@@ -38,8 +38,14 @@ func (l *launcher) describeProfiles(active string, types []string, accept func(m
 	for _, n := range l.confNames() {
 		f, err := l.readProfile(n, func(line string) { fmt.Fprintln(os.Stderr, line) })
 		if err != nil {
-			l.err(err.Error())
-			say("ccmorph: skipping invalid profile '" + n + "' — " + profile.Repair(err, n))
+			// The fault line names what the skip line does not — but only for
+			// a content fault: a name the validator itself rejects is fully
+			// told by the skip line, and the bare refusal under it was a
+			// second, redundant answer (GH-915).
+			if profile.ValidName(n) {
+				l.err(err.Error())
+			}
+			say(l.skipNotice(n, err))
 			skipped++
 			continue
 		}
@@ -77,6 +83,27 @@ func (l *launcher) describeProfiles(active string, types []string, accept func(m
 		descs = append(descs, d)
 	}
 	return descs, skipped
+}
+
+// skipNotice is the one line a listing says for a conf it cannot read: the
+// name it skipped and the repair that would load it again (GH-839). quota
+// says it too, so no verb drops a configured profile from its report in
+// silence (GH-915).
+func (l *launcher) skipNotice(n string, err error) string {
+	return "ccmorph: skipping invalid profile '" + n + "' — " + l.repair(n, err)
+}
+
+// repair is profile.Repair, except for a stem with no private state of its
+// own: an rm of the empty stem is a usage fault, not a removal, and
+// `ccmorph rm .` would name the profiles directory — so the removal there is
+// the one conf file, spelled for the shell with its path and after `--`, so a
+// relative state root that starts with `-` is read as the file it names, not
+// as an option (GH-915).
+func (l *launcher) repair(n string, err error) string {
+	if profile.OwnStateName(n) {
+		return profile.Repair(err, n)
+	}
+	return "fix " + n + ".conf, or delete that file: rm -- " + profile.ShellWord(filepath.Join(l.dir, n+".conf"))
 }
 
 // profileRows is _ccm_profile_rows: ID<TAB>kind<TAB>detail<TAB>marker per

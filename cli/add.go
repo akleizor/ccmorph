@@ -897,7 +897,7 @@ func (l *launcher) login(args []string) int {
 			l.err(err.Error())
 			return 1
 		}
-		if rc, done := l.locked(name, []string{"login", name}); done {
+		if rc, done := l.locked(lockKey(name), []string{"login", name}); done {
 			return rc
 		}
 		return l.subLogin(name, f)
@@ -905,7 +905,7 @@ func (l *launcher) login(args []string) int {
 	if f["type"] == "sub" {
 		// The sign-in rewrites the conf's email line, so it takes the profile
 		// context lock config takes for the same write.
-		if rc, done := l.locked(name, []string{"login", name}); done {
+		if rc, done := l.locked(lockKey(name), []string{"login", name}); done {
 			return rc
 		}
 		return l.subLogin(name, f)

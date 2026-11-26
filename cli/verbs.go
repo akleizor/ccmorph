@@ -158,6 +158,23 @@ func (l *launcher) confNames() []string {
 	return names
 }
 
+// hasConfName reports whether name is exactly one of the .conf files the
+// scanner lists, however the validator judges that name. It is how rm and mv
+// recognise the skipped conf every listing prints a repair hint for (GH-915):
+// the name reaches a path only after being matched against the scanner's own
+// directory entries, so it can never carry a separator.
+func (l *launcher) hasConfName(name string) bool {
+	for _, n := range l.confNames() {
+		if n == name {
+			// A directory spelled like a conf is not one, exactly as for a
+			// valid name: rm and mv never reach through to it.
+			fi, err := os.Lstat(l.conf(name))
+			return err == nil && !fi.IsDir()
+		}
+	}
+	return false
+}
+
 func (l *launcher) active() string {
 	name, ok := l.readActive()
 	if !ok {
@@ -253,9 +270,17 @@ func (l *launcher) rmBadNameMsg(name string) string {
 }
 
 // nameRefusal appends the profiles that do exist, when any, so a refusal's one
-// line spots a typo the way the no-profile reply does.
+// line spots a typo the way the no-profile reply does. A name the validator
+// refuses is not among them: a message that will not touch a name must not
+// call it a profile in the same breath (GH-915).
 func (l *launcher) nameRefusal(msg string) string {
-	if names := l.confNames(); len(names) > 0 {
+	var names []string
+	for _, n := range l.confNames() {
+		if profile.ValidName(n) {
+			names = append(names, n)
+		}
+	}
+	if len(names) > 0 {
 		msg += ". Profiles: " + strings.Join(names, " ")
 	}
 	return msg

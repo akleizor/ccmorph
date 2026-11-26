@@ -1,8 +1,10 @@
 package cli
 
 import (
+	"errors"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -152,6 +154,126 @@ func TestRmClearsTheDefaultItRemovedWhateverTheNameLength(t *testing.T) {
 		}
 		if strings.Contains(msg, "invalid active profile") {
 			t.Fatalf("removing the default must not refuse the name it just removed: %s", msg)
+		}
+	}
+}
+
+// GH-915: `.conf` and `..conf` are listed by the scanner under the stems ""
+// and ".", and a removal that admitted either resolved <profiles>/"" and
+// <profiles>/. to the profiles directory itself — one attempt deleted every
+// profile's private state. A missing or empty operand is a usage fault before
+// the destructive path, and a stem that has no private state of its own is
+// never one rm removes.
+func TestRmNeverReachesTheProfilesDirForAStemWithoutState(t *testing.T) {
+	for _, stem := range []string{"", "."} {
+		l := storeTestLauncher(t, "work", "type=apikey\napi_key=k\n", `{"env":{}}`)
+		settings := filepath.Join(l.profileDirs, "work", "settings.profile.json")
+		conf := filepath.Join(l.dir, stem+".conf")
+		if err := os.WriteFile(conf, []byte("type=apikey\napi_key=k\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		answerRmPrompt(t, "y\n")
+		msg, rc := rmStderr(t, l, stem)
+		if rc == 0 {
+			t.Fatalf("stem %q: rm must refuse, not remove (printed %q)", stem, msg)
+		}
+		if _, err := os.Stat(settings); err != nil {
+			t.Fatalf("stem %q: rm removed a profile's private state: %v", stem, err)
+		}
+		if _, err := os.Stat(conf); err != nil {
+			t.Fatalf("stem %q: rm removed the conf it refused: %v", stem, err)
+		}
+	}
+}
+
+// GH-915: dispatch discounted a `--` wherever it stood, while rm and mv only
+// consume a leading one, so `ccmorph rm work --` deleted work. Only the leading
+// separator is the command's; a trailing one is an extra word.
+func TestRmAndMvTakeOnlyALeadingSeparator(t *testing.T) {
+	stubKeychain(t)
+	for _, argv := range [][]string{
+		{"rm", "work", "--"},
+		{"rm", "--", "work", "--"},
+		{"rm", "work", "--", "x"},
+		{"mv", "work", "b", "--"},
+		{"mv", "--", "work", "b", "--"},
+	} {
+		l := storeTestLauncher(t, "work", "type=apikey\napi_key=k\n", `{"env":{}}`)
+		answerRmPrompt(t, "y\n")
+		out, rc := readerOutput(t, func() int { return l.dispatch(argv) })
+		if rc != 2 || !strings.Contains(out, "unexpected argument") {
+			t.Fatalf("%q: want exit 2 and an unexpected-argument line, got %d %q", argv, rc, out)
+		}
+		if _, err := os.Stat(filepath.Join(l.dir, "work.conf")); err != nil {
+			t.Fatalf("%q: the refused command touched work.conf: %v", argv, err)
+		}
+		if _, err := os.Stat(filepath.Join(l.dir, "b.conf")); err == nil {
+			t.Fatalf("%q: the refused mv wrote b.conf", argv)
+		}
+	}
+}
+
+// GH-915: a stem starting with '.' names no profile's private state — the
+// validator never allowed one — and profiles/.rc-bridge is shared Remote
+// Control state. rm and mv must refuse it before the destructive path.
+func TestRmLeavesSharedDotStateAlone(t *testing.T) {
+	stubKeychain(t)
+	for _, stem := range []string{".rc-bridge", ".adapter-cache"} {
+		l := storeTestLauncher(t, "work", "type=apikey\napi_key=k\n", `{"env":{}}`)
+		t.Setenv("CCMORPH_CONTEXT_LOCKED", lockKey(stem))
+		shared := filepath.Join(l.profileDirs, stem, "hosted.json")
+		if err := os.MkdirAll(filepath.Dir(shared), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(shared, []byte("{}"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		conf := filepath.Join(l.dir, stem+".conf")
+		if err := os.WriteFile(conf, []byte("type=apikey\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		answerRmPrompt(t, "y\n")
+		msg, rc := rmStderr(t, l, stem)
+		if rc == 0 {
+			t.Fatalf("stem %q: rm must refuse (printed %q)", stem, msg)
+		}
+		if _, err := os.Stat(shared); err != nil {
+			t.Fatalf("stem %q: rm removed shared state: %v", stem, err)
+		}
+		if rc := l.mv([]string{stem, "fixed"}); rc == 0 {
+			t.Fatalf("stem %q: mv must refuse", stem)
+		}
+		if _, err := os.Stat(shared); err != nil {
+			t.Fatalf("stem %q: mv moved shared state: %v", stem, err)
+		}
+	}
+}
+
+// GH-915: the file-only repair for a stem without state of its own must run
+// as printed under any state root: a relative root that starts with '-' read
+// as an option to rm, and a root holding a space or quote must stay one word.
+func TestFileOnlyRepairRunsUnderAnyStateRoot(t *testing.T) {
+	for _, root := range []string{"-state", "my state", "it's"} {
+		base := t.TempDir()
+		t.Chdir(base)
+		if err := os.MkdirAll(root, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		conf := filepath.Join(root, ".conf")
+		if err := os.WriteFile(conf, []byte("type=apikey\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		l := &launcher{dir: root, profileDirs: filepath.Join(root, "profiles")}
+		hint := l.repair("", errors.New("x"))
+		_, cmd, ok := strings.Cut(hint, "or delete that file: ")
+		if !ok || !strings.HasPrefix(cmd, "rm -- ") {
+			t.Fatalf("root %q: the hint must end option parsing before the path: %q", root, hint)
+		}
+		if out, err := exec.Command("sh", "-c", cmd).CombinedOutput(); err != nil {
+			t.Fatalf("root %q: the printed command failed: %q: %v %s", root, cmd, err, out)
+		}
+		if _, err := os.Lstat(conf); !os.IsNotExist(err) {
+			t.Fatalf("root %q: the printed command left the conf: %v", root, err)
 		}
 	}
 }
