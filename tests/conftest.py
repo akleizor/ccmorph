@@ -2,8 +2,12 @@ import getpass
 import http.server
 import os
 import socketserver
+import sys
 
 import pytest
+
+if sys.version_info < (3, 11):  # pytest's own dependency below 3.11, as its runner uses it
+    from exceptiongroup import BaseExceptionGroup
 
 # Fake gateways take the adapter's 8 concurrent probes; the stdlib default backlog
 # of 5 makes macOS reset the overflow, which the adapter reads as a transport
@@ -72,3 +76,87 @@ def pytest_configure(config):
     # reads (pytest-timeout exposes no public per-run method hook).
     if hasattr(config, "workerinput"):
         config._env_timeout_method = "thread"
+
+
+# GH-919: every worker's OWN descendant tree is read while each test runs, by a
+# watcher process outside that tree (proc_pressure_test.RunTreeWatch); a test
+# whose tree passes RUN_SHARE of the per-user cap fails at its teardown, named.
+# The window is opened by a tryfirst setup hook and closed by a teardown hook
+# wrapper, not by a fixture: a fixture opens it after every higher-scoped
+# fixture (a module's or the session's) has been built and closes it before they
+# are torn down, so what those hold would belong to no test.
+_RUN_TREE = {}
+
+
+def _run_tree_watch():
+    """This process's watch, started by its first test (None: no finite cap,
+    where the in-file probes skip and say why, or a copy of this file run away
+    from tests/)."""
+    if "watch" not in _RUN_TREE:
+        try:
+            import proc_pressure_test as probe
+        except ModuleNotFoundError as missing:
+            # A copy of this conftest in an inner run away from tests/
+            # (timeout_headroom_test's probe): that run is a descendant of the
+            # outer worker, whose own watch already reads its tree. Beside the
+            # module, a failed import is a broken suite and stays loud.
+            beside = os.path.join(os.path.dirname(__file__), "proc_pressure_test.py")
+            if missing.name != "proc_pressure_test" or os.path.exists(beside):
+                raise
+            _RUN_TREE["watch"] = None
+            return None
+        cap = probe.per_user_cap()
+        _RUN_TREE["watch"] = None if cap is None else probe.RunTreeWatch(
+            cap[0], probe.RUN_SHARE, f"the {cap[1]} cap").start()
+    return _RUN_TREE["watch"]
+
+
+@pytest.hookimpl(tryfirst=True)
+def pytest_runtest_setup(item):
+    watch = _run_tree_watch()
+    if watch is not None:
+        watch.begin(item.nodeid)
+
+
+def _run_tree_verdict():
+    """Close this test's window: the GH-919 text when its tree passed the share
+    or the watch could not read the table, else None."""
+    watch = _RUN_TREE.get("watch")
+    return watch.end() if watch is not None else None
+
+
+@pytest.hookimpl(wrapper=True)
+def pytest_runtest_teardown(item, nextitem):
+    # A wrapper, not a trylast impl: pytest tears every fixture down inside the
+    # yield, and when one of them raises or skips the hook chain stops there, so
+    # an impl ordered after it never ran - the window stayed open, the next
+    # test's begin() discarded its samples, and a tree past the share passed
+    # green (#hive-repro-38948e07). The code after the yield runs however the
+    # teardown ended, and keeps that ending beside the verdict, the way pytest
+    # itself reports two finalizers that both failed.
+    try:
+        result = yield
+    except BaseException as ended:
+        message = _run_tree_verdict()
+        if message is None or isinstance(ended, KeyboardInterrupt):
+            raise  # ^C: the run stops as interrupted (exit 2), never green
+        if isinstance(ended, pytest.exit.Exception):  # a stop pytest must still see
+            raise pytest.exit.Exception(f"{ended.msg}; and {message}",
+                                        returncode=ended.returncode) from None
+        raise BaseExceptionGroup("errors during test teardown", [
+            ended, pytest.fail.Exception(message, pytrace=False)]) from None
+    message = _run_tree_verdict()
+    if message:
+        pytest.fail(message, pytrace=False)
+    return result
+
+
+def pytest_sessionfinish(session):
+    watch = _RUN_TREE.pop("watch", None)
+    if watch is not None:
+        watch.stop()
+
+
+@pytest.fixture(scope="session")
+def run_tree_watch():
+    return _run_tree_watch()
