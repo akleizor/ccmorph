@@ -3,6 +3,7 @@ package cli
 import (
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -66,6 +67,86 @@ func secureForCompinit(t *testing.T, root string) {
 	}
 }
 
+// warmCompletionProbe starts the probe's exact zsh once, untimed, with the
+// case's env already set: a fresh t.TempDir home has never built a
+// zcompdump, and the cold build belongs outside every budget, so this runs
+// it before the assertion and the timed probe then reads a warm startup
+// (#929, the #891 warm-stub recipe). What the shell answers here is thrown
+// away — only the files it leaves behind are the point — and a home whose
+// shell cannot start simply leaves nothing. doctorCompletion asks nothing of
+// a bash or fish login shell, so those homes are warmed by nobody.
+//
+// A warm dump is only worth something if the timed shell reads it instead of
+// rebuilding it, and Ubuntu's own startup would quietly undo that: its
+// /etc/zsh/zshrc runs compinit over the system fpath before the case's
+// .zshrc has put the install's directory on fpath, and compinit re-scans the
+// moment the fpath differs from the one its dump was built for — so the
+// global run replaces the warmed dump and the timed probe pays the cold scan
+// inside the budget after all (the #929 review's trace). The home therefore
+// carries the line that file itself documents, in the place it names: these
+// cases' .zshrc starts the completion system for every home that needs one,
+// so the global half was always a second, different initialization the case
+// never claimed. The guard block exists only on Ubuntu; on every other host
+// the line starts nothing. The dump's path and timestamp after the warm run
+// come back so a quiet case can show, not assume, that its probe reused it.
+func warmCompletionProbe(t *testing.T) (dump string, warmed time.Time) {
+	t.Helper()
+	shell := os.Getenv("SHELL")
+	if b := filepath.Base(shell); b == "bash" || b == "fish" {
+		return "", time.Time{}
+	}
+	if shell == "" {
+		p, err := exec.LookPath("zsh")
+		if err != nil {
+			return "", time.Time{}
+		}
+		shell = p
+	}
+	zdot := os.Getenv("ZDOTDIR")
+	if zdot == "" {
+		zdot = os.Getenv("HOME")
+	}
+	if err := os.WriteFile(filepath.Join(zdot, ".zshenv"), []byte("skip_global_compinit=1\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command(shell, "-ilc", `print -r -- "__ccmorph_completion_${_comps[ccmorph]-}"`)
+	env := make([]string, 0, len(os.Environ()))
+	for _, kv := range os.Environ() {
+		if strings.HasPrefix(kv, "FPATH=") || strings.HasPrefix(kv, "ZDOTDIR=") {
+			continue
+		}
+		env = append(env, kv)
+	}
+	cmd.Env = append(env, "ZDOTDIR="+zdot)
+	_ = cmd.Run()
+	dumps, _ := filepath.Glob(filepath.Join(zdot, ".zcompdump*"))
+	if len(dumps) == 0 {
+		return "", time.Time{}
+	}
+	st, err := os.Stat(dumps[0])
+	if err != nil {
+		return "", time.Time{}
+	}
+	return dumps[0], st.ModTime()
+}
+
+// pinProbeBound answers the probe through its seam instead of a shell and
+// shortens its deadline to a millisecond no fork could beat (#929): from
+// here a verdict can only be the pinned answer's, never the clock's — where
+// the landed deadline, answering alone, read a warm-enough shell as a
+// timeout and printed the fail-safe row. Both are restored on cleanup.
+func pinProbeBound(t *testing.T) {
+	t.Helper()
+	answer := completionProbeAnswer
+	completionProbeAnswer = func(string) (bool, bool) { return true, true }
+	deadline := completionProbeDeadline
+	completionProbeDeadline = time.Millisecond
+	t.Cleanup(func() {
+		completionProbeAnswer = answer
+		completionProbeDeadline = deadline
+	})
+}
+
 // TestDoctorCompletionSaysOnlyWhatANewZshStillMisses holds every state of a
 // person's zsh startup the completion row has to answer for (#363): the row is
 // doctor's word that Tab completes in a new zsh, and zsh starts no completion
@@ -80,7 +161,9 @@ func TestDoctorCompletionSaysOnlyWhatANewZshStillMisses(t *testing.T) {
 	dir := filepath.Join(root, "share", "zsh", "site-functions")
 	secureForCompinit(t, root)
 	// A cold compinit under a loaded CI box can pass the production 5s; a probe
-	// that times out would print a row where these cases expect silence.
+	// that times out would print a row where these cases expect silence. Each
+	// case warms the startup its probe will read, so this raise is only a
+	// ceiling — the cold build never runs inside it (#929).
 	deadline := completionProbeDeadline
 	completionProbeDeadline = 60 * time.Second
 	t.Cleanup(func() { completionProbeDeadline = deadline })
@@ -222,10 +305,31 @@ func TestDoctorCompletionSaysOnlyWhatANewZshStillMisses(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
+			dump, warmed := warmCompletionProbe(t)
 			got := completionHint(t, l)
 			if tc.quiet {
 				if got != "" {
 					t.Fatalf("doctor row = %q, want silence: a new zsh completes ccmorph", got)
+				}
+				// The silence came from a probe that read the warm-up's dump,
+				// not from one that rebuilt it and happened to finish in time:
+				// compinit rewrites its dump exactly when it re-scans, so an
+				// unchanged dump means the cold cost stayed outside the
+				// budget (#929's review — a warm-up the probe quietly ignores
+				// is no warm-up).
+				if dump != "" {
+					if st, err := os.Stat(dump); err != nil || !st.ModTime().Equal(warmed) {
+						t.Fatalf("the timed probe rebuilt %s instead of reusing the warm-up's dump: the cold scan ran inside the budget, and the clock decides again (#929)", dump)
+					}
+				}
+				// The silence rode the probe's answer, not the clock it ran
+				// against: with the answer pinned bound and a 1 ms deadline no
+				// shell can start within, an answered shell still decides the
+				// row (#929 — on the landed code, where the deadline alone
+				// answered, this same pass printed the fail-safe advice row).
+				pinProbeBound(t)
+				if got := completionHint(t, l); got != "" {
+					t.Fatalf("doctor row = %q with the answer pinned bound and the deadline at 1 ms, want silence: the answer, not the clock, decides", got)
 				}
 				return
 			}
