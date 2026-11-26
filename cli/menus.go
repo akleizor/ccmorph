@@ -357,26 +357,28 @@ func menuRows(slot, current, typ, base, rows string, keep, custom bool) []string
 // the catalogue without it, and a custom-ID escape for models. keep offers the
 // keep row even when nothing is set, as config can keep the unsaved state —
 // worded as what keeping it means at launch (#381).
-func (l *launcher) valueMenu(slot, name, current, typ, base, rows string, keep bool) (string, bool) {
+// kept is true when the answer keeps current — the Keep row, or Enter at the
+// custom-ID prompt — rather than naming a value (#862).
+func (l *launcher) valueMenu(slot, name, current, typ, base, rows string, keep bool) (value string, kept, ok bool) {
 	menu := menuRows(slot, current, typ, base, rows, keep, true)
 	choice, rc := chooseValue(slot, "Default "+slot+" — "+name, strings.Join(menu, "\n"), "labels")
 	if rc != 0 {
-		return "", false
+		return "", false, false
 	}
 	switch choice {
 	case "@keep":
-		return current, true
+		return current, true, true
 	case "@custom":
 		answer, rc := uiInput("Custom model ID (Enter keeps current): ", false)
 		if rc != 0 {
-			return "", false
+			return "", false, false
 		}
 		if answer == "" {
-			answer = current
+			return current, true, true
 		}
-		return answer, true
+		return answer, false, true
 	}
-	return choice, true
+	return choice, false, true
 }
 
 // pickModelDefault is the picker of `set <profile> model`: the same list, opened
@@ -389,7 +391,8 @@ func (l *launcher) pickModelDefault(name string) (string, bool) {
 	}
 	current := l.accountModel(name)
 	// A leave is answered by the picker's own Cancelled line (#280): no usage line here.
-	return l.valueMenu("model", name, current, f["type"], f["base_url"], l.defaultRows("model", name, f["type"]), current != "")
+	v, _, ok := l.valueMenu("model", name, current, f["type"], f["base_url"], l.defaultRows("model", name, f["type"]), current != "")
+	return v, ok
 }
 
 func say(msg string) { fmt.Fprintln(os.Stderr, msg) }

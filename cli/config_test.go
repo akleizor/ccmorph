@@ -96,3 +96,61 @@ func TestConfigKeepingTheModelKeepsItsImportedSourceIssue862(t *testing.T) {
 		}
 	}
 }
+
+// GH-862 review: a model the person answers at config's model prompt is theirs,
+// even when it is the imported id itself: the store drops model_source. Enter
+// keeps it, and the marker with it.
+func TestConfigAnExplicitModelAnswerDropsTheImportedSourceIssue862(t *testing.T) {
+	for _, tc := range []struct {
+		name, answer string
+		source       bool
+	}{
+		{"the same id typed", "opus", false},
+		{"another id typed", "model-a", false},
+		{"Enter keeps it", "", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root := t.TempDir()
+			state, profiles, home := filepath.Join(root, "state"), filepath.Join(root, "profiles"), filepath.Join(root, "home")
+			for _, d := range []string{state, filepath.Join(profiles, "gw"), filepath.Join(home, ".claude")} {
+				if err := os.MkdirAll(d, 0o700); err != nil {
+					t.Fatal(err)
+				}
+			}
+			conf := filepath.Join(state, "gw.conf")
+			if err := os.WriteFile(conf, []byte("type=apikey\nbase_url=https://gw.test\napi_key=test-key\nmodel=opus\nmodel_source=claude-settings\nmodel_defaults=1\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			// Enter keeps the endpoint, n keeps the credential, then the model
+			// answer, then Enter keeps the effort.
+			stdin := filepath.Join(root, "stdin")
+			if err := os.WriteFile(stdin, []byte("\nn\n"+tc.answer+"\n\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			in, err := os.Open(stdin)
+			if err != nil {
+				t.Fatal(err)
+			}
+			oldIn, oldTTY := os.Stdin, isTTY
+			os.Stdin, isTTY = in, func(int) bool { return false }
+			t.Cleanup(func() { os.Stdin, isTTY = oldIn, oldTTY; in.Close() })
+			t.Setenv("HOME", home)
+			t.Setenv("CCMORPH_CONTEXT_LOCKED", "gw")
+			l := &launcher{dir: state, profileDirs: profiles}
+			if rc := l.config([]string{"gw"}); rc != 0 {
+				t.Fatalf("config rc %d, want 0", rc)
+			}
+			after := readBack(t, conf)
+			want := tc.answer
+			if want == "" {
+				want = "opus"
+			}
+			if !strings.Contains(after, "\nmodel="+want+"\n") {
+				t.Fatalf("the conf does not hold model=%s:\n%s", want, after)
+			}
+			if got := strings.Contains(after, "model_source=claude-settings"); got != tc.source {
+				t.Fatalf("model_source kept=%v, want %v:\n%s", got, tc.source, after)
+			}
+		})
+	}
+}
