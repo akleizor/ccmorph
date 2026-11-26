@@ -230,7 +230,7 @@ func (l *launcher) getSet(verb string, args []string) int {
 		l.err("usage: " + usageLine("set"))
 		return 2
 	}
-	if rc, done := l.locked(name, append([]string{"set"}, args...)); done {
+	if rc, done := l.locked(lockKey(name), append([]string{"set"}, args...)); done {
 		return rc
 	}
 	value := args[2]
@@ -331,7 +331,7 @@ func (l *launcher) config(args []string) int {
 	if !l.requireProfile(&name, "config") {
 		return 1
 	}
-	if rc, done := l.locked(name, []string{"config", name}); done {
+	if rc, done := l.locked(lockKey(name), []string{"config", name}); done {
 		return rc
 	}
 	// The conf's one validator runs before any store read: a profile `list`

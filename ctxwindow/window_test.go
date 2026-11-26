@@ -902,3 +902,45 @@ func TestLockedTakesTheLegacyNamesRemovalAddresses(t *testing.T) {
 		t.Fatalf("a name past the storable bound must still be refused (exit %d, err %v)", code, err)
 	}
 }
+
+// GH-915: a conf the validator rejects on its name alone — `my[proj].conf`,
+// the shipped template copied under a name a person typed — is removable now,
+// and rm re-execs under this lock. The lock takes that exact on-disk name; a
+// word that is no conf on disk, and a separator that could leave the state
+// directory, are still refused.
+func TestLockedTakesASkippedConfsExactNameOnly(t *testing.T) {
+	e := setup(t)
+	child := lockChild(t)
+	write(t, filepath.Join(e.state, "my[proj].conf"), "type=apikey\napi_key=k\n")
+	code, err := windowRun([]string{"--locked", "my[proj]", child}, io.Discard, io.Discard)
+	if err != nil || code != 0 {
+		t.Fatalf("a skipped conf's exact name must lock: exit %d, err %v", code, err)
+	}
+	if _, err := os.Stat(filepath.Join(e.state, ".locks", "my[proj].lock")); err != nil {
+		t.Fatalf("the skipped conf's lock was not taken: %v", err)
+	}
+	// GH-915: a skipped stem may hold the separator itself. The key escapes a
+	// name's own comma, so the lock takes that conf whole instead of locking
+	// the fragments of a name nobody asked for.
+	write(t, filepath.Join(e.state, "team,west[.conf"), "type=apikey\napi_key=k\n")
+	code, err = windowRun([]string{"--locked", `team\,west[`, child}, io.Discard, io.Discard)
+	if err != nil || code != 0 {
+		t.Fatalf("a skipped comma name must lock as one name: exit %d, err %v", code, err)
+	}
+	if _, err := os.Stat(filepath.Join(e.state, ".locks", "team,west[.lock")); err != nil {
+		t.Fatalf("the comma name's lock was not taken: %v", err)
+	}
+	// Unescaped, the comma separates names, and neither fragment names a conf.
+	if code, err := windowRun([]string{"--locked", "team,west[", child}, io.Discard, io.Discard); err == nil || code != 0 {
+		t.Fatalf("an unescaped comma must still split (exit %d, err %v)", code, err)
+	}
+	// A dot stem names shared state (profiles/.rc-bridge is Remote Control's),
+	// never a profile's own: refused even with its conf on disk (GH-915). Nor
+	// is any other stem without private state of its own a lock key.
+	write(t, filepath.Join(e.state, ".rc-bridge.conf"), "type=apikey\napi_key=k\n")
+	for _, word := range []string{"nothere[", "my[proj]x", "../escape", "a/b", "", ".", "..", ".rc-bridge"} {
+		if code, err := windowRun([]string{"--locked", word, child}, io.Discard, io.Discard); err == nil || code != 0 {
+			t.Fatalf("--locked %q must still be refused (exit %d, err %v)", word, code, err)
+		}
+	}
+}
