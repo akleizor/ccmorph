@@ -2360,6 +2360,12 @@ def test_a_config_flag_without_a_path_is_a_usage_error_not_a_crash(capsys):
     assert "usage" in capsys.readouterr().err
 
 
+# #892: this case builds a real repository — init, commit, three locked worktrees,
+# then the supervisor's own `git rev-list`/`branch` children — and on a loaded
+# gate a single child start can occupy most of the one-minute ceiling (the
+# 2026-11-25 night gate struck this test inside `Popen._execute_child`). The
+# marker is its per-test headroom; the ceiling stays 60 s everywhere else.
+@pytest.mark.timeout(300)
 def test_an_archived_sessions_worktree_is_removed_after_the_limit_unless_it_holds_work(tmp_path, monkeypatch):
     import json
     import subprocess
