@@ -7,51 +7,33 @@
 
 ## Unreleased
 
-### Fixed
-
-- **`ccmorph update` no longer ends with a parse error.** The installer rewrote the launcher while `update` was still running from it, so zsh read the new file at the old offsets and the update exited 1 after it had already finished. The launcher is now replaced by a rename, and the running update keeps its own file.
-- **An install or update replaces every file by a rename and keeps what was there.** A symlinked file keeps its link, an existing file keeps its exact mode, and no installed path is ever empty or half written while a launch reads it.
-- **A `router.json` with its own `kinds` no longer turns image generation on**, and a top-tier mechanical task on a profile without Qwen or DeepSeek still gets a model.
-
 ### Added
 
 - **In a Remote Control session, a subagent runs on any profile and stays native.** With the router on, an Agent call the router picks for another profile (a gateway, an API key, another account) is still Claude Code's own subagent: it streams in the session, shows its tools, and returns to its caller. The edge's proxy serves that one agent from the picked profile and model; the rest of the session keeps its own. A profile the edge cannot serve falls back to the session's own models.
-- **`ccmorph router on` routes subagent work across your profiles.** Off by default. With it on, sessions get a `delegate` tool and Agent hooks: free gateways first, then the subscription furthest behind its pace, then paid keys, and inside a profile the cheapest model that fits the task's kind and tier. `ccmorph router status`, `dispatch` (`--dry-run` to see the pick only) and `report` show and check it. `dispatch` also serves scripts and services: `--timeout` bounds the whole run, flags after `--` reach the worker's claude, and the caller's `CCMORPH_TASK` tags its spend. The hooks never deny an Agent call: when no pick fits the session, the call runs as written.
-- **On a free profile the task's kind picks the model family before list price.** A writing task on a free gateway goes to Gemini rather than whichever model lists cheapest, and mechanical work prefers Qwen, then DeepSeek. A `kinds` entry in `router.json` now overrides only the kinds it names; the others keep their defaults.
-- **Chinese writing goes to DeepSeek first.** A writing brief mostly in Chinese, or one that names Chinese or Cantonese, ranks families by `writing_zh` (DeepSeek, Gemini, Claude, GPT); other writing keeps `writing`. Set `writing_zh` in `router.json` to change it.
-- **The router records what a route's answer was, and whether it held.** The decider's read is now a verdict (`pass`, `wrong` or `format`) marked as weak evidence; only a wrong answer is escalated, since a format problem means the model did the work. Each settled route records when it finished. `ccmorph router dispatch --id ID` names a run, and `ccmorph router accept ID pass|fail [--by SIGNAL]` records its real effect later (a merged PR, a passing test run), the strongest evidence a route has.
-- **The router runs a shadow picker beside its own.** On every route it samples each usable model's chance of passing, from the ledger's evidence (acceptance first, the decider's verdict at half weight) and your router.json labels and family order, and records in the ledger the model with the lowest expected cost of a passed task: money plus waiting time at US$0.05 a minute (`time_value` in router.json). It never runs; `ccmorph router report` shows how often it agreed with the real pick.
-- **`ccmorph get <profile> <field|--json>` is the one public read of a profile.** `api_key` prints the key or token (the same as `cred`, which stays), and `--json` prints profile, type, base_url, api_key, model, effort and the tier map a launch resolves (`tiers`, `{alias: model}`) in one object.
-- **`ccmorph check <profile> <model> [--json]` asks one model whether it answers now.** One real request with one output token and no tools, on the route a session of that profile takes: an API key's cached dialect (else Anthropic, Responses and Chat, each at most once), a Claude account or token with its own sign-in, a provider through its bridge. `--json` prints `{"ok","route","status","ms","note"}` with the upstream's own reason; exit 0 answered, 1 refused, 2 usage. No key or token is printed.
-- **`ccmorph price <model>... [--json]`** reads cached list prices per million tokens, using the same model lookup as usage pricing.
-- Adapter usage rows record the launching session as `parent` when available.
-- **`ccmorph quota` reads Google AI plans.** An `antigravity` profile shows each quota pool (Gemini, and the weekly pool the Claude and gpt-oss models share) with its reset; `--json` windows carry the `models` that draw on them.
 
 ### Fixed
 
-- **Recording a key approval or the model picker's rows no longer drops what a
-  running session saved.** `ccmorph add`, `login`, a launch and a hop record
-  Claude Code's answer in the profile's `.claude.json`, and every gateway launch
-  rewrites the picker rows there and the allowlist in the profile's settings
-  layer. Each of these rewrites now holds the profile's live lock exclusively
-  across its read and its rename — the mode the repo's other whole-file writers
-  take — so a running session's own save, a second approval or another launch's
-  rewrite can no longer be lost under it. While a session of the profile is
-  open, `login` and `add` save the answer and the next launch records it before
-  Claude Code starts; a launch that finds it still waiting says so and starts
-  nothing. A second launch of a profile whose session is open keeps the picker
-  rows the files already hold until a launch can write them. The first-run
-  answers a hop or a second profile seeds into the profile's config run
-  through the same locked rewrite, so an approval recorded while the answers
-  are gathered keeps its place too (#299, #861).
+- **A model alias from ~/.claude/settings.json no longer leaves a gateway profile
+  unstartable behind a ready doctor.** `list` and `inspect` say where the shown
+  model came from, `doctor` fails with run's own sentence and the command that
+  picks a served model, a terminal launch offers the model picker instead of
+  stopping, a gateway whose list names no chat model fails `doctor` in run's
+  words, and `inspect` lists `excluded_models` (#862).
 
-- **One hand-edited conf line no longer splits the commands.** An unknown key or
-  an effort level outside low…max used to hide the profile from `list` (which
-  then said "No profiles yet"), let `get` answer confidently, and stop
-  `set`/`config` on "invalid saved effort default". Every reader now prints the
-  same refusal naming the key or value and the legal levels; `list`'s skip line
-  and `ccmorph doctor` end with the same repair, and `ccmorph set <profile>
-  effort <level>` overwrites a bad saved level (#839).
+## v0.5.38 — 2026-11-26
+
+### Added
+
+- **The router runs a shadow picker beside its own.** On every route it samples each usable model's chance of passing, from the ledger's evidence (acceptance first, the decider's verdict at half weight) and your router.json labels and family order, and records in the ledger the model with the lowest expected cost of a passed task: money plus waiting time at US$0.05 a minute (`time_value` in router.json). It never runs; `ccmorph router report` shows how often it agreed with the real pick.
+
+## v0.5.37 — 2026-11-26
+
+### Added
+
+- **The router records what a route's answer was, and whether it held.** The decider's read is now a verdict (`pass`, `wrong` or `format`) marked as weak evidence; only a wrong answer is escalated, since a format problem means the model did the work. Each settled route records when it finished. `ccmorph router dispatch --id ID` names a run, and `ccmorph router accept ID pass|fail [--by SIGNAL]` records its real effect later (a merged PR, a passing test run), the strongest evidence a route has.
+
+### Fixed
+
 - **Ctrl-C at the Claude-account sign-in cancels setup and frees the name.**
   `ccmorph add` promised the cancel, but SIGINT killed the process before the
   rollback, leaving a half-made profile home and its `.locks/<name>.live` that
@@ -88,29 +70,109 @@
   root's line also names ccmorph's own program files when the root is the
   install directory, so the list no longer says only your data stays while a
   runnable copy remains (#810).
+
+## v0.5.36 — 2026-11-26
+
+### Added
+
+- **Chinese writing goes to DeepSeek first.** A writing brief mostly in Chinese, or one that names Chinese or Cantonese, ranks families by `writing_zh` (DeepSeek, Gemini, Claude, GPT); other writing keeps `writing`. Set `writing_zh` in `router.json` to change it.
+
+### Fixed
+
+- **Recording a key approval or the model picker's rows no longer drops what a
+  running session saved.** `ccmorph add`, `login`, a launch and a hop record
+  Claude Code's answer in the profile's `.claude.json`, and every gateway launch
+  rewrites the picker rows there and the allowlist in the profile's settings
+  layer. Each of these rewrites now holds the profile's live lock exclusively
+  across its read and its rename — the mode the repo's other whole-file writers
+  take — so a running session's own save, a second approval or another launch's
+  rewrite can no longer be lost under it. While a session of the profile is
+  open, `login` and `add` save the answer and the next launch records it before
+  Claude Code starts; a launch that finds it still waiting says so and starts
+  nothing. A second launch of a profile whose session is open keeps the picker
+  rows the files already hold until a launch can write them. The first-run
+  answers a hop or a second profile seeds into the profile's config run
+  through the same locked rewrite, so an approval recorded while the answers
+  are gathered keeps its place too (#299, #861).
+
+## v0.5.35 — 2026-11-25
+
+### Fixed
+
+- **`ccmorph update` no longer ends with a parse error.** The installer rewrote the launcher while `update` was still running from it, so zsh read the new file at the old offsets and the update exited 1 after it had already finished. The launcher is now replaced by a rename, and the running update keeps its own file.
+- **An install or update replaces every file by a rename and keeps what was there.** A symlinked file keeps its link, an existing file keeps its exact mode, and no installed path is ever empty or half written while a launch reads it.
+- **A `router.json` with its own `kinds` no longer turns image generation on**, and a top-tier mechanical task on a profile without Qwen or DeepSeek still gets a model.
+
+## v0.5.34 — 2026-11-25
+
+
+## v0.5.33 — 2026-11-25
+
+### Added
+
+- **On a free profile the task's kind picks the model family before list price.** A writing task on a free gateway goes to Gemini rather than whichever model lists cheapest, and mechanical work prefers Qwen, then DeepSeek. A `kinds` entry in `router.json` now overrides only the kinds it names; the others keep their defaults.
+
+### Fixed
+
+- **One hand-edited conf line no longer splits the commands.** An unknown key or
+  an effort level outside low…max used to hide the profile from `list` (which
+  then said "No profiles yet"), let `get` answer confidently, and stop
+  `set`/`config` on "invalid saved effort default". Every reader now prints the
+  same refusal naming the key or value and the legal levels; `list`'s skip line
+  and `ccmorph doctor` end with the same repair, and `ccmorph set <profile>
+  effort <level>` overwrites a bad saved level (#839).
+
+## v0.5.32 — 2026-11-24
+
+### Fixed
+
 - **`ccmorph doctor <profile>` no longer calls a provider profile ready when
   its bridge cannot start.** Doctor now asks the launch's own check: with
   `cliproxyapi` missing it fails and names the install step, and a missing or
   symlinked auth directory fails with the launch's own words (#787).
-- **A model alias from ~/.claude/settings.json no longer leaves a gateway profile
-  unstartable behind a ready doctor.** `list` and `inspect` say where the shown
-  model came from, `doctor` fails with run's own sentence and the command that
-  picks a served model, a terminal launch offers the model picker instead of
-  stopping, a gateway whose list names no chat model fails `doctor` in run's
-  words, and `inspect` lists `excluded_models` (#862).
-- **Remote Control hosts pin the route profile's tiers.** `ccmorph-rc-hosts` kept
-  its own tier map in `tier.<alias>=` lines, which drifted from the profile: an alias
-  the profile mapped to a gateway model went out as the native Claude id, which the
-  gateway refused (HTTP 400 on every Explore agent). Hosts now pin each alias the
-  route profile maps outside its own Claude family, read through
-  `ccmorph get <route> --json`; a `tier.` line still overrides one alias.
-
 - **`ccmorph inspect` names the saved model on the launches-as line for every
   profile kind.** A Claude account, Claude token or provider profile with a
   saved model read `launches as  claude (Claude Code picks the model)` under a
   model row naming that model, though a plain launch starts it; the line now
   reads `claude --model <id>`, as an API key profile's already did, and the
   unsaved words show only when no model is saved (#389).
+
+## v0.5.31 — 2026-11-23
+
+### Fixed
+
+- `ccmorph check` trusts a session's extra CA (`NODE_EXTRA_CA_CERTS`), as `quota` does, so a Claude account or token is checked from inside a Remote Control session too (#821).
+
+## v0.5.30 — 2026-11-23
+
+### Added
+
+- **`ccmorph check <profile> <model> [--json]` asks one model whether it answers now.** One real request with one output token and no tools, on the route a session of that profile takes: an API key's cached dialect (else Anthropic, Responses and Chat, each at most once), a Claude account or token with its own sign-in, a provider through its bridge. `--json` prints `{"ok","route","status","ms","note"}` with the upstream's own reason; exit 0 answered, 1 refused, 2 usage. No key or token is printed.
+
+## v0.5.29 — 2026-11-23
+
+### Changed
+
+- **`ccmorph router dispatch --no-decider` skips the finished-answer score too.** A caller that judges the outcome itself no longer gets a small model's verdict appended to the worker's report (#816).
+
+### Fixed
+
+- The Remote Control supervisor and its signed-out 401 report name the account without dying (#805, #807)
+- One owner turns env seconds into durations (#770)
+- The credential picker offers only profiles with a stored key or token (#790)
+- An all-unpriced month carries no share on `quota --json`; `AllUnpriced` owns that answer (#776, #795)
+- The adapter shim reads the upstream knob from the profile conf alone (#773)
+- `ccmorph price` reports an empty price cache (#786)
+- The router refuses a word it does not take instead of acting on it (#784)
+- One resolver routes a profile's calls, exemptions included (#580)
+- The Antigravity rewrite is gated on cliproxyapi 8.0.70 (#631)
+- The pre-start sizing save gives up at its deadline, and a model-scoped readiness wait waits like any other (#757, #766)
+- **Remote Control hosts pin the route profile's tiers.** `ccmorph-rc-hosts` kept
+  its own tier map in `tier.<alias>=` lines, which drifted from the profile: an alias
+  the profile mapped to a gateway model went out as the native Claude id, which the
+  gateway refused (HTTP 400 on every Explore agent). Hosts now pin each alias the
+  route profile maps outside its own Claude family, read through
+  `ccmorph get <route> --json`; a `tier.` line still overrides one alias.
 - **The installer no longer breaks under options set in `~/.zshenv`.** zsh reads
   that file before any script, so `unsetopt bareglobqual` or `setopt
   ignorebraces` there stopped `./install.sh`, `ccmorph update` and the one-line
@@ -125,6 +187,49 @@
   total every other receipt. The statusline's quota read waits at most a
   second for the store lock, and its own compaction is capped in time,
   entries and bytes (#654).
+
+### Added
+
+- **`ccmorph get <profile> <field|--json>` is the one public read of a profile.** `api_key` prints the key or token (the same as `cred`, which stays), and `--json` prints profile, type, base_url, api_key, model, effort and the tier map a launch resolves (`tiers`, `{alias: model}`) in one object.
+
+## v0.5.28 — 2026-11-21
+
+### Changed
+
+- **`ccmorph router dispatch` keeps the worker's output as its own.** stdout is the worker's, unchanged (its final answer, or the output format it was given); the router's notes and failure account go to stderr; the exit status is the worker's, 124 past the deadline. Routing runs under the dispatch deadline. A quota or auth refusal is retried only when the worker ran no tool, and a second `--` or a `-p` bundle after `--` is refused (#759).
+
+### Fixed
+
+- A canonical allow or ask list survives a tombstone (#750)
+- The hook's ledger lock is bounded and its quota read stays cached (#691)
+- A 16-digit run inside a decimal is a number, not a card (#756)
+- The lone-word version rewrite stops at run's own -- (#751)
+
+## v0.5.27 — 2026-11-21
+
+### Added
+
+- **`ccmorph router dispatch` serves scripts and services.** `--timeout S` bounds the whole dispatch, a retry included, and the worker reads its end from `CCMORPH_DEADLINE`; flags after `--` reach the worker's claude (`--model`, `--effort` and `-p` are refused there); `--effort` sets the effort; a caller's `CCMORPH_TASK` tags the worker's spend.
+- **`ccmorph router on` routes subagent work across your profiles.** Off by default. With it on, sessions get a `delegate` tool and Agent hooks: free gateways first, then the subscription furthest behind its pace, then paid keys, and inside a profile the cheapest model that fits the task's kind and tier. `ccmorph router status`, `dispatch` (`--dry-run` to see the pick only) and `report` show and check it. `dispatch` also serves scripts and services: `--timeout` bounds the whole run, flags after `--` reach the worker's claude, and the caller's `CCMORPH_TASK` tags its spend. The hooks never deny an Agent call: when no pick fits the session, the call runs as written.
+
+### Fixed
+
+- An explicit effort never unroutes a call; order beats newer inside a family (#693)
+- Prune bridge session records older than a week (#755)
+- An unreachable gateway says so — receipts-only zero is not a free month (#726)
+- One shape verdict for a /v1/models reply (#747)
+- A config reload resolves the account without dying (#596)
+- A piped answer is read and honored; an unanswered prompt removes nothing (#724)
+- Save a Claude account profile only once the sign-in completes (#649)
+- Let launches that open no session pass a dead gateway through (#650)
+- Keep canonical permission lists through layer tombstones (#740)
+- Dispatch honors --family, --no-decider and --refresh (#694)
+- A wrong menu answer re-asks; a typed URL points at Custom endpoint (#727)
+- A gateway that answered nothing is not a picker to revise (#723)
+- Print where the receipts live, and docs name both state roots (#731)
+- Set model names what its one listing reply met (#728)
+- Help router names the file the router reads, in plain text (#730)
+- A spill a build before #633 named is still found (#634)
 - **`ccmorph update <tag>` no longer leaves a new library beside the old
   core.** A GitHub tag archive carries no `ccmorph-core`. The updater now
   checks the download for the binary before it runs that tag's installer,
@@ -142,6 +247,82 @@
   passes through. A retry refused with a non-retryable 4xx delivers the
   upstream's first 400; a 429 passes through and counts against the breaker
   (#646).
+- **Closing the terminal mid Claude-account sign-in no longer strands a
+  half-made profile.** `add` wrote the profile's conf the moment the sign-in
+  method was chosen, so a closed window or dropped SSH — signals Ctrl-C never
+  sends — left a profile with no email and no sign-in, and `list` and `add`
+  disagreed about the repair. The conf is now written only once the sign-in
+  has completed, and a closed terminal's SIGHUP/SIGTERM reach the sign-in
+  child so the rollback runs: an interrupted sign-in leaves nothing, like a
+  cancelled one. A half-made profile left by an older version hears one
+  repair everywhere — `ccmorph login <profile>` — and that command now really
+  completes such a conf.
+
+### Changed
+
+- A failed dispatch is retried on the next profile only when the account refused it (quota or auth); a model that answered is never run twice. A failed dispatch prints the worker's own words.
+
+## v0.5.26 — 2026-11-21
+
+### Fixed
+
+- **The adapter reuses its upstream connections.** Each adapter config now gives its API-key upstreams a `connection-pool` entry, so cliproxyapi keeps one transport per credential and a finished request no longer leaves an idle socket open for 90 s. Adapters started before this release keep their old config until they restart. (#720)
+- **`ccmorph rm` asks before it destroys a profile** in a terminal, names the paths it removes, and says when the default left with the profile. Piped input keeps its unattended behaviour. (#652)
+- **`ccmorph export` on a fresh install prints the zero report** instead of a raw `[Errno 2]`; a missing archive file is named. (#647)
+- A shared provider bridge no longer exits with the job that launched it.
+
+### Changed
+
+- `ccmorph router route` is gone: `ccmorph router dispatch --dry-run` shows the pick without running a job.
+
+## v0.5.25 — 2026-11-20
+
+### Fixed
+
+- **A named profile and model run as named.** `delegate` with both set skips the routing filters (disabled profile, advisor-only model) instead of failing with "no next available profile"; an unknown profile fails loudly. (#710)
+
+## v0.5.24 — 2026-11-20
+
+### Fixed
+
+- **The router never refuses a call.** The Agent hook no longer denies a call when no profile can take it, when its pick is on another profile, or when a delegated worker starts its own subagent; the call runs as written and is logged as unrouted. The `delegate` tool also runs inside a delegated worker.
+
+## v0.5.23 — 2026-11-20
+
+### Fixed
+
+- **The router no longer pauses a whole gateway over one model.** A 403 or 429 from one model on a gateway backs off that model for 15 minutes; only a subscription's refusal pauses the profile. (#709)
+- **Remote Control sessions load the router** (`delegate` tool and Agent hooks) while it is on, and ccmorph's own plugin. (#707)
+- A session started inside another no longer repeats ccmorph's plugin directories. (#708)
+
+## v0.5.22 — 2026-11-20
+
+### Added
+
+- **`ccmorph router on` routes subagent work across your profiles.** Off by default. With it on, sessions get a `delegate` tool and Agent hooks: free gateways first, then the subscription furthest behind its pace, then paid keys, and inside a profile the cheapest model that fits the task's kind and tier. `ccmorph router status`, `route`, `dispatch` and `report` show and check it. (#687)
+
+## v0.5.21 — 2026-11-19
+
+### Changed
+
+- `ccmorph quota` refreshes any expired cliproxyapi sign-in (Codex as well as Antigravity) with `cliproxyapi -refresh` before reading it. Needs cliproxyapi 8.0.76-akleizor.7 or later. (#682)
+
+## v0.5.20 — 2026-11-19
+
+### Added
+
+- **`ccmorph get <profile> <field|--json>` is the one public read of a profile.** `api_key` prints the key or token (the same as `cred`, which stays), and `--json` prints profile, type, base_url, api_key, model and effort in one object.
+
+## v0.5.19 — 2026-11-19
+
+### Added
+
+- **`ccmorph get <profile> base_url`** prints a profile's endpoint; with `ccmorph cred`, scripts reach a gateway without reading profile files.
+- **`ccmorph price <model>... [--json]`** reads cached list prices per million tokens, using the same model lookup as usage pricing.
+- Adapter usage rows record the launching session as `parent` when available.
+
+### Fixed
+
 - **A `uv run` without memorized flags can no longer run the pytest suite
   serially.** The pytest packages ride in pyproject.toml's default `test`
   group, so the command a session types from memory — without
@@ -160,16 +341,54 @@
   pyproject.toml's default uv `test` group; they now say
   `CCMORPH_LIB_DIR="$PWD/lib" uv run python -m pytest`, the form the Makefile
   and CONTRIBUTING use. A docs test pins it.
-- **Closing the terminal mid Claude-account sign-in no longer strands a
-  half-made profile.** `add` wrote the profile's conf the moment the sign-in
-  method was chosen, so a closed window or dropped SSH — signals Ctrl-C never
-  sends — left a profile with no email and no sign-in, and `list` and `add`
-  disagreed about the repair. The conf is now written only once the sign-in
-  has completed, and a closed terminal's SIGHUP/SIGTERM reach the sign-in
-  child so the rollback runs: an interrupted sign-in leaves nothing, like a
-  cancelled one. A half-made profile left by an older version hears one
-  repair everywhere — `ccmorph login <profile>` — and that command now really
-  completes such a conf.
+
+## v0.5.18 — 2026-11-19
+
+### Added
+
+- `ccmorph quota` refreshes an expired Antigravity (Google AI plan) sign-in with `cliproxyapi -antigravity-refresh` before reading it, so the reading stays live with no session running. Needs cliproxyapi 8.0.76-akleizor.5 or later. (#680)
+
+## v0.5.17 — 2026-11-19
+
+### Added
+
+- **`ccmorph quota` reads Google AI plans.** An `antigravity` profile shows each
+  quota pool (Gemini, and the weekly pool the Claude and gpt-oss models share)
+  with its reset; `--json` windows carry the `models` that draw on them.
+
+## v0.5.16 — 2026-11-19
+
+### Added
+
+- **`ccmorph price <model>... [--json]`** reads cached list prices per million
+  tokens, using the same model lookup as usage pricing, so other tools ask
+  ccmorph instead of copying its name rules.
+
+### Fixed
+
+- **A gateway model served under a precision name is priced.** A name such as
+  `Qwen3.8-Flash-Next-FP8` (also -NVFP4, -BF16, -INT4, -AWQ, -GPTQ) now prices
+  as its base model, the way a dated id already did; such usage rows were left
+  unpriced on every gateway profile.
+
+## v0.5.15 — 2026-11-18
+
+### Fixed
+
+- **Sessions started from a terminal that a Claude Code shell opened save
+  their transcript again.** Such a terminal hands `CLAUDE_CODE_CHILD_SESSION=1`
+  to every tab, and Claude Code then saved nothing, so the session could not be
+  resumed and a hop started a new conversation after ending the old one. The
+  launch keeps the marker only when a Claude Code process is an ancestor.
+
+## v0.5.14 — 2026-11-18
+
+### Fixed
+
+- **A signed-out Claude account now names its fix.** `ccmorph doctor` reads the
+  macOS keychain sign-in and fails with `ccmorph login <profile>` when it is
+  empty. `ccmorph-rc-hosts` stops retrying a refresh that cannot work and logs
+  the same command once.
 
 ## v0.5.13 — 2026-11-17
 
