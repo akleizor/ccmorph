@@ -367,6 +367,11 @@ func TestCloakNeverForBanner(t *testing.T) {
 }
 
 func TestCloakNeverForRunsTheBinary(t *testing.T) {
+	// The banner read's bound is the operator's env (CCMORPH_BRIDGE_BANNER_TIMEOUT);
+	// pin it as the bridge gate test does, so an inherited value cannot starve
+	// the stub's -h and report the old translator as new (#895, REVIEW.md: env
+	// is a tool too).
+	t.Setenv("CCMORPH_BRIDGE_BANNER_TIMEOUT", "600")
 	bin := filepath.Join(t.TempDir(), "cliproxyapi")
 	writeFile(t, bin, "#!/bin/sh\n[ \"$1\" = -h ] || exit 2\necho 'CLIProxyAPI Version: 7.2.110, Commit: x'\n", 0o755)
 	if !cloakNeverFor(bin) {

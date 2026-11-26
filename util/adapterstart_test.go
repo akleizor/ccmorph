@@ -4,7 +4,9 @@ import (
 	"bytes"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -70,21 +72,65 @@ func TestAdapterReadyLimit(t *testing.T) {
 func TestAdapterStartModelScopeHonorsTheEnvBoundAndSaysTheWait(t *testing.T) {
 	// #766: a --model-scoped start ignored any bound the caller passed and
 	// died at a fixed 45 s; it now waits the bound and the failure line says
-	// how long it actually waited.
+	// how long it actually waited. The clock here is the test's, not the
+	// machine's: a starved gate host can run the first poll seconds late, and
+	// a wall-clock ceiling read that starvation as an ignored bound (#895).
+	// The poll lands 11 s late in virtual time — the pause that failed the old
+	// ceiling — and a second tick past the default proves it was the 1 s env
+	// bound, not the 600 s default, that ended the wait.
 	t.Setenv("CCMORPH_ADAPTER_START_TIMEOUT", "1")
 	core := fakeCore(t, "exec sleep 30") // never answers; exec keeps it killable
+
+	var mu sync.Mutex
+	now := time.Unix(0, 0)
+	tick := make(chan time.Time, 2)
+	reads := make(chan struct{}, 8)
+	started := make(chan struct{})
+	savedNow, savedTicker := adapterNow, adapterTicker
+	t.Cleanup(func() { adapterNow, adapterTicker = savedNow, savedTicker })
+	adapterNow = func() time.Time {
+		mu.Lock()
+		defer mu.Unlock()
+		reads <- struct{}{}
+		return now
+	}
+	adapterTicker = func() (<-chan time.Time, func()) {
+		close(started)
+		return tick, func() {}
+	}
+	advance := func(to time.Duration) {
+		mu.Lock()
+		now = time.Unix(0, 0).Add(to)
+		mu.Unlock()
+		tick <- time.Time{}
+	}
+
 	var out, errw bytes.Buffer
-	started := time.Now()
-	rc := adapterStart([]string{core, "p", "llmgate/claude-opus-5-5", "1", os.DevNull}, nil, &out, &errw)
-	waited := time.Since(started)
-	if rc != 1 {
+	result := make(chan int, 1)
+	go func() {
+		result <- adapterStart([]string{core, "p", "llmgate/claude-opus-5-5", "1", os.DevNull}, nil, &out, &errw)
+	}()
+	select {
+	case <-started:
+	case rc := <-result:
+		t.Fatalf("rc %d before the first poll, stderr %q", rc, errw.String())
+	}
+	<-reads // the loop's start, read before it made the poll
+	advance(11 * time.Second)
+	// Wait for the poll's own reading so the next advance cannot change the
+	// decision it is about to make; a loop that ignored the env reaches this
+	// read and keeps waiting, and the 601 s tick then ends it.
+	<-reads
+	advance(601 * time.Second)
+	if rc := <-result; rc != 1 {
 		t.Fatalf("rc %d, stderr %q", rc, errw.String())
 	}
-	if !strings.Contains(errw.String(), "timed out after 1s") {
-		t.Errorf("stderr %q, want the waited seconds (1s)", errw.String())
+	timedOut := regexp.MustCompile(`: adapter timed out after ([0-9]+)s; session not started\.`).FindStringSubmatch(errw.String())
+	if timedOut == nil {
+		t.Fatalf("stderr %q, want a timeout naming the measured wait in seconds", errw.String())
 	}
-	if waited > 10*time.Second {
-		t.Errorf("env bound ignored: waited %v for a 1s bound", waited)
+	if timedOut[1] != "11" {
+		t.Errorf("stderr %q reports %ss, want the 11s the controlled clock measured", errw.String(), timedOut[1])
 	}
 }
 
