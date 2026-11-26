@@ -163,7 +163,7 @@ func ConfigStore(a StoreArgs, errw io.Writer) (string, int) {
 	if op == "prepare-launch" {
 		if dir := layerProfileDir(a.Settings); dir != "" {
 			var why error
-			release, why = liveExclusiveLock(filepath.Dir(dir), filepath.Base(dir))
+			release, why = liveExclusiveLock(filepath.Dir(dir), filepath.Base(dir), "")
 			layerWrite = release != nil
 			if release == nil && why != nil && !errors.Is(why, ErrProfileInUse) {
 				fmt.Fprintf(errw, "ccmorph: %v; the settings layer was left as it was\n", why)

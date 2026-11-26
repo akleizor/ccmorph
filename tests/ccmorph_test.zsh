@@ -12899,6 +12899,96 @@ run_test test_a_settings_model_still_sizes_the_budget
 run_test test_launch_hints_when_a_routed_window_is_unprobed
 run_test test_late_harness_files_heal_on_next_setup
 run_test test_profile_local_harness_content_survives_an_upgrade
+
+# GH-938: provisioning rewrites the profile's config.json and .claude.json
+# whole-file, and a launch ran it even while a session of the profile was live,
+# so a save the session made between provisioning's read and its rename could be
+# dropped. A session holds the profile's live lock shared for its life; a launch
+# that cannot take it exclusively must leave both files alone, say which file it
+# skipped, and still start.
+test_a_busy_launch_leaves_the_auth_files_alone_and_starts() {
+  local test_home; test_home=$(mktemp -d); setup_home "$test_home"
+  local prof="$HOME/.config/ccmorph/profiles/proxy" rc=0
+  local claude_auth='{"oauthAccount":{"emailAddress":"someone@example"}}'
+  local config_auth='{"oauth:tokenCache":{"accessToken":"t"}}'
+  mkdir -p "$prof"
+  print -r -- "$claude_auth" > "$prof/.claude.json"
+  print -r -- "$config_auth" > "$prof/config.json"
+  source "$CCMORPH_SOURCE"
+  local _CCMORPH_LIBEXEC_DIR="$_CCMORPH_LIBEXEC_DIR"
+  # The launch's background context refresh runs `ccmorph _route_env`, which
+  # provisions too. Left running it would outlive this launch and, once the
+  # fake session ends, do the very write on test; the suite's shared seam
+  # records and ends that probe instead (see fake_context_refresh).
+  fake_context_refresh
+  local _CCMORPH_LOG="$HOME/ccmorph.log"
+  # A first, uncontended launch completes the profile's shared setup, so the
+  # next launch's ProfileOK cannot answer "nothing to do" from a layer that
+  # still needs repairing.
+  _ccm_launch -a proxy prompt >/dev/null 2>&1 || {
+    print -u2 -- 'the first launch must start'
+    rc=1
+  }
+  # A session's own save (or a credential copied in) leaves the auth fields
+  # behind: the files need provisioning again.
+  print -r -- "$claude_auth" > "$prof/.claude.json"
+  print -r -- "$config_auth" > "$prof/config.json"
+  # One shared link is missing, so this launched setup runs (and repairs it)
+  # rather than being skipped whole by ProfileOK.
+  rm -f "$prof/skills"
+  local before_claude="$(<"$prof/.claude.json")" before_config="$(<"$prof/config.json")"
+  local live="$HOME/.config/ccmorph/.locks/proxy.live"
+  mkdir -p "${live:h}"; : > "$live"
+  # The lock as a live session holds it: shared, by a process that is no
+  # ancestor of the launch, so the launch inherits no descriptor of it and
+  # reads it as another holder — a second launch beside a running session.
+  perl -e 'open(my $fh, ">>", $ARGV[0]) or die $!; flock($fh, 1) or die $!; $| = 1; print "HELD\n"; $SIG{TERM} = sub { exit 0 }; sleep 300' "$live" > "$test_home/held" 2>&1 &
+  local holder=$!
+  local -i i
+  for (( i = 0; i < CCMORPH_TEST_HANG_TIMEOUT * 10; i++ )); do
+    [[ -s "$test_home/held" ]] && break
+    sleep 0.1
+  done
+  if [[ ! -s "$test_home/held" || "$(<"$test_home/held")" != 'HELD' ]]; then
+    print -u2 -- "the fake session could not take the live lock: $(<"$test_home/held")"
+    kill -KILL $holder 2>/dev/null; wait $holder 2>/dev/null
+    rm -rf "$test_home"; return 1
+  fi
+  : > "$_CCMORPH_LOG"
+  _ccm_launch -a proxy prompt >/dev/null 2>&1 || {
+    print -u2 -- 'a launch whose profile is in use must still start'
+    rc=1
+  }
+  [[ "$(<"$prof/.claude.json")" == "$before_claude" ]] || {
+    print -u2 -- "provisioning rewrote .claude.json under the live session: $(<"$prof/.claude.json")"
+    rc=1
+  }
+  [[ "$(<"$prof/config.json")" == "$before_config" ]] || {
+    print -u2 -- "provisioning rewrote config.json under the live session: $(<"$prof/config.json")"
+    rc=1
+  }
+  assert_contains "$(<"$CCMORPH_TEST_LOG")" 'ARG' \
+    'the busy launch must start Claude Code' || rc=1
+  assert_contains "$(<"$_CCMORPH_LOG")" "provisioning of 'proxy' skipped" \
+    'the launch must log the provisioning it skipped' || rc=1
+  assert_contains "$(<"$_CCMORPH_LOG")" 'config.json' \
+    'the skip must name the file it left alone' || rc=1
+  kill -TERM $holder 2>/dev/null
+  wait $holder 2>/dev/null
+  # Convergence is the next launch, not a marker: the shared layer is complete
+  # now, so only the auth files' actual state can send it through setup again.
+  _ccm_launch -a proxy prompt >/dev/null 2>&1 || {
+    print -u2 -- 'the next uncontended launch must start'
+    rc=1
+  }
+  assert_not_contains "$(<"$prof/.claude.json")" 'oauthAccount' \
+    'the next uncontended launch must retry the provisioning the busy launch skipped' || rc=1
+  assert_not_contains "$(<"$prof/config.json")" 'oauth:tokenCache' \
+    'the next uncontended launch must retry the provisioning the busy launch skipped' || rc=1
+  rm -rf "$test_home"
+  return $rc
+}
+run_test test_a_busy_launch_leaves_the_auth_files_alone_and_starts
 run_test test_an_unwritable_window_cache_is_silent_and_nonfatal
 run_test test_flag_errors_name_the_spelling_the_user_typed
 run_test test_source_names_no_machine_local_files

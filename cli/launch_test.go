@@ -1534,6 +1534,145 @@ func TestSetupDirProceedsForVerbsThatStartNoSession(t *testing.T) {
 	}
 }
 
+// cliBlockLiveLockDir puts a regular file where LiveLockPath's .locks directory
+// goes, so the profile's live lock cannot be made (#217's fixture).
+func cliBlockLiveLockDir(t *testing.T, profiles string) string {
+	t.Helper()
+	blocker := filepath.Join(filepath.Dir(profiles), ".locks")
+	if filepath.Dir(util.LiveLockPath(profiles, "p")) != blocker {
+		t.Fatalf("the fixture must block the directory LiveLockPath names: %s", util.LiveLockPath(profiles, "p"))
+	}
+	if err := os.WriteFile(blocker, []byte("not a directory\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return blocker
+}
+
+// setupDirStderr runs setupDir with stderr captured.
+func setupDirStderr(t *testing.T, l *launcher, name, typ string, policy livePolicy) (bool, string) {
+	t.Helper()
+	saved := os.Stderr
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	os.Stderr = w
+	ok := l.setupDir(name, typ, policy)
+	w.Close()
+	os.Stderr = saved
+	b, _ := io.ReadAll(r)
+	return ok, string(b)
+}
+
+// GH-938, #217: when the live lock cannot be made, `use` and `add` still go on,
+// but the auth files the lock covers are left as they are, and the launch that
+// can make the lock scopes them before any session starts.
+func TestSetupDirLeavesTheAuthFilesToALaunchWhenTheLiveLockCannotBeMade(t *testing.T) {
+	const claudeSeed = `{"oauthAccount":{"emailAddress":"someone@example"}}`
+	for _, tc := range []struct {
+		name     string
+		policy   livePolicy
+		wantNote bool
+	}{
+		{"use", liveSilent, false},
+		{"add", liveNote, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			home := t.TempDir()
+			t.Setenv("HOME", home)
+			profiles := filepath.Join(home, ".config/ccmorph/profiles")
+			dir := filepath.Join(profiles, "p")
+			if err := os.MkdirAll(dir, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			claudeJSON := filepath.Join(dir, ".claude.json")
+			if err := os.WriteFile(claudeJSON, []byte(claudeSeed), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			blocker := cliBlockLiveLockDir(t, profiles)
+			t.Cleanup(util.SetLockWait(0))
+			t.Cleanup(func() { util.ReleaseLive(profiles, "p") })
+
+			ok, note := setupDirStderr(t, &launcher{profileDirs: profiles}, "p", "proxy", tc.policy)
+			if !ok {
+				t.Fatalf("%s must go on when the live lock cannot be made: %q", tc.name, note)
+			}
+			if got, _ := os.ReadFile(claudeJSON); string(got) != claudeSeed {
+				t.Fatalf(".claude.json was rewritten without the live lock: %s", got)
+			}
+			if _, err := os.Lstat(filepath.Join(dir, "config.json")); !os.IsNotExist(err) {
+				t.Fatalf("config.json was written without the live lock (err %v)", err)
+			}
+			if strings.Contains(note, "profile setup failed") {
+				t.Fatalf("%s must not report a failed setup: %q", tc.name, note)
+			}
+			if tc.wantNote {
+				if !strings.Contains(note, "could not be created") || strings.Contains(note, "another launch") {
+					t.Fatalf("add must name the lock it could not make: %q", note)
+				}
+			} else if note != "" {
+				t.Fatalf("use must say nothing: %q", note)
+			}
+
+			if err := os.Remove(blocker); err != nil {
+				t.Fatal(err)
+			}
+			if !(&launcher{profileDirs: profiles}).setupDir("p", "proxy", liveRefuse) {
+				t.Fatal("a launch that can make the lock must start")
+			}
+			if got, _ := os.ReadFile(claudeJSON); strings.Contains(string(got), "oauthAccount") {
+				t.Fatalf("the launch did not scope .claude.json: %s", got)
+			}
+			if _, err := os.Stat(filepath.Join(dir, "config.json")); err != nil {
+				t.Fatalf("the launch did not provision config.json: %v", err)
+			}
+		})
+	}
+}
+
+// GH-938: the skip that lets `use` and `add` go on without the lock covers the
+// write alone; an invalid auth file is refused as before.
+func TestSetupDirStillRefusesAnInvalidAuthFileWhenTheLiveLockCannotBeMade(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		policy livePolicy
+	}{
+		{"use", liveSilent},
+		{"add", liveNote},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			home := t.TempDir()
+			t.Setenv("HOME", home)
+			profiles := filepath.Join(home, ".config/ccmorph/profiles")
+			dir := filepath.Join(profiles, "p")
+			if err := os.MkdirAll(dir, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			target := filepath.Join(home, "elsewhere.json")
+			if err := os.WriteFile(target, []byte(`{}`), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Symlink(target, filepath.Join(dir, ".claude.json")); err != nil {
+				t.Fatal(err)
+			}
+			cliBlockLiveLockDir(t, profiles)
+			t.Cleanup(util.SetLockWait(0))
+			t.Cleanup(func() { util.ReleaseLive(profiles, "p") })
+
+			ok, note := setupDirStderr(t, &launcher{profileDirs: profiles}, "p", "proxy", tc.policy)
+			if ok {
+				t.Fatalf("%s must refuse a symlinked .claude.json: %q", tc.name, note)
+			}
+			if !strings.Contains(note, "profile setup failed for 'p'") || !strings.Contains(note, "symbolic links are not allowed") {
+				t.Fatalf("the refusal must name the file and the failed setup: %q", note)
+			}
+			if got, _ := os.ReadFile(target); string(got) != `{}` {
+				t.Fatalf("the link's target was written: %s", got)
+			}
+		})
+	}
+}
+
 // canTakeExclusive reports whether a fresh probe can take the lock at path
 // exclusively right now.
 func canTakeExclusive(t *testing.T, path string) bool {
