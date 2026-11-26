@@ -3770,20 +3770,27 @@ test_a_session_with_no_conversation_ends_without_a_resume_command_issue_359() {
   source "$CCMORPH_SOURCE"
 
   # A session that spoke keeps its line, and the command it names resumes it.
+  # The reach probe's progress line is the loaded host's clock, not this
+  # test's subject: the shared advisory filter drops exactly that line from
+  # every captured launch output (#891).
   seed_session_transcript spoken-session 'a first message'
   out=$(CCMORPH_TEST_SESSION_ID=spoken-session _ccm_launch -a proxy 2>&1) || rc=1
+  out="$(strip_readiness_advisories "$out")"
   assert_contains "$out" 'ccmorph run proxy --resume spoken-session' \
     'a session with a message must name the command that resumes it' || rc=1
   out=$(_ccm_launch -a proxy --resume spoken-session 2>&1) || rc=1
+  out="$(strip_readiness_advisories "$out")"
   assert_contains "$out" 'ccmorph run proxy --resume spoken-session' \
     'the resumed session must again name the command that resumes it' || rc=1
   # A session closed before any message: nothing was saved, so no command.
   out=$(CCMORPH_TEST_SESSION_ID=quiet-session _ccm_launch -a proxy 2>&1) || rc=1
+  out="$(strip_readiness_advisories "$out")"
   assert_not_contains "$out" 'ccmorph run proxy --resume' \
     'a session closed before its first message must not offer a resume command' || rc=1
   # A resume of an id that does not exist ends with Claude Code's error and
   # its status, and no new command.
   out=$(_ccm_launch -a proxy --resume ghost-session 2>&1); st=$?
+  out="$(strip_readiness_advisories "$out")"
   [[ "$st" != 0 ]] || { print -u2 -- "Claude Code's own failure must keep its exit status: ${(qqq)out}"; rc=1 }
   assert_contains "$out" 'No conversation found with session ID: ghost-session' \
     'the failed resume must end with the error Claude Code printed' || rc=1
@@ -4364,29 +4371,72 @@ test_hop_to_a_wrong_name_inside_claude_answers_in_one_line() {
 # A launch whose adapter readiness wait passes one second prints advisory
 # lines to the same stream as its status: "ccmorph: Starting adapter for
 # '<label>'…" at one second, then "ccmorph: Waiting for '<profile>' adapter
-# (Ns); Ctrl-C to cancel." every five after (util/adapterstart.go). On a
-# loaded host that wait crosses a second routinely — the reason #766 raised
-# the readiness limit — so an exact comparison of launch output must not
-# depend on the readiness clock: drop exactly those whole advisory lines and
-# hold every other byte exact (#856).
+# (Ns); Ctrl-C to cancel." every five after (util/adapterstart.go). Its reach
+# probe prints a third the same way once a gateway has gone unanswered past
+# its progress bound: "ccmorph: Checking '<name>' gateway (up to Ns); Ctrl-C
+# to cancel." (util/reach.go, cli/run.go). On a loaded host either wait
+# crosses its line routinely — the reason #766 raised the readiness limit —
+# so an exact comparison of launch output must not depend on either clock:
+# drop exactly those whole advisory lines and hold every other byte exact
+# (#856, #891).
 strip_readiness_advisories() {
   setopt localoptions extended_glob
   local line
   local -a kept
-  # The two emitted shapes exactly. A literal single quote cannot be spelled
+  # The three emitted shapes exactly. A literal single quote cannot be spelled
   # inside a case pattern without the parser misreading the quotes around it,
   # so each pattern rides in a $'…' string (\x27 answers as the quote only
   # after parsing, when ${~} turns the text into the pattern) and \( \) keeps
-  # the (Ns) parentheses literal.
+  # the parentheses literal.
   local pat_start=$'ccmorph: Starting adapter for \x27*\x27…'
   local pat_wait=$'ccmorph: Waiting for \x27*\x27 adapter \\([0-9]#s\\); Ctrl-C to cancel.'
+  # util.ReachBoundSeconds prints 1 through doctor's 5, never another count (#891).
+  local pat_check=$'ccmorph: Checking \x27*\x27 gateway \\(up to [1-5]s\\); Ctrl-C to cancel.'
   for line in "${(@f)1}"; do
-    if [[ $line == ${~pat_start} || $line == ${~pat_wait} ]]; then
+    if [[ $line == ${~pat_start} || $line == ${~pat_wait} || $line == ${~pat_check} ]]; then
       continue
     fi
     kept+=("$line")
   done
   print -r -- "${(F)kept}"
+}
+
+test_the_readiness_filter_drops_only_the_reach_durations_the_probe_emits_issue_891() {
+  # The reach progress line is filtered, but only for the counts
+  # util.ReachBoundSeconds can print: one through doctor's five. Every other
+  # lookalike (no digit, 0, 6 and up, two digits, a leading zero, a space
+  # before the unit, a truncated line) must reach the exact comparison intact
+  # (#891).
+  local rc=0 n v bad got
+  local base="ccmorph: Checking 'profile (with spaces)' gateway (up to 5s); Ctrl-C to cancel."
+  for n in 1 2 3 4 5; do
+    v=${base/up to 5s/up to ${n}s}
+    got=$(strip_readiness_advisories "$v")
+    [[ -z "$got" ]] || {
+      print -u2 -- "an emitted reach duration must be dropped: ${(qqq)v}"
+      rc=1
+    }
+  done
+  for bad in 'up to s' 'up to 0s' 'up to 6s' 'up to 9s' 'up to 10s' 'up to 05s' 'up to 5 s'; do
+    v=${base/up to 5s/$bad}
+    got=$(strip_readiness_advisories "$v")
+    [[ "$got" == "$v" ]] || {
+      print -u2 -- "a lookalike the probe cannot emit must stay: ${(qqq)v}"
+      rc=1
+    }
+  done
+  v=${base%; Ctrl-C to cancel.}
+  got=$(strip_readiness_advisories "$v")
+  [[ "$got" == "$v" ]] || {
+    print -u2 -- "a reach line missing its tail must stay: ${(qqq)v}"
+    rc=1
+  }
+  got=$(strip_readiness_advisories "before"$'\n'"$base"$'\n'"after")
+  [[ "$got" == "before"$'\n'"after" ]] || {
+    print -u2 -- "only the reach line goes, the other lines stay in order: ${(qqq)got}"
+    rc=1
+  }
+  return $rc
 }
 
 test_relay_resume_preserves_dangerous_permission_mode() {
@@ -7967,8 +8017,17 @@ test_an_out_of_schema_saved_budget_does_not_block_derivation() {
     > "$HOME/.config/ccmorph/profiles/gw/settings.json"
   source "$CCMORPH_SOURCE"
 
-  local rc=0
-    _ccm_launch -a gw prompt >/dev/null 2>&1 || { rm -rf "$test_home"; return 1; }
+  local rc=0 launch_out="$test_home/launch.out" launch_rc=0
+  _ccm_launch -a gw prompt >"$launch_out" 2>&1 || launch_rc=$?
+  # The reach probe's progress line belongs to the loaded host's clock, not to
+  # this test: the shared advisory filter drops exactly that line (#891). A
+  # failure keeps the launch's own words, never a silent return.
+  launch_out="$(strip_readiness_advisories "$(<"$launch_out")")"
+  (( launch_rc == 0 )) || {
+    print -u2 -- "the launch failed (exit $launch_rc):\n$launch_out"
+    rm -rf "$test_home"
+    return 1
+  }
   local actual="$(<"$CCMORPH_TEST_LOG")"
 
   assert_contains "${actual//\"autoCompactWindow\": /\"autoCompactWindow\":}" \
@@ -12598,6 +12657,7 @@ run_test test_hop_to_a_wrong_name_inside_claude_answers_in_one_line
 run_test test_hop_falls_back_when_the_target_cannot_serve_the_model
 run_test test_hop_asks_the_gateway_which_models_it_serves
 run_test test_relay_resume_preserves_dangerous_permission_mode
+run_test test_the_readiness_filter_drops_only_the_reach_durations_the_probe_emits_issue_891
 run_test test_relay_same_profile_omits_cache_notice_issue_226
 run_test test_relay_same_file_profile_omits_cache_notice_issue_226
 run_test test_relay_failed_switch_omits_cache_notice_issue_226
