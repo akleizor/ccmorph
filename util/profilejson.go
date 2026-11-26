@@ -14,8 +14,16 @@ import (
 // holder's own save and could lose it (#299, #861). The file is untouched.
 var ErrProfileInUse = errors.New("a session or launch of the profile is open")
 
-// profileJSONRead runs between rewriteProfileJSON's locked read of path and its
-// write; a test puts a second writer of the same file there (#299, #861).
+// errLiveLockUnavailable is why a whole-file rewrite did not run when not even
+// the live lock could be made: nothing can hold a lock at that path, so nothing
+// may be written through it. A verb whose policy is to go on without the lock
+// (`add`, `use`) skips the write and leaves it to the next launch that can make
+// the lock; a launch is refused earlier, by the holder check (#217, GH-938).
+var errLiveLockUnavailable = errors.New("the live lock could not be created")
+
+// profileJSONRead runs inside a whole-file writer's locked window, after its
+// read of path and before its write; a test puts a second writer of the same
+// file there (#299, #861, GH-938).
 var profileJSONRead = func(path string) {}
 
 // LiveExclusive runs fn holding profile name's live lock exclusively, across a
@@ -26,7 +34,7 @@ var profileJSONRead = func(path string) {}
 // the file untouched, with an error wrapping ErrProfileInUse; any other error
 // is the lock file that could not be made (#861, #939).
 func LiveExclusive(profiles, name string, fn func()) (bool, error) {
-	release, err := liveExclusiveLock(profiles, name)
+	release, err := liveExclusiveLock(profiles, name, "")
 	if release == nil {
 		return false, err
 	}
@@ -37,35 +45,72 @@ func LiveExclusive(profiles, name string, fn func()) (bool, error) {
 
 // liveExclusiveLock is LiveExclusive's acquisition half: its release, or nil
 // when the lock could not be taken. A caller that cannot hold it must not
-// rename the file it guards (#939).
-func liveExclusiveLock(profiles, name string) (func(), error) {
+// rename the file it guards (#939). path, when it names the file about to be
+// rewritten, is carried in the contention error so a launch's skip log names
+// that file; empty names the lock instead.
+func liveExclusiveLock(profiles, name, path string) (func(), error) {
 	lock := LiveLockPath(profiles, name)
+	if path == "" {
+		path = lock
+	}
 	liveMu.Lock()
 	_, held := liveFDs[lock]
+	if liveEx[lock] > 0 && held {
+		// SetupProfile holds this profile's lock exclusively for its whole run
+		// (#185); a writer's window nests inside it. Count the hold and leave
+		// the descriptor exclusive — a downgrade here would open the history
+		// merge to a second launch's setup (#938).
+		liveEx[lock]++
+		liveMu.Unlock()
+		return func() {
+			liveMu.Lock()
+			liveEx[lock]--
+			if liveEx[lock] <= 0 {
+				delete(liveEx, lock)
+			}
+			liveMu.Unlock()
+		}, nil
+	}
 	liveMu.Unlock()
 	live, why := HoldLive(profiles, name, nil)
 	if live == nil {
 		if errors.Is(why, ErrLiveHeld) {
-			return nil, fmt.Errorf("%s: another launch is rewriting the profile's config: %w", lock, ErrProfileInUse)
+			return nil, fmt.Errorf("%s: another launch is rewriting the profile's config: %w", path, ErrProfileInUse)
 		}
-		return nil, errors.New(lock + ": the live lock could not be created: " + why.Error())
+		return nil, fmt.Errorf("%s: %w: %v", lock, errLiveLockUnavailable, why)
 	}
 	if !flockWithin(live, syscall.LOCK_EX) {
 		// The failed conversion can leave this fd unlocked (Linux drops the
 		// shared lock first), so the lock the session runs under is taken back
 		// or gone; either way this writer waits for a caller that holds it.
-		if !flockWithin(live, syscall.LOCK_SH) {
+		restored := flockWithin(live, syscall.LOCK_SH)
+		if !held || !restored {
 			ReleaseLive(profiles, name)
 		}
-		return nil, fmt.Errorf("%s: %w", lock, ErrProfileInUse)
+		return nil, fmt.Errorf("%s: %w", path, ErrProfileInUse)
 	}
+	liveMu.Lock()
+	liveEx[lock]++
+	liveMu.Unlock()
 	return func() {
-		syscall.Flock(int(live.Fd()), syscall.LOCK_SH)
+		liveMu.Lock()
+		liveEx[lock]--
+		rem := liveEx[lock]
+		if rem <= 0 {
+			delete(liveEx, lock)
+		}
+		_, still := liveFDs[lock]
+		liveMu.Unlock()
+		if rem > 0 || !still {
+			return
+		}
 		if !held {
 			// A caller that starts no session of this profile — a hop's check,
 			// a config verb — must not keep its lock past the write.
 			ReleaseLive(profiles, name)
+			return
 		}
+		syscall.Flock(int(live.Fd()), syscall.LOCK_SH)
 	}, nil
 }
 
@@ -76,11 +121,13 @@ func liveExclusiveLock(profiles, name string) (func(), error) {
 // writes the changed document to path. An edit that changes nothing takes no
 // lock and writes nothing. Otherwise the profile's live lock is held
 // exclusively from the read to the rename: every ccmorph session holds it
-// shared for its life and every whole-file writer takes it exclusively, so no
-// session, launch or second writer can write the file while this runs, and
-// none of theirs is lost under it. A holder that outlasts the bounded wait
-// (promise 8) leaves the file untouched and the error wraps ErrProfileInUse.
-// A file that is unreadable or not a JSON object is an error, never guessed at.
+// shared for its life and every whole-file writer takes it exclusively — this
+// one, ApproveKey, the project picker, SeedPersonAnswers and a launch's
+// provisioning — so no session, launch or second writer can write the file
+// while this runs, and none of theirs is lost under it. A holder that outlasts
+// the bounded wait (promise 8) leaves the file untouched and the error wraps
+// ErrProfileInUse. A file that is unreadable or not a JSON object is an error,
+// never guessed at.
 func rewriteProfileJSON(profiles, name, path string, edit func(doc *ordjson.Obj) (bool, error), save func(path string, doc *ordjson.Obj) error) error {
 	if !profile.ValidName(name) {
 		return errors.New("invalid profile name: " + name)

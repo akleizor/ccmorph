@@ -1345,6 +1345,9 @@ const (
 )
 
 // setupDir is _ccm_setup_dir: provision the profile's config dir unless it is.
+// "Is" means both layers are done: ProfileOK answers for the shared layer and
+// ProvisionOK for the auth files, so a provisioning skipped as busy is tried
+// again by the next launch from the files' state, never a marker (#938).
 func (l *launcher) setupDir(name, typ string, policy livePolicy) bool {
 	// #205: a hop runs the next profile in this same process. The hopped-away
 	// profile's live lock is released here, or another launch of it reads a
@@ -1361,7 +1364,7 @@ func (l *launcher) setupDir(name, typ string, policy livePolicy) bool {
 	if !l.holdLive(name, policy) {
 		return false
 	}
-	if util.ProfileOK(l.profileDirs, name) {
+	if util.ProfileOK(l.profileDirs, name) && util.ProvisionOK(l.profileDirs, name, typ) {
 		return true
 	}
 	if !util.SetupProfile(l.profileDirs, name, typ, l.log, l.err) {

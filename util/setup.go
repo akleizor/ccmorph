@@ -124,9 +124,29 @@ func SetupProfile(profiles, name, kind string, log, errf func(string)) bool {
 	// sample below, or not yet at all; the lock covers its whole session.
 	exclusive := false
 	if serialized && live != nil {
+		lock := LiveLockPath(profiles, name)
 		if syscall.Flock(int(live.Fd()), syscall.LOCK_EX|syscall.LOCK_NB) == nil {
 			exclusive = true
-			defer syscall.Flock(int(live.Fd()), syscall.LOCK_SH) // back to live, for claude
+			liveMu.Lock()
+			liveEx[lock]++
+			liveMu.Unlock()
+			// The exclusive hold covers the whole setup, history merge included.
+			// A whole-file writer's nested hold counts itself in liveEx and
+			// leaves the descriptor exclusive; only the outermost release goes
+			// back to the shared lock a live session holds (#938).
+			defer func() {
+				liveMu.Lock()
+				liveEx[lock]--
+				rem := liveEx[lock]
+				if rem <= 0 {
+					delete(liveEx, lock)
+				}
+				_, still := liveFDs[lock]
+				liveMu.Unlock()
+				if rem <= 0 && still {
+					syscall.Flock(int(live.Fd()), syscall.LOCK_SH) // back to live, for claude
+				}
+			}()
 		} else if !flockWithin(live, syscall.LOCK_SH) {
 			// #205: Linux flock(2) drops the existing shared lock before it tries
 			// a conversion, so a failed upgrade leaves this launch holding
@@ -176,8 +196,18 @@ func SetupProfile(profiles, name, kind string, log, errf func(string)) bool {
 	// and its mode is the user's to set.
 	_ = os.Chmod(dir, 0o700)
 	if err := provisionProfile(dir, kind); err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		return fail("profile setup failed for '" + name + "'")
+		if errors.Is(err, ErrProfileInUse) || errors.Is(err, errLiveLockUnavailable) {
+			// The profile's live lock is held by a session or another launch,
+			// or it cannot be made at all, so the auth files must not be
+			// rewritten now: they stay as they are and the next launch that
+			// can take the lock provisions them. A caller whose policy is to
+			// go on without the lock (`add`, `use`) proceeds; a launch was
+			// already refused before this point. No state records the skip.
+			log("provisioning of '" + name + "' skipped: " + err.Error() + "; the next launch retries it")
+		} else {
+			fmt.Fprintln(os.Stderr, err)
+			return fail("profile setup failed for '" + name + "'")
+		}
 	}
 
 	for _, item := range append(append([]string{}, sharedDirs...), sharedFiles...) {
@@ -371,10 +401,14 @@ func flockWithin(f *os.File, how int) bool {
 }
 
 // liveLaunches holds one shared-lock descriptor per profile live lock path for
-// the life of the process (#185).
+// the life of the process (#185). liveEx counts this process's nested exclusive
+// holds of each path: SetupProfile keeps one over its whole run, and a
+// whole-file writer's window nests inside it, so the descriptor stays
+// exclusive until the outer hold ends (#938).
 var (
 	liveMu  sync.Mutex
 	liveFDs = map[string]*os.File{}
+	liveEx  = map[string]int{}
 )
 
 // LiveLockPath names a profile's live lock: a launch holds it shared while its
@@ -399,6 +433,7 @@ func ReleaseLive(profiles, name string) {
 		f.Close()
 		delete(liveFDs, lock)
 	}
+	delete(liveEx, lock)
 }
 
 // LiveFile is the descriptor this process holds for the profile's live lock,
