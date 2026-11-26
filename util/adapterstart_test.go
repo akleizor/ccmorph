@@ -4,7 +4,10 @@ import (
 	"bytes"
 	"os"
 	"path/filepath"
+	"regexp"
+	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -67,24 +70,112 @@ func TestAdapterReadyLimit(t *testing.T) {
 	}
 }
 
+// virtualStart is one model-scoped adapterStart against a core that never
+// answers, run on a clock the test sets instead of the machine's (#895).
+type virtualStart struct {
+	mu     sync.Mutex
+	now    time.Time
+	tick   chan time.Time
+	reads  chan struct{}
+	result chan int
+	errw   bytes.Buffer
+}
+
+// startVirtual swaps adapterNow and adapterTicker for a clock the test moves
+// and an unbuffered tick, starts adapterStart, and returns once the loop has
+// read its start time.
+func startVirtual(t *testing.T) *virtualStart {
+	t.Helper()
+	core := fakeCore(t, "exec sleep 300") // never answers; exec keeps it killable
+	v := &virtualStart{
+		now:    time.Unix(0, 0),
+		tick:   make(chan time.Time), // unbuffered: a send lands only on a loop still waiting
+		reads:  make(chan struct{}, 1),
+		result: make(chan int, 1),
+	}
+	started := make(chan struct{})
+	savedNow, savedTicker := adapterNow, adapterTicker
+	t.Cleanup(func() { adapterNow, adapterTicker = savedNow, savedTicker })
+	adapterNow = func() time.Time {
+		v.mu.Lock()
+		defer v.mu.Unlock()
+		v.reads <- struct{}{}
+		return v.now
+	}
+	adapterTicker = func() (<-chan time.Time, func()) {
+		close(started)
+		return v.tick, func() {}
+	}
+	var out bytes.Buffer
+	go func() {
+		v.result <- adapterStart([]string{core, "p", "llmgate/claude-opus-5-5", "1", os.DevNull}, nil, &out, &v.errw)
+	}()
+	select {
+	case <-started:
+	case rc := <-v.result:
+		t.Fatalf("rc %d before the first poll, stderr %q", rc, v.errw.String())
+	}
+	<-v.reads // the loop's start, read before its first poll
+	return v
+}
+
+// poll sets the clock to at past the start and ticks the loop once. It
+// returns the exit status and true when the loop had already returned
+// instead of taking the tick; false means the loop read at and decided.
+func (v *virtualStart) poll(at time.Duration) (int, bool) {
+	v.mu.Lock()
+	v.now = time.Unix(0, 0).Add(at)
+	v.mu.Unlock()
+	select {
+	case v.tick <- time.Time{}:
+		<-v.reads // the poll's own reading, taken before it decides
+		return 0, false
+	case rc := <-v.result:
+		return rc, true
+	}
+}
+
 func TestAdapterStartModelScopeHonorsTheEnvBoundAndSaysTheWait(t *testing.T) {
 	// #766: a --model-scoped start ignored any bound the caller passed and
 	// died at a fixed 45 s; it now waits the bound and the failure line says
-	// how long it actually waited.
+	// how long it actually waited. The clock is the test's, not the
+	// machine's (#895): a starved gate host runs polls late, and only a
+	// controlled clock tells that starvation from an ignored bound.
 	t.Setenv("CCMORPH_ADAPTER_START_TIMEOUT", "1")
-	core := fakeCore(t, "exec sleep 30") // never answers; exec keeps it killable
-	var out, errw bytes.Buffer
-	started := time.Now()
-	rc := adapterStart([]string{core, "p", "llmgate/claude-opus-5-5", "1", os.DevNull}, nil, &out, &errw)
-	waited := time.Since(started)
-	if rc != 1 {
-		t.Fatalf("rc %d, stderr %q", rc, errw.String())
-	}
-	if !strings.Contains(errw.String(), "timed out after 1s") {
-		t.Errorf("stderr %q, want the waited seconds (1s)", errw.String())
-	}
-	if waited > 10*time.Second {
-		t.Errorf("env bound ignored: waited %v for a 1s bound", waited)
+	timedOut := regexp.MustCompile(`: adapter timed out after ([0-9]+)s; session not started\.`)
+	t.Run("the env bound ends the wait at its deadline", func(t *testing.T) {
+		v := startVirtual(t)
+		if rc, done := v.poll(999 * time.Millisecond); done {
+			t.Fatalf("rc %d after a 999ms poll, before the 1s bound; stderr %q", rc, v.errw.String())
+		}
+		if rc, done := v.poll(time.Second); done {
+			t.Fatalf("rc %d before the 1s poll; stderr %q", rc, v.errw.String())
+		}
+		rc, done := v.poll(601 * time.Second)
+		if !done {
+			t.Fatal("the 1s poll did not end the wait: the CCMORPH_ADAPTER_START_TIMEOUT=1 bound was not the one used")
+		}
+		m := timedOut.FindStringSubmatch(v.errw.String())
+		if rc != 1 || m == nil || m[1] != "1" {
+			t.Fatalf("rc %d, stderr %q; want rc 1 and a timeout after 1s", rc, v.errw.String())
+		}
+	})
+	// A starved host polls late; the line reports the measured wait.
+	for _, late := range []time.Duration{2 * time.Second, 4 * time.Second, 11 * time.Second} {
+		t.Run("a first poll "+late.String()+" late", func(t *testing.T) {
+			v := startVirtual(t)
+			if rc, done := v.poll(late); done {
+				t.Fatalf("rc %d before the first poll; stderr %q", rc, v.errw.String())
+			}
+			rc, done := v.poll(601 * time.Second)
+			if !done {
+				t.Fatalf("a poll %s past the start did not end the wait under a 1s bound", late)
+			}
+			m := timedOut.FindStringSubmatch(v.errw.String())
+			if want := strconv.Itoa(int(late / time.Second)); rc != 1 || m == nil || m[1] != want {
+				t.Fatalf("rc %d, stderr %q; want rc 1 and a timeout after %ss", rc, v.errw.String(), want)
+			}
+		})
 	}
 }
 
