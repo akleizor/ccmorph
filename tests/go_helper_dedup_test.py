@@ -588,6 +588,11 @@ def assert_both_guards_fail(name):
         test_the_file_predicates_are_defined_only_in_paths()
 
 
+# GH-932: `checkout` and `add_sibling` build a throwaway repository through a
+# dozen git children, each HANG_TIMEOUT (120 s) bounded; on the night gate's
+# saturated host `git worktree add` and `commit` alone ran past the 60 s
+# ceiling. Per-test headroom; the ceiling stays 60 s everywhere else (#892).
+@pytest.mark.timeout(300)
 @pytest.mark.parametrize("where", [".claude/worktrees", "vendor/worktrees"])
 @pytest.mark.parametrize("flags", [[], ["--lock"]], ids=["unlocked", "locked"])
 def test_a_sibling_worktree_copy_does_not_fail_the_guard(tmp_path, monkeypatch, flags, where):
@@ -602,6 +607,11 @@ def test_a_sibling_worktree_copy_does_not_fail_the_guard(tmp_path, monkeypatch, 
     test_the_file_predicates_are_defined_only_in_paths()
 
 
+# GH-932: the same git-built checkout, then both guards walk it — each git
+# child is HANG_TIMEOUT (120 s) bounded and the night gate's saturated host
+# stretched the setup past the 60 s ceiling. Per-test headroom, ceiling
+# unchanged.
+@pytest.mark.timeout(300)
 @pytest.mark.parametrize("how", HOW)
 def test_a_copy_this_tree_holds_still_fails_both_guards(tmp_path, monkeypatch, how):
     repo = checkout(tmp_path)
