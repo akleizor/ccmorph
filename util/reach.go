@@ -366,9 +366,14 @@ func ReachListing(base, key, via string, strip []string, progress func()) Reach 
 	if err == nil {
 		return Reach{}
 	}
+	// curl's own exit, never the stop's assumption: a probe the scheduler held
+	// across its stop wakes after curl has answered, and rewriting that answer
+	// as the stop's signal ended a healthy launch on the gateway-down class
+	// (#947). ProcessState carries the exit even when Wait returned
+	// ErrWaitDelay over a pipe a surviving child held.
 	exit := exitOf(err)
-	if killed {
-		exit = -1
+	if state := cmd.ProcessState; state != nil {
+		exit = state.ExitCode()
 	}
 	if exit == 22 || refused.MatchString(complaint.String()) {
 		return Reach{} // an HTTP status is an answer
