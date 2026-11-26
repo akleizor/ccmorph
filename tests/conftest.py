@@ -72,3 +72,50 @@ def pytest_configure(config):
     # reads (pytest-timeout exposes no public per-run method hook).
     if hasattr(config, "workerinput"):
         config._env_timeout_method = "thread"
+
+
+# GH-919: every worker's OWN descendant tree is read while each test runs, by a
+# watcher process outside that tree (proc_pressure_test.RunTreeWatch); a test
+# whose tree passes RUN_SHARE of the per-user cap fails at its teardown, named.
+# The window is opened by a tryfirst setup hook and closed by a trylast teardown
+# hook, not by a fixture: a fixture opens it after every higher-scoped fixture
+# (a module's or the session's) has been built and closes it before they are
+# torn down, so what those hold would belong to no test.
+_RUN_TREE = {}
+
+
+def _run_tree_watch():
+    """This process's watch, started by its first test (None: no finite cap,
+    where the in-file probes skip and say why)."""
+    if "watch" not in _RUN_TREE:
+        import proc_pressure_test as probe
+        cap = probe.per_user_cap()
+        _RUN_TREE["watch"] = None if cap is None else probe.RunTreeWatch(
+            cap[0], probe.RUN_SHARE, f"the {cap[1]} cap").start()
+    return _RUN_TREE["watch"]
+
+
+@pytest.hookimpl(tryfirst=True)
+def pytest_runtest_setup(item):
+    watch = _run_tree_watch()
+    if watch is not None:
+        watch.begin(item.nodeid)
+
+
+@pytest.hookimpl(trylast=True)
+def pytest_runtest_teardown(item, nextitem):
+    watch = _RUN_TREE.get("watch")
+    message = watch.end() if watch is not None else None
+    if message:
+        pytest.fail(message, pytrace=False)
+
+
+def pytest_sessionfinish(session):
+    watch = _RUN_TREE.pop("watch", None)
+    if watch is not None:
+        watch.stop()
+
+
+@pytest.fixture(scope="session")
+def run_tree_watch():
+    return _run_tree_watch()
