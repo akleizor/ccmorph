@@ -122,22 +122,44 @@ func Decide(c Config, r Request) (Decision, error) {
 		opts = slices.DeleteFunc(opts, func(o Option) bool { return !r.Keep(o) })
 	}
 	d.Dropped = dropped
+	d.Shortlist = Choose(opts, c.Order)
+	if len(d.Shortlist) > 0 {
+		d.Pick = &d.Shortlist[0]
+	}
+	d.Shortlist = d.Shortlist[:min(8, len(d.Shortlist))]
 	pin.AnyTier = true
-	if all, _, err := Options(d.Task, profiles, labeler(c, profiles, decider, r.Deadline), c.Kinds, nowSec(), pin); err == nil {
+	task := d.Task // the caller may change d after a hook stops waiting
+	d.Shadow = shadowWithin(r.Deadline, func() *Shadow {
+		all, _, err := Options(task, profiles, labeler(c, profiles, decider, r.Deadline), c.Kinds, nowSec(), pin)
+		if err != nil {
+			return nil
+		}
 		if r.Family != "" {
 			all = slices.DeleteFunc(all, func(o Option) bool { return o.Family != r.Family })
 		}
 		if r.Keep != nil {
 			all = slices.DeleteFunc(all, func(o Option) bool { return !r.Keep(o) })
 		}
-		d.Shadow = shadowPick(c, all, d.Task, loadBanditStats(readRows(ledgerPath())), shadowRand)
-	}
-	d.Shortlist = Choose(opts, c.Order)
-	if len(d.Shortlist) > 0 {
-		d.Pick = &d.Shortlist[0]
-	}
-	d.Shortlist = d.Shortlist[:min(8, len(d.Shortlist))]
+		return shadowPick(c, all, task, loadBanditStats(readRows(ledgerPath())), newShadowRand())
+	})
 	return d, nil
+}
+
+// shadowWithin runs the shadow picker after the real pick is made. A hook's
+// route never waits for it past half of what its budget has left: the
+// reservation that follows needs the rest. Without a deadline it runs inline.
+func shadowWithin(deadline time.Time, pick func() *Shadow) *Shadow {
+	if deadline.IsZero() {
+		return pick()
+	}
+	ch := make(chan *Shadow, 1)
+	go func() { ch <- pick() }()
+	select {
+	case s := <-ch:
+		return s
+	case <-time.After(time.Until(deadline) / 2):
+		return nil
+	}
 }
 
 func newID(prefix string) string {

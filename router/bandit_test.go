@@ -1,10 +1,13 @@
 package router
 
 import (
+	"encoding/json"
+	"math"
 	"math/rand/v2"
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 // Acceptance outranks the decider, which counts half; an account's refusal and
@@ -17,13 +20,16 @@ func TestEvidenceWeighsAcceptanceAboveTheDeciderAndSkipsWhatIsNotTheModels(t *te
 		weight float64
 		counts bool
 	}{
-		{"accepted beats a wrong verdict", Row{"verdict": "wrong", "accepted": true}, true, acceptedWeight, true},
-		{"decider pass", Row{"verdict": "pass"}, true, deciderWeight, true},
-		{"decider wrong", Row{"verdict": "wrong"}, false, deciderWeight, true},
+		{"accepted beats a wrong verdict", Row{"verdict": "wrong", "accepted": true}, true, 1, true},
+		{"decider pass", Row{"verdict": "pass"}, true, 0.5, true},
+		{"decider wrong", Row{"verdict": "wrong"}, false, 0.5, true},
 		{"format", Row{"verdict": "format"}, false, 0, false},
-		{"a row from before verdicts", Row{"quality": false}, false, deciderWeight, true},
-		{"timeout", Row{"outcome": "error", "failure": "timeout"}, false, acceptedWeight, true},
+		{"format, then accepted", Row{"verdict": "format", "accepted": true}, true, 1, true},
+		{"a row from before verdicts", Row{"quality": false}, false, 0.5, true},
+		{"timeout", Row{"outcome": "error", "failure": "timeout"}, false, 1, true},
 		{"quota", Row{"outcome": "error", "failure": "quota"}, false, 0, false},
+		{"accepted, but the account refused", Row{"outcome": "error", "failure": "quota", "accepted": false}, false, 0, false},
+		{"cancelled", Row{"outcome": "error", "failure": "aborted"}, false, 0, false},
 		{"auth", Row{"outcome": "auth"}, false, 0, false},
 		{"unsettled", Row{"outcome": nil}, false, 0, false},
 	} {
@@ -31,6 +37,99 @@ func TestEvidenceWeighsAcceptanceAboveTheDeciderAndSkipsWhatIsNotTheModels(t *te
 		if pass != tc.pass || weight != tc.weight || counts != tc.counts {
 			t.Errorf("%s: evidence = %v %v %v, want %v %v %v", tc.name, pass, weight, counts, tc.pass, tc.weight, tc.counts)
 		}
+	}
+}
+
+// A cancelled or refused route is neither a result nor a time: a burst of
+// instant cancels must not make a model look fast.
+func TestARefusedOrCancelledRouteIsNotTimed(t *testing.T) {
+	rows := []Row{{"model": "m", "kind": "code", "tier": "mid", "ts": 0.0, "finished": 600.0}}
+	for range 30 {
+		rows = append(rows, Row{"model": "m", "kind": "code", "tier": "mid", "ts": 0.0, "finished": 1.0, "outcome": "error", "failure": "aborted"})
+	}
+	if got := loadBanditStats(rows).minutes(arm{"m", "code", "mid"}); got < 9.9 {
+		t.Fatalf("cancels timed the model at %.2f min", got)
+	}
+}
+
+// The sampler draws from the Beta it is given: mean a/(a+b), variance
+// ab/((a+b)²(a+b+1)), within sampling error at a fixed seed.
+func TestBetaSampleMatchesItsDistribution(t *testing.T) {
+	rng := rand.New(rand.NewPCG(7, 11))
+	for _, ab := range [][2]float64{{2, 5}, {0.5, 0.5}, {30, 10}} {
+		a, b := ab[0], ab[1]
+		const n = 40000
+		var sum, sq float64
+		for range n {
+			x := betaSample(rng, a, b)
+			sum += x
+			sq += x * x
+		}
+		mean, v := sum/n, sq/n-(sum/n)*(sum/n)
+		wantMean, wantVar := a/(a+b), a*b/((a+b)*(a+b)*(a+b+1))
+		if math.Abs(mean-wantMean) > 0.01 || math.Abs(v-wantVar) > 0.1*wantVar {
+			t.Errorf("Beta(%g,%g): mean %.4f var %.5f, want %.4f %.5f", a, b, mean, v, wantMean, wantVar)
+		}
+	}
+}
+
+// A model two profiles serve draws one p: at the same price it does not get
+// two chances against a model one profile serves, and a dearer profile never
+// beats the cheaper one serving the same model.
+func TestAModelServedTwiceDrawsOnce(t *testing.T) {
+	task := Task{Kind: "code", Tier: "mid"}
+	opts := []Option{
+		{Profile: "a", Model: "twice", Class: "free", Family: "x"},
+		{Profile: "b", Model: "twice", Class: "free", Family: "x"},
+		{Profile: "a", Model: "once", Class: "free", Family: "y"},
+	}
+	rng := rand.New(rand.NewPCG(3, 4))
+	wins := 0
+	const n = 4000
+	for range n {
+		if shadowPick(Config{}, opts, task, loadBanditStats(nil), rng).Model == "twice" {
+			wins++
+		}
+	}
+	if share := float64(wins) / n; math.Abs(share-0.5) > 0.03 {
+		t.Fatalf("the twice-served model won %.2f of equal draws, want about half", share)
+	}
+	dear := []Option{{Profile: "api", Model: "m", Class: "paid", Price: 20}, {Profile: "gw", Model: "m", Class: "free"}}
+	for range 200 {
+		if got := shadowPick(Config{}, dear, task, loadBanditStats(nil), rng); got.Profile != "gw" {
+			t.Fatalf("a dearer profile beat the free one serving the same model: %+v", got)
+		}
+	}
+}
+
+// A time value so large the cost overflows leaves no shadow pick, and the
+// route's reservation is written whole.
+func TestAnInfiniteShadowCostNeverCostsTheReservation(t *testing.T) {
+	hookEnv(t, true)
+	s := loadBanditStats([]Row{{"model": "m", "kind": "code", "tier": "mid", "ts": 0.0, "finished": 120.0}})
+	opts := []Option{{Profile: "gw", Model: "m", Class: "free"}}
+	sh := shadowPick(Config{TimeValue: 1e308}, opts, Task{Kind: "code", Tier: "mid"}, s, rand.New(rand.NewPCG(1, 1)))
+	if sh != nil {
+		t.Fatalf("an infinite cost became a pick: %+v", sh)
+	}
+	reserve("route-1", Decision{Task: Task{Kind: "code", Tier: "mid"}, Pick: &opts[0], Shadow: sh}, "brief", nil)
+	if rows := readRows(ledgerPath()); len(rows) != 1 || rows[0]["model"] != "m" {
+		t.Fatalf("the reservation was lost: %v", rows)
+	}
+	if _, err := json.Marshal(Shadow{Cost: math.Inf(1)}); err == nil {
+		t.Fatal("json now encodes +Inf; the guard above is no longer needed")
+	}
+}
+
+// A hook's route never waits past half its remaining budget for the shadow.
+func TestAHookNeverWaitsOnTheShadow(t *testing.T) {
+	start := time.Now()
+	got := shadowWithin(time.Now().Add(200*time.Millisecond), func() *Shadow {
+		time.Sleep(2 * time.Second)
+		return &Shadow{}
+	})
+	if got != nil || time.Since(start) > time.Second {
+		t.Fatalf("waited %v for the shadow (%+v)", time.Since(start), got)
 	}
 }
 

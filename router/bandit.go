@@ -33,8 +33,9 @@ const (
 // are per 1M tokens, and a delegated task reads and writes on this order.
 const tokensPerCall = 50_000
 
-// shadowRand is the picker's randomness; a test seeds its own.
-var shadowRand = rand.New(rand.NewPCG(rand.Uint64(), rand.Uint64()))
+// newShadowRand gives each decision its own generator: a *rand.Rand is not
+// safe to share between two concurrent Decides. A test seeds its own.
+var newShadowRand = func() *rand.Rand { return rand.New(rand.NewPCG(rand.Uint64(), rand.Uint64())) }
 
 type arm struct{ model, kind, tier string }
 
@@ -77,6 +78,9 @@ func loadBanditStats(rows []Row) banditStats {
 		if model == "" || kind == "" || tier == "" {
 			continue
 		}
+		if notTheModels(r) {
+			continue // neither its time nor its result is the model's
+		}
 		a := arm{model, kind, tier}
 		if fin, ok := r["finished"].(float64); ok {
 			if ts, ok := r["ts"].(float64); ok && fin > ts {
@@ -103,16 +107,29 @@ func loadBanditStats(rows []Row) banditStats {
 	return s
 }
 
+// notTheModels is a route the account refused (quota, auth) or the caller
+// cancelled: it says nothing about the model, whatever else the row holds.
+func notTheModels(r Row) bool {
+	for _, k := range []string{"outcome", "failure"} {
+		if v, _ := r[k].(string); v == "quota" || v == "auth" || v == "aborted" {
+			return true
+		}
+	}
+	return false
+}
+
 // evidence reads one settled row: whether it passed, and how much that counts.
+// Acceptance overrides the decider; a format problem without acceptance, a
+// refusal and an unsettled row count nothing.
 func evidence(r Row) (pass bool, weight float64, ok bool) {
+	if notTheModels(r) {
+		return false, 0, false
+	}
 	if a, isBool := r["accepted"].(bool); isBool {
 		return a, acceptedWeight, true
 	}
 	switch r["outcome"] {
 	case "timeout", "empty", "error":
-		if f, _ := r["failure"].(string); f == "quota" || f == "auth" || f == "aborted" {
-			return false, 0, false
-		}
 		return false, acceptedWeight, true
 	}
 	switch r["verdict"] {
@@ -166,19 +183,28 @@ func callMoney(o Option) float64 {
 	return o.Price * tokensPerCall / 1e6
 }
 
-// shadowPick samples each option's belief and returns the cheapest expected
-// passed task; nil when there is no option.
+// shadowPick samples each arm's belief once, so a model two profiles serve
+// draws one p, and returns the cheapest expected passed task; nil when there
+// is no option or no finite cost.
 func shadowPick(c Config, opts []Option, t Task, s banditStats, rng *rand.Rand) *Shadow {
 	timeValue := TimeValue
 	if c.TimeValue > 0 {
 		timeValue = c.TimeValue
 	}
+	sampled := map[string]float64{}
 	var best *Shadow
 	for _, o := range opts {
-		b := prior(c, o, t)
-		e := s.beliefs[arm{o.Model, t.Kind, t.Tier}]
-		p := betaSample(rng, b.pass+e.pass, b.fail+e.fail)
-		cost := (callMoney(o) + s.minutes(arm{o.Model, t.Kind, t.Tier})*timeValue) / max(p, 1e-6)
+		a := arm{o.Model, t.Kind, t.Tier}
+		p, ok := sampled[o.Model]
+		if !ok {
+			b, e := prior(c, o, t), s.beliefs[a]
+			p = betaSample(rng, b.pass+e.pass, b.fail+e.fail)
+			sampled[o.Model] = p
+		}
+		cost := (callMoney(o) + s.minutes(a)*timeValue) / max(p, 1e-6)
+		if math.IsInf(cost, 0) || math.IsNaN(cost) {
+			continue // a cost JSON cannot hold would cost the route its reservation
+		}
 		if best == nil || cost < best.Cost {
 			best = &Shadow{Profile: o.Profile, Model: o.Model, P: p, Cost: cost}
 		}

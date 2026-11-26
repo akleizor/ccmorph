@@ -214,11 +214,10 @@ func Options(t Task, profiles []Profile, labels func(profile, model string) (Lab
 				dropped = append(dropped, p.Name+"/"+m+": "+reason)
 				continue
 			}
-			// One model per family, the newest; across tiers a family's small and
-			// top lines are different models, not versions of one.
+			// One model per family, the newest.
 			key := l.Family
-			if pin.AnyTier {
-				key += "/" + l.Tier
+			if pin.AnyTier { // the shadow pool weighs every usable model, each version its own
+				key += "/" + m
 			}
 			prev, seen := newest[key]
 			// The user's order outranks a newer version of the same family:
