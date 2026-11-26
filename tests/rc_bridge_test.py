@@ -2022,6 +2022,31 @@ def test_a_restarted_proxy_holds_nothing_so_a_repeat_switch_hands_it_over_again(
     assert json.loads(handed[1])["id"] != json.loads(handed[0])["id"]
 
 
+@pytest.mark.parametrize("upstream, alive", [
+    ("http://127.0.0.1:{port}", True),      # the record's host answers: shared, not brought up again
+    ("http://gw.invalid:{port}", False),    # a LOCAL listener holds the port; the record's host does not answer
+    ("http://127.0.0.1", False),            # no port to ask: never taken for alive (bring-up redone, safe)
+])
+def test_bring_up_reuse_is_proved_against_the_records_own_host(tmp_path, monkeypatch, upstream, alive):
+    """issue #899: the reuse check took the recorded upstream's port and probed
+    127.0.0.1, so a profile brought up on a remote endpoint read as "up" whenever a
+    local process held that port -- the switch skipped the handoff and the session
+    landed on the route, on the backend it had switched away from. The probe asks
+    the host and port the record itself names: a port held only on loopback never
+    proves a remote endpoint up, and the proxy's own held note cannot stand in."""
+    rc = _launcher()
+    monkeypatch.setattr(rc, "STATE", tmp_path)
+    with socket.socket() as srv:                            # a real listener on this machine
+        srv.bind(("127.0.0.1", 0))
+        srv.listen()
+        (tmp_path / "up-gw.json").write_text(json.dumps(
+            {"edge": 500, "edge_started": "start-500", "hand": "h1", "tiers": {},
+             "upstream": upstream.format(port=srv.getsockname()[1])}))
+        (tmp_path / "held.500.json").write_text(json.dumps(  # the proxy says it holds this very handoff
+            {"edge": 500, "edge_started": "start-500", "profiles": {"gw": "h1"}}))
+        assert rc.brought_up("gw", 500, "start-500", {}) is alive   # only the probe can answer
+
+
 def test_a_switch_lands_only_once_the_edges_proxy_says_it_holds_the_handoff(tmp_path, monkeypatch):
     """A handoff that is merely gone proves nothing: another proxy, or one that cannot
     say what it holds, took it. --switch waits for the edge's own proxy to name it."""

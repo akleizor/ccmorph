@@ -428,7 +428,10 @@ def edge_started(pid: int) -> str | None:
 
 
 def _listening(upstream: str) -> bool:
-    """Whether an upstream URL's port answers: proof the adapter behind it serves."""
+    """Whether the host AND port the upstream URL itself names answer: proof that
+    endpoint serves. Never this machine's loopback in place of the URL's host — a
+    port held only here proves nothing about a remote endpoint (issue #899) — and an
+    URL with no port to ask is never taken for alive (its bring-up simply redone)."""
     target = urllib.parse.urlsplit(upstream)
     try:
         with socket.create_connection((target.hostname, target.port), timeout=1):
@@ -954,7 +957,10 @@ def hand_held(profile: str, owner: int, started: str) -> dict | None:
 def brought_up(profile: str, owner: int, started: str, tiers: dict | None) -> bool:
     """Whether `profile` is already up beside this edge with these tiers: its proxy
     holds the endpoint (hand_held), and a second bring-up would only hand the same
-    thing over again. Several sessions on one profile share the first bring-up."""
+    thing over again. Several sessions on one profile share the first bring-up.
+    The endpoint's liveness is proved against the host and port the record's own
+    upstream names (_listening), never 127.0.0.1 in its place: a local process
+    holding the same port never proves a remote endpoint up (issue #899)."""
     up = hand_held(profile, owner, started)
     return up is not None and up.get("tiers") == tiers
 
