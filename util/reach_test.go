@@ -1,7 +1,9 @@
 package util
 
 import (
+	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -112,6 +114,45 @@ func TestWhyUnreachableNamesEachCauseInPlainWords(t *testing.T) {
 	}
 }
 
+// GH-891: the launch's progress line promises "up to Ns", and a loaded
+// scheduler can hold the probe's return well past that bound. The sentence may
+// claim the promised bound plus the one-second WaitDelay, never the
+// scheduler's own 26 seconds; the clamp is the cause of the wanted sentence.
+func TestWhyUnreachableClampsItsClaimToThePromisedBound(t *testing.T) {
+	const advice = " (if it is an internal endpoint, connect your private network and try again)"
+	for _, c := range []struct {
+		name, endpoint, complaint string
+		exit                      int
+		waited, claim             time.Duration
+		want                      string
+	}{
+		{"a killed probe the scheduler held 26 s past its 5 s promise", "https://gw.example", "",
+			-1, 26 * time.Second, 6 * time.Second,
+			"no answer from gw.example port 443 after 6 seconds" + advice},
+		{"a complaint counting 20 s against the launch probe's 5 s promise", "https://gw.example",
+			"curl: (28) Operation timed out after 20001 milliseconds with 0 bytes received",
+			28, 0, 6 * time.Second,
+			"no answer from gw.example port 443 after 6 seconds" + advice},
+		{"a wait inside the promise is stated as measured", "https://gw.example", "",
+			-1, 4800 * time.Millisecond, 6 * time.Second,
+			"no answer from gw.example port 443 after 5 seconds" + advice},
+		{"a claim over the grace rounds down to it", "https://gw.example", "",
+			-1, 6600 * time.Millisecond, 6 * time.Second,
+			"no answer from gw.example port 443 after 6 seconds" + advice},
+		{"a caller that promised no bound keeps curl's own count", "https://gw.example",
+			"curl: (28) Operation timed out after 20001 milliseconds with 0 bytes received",
+			28, 0, 0,
+			"no answer from gw.example port 443 after 20 seconds" + advice},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			got := whyUnreachableWithin(c.endpoint, c.exit, c.complaint, c.waited, false, c.claim)
+			if got != c.want {
+				t.Fatalf("claim %q, want %q: the sentence must be clamped to the promised bound (%v) plus the 1 s WaitDelay, not state the scheduler's delay", got, c.want, c.claim)
+			}
+		})
+	}
+}
+
 // The connect that tells curl 8's refused port from an unreachable network
 // dials the redacted host and port, and only when curl's own words do not
 // already say which.
@@ -149,10 +190,83 @@ func reachCurl(t *testing.T, body string) string {
 	return dir
 }
 
+// reachCurlScript puts a curl on PATH whose script is exactly body: no argv
+// recorder stands between the probe's start and the script's first action.
+func reachCurlScript(t *testing.T, body string) string {
+	t.Helper()
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "curl"), []byte("#!/bin/sh\n"+body+"\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir+":"+os.Getenv("PATH"))
+	return dir
+}
+
+// reachCurlWritesFirst is reachCurlScript for a body that blocks after its
+// first write, with that first exec paid before the probe (#875, #891): the
+// test reads one byte through a pipe — a readiness signal, not a sleep — and
+// stops the warm run. The answer byte is then the script's first action, and
+// the probe's own start is the only scheduling left between it and the byte.
+func reachCurlWritesFirst(t *testing.T, body string) string {
+	t.Helper()
+	dir := reachCurlScript(t, body)
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command(filepath.Join(dir, "curl"))
+	cmd.Env = append(os.Environ(), "HOME="+t.TempDir())
+	cmd.Stdin = strings.NewReader("")
+	cmd.Stdout, cmd.Stderr = w, io.Discard
+	if err := cmd.Start(); err != nil {
+		w.Close()
+		r.Close()
+		t.Fatalf("warm %s: %v", filepath.Join(dir, "curl"), err)
+	}
+	w.Close()
+	var first [1]byte
+	if _, err := io.ReadFull(r, first[:]); err != nil {
+		cmd.Process.Kill()
+		r.Close()
+		cmd.Wait()
+		t.Fatalf("warm %s wrote no first byte: %v", filepath.Join(dir, "curl"), err)
+	}
+	cmd.Process.Kill()
+	io.Copy(io.Discard, r)
+	r.Close()
+	cmd.Wait()
+	return dir
+}
+
+// warmCurl pays a stub's first exec outside every probe bound (#875, #891):
+// macOS validates a freshly written executable on first use, and a loaded
+// machine can hold that scan past the probe's one-second progress bound, so a
+// stub that answers at once would still be counted as silent. The warm run is
+// isolated in an empty HOME and stdin, its output discarded, and its request
+// record removed, so it cannot stand in for the call the test asserts on. Only
+// stubs whose bodies exit on their own may be warmed: one that blocks would
+// hold the test here.
+func warmCurl(t *testing.T, dir string) {
+	t.Helper()
+	cmd := exec.Command(filepath.Join(dir, "curl"))
+	cmd.Env = append(os.Environ(), "HOME="+t.TempDir())
+	cmd.Stdin = strings.NewReader("")
+	cmd.Stdout, cmd.Stderr = io.Discard, io.Discard
+	if err := cmd.Run(); err != nil {
+		// The warmed stubs exit 6, 7, 22 and so on by design; only a start
+		// failure is the test's.
+		var exit *exec.ExitError
+		if !errors.As(err, &exit) {
+			t.Fatalf("warm %s: %v", filepath.Join(dir, "curl"), err)
+		}
+	}
+	os.Remove(filepath.Join(dir, "request"))
+}
+
 // GH-260: a gateway that never answers gets a progress line after the
 // progress bound and a give-up at the bound, and the verdict says it waited.
 func TestReachListingPrintsProgressAndGivesUpOnASilentGateway(t *testing.T) {
-	reachCurl(t, "exec sleep 30")
+	dir := reachCurl(t, "exec sleep 30")
 	t.Setenv("CCMORPH_REACH_PROGRESS", "0.2")
 	t.Setenv("CCMORPH_REACH_BOUND", "0.8")
 	said := 0
@@ -162,8 +276,19 @@ func TestReachListingPrintsProgressAndGivesUpOnASilentGateway(t *testing.T) {
 	if said != 1 {
 		t.Fatalf("progress ran %d times, want once", said)
 	}
-	if took < 700*time.Millisecond || took > 3*time.Second {
-		t.Fatalf("gave up after %v, want the 0.8s bound", took)
+	if took < 700*time.Millisecond {
+		t.Fatalf("gave up after %v, before the 0.8 s bound was spent", took)
+	}
+	// The probe may not hold a stub that has already started past the 3 s
+	// ceiling this test has always kept (#891). The stub's own first write is
+	// its start mark: a loaded Start only moves the mark later (and a stub
+	// killed before it runs leaves no mark, so the elapsed time is all the
+	// scheduler's), while a probe that sleeps after starting the stub leaves
+	// the mark behind and is caught here.
+	if info, err := os.Stat(filepath.Join(dir, "request")); err == nil {
+		if held := time.Since(info.ModTime()); held > 3*time.Second {
+			t.Fatalf("held the stub %v after it started, want no more than 3 s from the 0.8 s bound and its reap", held)
+		}
 	}
 	if !r.Waited || !strings.HasPrefix(r.Why, "no answer from 10.255.255.1 port 8080 after 1 second") ||
 		!strings.Contains(r.Why, "private network") {
@@ -172,7 +297,10 @@ func TestReachListingPrintsProgressAndGivesUpOnASilentGateway(t *testing.T) {
 }
 
 // An instant failure is named at once, with no progress line, and is not a
-// wait the launch must end on.
+// wait the launch must end on. The stub's first exec is warm before the probe
+// (warmCurl): a cold exec can outlast the product's one-second progress bound
+// on a loaded machine, and the probe would then truthfully report a wait that
+// the answer never caused (#891).
 func TestReachListingNamesAnInstantFailureWithoutProgress(t *testing.T) {
 	noProxy(t)
 	stubConnect(t, nil)
@@ -189,7 +317,7 @@ func TestReachListingNamesAnInstantFailureWithoutProgress(t *testing.T) {
 		{"an older curl's certificate name mismatch", "exit 51", "secure connection failed: 127.0.0.1 port 9"},
 	} {
 		t.Run(c.name, func(t *testing.T) {
-			reachCurl(t, c.body)
+			warmCurl(t, reachCurl(t, c.body))
 			said := 0
 			r := ReachListing("http://127.0.0.1:9", "k", "", nil, func() { said++ })
 			if said != 0 || r.Waited || r.Why != c.want {
@@ -200,7 +328,9 @@ func TestReachListingNamesAnInstantFailureWithoutProgress(t *testing.T) {
 }
 
 // Any HTTP answer is an answer, and a failure none of the four causes names is
-// left to the launch's own words: the probe says nothing about either.
+// left to the launch's own words: the probe says nothing about either. Each
+// stub is warm before the probe, so an exec delay cannot become the answer
+// this test reads (#891).
 func TestReachListingStepsAsideForAnAnswer(t *testing.T) {
 	for _, c := range []struct{ name, body string }{
 		{"a listing", `printf '{"data":[]}'`},
@@ -211,7 +341,7 @@ func TestReachListingStepsAsideForAnAnswer(t *testing.T) {
 		{"a slow answer cut at the bound", "printf '%s\\n' 'curl: (28) Operation timed out after 5001 milliseconds with 1200 out of 9000 bytes received' >&2; exit 28"},
 	} {
 		t.Run(c.name, func(t *testing.T) {
-			reachCurl(t, c.body)
+			warmCurl(t, reachCurl(t, c.body))
 			if r := ReachListing("http://127.0.0.1:9", "k", "", nil, nil); r != (Reach{}) {
 				t.Fatalf("got %+v, want nothing to say", r)
 			}
@@ -237,6 +367,7 @@ func TestReachListingAsksWithDoctorsBoundsAndKeepsTheKeyOffArgv(t *testing.T) {
 		return strings.Join(out, " ")
 	}
 	dir := reachCurl(t, "exit 7")
+	warmCurl(t, dir)
 	stubConnect(t, nil)
 	t.Setenv("HTTPS_PROXY", "http://127.0.0.1:47999")
 	ProbeListing("http://127.0.0.1:9", "sk-reach-260")
@@ -310,6 +441,7 @@ func TestReachListingTakesTheProfilesProxyRoute(t *testing.T) {
 		t.Run(c.name, func(t *testing.T) {
 			t.Setenv("NO_PROXY", c.noProxy)
 			dir := reachCurl(t, "exit 0")
+			warmCurl(t, dir)
 			ReachListing(c.base, "k", c.via, nil, nil)
 			request, _ := os.ReadFile(filepath.Join(dir, "request"))
 			if c.want != "" && !strings.Contains(string(request), c.want+"\n") {
@@ -325,7 +457,7 @@ func TestReachListingTakesTheProfilesProxyRoute(t *testing.T) {
 	}
 	// Through the profile's proxy, a direct connect would test a door curl never used.
 	asked := stubConnect(t, fmt.Errorf("dial tcp: %w", syscall.ECONNREFUSED))
-	reachCurl(t, `printf '%s\n' "curl: (7) Failed to connect to 127.0.0.1 port 3128 after 0 ms: Couldn't connect to server" >&2; exit 7`)
+	warmCurl(t, reachCurl(t, `printf '%s\n' "curl: (7) Failed to connect to 127.0.0.1 port 3128 after 0 ms: Couldn't connect to server" >&2; exit 7`))
 	r := ReachListing("http://10.0.0.5:8080", "k", "http://127.0.0.1:3128", nil, nil)
 	if len(*asked) != 0 || !strings.HasPrefix(r.Why, "no answer from 10.0.0.5 port 8080") {
 		t.Fatalf("through the profile's proxy: connects %v, verdict %+v", *asked, r)
@@ -504,9 +636,12 @@ func TestReachBoundsOnlyShorten(t *testing.T) {
 }
 
 // GH-260 (gate finding): with the knobs asking for more than the contract and
-// a curl that ignores its own --max-time, the progress line still comes within
-// two seconds and the probe has returned, curl stopped and reaped, within
-// doctor's five, counted from the call.
+// a curl that ignores its own --max-time, the progress line still comes after
+// the product's one second and before the give-up, and the probe has returned,
+// curl stopped and reaped, within doctor's five counted from the call. Start
+// and the reap are the scheduler's, so the wall-clock promise the test holds
+// is the bound plus curl's one-second WaitDelay (6 s), and the verdict may
+// claim no more than that (#891).
 func TestReachListingReturnsWithinDoctorsBoundWhenCurlIgnoresItsOwn(t *testing.T) {
 	reachCurl(t, "exec sleep 30")
 	t.Setenv("CCMORPH_REACH_PROGRESS", "2.1")
@@ -516,26 +651,33 @@ func TestReachListingReturnsWithinDoctorsBoundWhenCurlIgnoresItsOwn(t *testing.T
 	said := 0
 	r := ReachListing("http://10.255.255.1:8080", "k", "", nil, func() { said++; progressAt = time.Since(start) })
 	took := time.Since(start)
-	if said != 1 || progressAt < 900*time.Millisecond || progressAt > 2*time.Second {
-		t.Fatalf("progress ran %d time(s), at %v; want once, after about one second", said, progressAt)
+	// The 2.1 s knob is capped to one second (TestReachBoundsOnlyShorten), so
+	// progress may not come before that; a loaded Start can only make it
+	// later, never past the give-up.
+	if said != 1 || progressAt < 900*time.Millisecond || progressAt > 5*time.Second {
+		t.Fatalf("progress ran %d time(s), at %v of %v; want once, after about one second and before the give-up", said, progressAt, took)
 	}
-	if took > 5*time.Second {
-		t.Fatalf("gave up after %v, past doctor's 5 s", took)
+	if took > 5*time.Second+reachWaitDelay {
+		t.Fatalf("gave up after %v, past doctor's 5 s bound plus curl's %v wait delay", took, reachWaitDelay)
 	}
-	if !r.Waited || !strings.HasPrefix(r.Why, "no answer from 10.255.255.1 port 8080 after 5 seconds") {
-		t.Fatalf("verdict %+v, want a waited no-answer after 5 seconds", r)
+	if !r.Waited || !strings.HasPrefix(r.Why, "no answer from 10.255.255.1 port 8080 after ") ||
+		(!strings.Contains(r.Why, "after 5 seconds") && !strings.Contains(r.Why, "after 6 seconds")) {
+		t.Fatalf("verdict %+v, want a waited no-answer claiming no more than 5 s plus the %v wait delay", r, reachWaitDelay)
 	}
 }
 
-// A shortened bound is kept the same way: the probe returns before it.
+// A shortened bound is kept the same way: the probe returns within it and its
+// WaitDelay. The bound counts from the call, so curl's start and reap are the
+// scheduler's: 2.5 s keeps the stop at 2.375 s and allows one more second for
+// the reap, still well inside the 5 s default it shortened (#891).
 func TestReachListingReturnsBeforeAShortenedBound(t *testing.T) {
 	reachCurl(t, "exec sleep 30")
 	t.Setenv("CCMORPH_REACH_PROGRESS", "0.2")
-	t.Setenv("CCMORPH_REACH_BOUND", "0.8")
+	t.Setenv("CCMORPH_REACH_BOUND", "2.5")
 	start := time.Now()
 	r := ReachListing("http://10.255.255.1:8080", "k", "", nil, nil)
-	if took := time.Since(start); took >= 800*time.Millisecond || !r.Waited {
-		t.Fatalf("returned after %v with %+v, want a waited verdict before the 0.8 s bound", took, r)
+	if took, limit := time.Since(start), 2500*time.Millisecond+reachWaitDelay; took > limit || !r.Waited {
+		t.Fatalf("returned after %v with %+v, want a waited verdict within the 2.5 s bound plus the %v wait delay", took, r, reachWaitDelay)
 	}
 }
 
@@ -544,6 +686,9 @@ func TestReachListingReturnsBeforeAShortenedBound(t *testing.T) {
 // headers alone, or headers and the start of the listing, then nothing until
 // the probe stops curl, is not "no answer" and carries no private-network
 // advice. A gateway that accepts the connection and sends nothing is silence.
+// The stop is doctor's full 4.75 s, not 760 ms: real curl's own start is the
+// scheduler's, and a start measured near 0.8 s at load 274 left the old stop
+// before the request existed, counting a healthy answer as silence (#891).
 func TestReachListingWithRealCurlCountsAnyResponseAsAnAnswer(t *testing.T) {
 	if _, err := exec.LookPath("curl"); err != nil {
 		t.Skip("no curl on PATH")
@@ -552,7 +697,7 @@ func TestReachListingWithRealCurlCountsAnyResponseAsAnAnswer(t *testing.T) {
 	t.Setenv("NO_PROXY", "*")
 	t.Setenv("CURL_HOME", t.TempDir()) // no operator .curlrc
 	t.Setenv("CCMORPH_REACH_PROGRESS", "0.2")
-	t.Setenv("CCMORPH_REACH_BOUND", "0.8")
+	t.Setenv("CCMORPH_REACH_BOUND", "5")
 	for _, c := range []struct {
 		name, body string
 		headers    bool
@@ -585,11 +730,15 @@ func TestReachListingWithRealCurlCountsAnyResponseAsAnAnswer(t *testing.T) {
 }
 
 // A listing still arriving when the probe stops curl is a slow answer, not
-// silence: the launch goes on and the listing's own wait judges it.
+// silence: the launch goes on and the listing's own wait judges it. The
+// answer byte is the stub's very first action — no argv recorder, `cat` or
+// other external helper runs before it — and its first exec is warm, so
+// neither a cold start nor a slow helper can turn the byte into silence
+// (#875, #891).
 func TestReachListingCountsAListingCutShortAsAnAnswer(t *testing.T) {
-	reachCurl(t, `printf '{"data":['; exec sleep 30`)
+	reachCurlWritesFirst(t, `printf '{"data":['; exec sleep 30`)
 	t.Setenv("CCMORPH_REACH_PROGRESS", "0.2")
-	t.Setenv("CCMORPH_REACH_BOUND", "0.8")
+	t.Setenv("CCMORPH_REACH_BOUND", "2.5")
 	if r := ReachListing("http://10.255.255.1:8080", "k", "", nil, nil); r != (Reach{}) {
 		t.Fatalf("got %+v, want nothing to say about a gateway that was answering", r)
 	}
