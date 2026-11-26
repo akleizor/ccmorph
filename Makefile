@@ -5,6 +5,9 @@
 # install for its author, so `tar` over it would package live credentials.
 # `git archive` only ever sees tracked files at a named ref, which makes that
 # mistake unrepresentable rather than merely discouraged.
+#
+# Every release's record lands on main via chore/sync-05NN; check-version's
+# newest-tag guard is what notices when a sync skips.
 
 SHELL := /bin/sh
 VERSION := $(shell grep -m1 '^_CCMORPH_VERSION=' lib/ccmorph.sh | cut -d'"' -f2)
@@ -116,6 +119,14 @@ gate-py:
 # `## Unreleased`; the next one must be TAG's. The
 # `head -20` window this replaced held zero slack once v0.5.13 landed, and the
 # next Unreleased bullet would have blocked `make release` (#610).
+#
+# The tag main carries is not the newest release: a skipped sync leaves
+# `_CCMORPH_VERSION` behind and every check above agrees with itself (#928).
+# Resolve the newest v* tag in version order and refuse when main has neither
+# its commit nor its record. A release is on main when the tag is reachable from
+# origin/main (the release commit landed) or when main carries that version and
+# its `## vX` section (a chore/sync-05NN record, which lands squashed and so
+# cannot carry the release commit). Anything else is a skipped sync.
 check-version:
 	@test -n "$(VERSION)" || { echo "no _CCMORPH_VERSION in lib/ccmorph.sh"; exit 1; }
 	@grep -q '^## $(TAG) ' CHANGELOG.md || { \
@@ -126,6 +137,18 @@ check-version:
 	@git rev-parse -q --verify "refs/tags/$(TAG)" >/dev/null || { \
 	  echo "tag $(TAG) does not exist — create it before releasing:"; \
 	  echo "  git tag $(TAG)"; exit 1; }
+	@newest=$$(git for-each-ref --sort=-v:refname --format='%(refname:short)' 'refs/tags/v*' | head -1); \
+	if [ -n "$$newest" ]; then \
+	  main=$$(git rev-parse -q --verify refs/remotes/origin/main >/dev/null && echo origin/main || echo HEAD); \
+	  if ! git merge-base --is-ancestor "$$newest^{commit}" "$$main" 2>/dev/null; then \
+	    n=$$(echo "$$newest" | sed 's/^v//'); \
+	    if [ "$$n" != "$(VERSION)" ] || ! grep -q "^## $$newest " CHANGELOG.md; then \
+	      echo "tag $$newest is not on main — record the release:"; \
+	      echo "  branch chore/sync-$$(echo $$n | tr -d .) from $$newest, record it, and land it on main"; \
+	      exit 1; \
+	    fi; \
+	  fi; \
+	fi
 	@echo "version $(VERSION): source, changelog and tag agree"
 
 # Built from the TAG, never from the working tree — see the note at the top.
