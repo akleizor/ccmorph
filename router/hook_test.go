@@ -2,13 +2,16 @@ package router
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -429,17 +432,24 @@ func TestPreToolUseHandsBothRoutesOneBudget(t *testing.T) {
 	}
 }
 
-// In an edge session the tier env is unset (the edge passes real Claude ids),
-// so a pick of the route's sonnet id runs natively as the sonnet alias.
-func TestPreToolUseInAnEdgeSessionRunsTheRoutesClaudeIdAsItsAlias(t *testing.T) {
+// In an edge session the route's own pick runs as picked: kimi-k3 has no alias
+// in the session, so the proxy names it for that agent under the "route" word,
+// with nothing to hold (the edge serves its route already).
+func TestPreToolUseInAnEdgeSessionRunsTheRoutesPickThroughTheEdge(t *testing.T) {
 	root := hookEnv(t, true)
 	gateProfile(t, root)
 	t.Setenv("CLAUDE_CONFIG_DIR", filepath.Join(root, "profiles", "here"))
 	edgeSession(t, root, "route", map[string]int{"gate": 47670})
+	defer func(f func(context.Context, string, string) error) { rcHold = f }(rcHold)
+	rcHold = func(context.Context, string, string) error { t.Fatal("the edge's own route needs no hold"); return nil }
 	var out bytes.Buffer
 	PreToolUse(strings.NewReader(agentCall), &out)
-	if !strings.Contains(out.String(), `"model":"sonnet"`) {
-		t.Fatalf("the edge route's sonnet runs the call: %q", out.String())
+	if !strings.Contains(out.String(), "→ gate · kimi-k3") || !strings.Contains(out.String(), "through the edge") {
+		t.Fatalf("the route's pick runs through the edge: %q", out.String())
+	}
+	b, err := os.ReadFile(filepath.Join(root, "profiles", ".rc-bridge", "agents", "pending", promptKey("Fix the bug in parse()")+".json"))
+	if err != nil || string(b) != `{"model":"kimi-k3","word":"route"}` {
+		t.Fatalf("the pick names the route word and its model: %s %v", b, err)
 	}
 }
 
@@ -461,5 +471,64 @@ func TestEdgeInferenceProfileReadsEdgesUnderABracketedRoot(t *testing.T) {
 	t.Setenv("CCMORPH_STATE_DIR", root)
 	if got := edgeInferenceProfile("here", 47670); got != "llmgate" {
 		t.Fatalf("edge record under a root holding `[`: got %q, want llmgate", got)
+	}
+}
+
+// In an edge session a pick on another profile still runs as this session's own
+// subagent: the hook has the proxy hold that profile, leaves the pick for the
+// proxy under the prompt's key, and leaves the model to the proxy. When the
+// proxy cannot hold it, the session's native alias runs the call as before.
+func TestPreToolUseHandsAnotherProfilesPickToTheEdgeProxy(t *testing.T) {
+	root := hookEnv(t, true)
+	edgeSession(t, root, "account", map[string]int{"llmgate": 47670})
+	quotaSnapshot(t, map[string]float64{"here": 0.9, "there": 0.1})
+	var held []string
+	hold := error(nil)
+	defer func(f func(context.Context, string, string) error) { rcHold = f }(rcHold)
+	rcHold = func(_ context.Context, profile, account string) error {
+		held = append(held, profile+"@"+account)
+		return hold
+	}
+
+	var out bytes.Buffer
+	PreToolUse(strings.NewReader(agentCall), &out)
+	if !strings.Contains(out.String(), "→ there · ") || !strings.Contains(out.String(), "through the edge") ||
+		strings.Contains(out.String(), `"model":`) || !strings.Contains(out.String(), `"effort":`) {
+		t.Fatalf("the pick goes through the edge with no alias: %s", out.String())
+	}
+	if !slices.Equal(held, []string{"there@here"}) {
+		t.Fatalf("the proxy is asked to hold the pick's profile for the account: %v", held)
+	}
+	pending := filepath.Join(root, "profiles", ".rc-bridge", "agents", "pending", promptKey(" Fix the bug in parse()\n")+".json")
+	var pick map[string]string
+	if b, err := os.ReadFile(pending); err != nil || json.Unmarshal(b, &pick) != nil || pick["word"] != "there" || pick["model"] == "" {
+		t.Fatalf("the pick waits for its agent under the prompt's key: %v %v", pick, err)
+	}
+	if !ledgerUpdate("tu1", Row{"seen": true}) {
+		t.Fatal("the edge route is in the ledger under its tool_use_id")
+	}
+
+	hold = errors.New("cannot serve")
+	out.Reset()
+	PreToolUse(strings.NewReader(agentCall), &out)
+	if !strings.Contains(out.String(), `"model":"sonnet"`) || strings.Contains(out.String(), "through the edge") {
+		t.Fatalf("a profile the proxy cannot hold falls back to the session's own alias: %s", out.String())
+	}
+
+	bound := filepath.Join(root, "profiles", ".rc-bridge", "agents", "a1b2.json")
+	if err := os.WriteFile(bound, []byte(`{"word":"there"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	SubagentStop(strings.NewReader(`{"agent_type":"general-purpose","agent_id":"a1b2","last_assistant_message":"done"}`), io.Discard)
+	if _, err := os.Stat(bound); !os.IsNotExist(err) {
+		t.Fatalf("a stopped agent's binding is removed: %v", err)
+	}
+}
+
+// The pending key is rc_route.prompt_key: sha256 of the stripped prompt, the
+// value Python's hashlib gives for "say hi".
+func TestPromptKeyMatchesTheProxys(t *testing.T) {
+	if got := promptKey("  say hi\n"); got != "53eae7058490affdf5ca03d9cc9f08b34b7f408f21f6f8a5e397068709243ede" {
+		t.Fatal(got)
 	}
 }

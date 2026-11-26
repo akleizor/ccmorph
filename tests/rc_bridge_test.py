@@ -2438,3 +2438,99 @@ def test_a_sessions_note_names_the_session_switch(tmp_path, monkeypatch):
     note = rc_route.lost_endpoint_note("oli", bridge, os.getpid(), "cse_01ABC",
                                        rc_route.proc_started(os.getpid()))
     assert "`ccmorph-rc oli --switch --session cse_01ABC` hands it over" in note
+
+
+# Cross-profile subagents: the router's PreToolUse leaves a pick under the Agent
+# prompt's key; the proxy binds the subagent whose first request carries that
+# prompt, and sends every request of that agent to the pick.
+
+def _pending(agents, prompt, word, model):
+    from rc_route import prompt_key
+    (agents / "pending").mkdir(parents=True, exist_ok=True)
+    (agents / "pending" / f"{prompt_key(prompt)}.json").write_text(json.dumps({"word": word, "model": model}))
+
+
+def _first_request(prompt):
+    return {"model": "claude-sonnet-5-5", "messages": [{"role": "user", "content": [
+        {"type": "text", "text": "<system-reminder>context</system-reminder>"},
+        {"type": "text", "text": prompt}]}]}
+
+
+def test_the_pending_key_is_the_routers():
+    """router/edge.go promptKey pins the same vector."""
+    from rc_route import prompt_key
+    assert prompt_key("  say hi\n") == "53eae7058490affdf5ca03d9cc9f08b34b7f408f21f6f8a5e397068709243ede"
+
+
+def test_a_pick_binds_the_one_agent_whose_prompt_it_names(tmp_path):
+    from rc_route import agent_target, claim_agent, has_pending
+    agents = tmp_path / "agents"
+    _pending(agents, "Fix parse()", "kathy", "claude-sonnet-5-5")
+    assert has_pending(str(agents))
+    assert claim_agent(str(agents), "a1", _first_request("other work"), time.time()) is None
+    assert claim_agent(str(agents), "a1", _first_request("Fix parse()\n"), time.time()) == \
+        {"word": "kathy", "model": "claude-sonnet-5-5"}
+    assert not has_pending(str(agents))
+    assert agent_target(str(agents), "a1")["word"] == "kathy"
+    # The pick was taken: a second agent with the same prompt is not bound to it.
+    assert claim_agent(str(agents), "a2", _first_request("Fix parse()"), time.time()) is None
+    for bad in ("../a1", "a/1", "", None):
+        assert agent_target(str(agents), bad) is None
+
+
+def test_a_pick_nobody_claims_is_swept(tmp_path):
+    from rc_route import PENDING_TTL, claim_agent, has_pending
+    agents = tmp_path / "agents"
+    _pending(agents, "late", "kathy", "m")
+    old = time.time() - PENDING_TTL - 5
+    os.utime(next((agents / "pending").iterdir()), (old, old))
+    assert claim_agent(str(agents), "a1", _first_request("late"), time.time()) is None
+    assert not has_pending(str(agents))
+
+
+def _agent_flow(agent, body):
+    flow = _Flow()
+    if agent:
+        flow.request.headers["x-claude-code-agent-id"] = agent
+    flow.request.content = json.dumps(body).encode()
+    return flow
+
+
+def test_a_picked_subagent_is_parked_then_sent_to_its_pick(tmp_path, monkeypatch):
+    """The pick is read from the body, so requestheaders parks the request on a port
+    nothing answers (fail closed if the addon died there); `request` claims the pick,
+    routes the agent and names the pick's model. Its later requests route from the
+    headers alone, and the main thread never waits on a pick."""
+    import asyncio
+    addon = _addon(monkeypatch, tmp_path, "account")
+    _pending(tmp_path / "agents", "Fix parse()", "route", "kimi-k3")
+
+    main = _agent_flow(None, _first_request("Fix parse()"))
+    addon.requestheaders(main)
+    assert main.metadata.get(ACCOUNT_METADATA) is True               # the session's own word
+
+    flow = _agent_flow("a1", _first_request("Fix parse()"))
+    addon.requestheaders(flow)
+    assert (flow.request.scheme, flow.request.host, flow.request.port) == ("http", "127.0.0.1", 9)
+    asyncio.run(addon.request(flow))
+    assert flow.metadata["rc_route"] is True and flow.metadata["rc_word"] == "route"
+    assert (flow.request.host, flow.request.port) == ("127.0.0.1", 5000)
+    assert flow.request.headers["x-api-key"] == "route-key"
+    assert json.loads(flow.request.content)["model"] == "kimi-k3"
+
+    later = _agent_flow("a1", {"model": "claude-sonnet-5-5", "messages": [{"role": "user", "content": "go on"}]})
+    addon.requestheaders(later)
+    assert later.metadata["rc_route"] is True and "rc_parked" not in later.metadata
+
+    other = _agent_flow("a2", _first_request("unrelated"))
+    addon.requestheaders(other)
+    assert other.metadata.get(ACCOUNT_METADATA) is True               # no pick waits: not parked
+
+
+def test_a_rehand_holds_a_profile_without_a_word(tmp_path, monkeypatch):
+    """The router asks the edge to hold a picked profile with --switch --rehand:
+    the proxy gets the endpoint, and no host's word changes."""
+    rc, _ = _switch_state(tmp_path, monkeypatch)
+    rc.switch("gw", "me", rehand=True)
+    assert (rc.STATE / "switch-gw.json").exists()
+    assert not (rc.STATE / "inference").exists()

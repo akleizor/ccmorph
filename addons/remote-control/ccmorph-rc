@@ -1153,8 +1153,8 @@ def main(argv: list[str]) -> None:
     ap.add_argument("--switch", action="store_true",
                     help="send every host's inference to this profile from the next turn, with no restart")
     ap.add_argument("--rehand", action="store_true",
-                    help="with --switch: hand the live profile to the edge's proxy again, changing no word "
-                         "(ccmorph-rc-hosts runs it after an edge or proxy restart)")
+                    help="with --switch: hand the profile to the edge's proxy, changing no word "
+                         "(ccmorph-rc-hosts after an edge or proxy restart; the router for one subagent)")
     ap.add_argument("--session", metavar="ID",
                     help="with --switch: only this phone session (cse_...) moves; the rest keep theirs")
     ap.add_argument("--unswitch", metavar="ID",

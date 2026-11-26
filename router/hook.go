@@ -125,6 +125,28 @@ func PreToolUse(in io.Reader, w io.Writer) {
 	if d.Pick.Profile == session {
 		alias = aliasFor(session, d.Pick.Model)
 	}
+	route := func(alias string, extra Row, via string) {
+		reserve(newID("native"), d, str("prompt"), extra)
+		input := map[string]any{}
+		for k, v := range ev.ToolInput {
+			input[k] = v
+		}
+		if alias != "" {
+			input["model"] = alias
+		}
+		input["effort"] = d.Pick.Effort
+		hookOut(w, map[string]any{"hookSpecificOutput": map[string]any{"hookEventName": "PreToolUse", "updatedInput": input,
+			"additionalContext": fmt.Sprintf("router: %s/%s → %s · %s · effort %s%s.", d.Task.Kind, d.Task.Tier, d.Pick.Profile, d.Pick.Model, d.Pick.Effort, via)}})
+	}
+	// An edge session's proxy serves any profile it holds: the pick runs as this
+	// session's own subagent, its requests sent to the picked profile. The Agent
+	// tool takes only Claude's aliases, so the model is left to the proxy.
+	if alias == "" {
+		if word, ok := edgeWord(d.Pick.Profile, deadline); ok && leavePick(str("prompt"), word, d.Pick.Model) == nil {
+			route("", Row{"tool_use_id": ev.ToolUseID, "native": true, "edge": word}, " (through the edge)")
+			return
+		}
+	}
 	if alias == "" && session != "" { // decide again among what this session runs natively
 		d2, err := Decide(c, Request{Prompt: str("prompt"), Effort: str("effort"), Kind: d.Task.Kind, Tier: d.Task.Tier, Only: []string{session},
 			Keep: func(o Option) bool { return aliasFor(session, o.Model) != "" }, Deadline: deadline})
@@ -137,14 +159,7 @@ func PreToolUse(in io.Reader, w io.Writer) {
 		unrouted("pick is on profile " + d.Pick.Profile)
 		return
 	}
-	reserve(newID("native"), d, str("prompt"), Row{"tool_use_id": ev.ToolUseID, "native": true})
-	input := map[string]any{}
-	for k, v := range ev.ToolInput {
-		input[k] = v
-	}
-	input["model"], input["effort"] = alias, d.Pick.Effort
-	hookOut(w, map[string]any{"hookSpecificOutput": map[string]any{"hookEventName": "PreToolUse", "updatedInput": input,
-		"additionalContext": fmt.Sprintf("router: %s/%s → %s · %s · effort %s.", d.Task.Kind, d.Task.Tier, d.Pick.Profile, d.Pick.Model, d.Pick.Effort)}})
+	route(alias, Row{"tool_use_id": ev.ToolUseID, "native": true}, "")
 }
 
 func resultText(v any) string {
@@ -232,6 +247,7 @@ func SubagentStop(in io.Reader, w io.Writer) {
 	if hard == "" && failed {
 		hard = "error"
 	}
+	dropAgent(ev.AgentID)
 	if hint := complete(c, id, text, hard); hint != "" {
 		hookOut(w, map[string]any{"systemMessage": hint})
 	}

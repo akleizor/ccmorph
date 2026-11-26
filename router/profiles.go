@@ -274,10 +274,8 @@ func labeler(c Config, profiles []Profile, d *Decider, deadline time.Time) func(
 // account profile, the edge's own route, or a profile switched in beside it.
 func SessionProfile() string {
 	n := filepath.Base(os.Getenv("CLAUDE_CONFIG_DIR"))
-	if os.Getenv("CCMORPH_EDGE_ROUTE_ENV") != "" {
-		if port, ok := util.LoopbackProxyPort(); ok {
-			n = edgeInferenceProfile(n, port)
-		}
+	if port, ok := edgePort(); ok {
+		n = edgeInferenceProfile(n, port)
 	}
 	if profile.ValidName(n) {
 		return n
@@ -300,7 +298,7 @@ func SessionProfile() string {
 // can see that state; until #595 persists it, this is the ported rule's known
 // limit, pinned by the stale-word case in TestSessionProfileInAnEdgeSessionIsWhereInferenceRuns.
 func edgeInferenceProfile(account string, port int) string {
-	bridge := filepath.Join(paths.ProfileRoot(), "profiles", ".rc-bridge")
+	bridge := rcBridge()
 	word := "route"
 	if b, err := os.ReadFile(filepath.Join(bridge, "inference")); err == nil {
 		word = strings.TrimSpace(string(b))
@@ -311,12 +309,5 @@ func edgeInferenceProfile(account string, port int) string {
 	case word != "route" && profile.ValidName(word):
 		return word
 	}
-	records, _ := filepath.Glob(filepath.Join(paths.GlobQuote(bridge), "edges", "*.json"))
-	for _, f := range records {
-		var rec struct{ Port int }
-		if b, err := os.ReadFile(f); err == nil && json.Unmarshal(b, &rec) == nil && rec.Port == port {
-			return strings.TrimSuffix(filepath.Base(f), ".json")
-		}
-	}
-	return ""
+	return edgeRoute(bridge, port)
 }

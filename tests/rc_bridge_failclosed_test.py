@@ -249,3 +249,87 @@ def test_addon_dated_epoch_still_loads(tmp_path):
     finally:
         proxy.terminate()
         proxy.wait(timeout=HANG_TIMEOUT)
+
+
+@needs_loopback  # the proxy and upstreams are real listeners: #611
+@pytest.mark.skipif(not MITMDUMP, reason="mitmdump not installed")
+def test_a_picked_subagent_is_served_by_its_pick_through_a_real_proxy(tmp_path):
+    """The router left a pick for one subagent's prompt: under the account word, the
+    main thread still reaches the account while that subagent's requests reach the
+    route, on the route's key and the pick's model. Its first request is parked
+    until the addon reads its body; a later one routes from its headers."""
+    import http.server
+    import json
+    import threading
+    import hashlib
+
+    def stub(name, seen):
+        class Handler(http.server.BaseHTTPRequestHandler):
+            def log_message(self, *a):
+                pass
+
+            def do_POST(self):
+                body = json.loads(self.rfile.read(int(self.headers.get("content-length") or 0)))
+                seen.append((name, self.headers.get("x-api-key") or self.headers.get("authorization"),
+                             body.get("model")))
+                self.send_response(200)
+                self.send_header("content-length", "2")
+                self.end_headers()
+                self.wfile.write(b"ok")
+        server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        return server
+
+    seen = []
+    account, route = stub("account", seen), stub("route", seen)
+    rc = _launcher()
+    (tmp_path / "inference").write_text("account\n")
+    pending = tmp_path / "agents" / "pending"
+    pending.mkdir(parents=True)
+    (pending / f"{hashlib.sha256(b'Fix parse()').hexdigest()}.json").write_text('{"word": "route", "model": "kimi-k3"}')
+    key_file = tmp_path / "route-key"
+    key_file.write_text("route-key")
+    script = rc.private_addon(tmp_path)
+    port = port_outside_the_ephemeral_pool()
+    map_remote = (rf"|~d ^api\.anthropic\.com$|^http://api\.anthropic\.com"
+                  rf"|http://127.0.0.1:{account.server_address[1]}")
+    env = dict(os.environ, RC_UPSTREAM=f"http://127.0.0.1:{route.server_address[1]}",
+               RC_KEY_FILE=str(key_file), RC_PARENT_PID=str(os.getpid()),
+               RC_INFERENCE=str(tmp_path / "inference"))
+    proxy = subprocess.Popen(rc.proxy_command(MITMDUMP, port, tmp_path / "mitm", script)
+                             + ["--set", f"map_remote={map_remote}"],
+                             env=env, stdin=subprocess.DEVNULL,
+                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    opener = urllib.request.build_opener(
+        urllib.request.ProxyHandler({"http": f"http://127.0.0.1:{port}"}))
+
+    def post(agent, text):
+        headers = {"authorization": "Bearer ACCOUNT", "content-type": "application/json"}
+        if agent:
+            headers["x-claude-code-agent-id"] = agent
+        body = {"model": "claude-opus-5-5", "messages": [{"role": "user", "content": [
+            {"type": "text", "text": "<system-reminder>x</system-reminder>"}, {"type": "text", "text": text}]}]}
+        req = urllib.request.Request("http://api.anthropic.com/v1/messages", method="POST",
+                                     data=json.dumps(body).encode(), headers=headers)
+        with opener.open(req, timeout=HANG_TIMEOUT) as r:
+            return r.status
+
+    try:
+        def listening():
+            with socket.socket() as s:
+                return s.connect_ex(("127.0.0.1", port)) == 0
+        assert wait_until(listening, HANG_TIMEOUT), "the proxy never listened"
+        assert wait_until(lambda: not key_file.exists(), HANG_TIMEOUT), "the addon never loaded"
+        assert post(None, "Fix parse()") == 200          # the main thread: its word, never the pick
+        assert post("a1", "Fix parse()") == 200          # the subagent: parked, claimed, routed
+        assert post("a1", "go on") == 200                # its later turn: bound
+        assert post("a2", "other") == 200                # another subagent: its word
+        assert seen == [("account", "Bearer ACCOUNT", "claude-opus-5-5"),
+                        ("route", "route-key", "kimi-k3"),
+                        ("route", "route-key", "kimi-k3"),
+                        ("account", "Bearer ACCOUNT", "claude-opus-5-5")]
+    finally:
+        proxy.terminate()
+        proxy.wait(timeout=HANG_TIMEOUT)
+        account.shutdown()
+        route.shutdown()

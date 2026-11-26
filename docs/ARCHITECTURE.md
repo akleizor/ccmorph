@@ -2039,6 +2039,20 @@ effort and join outcomes to the ledger. The hooks never deny a call: another
 profile's pick, no pick, or a delegated worker's own Agent call runs as written. An Agent call with an explicit model, or a fork, is
 never touched (promise 2).
 
+In a Remote Control edge session (section on `ccmorph-rc`), a pick on any
+profile still runs as Claude Code's own subagent. The Agent tool takes only
+Claude's aliases, so the pick travels beside the call: the hook has the edge's
+proxy hold the profile (`ccmorph-rc <profile> --switch --rehand`, which changes
+no switch word), writes `{word, model}` to
+`.rc-bridge/agents/pending/<sha256 of the stripped prompt>.json`, and leaves the
+call's model unset. Every subagent request carries `X-Claude-Code-Agent-Id`;
+the proxy parks a new agent's first request on a port nothing answers (fail
+closed), reads the prompt from its first message, renames the pending pick to
+`agents/<agent id>.json`, and sends that request and every later one of that
+agent to the pick with the pick's model. SubagentStop removes the binding; a
+pick unclaimed after ten minutes is swept. When the proxy cannot hold the
+profile, the hook falls back to the session's native aliases.
+
 One route, in order:
 
 1. Kind and tier: the caller's, else the optional decider endpoint's typed

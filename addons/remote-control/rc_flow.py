@@ -13,14 +13,28 @@ import subprocess
 import tempfile
 from pathlib import Path
 
-from rc_route import (ACCOUNT_METADATA, SESSION_HEADER, encode_json, inference_target,
-                      is_event_upload, is_inference, lost_endpoint_note, normalize_body, reroute,
-                      session_target, set_model, slim_events)
+import time
+
+from rc_route import (ACCOUNT_METADATA, AGENT_HEADER, SESSION_HEADER, agent_target, claim_agent,
+                      encode_json, has_pending, inference_target, is_event_upload, is_inference,
+                      lost_endpoint_note, normalize_body, reroute, session_target, set_model,
+                      slim_events)
 
 
 def _sessions(s) -> str | None:
     """<dir>/sessions: one session's own word, written by --switch --session."""
     return str(Path(s.inference).parent / "sessions") if s.inference else None
+
+
+def _agents(s) -> str | None:
+    """<dir>/agents: the router's picks for single subagents (rc_route.claim_agent)."""
+    return str(Path(s.inference).parent / "agents") if s.inference else None
+
+
+# A new subagent's request waits here, on a port nothing answers, until `request` has
+# read its body: a route decided from the body alone must still fail closed if the
+# addon dies before deciding (the block_list matches api.anthropic.com only).
+PARKED = ("http", "127.0.0.1", 9)
 
 
 def _account_tiers(s) -> dict:
@@ -46,9 +60,27 @@ def requestheaders(flow, s) -> None:
         flow.metadata["rc_events"] = is_event_upload(req.pretty_host, req.path)
         s.log(f"anthropic {req.method} {req.pretty_host}{route}")
         return
-    own = session_target(_sessions(s), req.headers.get(SESSION_HEADER))
-    target = own or inference_target(s.inference)
-    via = " (session)" if own else ""
+    agent = req.headers.get(AGENT_HEADER)
+    if pick := agent_target(_agents(s), agent):
+        return _route(flow, s, pick["word"], " (agent)", pick["model"])
+    if agent and has_pending(_agents(s)):
+        # Its prompt, in the body, may name a pick: decided in `request`.
+        flow.metadata["rc_parked"] = (req.scheme, req.host, req.port)
+        req.scheme, req.host, req.port = PARKED
+        return
+    _route(flow, s)
+
+
+def _route(flow, s, target: str | None = None, via: str = "", model: str | None = None) -> None:
+    """Send an inference request where its word says: the agent's pick when given,
+    else its session's own word, else the switch every host shares."""
+    req = flow.request
+    route = req.path.split("?", 1)[0]
+    if target is None:
+        own = session_target(_sessions(s), req.headers.get(SESSION_HEADER))
+        target = own or inference_target(s.inference)
+        via = " (session)" if own else ""
+    flow.metadata["rc_model"] = model
     if target == "account":
         # A legitimate first-party call: leave it untouched, but mark it so the
         # launcher's fail-closed block_list tells it from one no addon ever saw.
@@ -71,7 +103,7 @@ def requestheaders(flow, s) -> None:
             if s.inference and getattr(s, "logs", True):
                 # getattr: a proxy started before these existed reloads this module too
                 s.log(lost_endpoint_note(target, Path(s.inference).parent, getattr(s, "parent", 0),
-                                         req.headers.get(SESSION_HEADER) if own else None,
+                                         req.headers.get(SESSION_HEADER) if via == " (session)" else None,
                                          getattr(s, "parent_started", None)))
             target = "route"
     headers, (scheme, host, port) = reroute(dict(req.headers.items()), upstream, key)
@@ -83,6 +115,20 @@ def requestheaders(flow, s) -> None:
     flow.metadata["rc_route"] = True
     flow.metadata["rc_via"] = target              # what routed it: the route after a fallback
     s.log(f"route     {req.method} {route}" + ("" if target == "route" else f" via {target}") + via)
+
+
+def _claim(flow, s) -> None:
+    """A parked subagent request: bind the agent to the pick its prompt names, then
+    route it as requestheaders would have."""
+    req = flow.request
+    req.scheme, req.host, req.port = flow.metadata.pop("rc_parked")
+    try:
+        payload = json.loads(req.content or b"null")
+    except ValueError:
+        payload = None
+    if pick := claim_agent(_agents(s), req.headers.get(AGENT_HEADER), payload, time.time()):
+        return _route(flow, s, pick["word"], " (agent)", pick["model"])
+    _route(flow, s)
 
 
 def _shrink(data: str, media_type: str | None) -> tuple[str, str] | None:
@@ -98,9 +144,10 @@ def _shrink(data: str, media_type: str | None) -> tuple[str, str] | None:
 
 
 def _slim_body(content: bytes, routed: bool, tiers: dict, route_tiers: dict,
-               account: dict | None = None) -> bytes | None:
+               account: dict | None = None, model: str | None = None) -> bytes | None:
     """Parse, lighten and re-encode a request body; None if nothing changed. An
-    account call (`account`: its tiers) changes nothing but its model."""
+    account call (`account`: its tiers) changes nothing but its model; an agent's
+    pick (`model`) names the model outright."""
     try:
         payload = json.loads(content)
     except ValueError:
@@ -111,19 +158,25 @@ def _slim_body(content: bytes, routed: bool, tiers: dict, route_tiers: dict,
         changed = normalize_body(payload, tiers, route_tiers)
     else:
         changed = slim_events(payload, _shrink)
+    if model and isinstance(payload, dict) and payload.get("model") != model:
+        payload["model"] = model
+        changed = True
     return encode_json(payload) if changed else None
 
 
 async def request(flow, s) -> None:
+    if "rc_parked" in flow.metadata:
+        await asyncio.get_running_loop().run_in_executor(None, _claim, flow, s)
     routed, events = flow.metadata.get("rc_route"), flow.metadata.get("rc_events")
     account = flow.metadata.get("rc_account_tiers")
-    if not (routed or events or account) or not flow.request.content:
+    if not (routed or events or account or flow.metadata.get("rc_model")) or not flow.request.content:
         return
     content = flow.request.content
     # sips and multi-MB JSON would stall every other flow served by the loop:
     # parse, slim and encode on a worker thread and wait for it here.
     slim = await asyncio.get_running_loop().run_in_executor(
-        None, _slim_body, content, routed, flow.metadata.get("rc_tiers", s.tiers), s.tiers, account)
+        None, _slim_body, content, routed, flow.metadata.get("rc_tiers", s.tiers), s.tiers, account,
+        flow.metadata.get("rc_model"))
     if slim is not None:
         flow.request.content = slim
         if events:

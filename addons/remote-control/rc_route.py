@@ -263,6 +263,91 @@ def session_target(sessions: str | None, session: str | None) -> str | None:
     return None
 
 
+# A subagent's every request carries X-Claude-Code-Agent-Id; the main thread's never
+# does. The router's PreToolUse hook picks a profile for an Agent call and leaves the
+# pick in <agents>/pending/<prompt_key(prompt)>.json ({"word", "model"}): the Agent
+# tool takes only Claude's own aliases, so the pick cannot ride in the call. The
+# agent's first request carries its prompt as a text block of its first message;
+# claim_agent matches it and moves the pick to <agents>/<agent id>.json, which every
+# later request of that agent reads (agent_target). The router removes it on SubagentStop.
+AGENT_HEADER = "x-claude-code-agent-id"
+AGENT_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,127}")
+PENDING_TTL = 600          # seconds a pick waits for its agent's first request
+BOUND_TTL = 7 * 86400      # a binding whose agent never stopped is swept after this
+
+
+def prompt_key(prompt: str) -> str:
+    """The pending file name for an Agent prompt: sha256 of its stripped text."""
+    return hashlib.sha256(prompt.strip().encode()).hexdigest()
+
+
+def _pick(path: str) -> dict | None:
+    try:
+        pick = json.loads(open(path).read())
+    except (OSError, ValueError):
+        return None
+    if not isinstance(pick, dict) or not SWITCH_WORD.fullmatch(str(pick.get("word", ""))):
+        return None
+    if not isinstance(pick.get("model"), str):
+        pick["model"] = None
+    return pick
+
+
+def agent_target(agents: str | None, agent: str | None) -> dict | None:
+    """The pick bound to this agent ({"word", "model"}), else None."""
+    if not agents or not agent or not AGENT_ID.fullmatch(agent):
+        return None
+    return _pick(f"{agents}/{agent}.json")
+
+
+def has_pending(agents: str | None) -> bool:
+    """Whether any pick waits for its agent: only then is a new agent's body read."""
+    try:
+        return any(n.endswith(".json") for n in os.listdir(f"{agents}/pending")) if agents else False
+    except OSError:
+        return False
+
+
+def claim_agent(agents: str | None, agent: str | None, payload: object, now: float) -> dict | None:
+    """Bind `agent` to the pick its prompt names, from the first message of its request
+    body; None when no pending pick matches. A rename takes the pick, so one pick binds
+    one agent. Stale picks and bindings are swept here."""
+    if not agents or not agent or not AGENT_ID.fullmatch(agent) or not isinstance(payload, dict):
+        return None
+    pending = f"{agents}/pending"
+    _sweep(pending, now - PENDING_TTL)
+    _sweep(agents, now - BOUND_TTL)
+    messages = payload.get("messages")
+    first = messages[0] if isinstance(messages, list) and messages else None
+    content = first.get("content") if isinstance(first, dict) else None
+    blocks = [content] if isinstance(content, str) else content if isinstance(content, list) else []
+    for block in blocks:
+        text = block if isinstance(block, str) else block.get("text") if isinstance(block, dict) else None
+        if not isinstance(text, str) or not text.strip():
+            continue
+        bound = f"{agents}/{agent}.json"
+        try:
+            os.rename(f"{pending}/{prompt_key(text)}.json", bound)
+        except OSError:
+            continue
+        return _pick(bound)
+    return None
+
+
+def _sweep(folder: str, before: float) -> None:
+    try:
+        names = os.listdir(folder)
+    except OSError:
+        return
+    for name in names:
+        path = f"{folder}/{name}"
+        try:
+            if name.endswith(".json") and os.stat(path).st_mtime < before:
+                os.unlink(path)
+        except OSError:
+            pass
+
+
 def is_inference(host: str, path: str) -> bool:
     if host.lower().rstrip(".") != FIRST_PARTY_HOST:
         return False

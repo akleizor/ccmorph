@@ -158,6 +158,11 @@ Every request carries its session's id (`X-Claude-Code-Session-Id`, the same for
 subagents: a UUIDv5 Claude Code derives from the session's `--sdk-url`, which the proxy
 matches to the `cse_...` id), so one session can run on its own profile while the rest
 share the switch.
+With the router on (`ccmorph router on`), one subagent can run on another profile
+too: the router's Agent hook has the edge hold the profile it picked (`--switch
+--rehand`, no word changes) and leaves the pick for the proxy, which sends that one
+agent's requests (`X-Claude-Code-Agent-Id`) to it. The subagent stays Claude Code's
+own: it shows in the session, streams, and returns to its caller as usual.
 A profile already up beside the live edge with the same tiers is reused, not started
 again. A tier the route pinned outside the Claude family (fable on a gateway model)
 reaches another target as that target's own model for the alias.
