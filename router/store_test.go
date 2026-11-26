@@ -80,30 +80,55 @@ func TestASpentBudgetRefusesTheLedgerWriteEvenWhenTheLockIsFree(t *testing.T) {
 func TestAHookPathLedgerWriteReturnsWithinTheHooksBudgetWhileAnotherProcessHoldsTheLock(t *testing.T) {
 	hookEnv(t, true)
 	quotaSnapshot(t, map[string]float64{"here": 0.1, "there": 0.9}) // a same-profile pick, so the hook reserves
-	holdLock(t)
 	old := hookBudget
-	// PreToolUse's Request.Deadline (16 s in a real hook). Long enough that a
-	// few milliseconds of scheduler wake-up cannot matter next to the 25 ms
-	// allowance below, and still quick for the suite.
+	// PreToolUse's Request.Deadline (16 s in a real hook), short enough to
+	// keep the suite quick. The bound below is a measurement of this run's
+	// load around the budget, so the budget's length cannot hide a wait that
+	// outlives it.
 	hookBudget = 500 * time.Millisecond
 	t.Cleanup(func() { hookBudget = old })
 
-	start := time.Now()
-	done := make(chan struct{})
-	go func() {
+	// runHook makes one PreToolUse call and reports when it returned.
+	runHook := func() time.Duration {
+		start := time.Now()
 		var out bytes.Buffer
 		PreToolUse(strings.NewReader(agentCall), &out)
-		close(done)
-	}()
-	// lockSlack is the only allowance over the budget: one 10 ms poll plus a
-	// scheduler wake-up. A write that waits any real fraction longer than its
-	// budget — the refused implementations waited seconds, or added their own
-	// milliseconds to the deadline — lands past this bound and fails.
-	const lockSlack = 25 * time.Millisecond
+		return time.Since(start)
+	}
+
+	// The allowance over the budget is measured under this run's load, not
+	// assumed. It used to be a literal 25 ms — "one 10 ms poll plus a
+	// scheduler wake-up" — and under gate load a single wake-up late from the
+	// sleep in withLock passed it while the write was being refused at its
+	// deadline exactly as designed (#903). A refusal is now owed three
+	// measured things: the hook's own path around the wait (taken first, with
+	// the lock still free, so the held run repeats it warm), the budget as
+	// this run charges it, and one more poll. The sleep below is the second:
+	// the length of the budget, started with the write, so it wakes at the
+	// instant the write's last poll wakes and is late exactly as late as the
+	// scheduler is right now — a single late wake-up cannot outrun an
+	// allowance taken from one. A write that waits any real fraction longer
+	// than its budget — the refused implementations waited seconds — lands
+	// past the sum however late it is woken, and fails.
+	unheld := runHook()
+	if err := os.WriteFile(ledgerPath(), nil, 0o600); err != nil { // the unheld run's own row is not this test's evidence
+		t.Fatal(err)
+	}
+	holdLock(t)
+
+	returned := make(chan time.Duration, 1)
+	wake := time.Now()
+	go func() { returned <- runHook() }()
+	time.Sleep(hookBudget)
+	bound := unheld + time.Since(wake) + lockPoll
+	var waited time.Duration
 	select {
-	case <-done:
-	case <-time.After(hookBudget + lockSlack):
-		t.Fatalf("a held ledger.lock kept the hook past its %v budget (waited %v)", hookBudget, time.Since(start))
+	case waited = <-returned:
+	case <-time.After(bound + 10*hookBudget): // only a write that never returns at all lands here
+		t.Fatalf("a held ledger.lock never released the hook: still inside PreToolUse %v after its budget started (budget %v, bound %v)", time.Since(wake), hookBudget, bound)
+	}
+	if waited > bound {
+		t.Fatalf("a held ledger.lock kept the hook past its %v budget (returned after %v, bound %v)", hookBudget, waited, bound)
 	}
 	if rows := readRows(ledgerPath()); len(rows) != 0 {
 		t.Fatalf("a refused write left %d ledger row(s)", len(rows))
