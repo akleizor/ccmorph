@@ -269,7 +269,7 @@ if [[ "${1:-}" == "--uninstall" ]]; then
   # component matters: rm reaches through a symlinked parent, and the user's own
   # spelling stays readable. A link is named beside the cleanup, because it
   # outlives what it points at. Only ENOENT, ENOTDIR and ELOOP prove a link
-  # dangles and has only itself to remove — the #204 rule, `.github/REVIEW.md`.
+  # dangles and has only itself to remove — the #204 rule, `REVIEW.md`.
   # Any other failed stat means the target could not be asked (EACCES, a stalled
   # volume): nothing in it could be read or counted, the rm names where the link
   # leads unread, and the link stays, or following the cleanup detaches what the
@@ -309,7 +309,7 @@ if [[ "${1:-}" == "--uninstall" ]]; then
   # trailing `/`, `//` or `/.` names that same entry. `${1:a}` cannot be used:
   # it collapses `..` lexically, so `alias/../state` (with `alias` a symlink)
   # names an unrelated entry instead of the root the override selects — an
-  # override one reader honours and another forgets (`.github/REVIEW.md`).
+  # override one reader honours and another forgets (`REVIEW.md`).
   # $1 = a spelling. REPLY = the entry it names; _un_spell = the same entry
   # without a trailing `/`, `//` or `/.` — what the report prints for it, since
   # `rm -rf path/.` is refused outright by BSD rm.
