@@ -94,7 +94,8 @@
   unstartable behind a ready doctor.** `list` and `inspect` say where the shown
   model came from, `doctor` fails with run's own sentence and the command that
   picks a served model, a terminal launch offers the model picker instead of
-  stopping, and `inspect` lists `excluded_models` (#862).
+  stopping, a gateway whose list names no chat model fails `doctor` in run's
+  words, and `inspect` lists `excluded_models` (#862).
 - **Remote Control hosts pin the route profile's tiers.** `ccmorph-rc-hosts` kept
   its own tier map in `tier.<alias>=` lines, which drifted from the profile: an alias
   the profile mapped to a gateway model went out as the native Claude id, which the

@@ -1768,9 +1768,10 @@ existing effective native model settings once, retaining explicit conf values.
 defaults. Subsequent native writes are not re-imported. Explicit setters use the
 same transaction, and read-only inspection does not mutate a profile.
 `model_source=claude-settings` records that the seeded model came from the shared
-`~/.claude/settings.json`, and a saved model drops it. Doctor applies run's three
-model stops, in run's words: an unmapped alias, exclusions that leave nothing,
-and no saved model without a terminal.
+`~/.claude/settings.json`, and a saved model drops it; a `config` pass that keeps
+the model keeps it. Doctor applies run's four model stops, in run's words: an
+unmapped alias, exclusions that leave nothing, a model list that names no chat
+model to pick, and no saved model without a terminal.
 
 Claude Code's `/model` and `/effort` still write native preferences and may display
 “saved as default.” Those writes are not the ccmorph defaults. Launch preparation

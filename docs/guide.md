@@ -396,7 +396,7 @@ install at `"$(brew --prefix ccmorph)/libexec/share/profile.conf.example"`, and
 | `window_sources=<name>` | Shipped catalogue to size this route by |
 | `context_window.<model>` | Pinned token limit; beats discovery |
 | `model_defaults=1` | This profile owns its model defaults (written once; keep it) |
-| `model_source=claude-settings` | Written by ccmorph: the saved model was imported from `~/.claude/settings.json`; `list`, `inspect`, `doctor` and `run` name that source. Dropped when you save a model |
+| `model_source=claude-settings` | Written by ccmorph: the saved model was imported from `~/.claude/settings.json`; `list`, `inspect`, `doctor` and `run` name that source. Dropped when you save a model with `set` or answer `config`'s model step; kept when `config` keeps the model |
 | `api_key=keychain:<name>.api_key` | On macOS the key lives in the login keychain; ccmorph moves a plain key there on first use |
 
 The model-mapping keys in the table are the `env.ANTHROPIC_*` names listed in the
@@ -423,6 +423,10 @@ stops `ccmorph run` — in a terminal the model picker opens instead, for that
 session only — and fails `ccmorph doctor`. Both name the alias, say where it came
 from (`~/.claude/settings.json` or this profile) and print the command that saves
 a served one: `ccmorph set <profile> model -i`.
+
+A gateway whose model list names no chat model leaves a profile with no saved
+model nothing to pick: `ccmorph run` stops and `ccmorph doctor` fails, both
+naming the fix `ccmorph set <profile> model <model-id>`.
 
 Other Claude preferences live in the profile's layer,
 `~/.config/ccmorph/profiles/<profile>/settings.profile.json`. At each launch ccmorph
