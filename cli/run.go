@@ -17,6 +17,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/akleizor/ccmorph/adapter"
 	"github.com/akleizor/ccmorph/ctxwindow"
 	"github.com/akleizor/ccmorph/profile"
 	"github.com/akleizor/ccmorph/settingscompose"
@@ -560,6 +561,17 @@ func (l *launcher) runLaunch(p *launchPlan) (*relayNext, int) {
 		if needsAdapter && opensSession {
 			if l.adapterProfile != name {
 				l.adapterStop()
+				// No model given or saved, a listing that names no chat model, and
+				// no cached protocol: the adapter has nothing to start. Say so in
+				// the picker's and doctor's words before it is asked (#862).
+				if explicit == "" && defaultModel == "" {
+					if listed := l.listed(base, key); util.NoModelToPick(l.conf(name), listed) {
+						if _, known := adapter.TranslatorVerdict(base, l.profileDirs, "", listed); !known {
+							l.err(util.NoUsableModel(name))
+							return nil, 1
+						}
+					}
+				}
 				model, ok := l.adapterModel(name, penv, explicit, defaultModel)
 				if !ok {
 					return nil, 1

@@ -670,12 +670,18 @@ func (l *launcher) doctor(name string, verbose bool) int {
 	// the adapter row because a launch stops at the picker before any adapter
 	// starts: the model repair, not a translator install, is the first stop the
 	// verdict names. The no-model note promises a terminal picker, so it is
-	// printed only when the listing leaves a row to pick.
+	// printed only when the listing leaves a row to pick. A listing that leaves
+	// none, with no model saved, stops every terminal launch at the picker, and
+	// one without a terminal too unless a model is cached: doctor's verdict is
+	// for the person who types ccmorph run, so it fails either way (#862).
 	if typ == "apikey" && !util.NativeBase(base) && listing != "" {
 		_, pickable := util.GwModels(conf, true, listing)
 		switch {
 		case util.ExclusionsLeaveNone(conf, listing):
 			report("FAIL", "model: "+util.ExclusionsRefusal(name, conf), util.ExclusionsFix(name, conf))
+			failed = 1
+		case savedModel == "" && util.NoModelToPick(conf, listing):
+			report("FAIL", "model: "+util.NoUsableModel(name), util.NoUsableModelFix(name))
 			failed = 1
 		case savedModel == "" && !need(listing).Known && pickable:
 			report("INFO", "model: none saved; in a terminal, ccmorph run asks which model first, and without one it stops: "+util.NoModelReason(name))

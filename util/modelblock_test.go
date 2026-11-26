@@ -118,3 +118,37 @@ func TestExclusionsRefusal(t *testing.T) {
 		}
 	}
 }
+
+func TestNoModelToPick(t *testing.T) {
+	plain := modelBlockConf(t, "type=apikey\nbase_url=http://gw.invalid\napi_key=k\n")
+	excl := modelBlockConf(t, "type=apikey\nbase_url=http://gw.invalid\napi_key=k\nexcluded_models=model-a,model-b\n")
+	gone := filepath.Join(t.TempDir(), "gone.conf")
+	for _, tc := range []struct {
+		name, conf, body string
+		want             bool
+	}{
+		{"empty list", plain, `{"data":[]}`, true},
+		{"no chat model", plain, `{"data":[{"id":"emb","capabilities":{"chat_completion":false}}]}`, true},
+		{"a chat model", plain, `{"data":[{"id":"model-a"}]}`, false},
+		{"an error object", plain, `{"error":"x"}`, false},
+		{"garbage", plain, "garbage", false},
+		{"no body", plain, "", false},
+		{"exclusions remove all", excl, `{"data":[{"id":"model-a"},{"id":"model-b"}]}`, false},
+		{"exclusions and an empty list", excl, `{"data":[]}`, false},
+		{"a missing conf", gone, `{"data":[]}`, false},
+	} {
+		if got := NoModelToPick(tc.conf, tc.body); got != tc.want {
+			t.Errorf("%s: NoModelToPick = %v, want %v", tc.name, got, tc.want)
+		}
+	}
+}
+
+func TestNoUsableModel(t *testing.T) {
+	want := "the 'demo' gateway's model list names no chat model to pick; save a model id this gateway serves: ccmorph set demo model <model-id>"
+	if got := NoUsableModel("demo"); got != want {
+		t.Fatalf("NoUsableModel = %q, want %q", got, want)
+	}
+	if !strings.HasSuffix(want, NoUsableModelFix("demo")) {
+		t.Fatalf("the refusal does not end with its fix %q", NoUsableModelFix("demo"))
+	}
+}

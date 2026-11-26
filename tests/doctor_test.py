@@ -82,7 +82,7 @@ def test_doctor_auth_redaction_and_no_mutation(tmp_path):
     curl = """#!/bin/sh
 printf '%s\\n' "$@" > "$CURL_ARGS"
 [ "$1" = -K ] && cat >> "$CURL_ARGS"
-printf '%s\\n' '{"data":[]}'
+printf '%s\\n' '{"data":[{"id":"m-1"}]}'
 printf '%s\\n' '__CCMORPH_STATUS__200'
 """
     conf = "type=apikey\nbase_url=https://user:secret@example.test/api\napi_key=secret-key\n"
@@ -186,7 +186,7 @@ def test_doctor_never_echoes_userinfo_of_an_invalid_endpoint(tmp_path, base):
 
 
 OK_CURL = """#!/bin/sh
-printf '%s\n' '{"data":[]}'
+printf '%s\n' '{"data":[{"id":"m-1"}]}'
 printf '%s\n' '__CCMORPH_STATUS__200'
 """
 
@@ -247,7 +247,7 @@ def test_doctor_reports_the_profile_default_model_whatever_its_origin(tmp_path):
     # The listing serves every id this test saves, so the label is all that varies.
     served = ",".join('{"id":"%s"}' % m for m in (
         "saved", "global", "shared-pin", "profile-model", "conf-model", "native-model"))
-    listing = OK_CURL.replace('{"data":[]}', '{"data":[%s]}' % served)
+    listing = OK_CURL.replace('{"data":[{"id":"m-1"}]}', '{"data":[%s]}' % served)
 
     def effective(conf_text, profile_json, row="model"):
         profile_settings.write_text(profile_json)
@@ -595,7 +595,7 @@ def _doctor_until_table_read(tmp_path, conf, curl, profile, tries=3):
 @pytest.mark.parametrize("shape", ["translator-route", "native-route", "hooks-build"])
 def test_doctor_reports_existing_adapter_without_starting_it(tmp_path, shape, slow):
     curl = """#!/bin/sh
-printf '%s\n' '{"data":[]}'
+printf '%s\n' '{"data":[{"id":"m-1"}]}'
 printf '%s\n' '__CCMORPH_STATUS__200'
 """
     conf = "type=apikey\nbase_url=https://example.test\napi_key=k\nadapter=true\n"
@@ -889,7 +889,7 @@ def test_doctor_omits_the_adapter_line_for_an_unclassified_saved_model_issue_272
 def test_doctor_tolerates_a_conf_that_still_declares_removed_keys(tmp_path):
     """Removed keys (transport, forward_ip, subagent_model, lean) were removed,
     not reserved: an old conf carrying any or all of them must still be checkable."""
-    curl = "#!/bin/sh\nprintf '%s\\n' '{\"data\":[]}'\nprintf '%s\\n' '__CCMORPH_STATUS__200'\n"
+    curl = "#!/bin/sh\nprintf '%s\\n' '{\"data\":[{\"id\":\"m-1\"}]}'\nprintf '%s\\n' '__CCMORPH_STATUS__200'\n"
     result, _, _ = run_doctor(
         tmp_path / "legacy",
         "type=apikey\nbase_url=https://example.test\napi_key=k\ntransport=tunnel\n"
@@ -1334,7 +1334,7 @@ def test_doctor_reports_a_hosted_edge_only_when_its_pins_are_the_question_gh_881
         assert rows == [], result.stdout
 
 
-@pytest.mark.parametrize("case", ["gateway-ok", "missing-credential", "malformed-listing"])
+@pytest.mark.parametrize("case", ["gateway-ok", "missing-credential", "malformed-listing", "nothing-to-pick-gh-862"])
 def test_doctor_ends_with_a_verdict(tmp_path, case):
     """The last line answers the only question a person has: is this profile
     ready to run, or what must be fixed first."""
@@ -1343,6 +1343,12 @@ def test_doctor_ends_with_a_verdict(tmp_path, case):
             tmp_path, "type=apikey\nbase_url=https://example.test\napi_key=k\n", OK_CURL)
     elif case == "missing-credential":
         result, _, _ = run_doctor(tmp_path, "type=apikey\nbase_url=https://example.test\n")
+    elif case == "nothing-to-pick-gh-862":
+        # GH-862: a gateway that lists no chat model leaves a profile with no
+        # saved model nothing to start; the verdict names run's repair.
+        result, _, _ = run_doctor(
+            tmp_path, "type=apikey\nbase_url=https://example.test\napi_key=k\n",
+            OK_CURL.replace('{"data":[{"id":"m-1"}]}', '{"data":[]}'))
     else:
         malformed = """#!/bin/sh
 printf '%s\n' '{"data":"not-a-list"}'
@@ -1357,6 +1363,11 @@ printf '%s\n' '__CCMORPH_STATUS__200'
     elif case == "missing-credential":
         assert result.returncode == 1, result.stdout
         assert last == "FAIL not ready: set the API key: ccmorph config demo", result.stdout
+    elif case == "nothing-to-pick-gh-862":
+        assert result.returncode == 1, result.stdout
+        assert ("FAIL model: the 'demo' gateway's model list names no chat model to pick; "
+                "save a model id this gateway serves: ccmorph set demo model <model-id>") in result.stdout.splitlines(), result.stdout
+        assert last == "FAIL not ready: save a model id this gateway serves: ccmorph set demo model <model-id>", result.stdout
     else:
         assert result.returncode == 1, result.stdout
         assert last == ("FAIL not ready: check the endpoint (it must list models at /v1/models): "

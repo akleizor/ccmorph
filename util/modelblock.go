@@ -86,8 +86,30 @@ func ExclusionsRefusal(name, conf string) string {
 	return "no cached or served picker models remain after excluded_models, which removes every model this gateway serves; " + ExclusionsFix(name, conf)
 }
 
-// NoUsableModel is run's refusal when the gateway answers with a list that
-// leaves no picker row: an empty list, or rows that are not chat models.
+// NoUsableModelFix is the repair when the gateway's model list names no chat
+// model to pick: save an id the gateway serves although it does not list it.
+func NoUsableModelFix(name string) string {
+	return "save a model id this gateway serves: ccmorph set " + name + " model <model-id>"
+}
+
+// NoUsableModel is why no model can be picked from the gateway's answer: a
+// listing with no chat model in it (an empty list, or only rows that are not
+// chat models). The picker's refusal, run's, and doctor's row (#862).
 func NoUsableModel(name string) string {
-	return "'" + name + "' endpoint returned no usable model list"
+	return "the '" + name + "' gateway's model list names no chat model to pick; " + NoUsableModelFix(name)
+}
+
+// NoModelToPick is whether body is a model listing that leaves no chat model to
+// pick for a reason other than excluded_models. False for a body that is not a
+// listing, an unreadable conf, and exclusions that remove every model (that
+// state has its own sentence, ExclusionsRefusal).
+func NoModelToPick(conf, body string) bool {
+	if _, verdict := ctxwindow.ListingShapeBody(body); verdict == ctxwindow.ListingNotAListing {
+		return false
+	}
+	if _, err := readConf(conf); err != nil || ExclusionsLeaveNone(conf, body) {
+		return false
+	}
+	_, ok := GwModels(conf, true, body)
+	return !ok
 }

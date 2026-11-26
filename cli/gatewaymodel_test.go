@@ -605,27 +605,75 @@ func TestDoctorExclusionsOutrankTheAdapterRowIssue862(t *testing.T) {
 	}
 }
 
-// GH-862 review: an empty usable listing leaves no picker row. Doctor must not
-// promise a picker that will not open; the verdict for a profile never launched
-// stays ready, as before, and the gateway row already names models: 0. A
-// terminal launch stops at the picker with the sentence util.NoUsableModel.
-func TestDoctorDoesNotPromiseAPickerWithNoModelToPickIssue862(t *testing.T) {
-	state, profiles, libexec, _ := gw862(t, "", "")
-	t.Setenv("LISTING", `{"data":[]}`)
-	out, rc := doctorOutput(t, &launcher{dir: state, profileDirs: profiles}, "gw862")
-	if strings.Contains(out, "INFO model:") {
-		t.Fatalf("doctor promised a picker with no row to pick:\n%s", out)
+// GH-862 review: a listing that names no chat model, for a profile with no
+// saved model, stops every terminal launch at the picker, and with nothing
+// cached the launch without a terminal too. Doctor fails with run's cause and
+// repair, and no launch that stops opens a picker or starts an adapter.
+func TestDoctorAndRunStopOnAListingWithNoModelToPickIssue862(t *testing.T) {
+	for _, listing := range []string{
+		`{"data":[]}`,
+		`{"data":[{"id":"emb","capabilities":{"chat_completion":false}}]}`,
+	} {
+		t.Run(listing, func(t *testing.T) {
+			state, profiles, libexec, calls := gw862(t, "", "")
+			t.Setenv("LISTING", listing)
+			conf := filepath.Join(state, "gw862.conf")
+			before := readBack(t, conf)
+			out, rc := doctorOutput(t, &launcher{dir: state, profileDirs: profiles}, "gw862")
+			if !strings.Contains(out, "FAIL model: "+util.NoUsableModel("gw862")+"\n") || strings.Contains(out, "INFO model:") {
+				t.Fatalf("doctor does not name the empty choice in run's words:\n%s", out)
+			}
+			if rc != 1 || !strings.HasSuffix(strings.TrimSpace(out), "\nFAIL not ready: "+util.NoUsableModelFix("gw862")) {
+				t.Fatalf("doctor rc %d, want 1 ending %q:\n%s", rc, "FAIL not ready: "+util.NoUsableModelFix("gw862"), out)
+			}
+			if got := readBack(t, conf); got != before {
+				t.Fatalf("doctor changed the conf:\n%s\n->\n%s", before, got)
+			}
+			for _, terminal := range []bool{false, true} {
+				if terminal {
+					t.Setenv("TERM", "xterm-256color")
+				}
+				_, sawFile := fakeFzf862(t)
+				runRC, stderr := launchAs(t, terminal, state, profiles, libexec, "gw862", nil)
+				if runRC != 1 || !strings.Contains(stderr, "ccmorph: "+util.NoUsableModel("gw862")) {
+					t.Fatalf("terminal=%v: run rc %d, want 1 with %q:\n%s", terminal, runRC, util.NoUsableModel("gw862"), stderr)
+				}
+				if paths.Exists(sawFile) {
+					t.Fatalf("terminal=%v: a picker opened without a row to pick", terminal)
+				}
+			}
+			if c := calls(); strings.Contains(c, "adapter-start") {
+				t.Fatalf("an adapter started with no model to serve:\n%s", c)
+			}
+		})
 	}
-	if rc != 0 || !strings.HasSuffix(strings.TrimSpace(out), "OK ready: start it with ccmorph run gw862") {
-		t.Fatalf("doctor rc %d, want 0 ending ready:\n%s", rc, out)
-	}
-	t.Setenv("TERM", "xterm-256color")
-	_, sawFile := fakeFzf862(t)
-	runRC, stderr := launchAs(t, true, state, profiles, libexec, "gw862", nil)
-	if runRC != 1 || !strings.Contains(stderr, util.NoUsableModel("gw862")) {
-		t.Fatalf("run rc %d, want 1 with %q:\n%s", runRC, util.NoUsableModel("gw862"), stderr)
-	}
-	if paths.Exists(sawFile) {
-		t.Fatal("the picker opened without a row to pick")
-	}
+	t.Run("a cached model", func(t *testing.T) {
+		// The cache lets a launch without a terminal start, but the terminal
+		// launch still stops at the empty picker: doctor is not ready.
+		state, profiles, libexec, calls := gw862(t, "", "")
+		t.Setenv("LISTING", `{"data":[]}`)
+		sum := sha256.Sum256([]byte("https://gw.test"))
+		cache := filepath.Join(profiles, ".adapter-cache", hex.EncodeToString(sum[:])[:16]+".json")
+		if err := os.MkdirAll(filepath.Dir(cache), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(cache, []byte(`{"endpoint":"https://gw.test","anthropic_path":"/v1/messages","thinking_probe":2,"rows":[{"model":"model-a","dialect":"anthropic","note":"","cap":null,"nothink":false,"id_recycle":false,"status":200}]}`), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		out, rc := doctorOutput(t, &launcher{dir: state, profileDirs: profiles}, "gw862")
+		if rc != 1 || !strings.Contains(out, "FAIL model: "+util.NoUsableModel("gw862")+"\n") ||
+			!strings.HasSuffix(strings.TrimSpace(out), "\nFAIL not ready: "+util.NoUsableModelFix("gw862")) {
+			t.Fatalf("doctor rc %d; a terminal launch stops at the empty picker:\n%s", rc, out)
+		}
+		_, stderr := launchAs(t, false, state, profiles, libexec, "gw862", nil)
+		if strings.Contains(stderr, util.NoUsableModel("gw862")) || !strings.Contains(calls(), "adapter-start") {
+			t.Fatalf("no terminal: a cached model was refused before the adapter:\n%s\n%s", stderr, calls())
+		}
+		t.Setenv("TERM", "xterm-256color")
+		_, sawFile := fakeFzf862(t)
+		runRC, stderr := launchAs(t, true, state, profiles, libexec, "gw862", nil)
+		if runRC != 1 || !strings.Contains(stderr, "ccmorph: "+util.NoUsableModel("gw862")) || paths.Exists(sawFile) {
+			t.Fatalf("terminal: run rc %d, want 1 with %q and no picker:\n%s", runRC, util.NoUsableModel("gw862"), stderr)
+		}
+	})
 }
