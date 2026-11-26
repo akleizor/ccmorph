@@ -235,7 +235,11 @@ func (l *launcher) quota(args []string) int {
 	}
 	names := l.confNames()
 	if only != "" {
-		if !profile.ValidName(only) {
+		// A word the validator refuses that is exactly a conf on disk is the
+		// skipped profile a listing names: it takes the same skip notice and
+		// empty report as the unfiltered run (GH-915). Any other refused word
+		// keeps the one refusal.
+		if !profile.ValidName(only) && !l.hasConfName(only) {
 			return l.badName("quota", only)
 		}
 		if !l.exists(only) {
@@ -243,6 +247,15 @@ func (l *launcher) quota(args []string) int {
 			return 1
 		}
 		names = []string{only}
+	}
+	// A conf this report cannot carry is named before the report is made: the
+	// same skip line a listing gives (GH-915), on stderr in both modes, so
+	// `--json` stdout stays JSON and the exit stays 0. Without it a configured
+	// profile vanished from the machine-readable report in silence.
+	for _, n := range names {
+		if _, err := l.readProfile(n, func(string) {}); err != nil {
+			say(l.skipNotice(n, err))
+		}
 	}
 	// The core's stdin contract has no next step in it; the sentence is the
 	// cli's to say. JSON keeps its machine shape either way.

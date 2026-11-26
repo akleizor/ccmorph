@@ -150,14 +150,26 @@ func (l *launcher) dispatch(args []string) int {
 			return l.usage("router")
 		}
 	} else if n, public := verbArity[first]; public {
-		if helpAsked(rest) {
+		// rm and mv take a leading `--` separator, so a skipped conf whose
+		// stem is a flag or a help word is named as what it is —
+		// `ccmorph rm -- --help` removes that conf instead of opening help
+		// (GH-915). Only that leading separator is discounted, because rm and
+		// mv consume only that one: a `--` anywhere else is an extra word,
+		// exactly as on main.
+		own, words := rest, rest
+		if first == "rm" || first == "mv" {
+			if len(rest) > 0 && rest[0] == "--" {
+				own, words = nil, rest[1:]
+			}
+		}
+		if helpAsked(own) {
 			return l.usage(first)
 		}
 		if first == "hop" && len(rest) > 0 && rest[0] == hopSlashFlag {
 			n++ // the slash command's marker is not a word the user typed
 		}
-		if len(rest) > n {
-			return l.extraArg(first, rest[n])
+		if len(words) > n {
+			return l.extraArg(first, words[n])
 		}
 	}
 	switch first {

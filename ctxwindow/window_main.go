@@ -124,11 +124,36 @@ func windowRun(args []string, stdout, stderr io.Writer) (int, error) {
 	return 0, nil
 }
 
+// splitLockKey is a `--locked` operand back into its names: `\` escapes the
+// next rune, `,` separates, and every other rune is the name's own. A skipped
+// conf's stem may itself hold a comma, and the lock must take it whole rather
+// than lock the fragments of a name nobody asked for (GH-915).
+func splitLockKey(key string) []string {
+	var names []string
+	var b strings.Builder
+	escaped := false
+	for _, r := range key {
+		switch {
+		case escaped:
+			b.WriteRune(r)
+			escaped = false
+		case r == '\\':
+			escaped = true
+		case r == ',':
+			names = append(names, b.String())
+			b.Reset()
+		default:
+			b.WriteRune(r)
+		}
+	}
+	return append(names, b.String())
+}
+
 // runLocked holds every named profile's lock while it runs a command, which
 // gets CCMORPH_PROFILE_LOCK_HELD so its own writers do not deadlock.
 func runLocked(args []string, stderr io.Writer) (int, error) {
 	set := map[string]bool{}
-	for _, p := range strings.Split(args[1], ",") {
+	for _, p := range splitLockKey(args[1]) {
 		set[p] = true
 	}
 	var profiles []string
