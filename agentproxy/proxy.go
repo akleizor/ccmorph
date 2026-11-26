@@ -83,7 +83,12 @@ func Start(ca *CA, o Options) (*Proxy, error) {
 	}
 	p := &Proxy{Options: o, ca: ca, leaf: leaf, ln: ln}
 	tr := http.DefaultTransport.(*http.Transport).Clone()
-	tr.Proxy = func(*http.Request) (*url.URL, error) { return o.Upstream, nil }
+	tr.Proxy = func(r *http.Request) (*url.URL, error) {
+		if isLoopbackHost(r.URL.Hostname()) {
+			return nil, nil
+		}
+		return o.Upstream, nil
+	}
 	tr.TLSClientConfig = o.TLS
 	tr.ForceAttemptHTTP2 = true
 	p.rp = &httputil.ReverseProxy{
@@ -217,6 +222,19 @@ func originPath(o *url.URL) string {
 
 func isInference(path string) bool {
 	return path == "/v1/messages" || strings.HasPrefix(path, "/v1/messages/")
+}
+
+// isLoopbackHost reports whether a request target (a bare host, as
+// url.URL.Hostname gives it) names this machine. The adapters ccmorph
+// starts for picked profiles are served on loopback, and the session's
+// upstream proxy cannot serve them: a real proxy refuses the absolute URI
+// or resolves it against its own host, so those dial direct.
+func isLoopbackHost(host string) bool {
+	if strings.EqualFold(strings.TrimSuffix(host, "."), "localhost") {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }
 
 // connect answers CONNECT: api.anthropic.com is served here over TLS with the
