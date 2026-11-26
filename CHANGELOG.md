@@ -45,6 +45,14 @@
   answers a hop or a second profile seeds into the profile's config run
   through the same locked rewrite, so an approval recorded while the answers
   are gathered keeps its place too (#299, #861).
+- **A launch beside a live session no longer rewrites the profile's auth
+  files.** Provisioning read and replaced `config.json` and `.claude.json`
+  whole-file without the profile's live lock, so a save the running session
+  made between that read and the rename was silently dropped. Each file's
+  read-to-rename window now holds the lock exclusively, as every whole-file
+  writer does; a launch that cannot take it leaves both files untouched, says
+  which file it skipped and why, and still starts. Nothing records the skip:
+  the next launch provisions them (GH-938).
 
 - **One hand-edited conf line no longer splits the commands.** An unknown key or
   an effort level outside low…max used to hide the profile from `list` (which

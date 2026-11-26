@@ -56,9 +56,91 @@ func baseClaudeJSONs(home string) []string {
 	return []string{filepath.Join(home, ".claude.json"), filepath.Join(home, ".claude", ".claude.json")}
 }
 
+// configEdit applies a profile's auth scoping to config.json's decoded content
+// — a missing file is nil — and reports whether the file must be written or
+// only have its mode tightened.
+func configEdit(kind, appCfg string, existing *ordjson.Obj) (data *ordjson.Obj, write, chmod bool, err error) {
+	if kind == "sub" {
+		hasToken := existing != nil && (ordjson.Truthy(getKey(existing, "oauth:tokenCache")) || ordjson.Truthy(getKey(existing, "oauth:tokenCacheV2")))
+		if hasToken {
+			return existing, false, true, nil
+		}
+		// Best effort, and no longer load-bearing: a subscription credential comes from the profile's own /login.
+		seed, err := loadObj(appCfg, nil)
+		if err != nil {
+			return nil, false, false, err
+		}
+		if seed == nil {
+			return existing, false, false, nil
+		}
+		return seed, true, false, nil
+	}
+	data = existing
+	if data == nil {
+		if data, err = loadObj(appCfg, ordjson.New()); err != nil {
+			return nil, false, false, err
+		}
+	}
+	write = existing == nil
+	for _, k := range []string{"oauth:tokenCache", "oauth:tokenCacheV2"} {
+		if data.Has(k) {
+			data.Delete(k)
+			write = true
+		}
+	}
+	return data, write, !write, nil
+}
+
+// claudeJSONEdit applies a profile's auth scoping to .claude.json's decoded
+// content — a missing file is seeded from the base install — and reports
+// whether the file must be written.
+func claudeJSONEdit(kind string, seeds []string, existing *ordjson.Obj) (*ordjson.Obj, bool, error) {
+	fresh := existing == nil
+	data := existing
+	if fresh {
+		var err error
+		if data, err = loadObj(seeds[0], nil); err != nil {
+			return nil, false, err
+		}
+		if data == nil {
+			if data, err = loadObj(seeds[1], ordjson.New()); err != nil {
+				return nil, false, err
+			}
+		}
+	}
+	write := fresh
+	if fresh || kind != "sub" {
+		for _, k := range []string{"oauthAccount", "hasAvailableSubscription", "cachedExtraUsageDisabledReason"} {
+			if data.Has(k) {
+				data.Delete(k)
+				write = true
+			}
+		}
+	}
+	return data, write, nil
+}
+
+// provisionJSON holds the profile's live lock exclusively across one file's
+// read-to-rename window, so the read that decides the write cannot be overtaken
+// by a session's save the rename then drops.
+func provisionJSON(profiles, name, path string, write func() error) error {
+	release, err := holdLiveExclusive(profiles, name, path)
+	if err != nil {
+		return err
+	}
+	defer release()
+	return write()
+}
+
 // provisionProfile establishes a profile's auth-scoped config.json and
-// .claude.json; nothing else is touched. The error carries the reason.
+// .claude.json; nothing else is touched. Each file's read-to-rename window is
+// held under the profile's live lock exclusively, so a live session's write is
+// never dropped under provisioning's rename. A holder that outlasts the
+// bounded wait leaves the files untouched and the error wraps ErrProfileInUse.
+// The error carries the reason.
 func provisionProfile(pdir, kind string) error {
+	pdir = filepath.Clean(pdir)
+	profiles, name := filepath.Dir(pdir), filepath.Base(pdir)
 	home, err := os.UserHomeDir()
 	if err != nil {
 		home = ""
@@ -77,76 +159,71 @@ func provisionProfile(pdir, kind string) error {
 	if err != nil {
 		return err
 	}
-	if kind == "sub" {
-		hasToken := existing != nil && (ordjson.Truthy(getKey(existing, "oauth:tokenCache")) || ordjson.Truthy(getKey(existing, "oauth:tokenCacheV2")))
-		// Best effort, and no longer load-bearing: a subscription credential comes from the profile's own /login.
-		if !hasToken {
-			seed, err := loadObj(appCfg, nil)
+	_, write, chmod, err := configEdit(kind, appCfg, existing)
+	if err != nil {
+		return err
+	}
+	switch {
+	case write:
+		err = provisionJSON(profiles, name, cfg, func() error {
+			if paths.IsSymlink(cfg) {
+				return errors.New(cfg + ": symbolic links are not allowed")
+			}
+			existing, err := loadObj(cfg, nil)
 			if err != nil {
 				return err
 			}
-			if seed != nil {
-				if err := atomicJSON(cfg, seed); err != nil {
-					return err
-				}
-			}
-		} else if err := os.Chmod(cfg, 0o600); err != nil {
-			return err
-		}
-	} else {
-		data := existing
-		if data == nil {
-			if data, err = loadObj(appCfg, ordjson.New()); err != nil {
+			profileJSONRead(cfg)
+			data, write, chmod, err := configEdit(kind, appCfg, existing)
+			if err != nil {
 				return err
 			}
-		}
-		dirty := existing == nil
-		for _, k := range []string{"oauth:tokenCache", "oauth:tokenCacheV2"} {
-			if data.Has(k) {
-				data.Delete(k)
-				dirty = true
+			if !write {
+				if chmod {
+					return os.Chmod(cfg, 0o600)
+				}
+				return nil
 			}
-		}
-		if dirty {
-			err = atomicJSON(cfg, data)
-		} else {
-			err = os.Chmod(cfg, 0o600)
-		}
-		if err != nil {
-			return err
-		}
+			return atomicJSON(cfg, data)
+		})
+	case chmod:
+		err = os.Chmod(cfg, 0o600)
+	}
+	if err != nil {
+		return err
 	}
 
 	claudeJSON := filepath.Join(pdir, ".claude.json")
 	if paths.IsSymlink(claudeJSON) {
 		return errors.New(claudeJSON + ": symbolic links are not allowed")
 	}
-	data, err := loadObj(claudeJSON, nil)
+	existing, err = loadObj(claudeJSON, nil)
 	if err != nil {
 		return err
 	}
-	fresh := data == nil
-	if fresh {
-		if data, err = loadObj(seeds[0], nil); err != nil {
+	_, write, err = claudeJSONEdit(kind, seeds, existing)
+	if err != nil {
+		return err
+	}
+	if !write {
+		return os.Chmod(claudeJSON, 0o600)
+	}
+	return provisionJSON(profiles, name, claudeJSON, func() error {
+		if paths.IsSymlink(claudeJSON) {
+			return errors.New(claudeJSON + ": symbolic links are not allowed")
+		}
+		existing, err := loadObj(claudeJSON, nil)
+		if err != nil {
 			return err
 		}
-		if data == nil {
-			if data, err = loadObj(seeds[1], ordjson.New()); err != nil {
-				return err
-			}
+		profileJSONRead(claudeJSON)
+		data, write, err := claudeJSONEdit(kind, seeds, existing)
+		if err != nil {
+			return err
 		}
-	}
-	dirty := fresh
-	if fresh || kind != "sub" {
-		for _, k := range []string{"oauthAccount", "hasAvailableSubscription", "cachedExtraUsageDisabledReason"} {
-			if data.Has(k) {
-				data.Delete(k)
-				dirty = true
-			}
+		if !write {
+			return os.Chmod(claudeJSON, 0o600)
 		}
-	}
-	if dirty {
 		return atomicJSON(claudeJSON, data)
-	}
-	return os.Chmod(claudeJSON, 0o600)
+	})
 }
