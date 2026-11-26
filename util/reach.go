@@ -76,6 +76,15 @@ func WhyUnreachable(endpoint string, exit int, complaint string, waited time.Dur
 // proxy of its own choosing (viaProxy): a direct connect would then test a door
 // curl never used.
 func whyUnreachable(endpoint string, exit int, complaint string, waited time.Duration, viaProxy bool) string {
+	return whyUnreachableWithin(endpoint, exit, complaint, waited, viaProxy, 0)
+}
+
+// whyUnreachableWithin is whyUnreachable with claim, the longest wait the
+// caller's own progress line promised and its reaping grace allow: 0 when the
+// caller promised none. waited counts from the call, so scheduler delay can
+// carry it past that promise; the sentence then states no more than claim,
+// never a number the launch never advertised (#891).
+func whyUnreachableWithin(endpoint string, exit int, complaint string, waited time.Duration, viaProxy bool, claim time.Duration) string {
 	host, port := hostPort(endpoint)
 	where := ""
 	if host != "" {
@@ -110,6 +119,9 @@ func whyUnreachable(endpoint string, exit int, complaint string, waited time.Dur
 		return at("secure connection failed")
 	case exit == 28 || exit == -1:
 		n := secondsWaited(complaint, waited)
+		if claim > 0 {
+			n = min(n, max(int((claim+time.Second/2)/time.Second), 1))
+		}
 		unit := "seconds"
 		if n == 1 {
 			unit = "second"
@@ -218,6 +230,12 @@ func reachProgressAfter() time.Duration {
 }
 func reachBound() time.Duration { return min(envDuration("CCMORPH_REACH_BOUND", 5), 5*time.Second) }
 
+// reachWaitDelay is the grace the probe gives curl to be reaped after it
+// stops it at the bound (cmd.WaitDelay). A loaded scheduler can also delay
+// Start, so the verdict may claim the bound plus this grace, never the
+// scheduler's own delay (#891).
+const reachWaitDelay = time.Second
+
 func envDuration(name string, def float64) time.Duration {
 	if d, err := EnvSeconds(os.Getenv, name, def); err == nil {
 		return d
@@ -230,6 +248,22 @@ func envDuration(name string, def float64) time.Duration {
 func ReachBoundSeconds() int {
 	return max(int((reachBound()+time.Second-1)/time.Second), 1)
 }
+
+// reachStop is the probe's stop: a timer that fires after d, what is left of
+// the bound counted from the call. A package var, like connectProbe, so a test
+// about what the probe reads from a curl it stopped can stop curl once its stub
+// has answered, not when a loaded scheduler lets the timer win (#891).
+var reachStop = func(d time.Duration) (<-chan time.Time, func() bool) {
+	t := time.NewTimer(d)
+	return t.C, t.Stop
+}
+
+// reachProgressTick is the channel the probe's progress line waits on: the
+// progress timer's own. A package var, like reachStop, so a test about what the
+// probe says of an instant failure can hold the line back instead of racing a
+// loaded scheduler; the bound tests keep the real timer and own when it fires
+// (#891).
+var reachProgressTick = func(t *time.Timer) <-chan time.Time { return t.C }
 
 // Reach is what the launch's reachability probe met.
 type Reach struct {
@@ -277,7 +311,7 @@ func ReachListing(base, key, via string, strip []string, progress func()) Reach 
 	var complaint strings.Builder
 	var got countedBytes
 	cmd.Stdout, cmd.Stderr = &got, &complaint
-	cmd.WaitDelay = time.Second
+	cmd.WaitDelay = reachWaitDelay
 	env := os.Environ()
 	if len(strip) > 0 {
 		env = slices.DeleteFunc(env, func(e string) bool {
@@ -296,20 +330,21 @@ func ReachListing(base, key, via string, strip []string, progress func()) Reach 
 	// reaped, within the bound: never later than doctor's own request.
 	tick := time.NewTimer(reachProgressAfter() - time.Since(start))
 	defer tick.Stop()
-	stop := time.NewTimer(bound - bound/20 - time.Since(start))
-	defer stop.Stop()
+	ticked := reachProgressTick(tick)
+	stop, stopTimer := reachStop(bound - bound/20 - time.Since(start))
+	defer stopTimer()
 	killed, said := false, false
 	var err error
 	for waiting := true; waiting; {
 		select {
 		case err = <-done:
 			waiting = false
-		case <-tick.C:
+		case <-ticked:
 			if !said && progress != nil {
 				progress()
 			}
 			said = true
-		case <-stop.C:
+		case <-stop:
 			killed = true
 			cmd.Process.Kill()
 		}
@@ -330,7 +365,7 @@ func ReachListing(base, key, via string, strip []string, progress func()) Reach 
 	if killed && got > 0 {
 		return Reach{} // stopped once the gateway had begun to answer: a slow answer, as above
 	}
-	why := whyUnreachable(base, exit, complaint.String(), time.Since(start), viaProxy)
+	why := whyUnreachableWithin(base, exit, complaint.String(), time.Since(start), viaProxy, bound+reachWaitDelay)
 	return Reach{Why: why, Waited: why != "" && (exit == 28 || exit == -1)}
 }
 
