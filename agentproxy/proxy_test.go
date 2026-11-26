@@ -190,6 +190,97 @@ func TestAPickIsClaimedOnlyByItsSessionsAgent(t *testing.T) {
 	}
 }
 
+// The adapter ccmorph starts for a picked profile is served on loopback;
+// the session's own HTTPS_PROXY cannot serve it — a real proxy refuses the
+// absolute URI or resolves it against its own host. A loopback target must
+// therefore dial direct even when an upstream is configured.
+func TestALoopbackTargetIsDialedDirectly(t *testing.T) {
+	t.Setenv("HTTPS_PROXY", "")
+	t.Setenv("https_proxy", "")
+	adapter, got := recorder(t, false, "")
+	upstreamHits := make(chan string, 4)
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		upstreamHits <- r.Method + " " + r.URL.String()
+		w.WriteHeader(http.StatusForbidden)
+	}))
+	t.Cleanup(up.Close)
+	upURL, _ := url.Parse(up.URL)
+
+	ca, err := LoadCA(filepath.Join(t.TempDir(), "ca"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	base, _ := url.Parse(adapter.URL + "/gw")
+	p, err := Start(ca, Options{Dir: filepath.Join(t.TempDir(), "agents"), Logf: t.Logf,
+		Upstream: upURL,
+		Resolve:  func(Pick) (Target, error) { return Target{Base: base, Key: "k"}, nil }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer p.Close()
+	if err := LeavePick(p.Dir, "s1", "  write the report \n", Pick{Word: "ds", Model: "deepseek-v5"}); err != nil {
+		t.Fatal(err)
+	}
+
+	proxyURL, _ := url.Parse("http://127.0.0.1:" + itoa(p.Port()))
+	c := &http.Client{Transport: &http.Transport{Proxy: http.ProxyURL(proxyURL)}}
+	req, _ := http.NewRequest("POST", "http://api.anthropic.com/v1/messages?beta=true",
+		strings.NewReader(`{"model":"claude-opus-5-5","messages":[{"role":"user","content":"write the report"}]}`))
+	req.Header.Set(AgentHeader, "agent1")
+	req.Header.Set(SessionHeader, "s1")
+	resp, err := c.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case hit := <-upstreamHits:
+		t.Fatalf("the upstream proxy was asked for a loopback target: %s", hit)
+	default:
+	}
+	b, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if !strings.Contains(string(b), "message_stop") {
+		t.Fatalf("the loopback target never saw the request: %d %q", resp.StatusCode, b)
+	}
+	if s := <-got; s.path != "/gw/v1/messages" {
+		t.Fatalf("the target's base path is lost: %q", s.path)
+	}
+	// A remote target still chains the upstream: a second agent without a
+	// pick stays on the session's route, which is the proxy's address.
+	req2, _ := http.NewRequest("POST", "http://api.anthropic.com/v1/messages?beta=true",
+		strings.NewReader(`{"model":"claude-opus-5-5","messages":[{"role":"user","content":"a different prompt"}]}`))
+	req2.Header.Set(AgentHeader, "agent2")
+	req2.Header.Set(SessionHeader, "s1")
+	resp2, err := c.Do(req2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp2.Body.Close()
+	if hit := <-upstreamHits; hit != "POST http://api.anthropic.com/v1/messages?beta=true" {
+		t.Fatalf("a remote target stopped chaining the upstream: %q", hit)
+	}
+}
+
+func TestIsLoopbackHost(t *testing.T) {
+	for host, want := range map[string]bool{
+		"127.0.0.1":          true,
+		"127.0.0.53":         true,
+		"::1":                true,
+		"localhost":          true,
+		"LOCALHOST":          true,
+		"localhost.":         true,
+		"127.0.0.1.evil.com": false,
+		"localhost.evil.com": false,
+		"api.anthropic.com":  false,
+		"10.0.0.8":           false,
+		"":                   false,
+	} {
+		if got := isLoopbackHost(host); got != want {
+			t.Errorf("isLoopbackHost(%q)=%v want %v", host, got, want)
+		}
+	}
+}
+
 func TestOtherHostsAreTunnelledNotDecrypted(t *testing.T) {
 	_, c, first, _, srv := harness(t)
 	// The test server's own certificate answers: the proxy never read the bytes.
