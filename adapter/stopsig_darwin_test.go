@@ -80,16 +80,32 @@ func (w *sigWatch) blocked() (uint64, error) {
 	return 0, errors.New("no other process's blocked set on macOS")
 }
 
-// kevent is a zero-timeout kevent retried on EINTR: Go's runtime preempts a
-// busy test with SIGURG, which interrupts the call before it reads the queue.
-// Re-adding an EV_ADD filter is idempotent, so a retried attach is safe.
+// syscallKevent is the one interruptible call the witness makes, kept as a
+// package variable so the retry below can be checked with a stubbed drain.
+var syscallKevent = func(kq int, changes, events []syscall.Kevent_t) (int, error) {
+	return syscall.Kevent(kq, changes, events, &syscall.Timespec{})
+}
+
+// maxKeventEINTR bounds the retries: a zero-timeout kevent is idempotent —
+// draining again is the same answer — so a retry costs the test microseconds,
+// but a persistent interruption must end as an error, not hang the suite.
+const maxKeventEINTR = 5
+
+// kevent is a zero-timeout kevent retried up to maxKeventEINTR times on EINTR:
+// Go's runtime preempts a busy test with SIGURG, which interrupts the call
+// before it reads the queue. Re-adding an EV_ADD filter is idempotent, so a
+// retried attach is safe. Any other error, and an exhausted retry budget, are
+// answers, not interruptions.
 func kevent(kq int, changes, events []syscall.Kevent_t) (int, error) {
-	for {
-		n, err := syscall.Kevent(kq, changes, events, &syscall.Timespec{})
-		if err != syscall.EINTR {
+	var err error
+	for i := 0; i < maxKeventEINTR; i++ {
+		var n int
+		n, err = syscallKevent(kq, changes, events)
+		if !errors.Is(err, syscall.EINTR) {
 			return n, err
 		}
 	}
+	return 0, err
 }
 
 func (w *sigWatch) close() { syscall.Close(w.kq) }
