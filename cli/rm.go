@@ -35,8 +35,12 @@ func (l *launcher) rm(args []string) int {
 	}
 	// rm is the one verb that accepts the pre-#373 length: a profile made before
 	// the limit can still be addressed and so must still be removable (#449).
-	// Its refusal names its own, wider bound, not ValidName's (#551).
-	if !profile.RemovableName(name) {
+	// Its refusal names its own, wider bound, not ValidName's (#551). And a
+	// word that is exactly a conf on disk names the skipped profile every
+	// listing prints a delete hint for: the hint runs here, whatever the name
+	// rule makes of it (GH-915) — every other verb still answers it with the
+	// one refusal.
+	if !profile.RemovableName(name) && !l.hasConfName(name) {
 		return l.rmBadName("rm", name)
 	}
 	// A name that differs only by case is refused before the leftover branch:
@@ -274,10 +278,16 @@ func (l *launcher) mv(args []string) int {
 		l.err("usage: " + usageLine("mv"))
 		return 1
 	}
-	for _, n := range args[:2] {
-		if !profile.ValidName(n) {
-			return l.badName("mv", n)
+	// A word the validator refuses can still name a conf on disk — the skipped
+	// conf every listing prints a rename hint for — and a rename to a valid
+	// name is the repair that makes it load again (GH-915). Only the old name
+	// takes that path: a new name must always be one every reader can read
+	// back, so every other word keeps the one refusal.
+	for i, n := range args[:2] {
+		if profile.ValidName(n) || (i == 0 && l.hasConfName(n)) {
+			continue
 		}
+		return l.badName("mv", n)
 	}
 	from, to := args[0], args[1]
 	// A volume that ignores letter case cannot hold both names while the rename

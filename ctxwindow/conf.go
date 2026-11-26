@@ -74,13 +74,29 @@ func ProfilePath(profile string) (string, error) {
 // lockProfilePath is ProfilePath for the key `model-window --locked` names. rm
 // is the one verb that takes the pre-#373 range (#449), and its flow re-execs
 // under that lock, so the lock must take the name removal can address; a name
-// past the storable bound is still refused. Every other command keeps
-// ValidProfileName (#551).
+// past the storable bound is still refused. A name the validator refuses is
+// removable too once a conf on disk spells it exactly — the skipped conf every
+// listing prints a delete hint for (GH-915) — and only such an exact on-disk
+// entry answers: a word holding a separator, or one no .conf names, is still
+// refused. Every other command keeps ValidProfileName (#551).
 func lockProfilePath(name string) (string, error) {
-	if !profile.RemovableName(name) {
-		return "", errors.New("invalid profile name")
+	if profile.RemovableName(name) || stateConfExists(name) {
+		return profilePath(name), nil
 	}
-	return profilePath(name), nil
+	return "", errors.New("invalid profile name")
+}
+
+// stateConfExists is whether <name> is exactly the base name of a .conf in the
+// state directory — the scanner's own view (its Glob answers directories and
+// links too), minus a directory spelled like a conf, which no verb reaches
+// through. The name is taken as one literal entry: a separator or traversal in
+// it can never name a conf.
+func stateConfExists(name string) bool {
+	if name == "" || name == "." || name == ".." || strings.ContainsRune(name, '/') {
+		return false
+	}
+	fi, err := os.Lstat(filepath.Join(StateDir(), name+".conf"))
+	return err == nil && !fi.IsDir()
 }
 
 // profilePath is the conf path both name gates share.

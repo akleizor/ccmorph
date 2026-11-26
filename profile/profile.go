@@ -49,7 +49,23 @@ func Repair(err error, name string) string {
 	if r := RepairOf(err); r != "" {
 		return r
 	}
-	return "fix " + name + ".conf, or delete it: ccmorph rm " + name
+	return "fix " + name + ".conf, or delete it: ccmorph rm " + shellWord(name)
+}
+
+// shellSafeWord is a word every shell runs literally: no glob, quote or
+// separator rune needs quoting for it.
+var shellSafeWord = regexp.MustCompile(`^[A-Za-z0-9_@%+=:,./-]+$`)
+
+// shellWord is a name as a printed command should carry it (GH-915): a word
+// any shell runs literally stays bare — every name the validator accepts is
+// one — and a name holding glob or quote characters, the shape a skipped
+// conf's name can have, is single-quoted so the line a listing prints can be
+// pasted back into bash or zsh unchanged.
+func shellWord(s string) string {
+	if shellSafeWord.MatchString(s) {
+		return s
+	}
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }
 
 // RepairOf is the repair a refusal carries, or "" when it names none (GH-839).

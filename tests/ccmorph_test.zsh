@@ -1401,6 +1401,158 @@ PY
   return $rc
 }
 
+# GH-915: a conf saved under a name the validator rejects — the shipped
+# template copied to `my[proj].conf` — left every documented path out broken:
+# list printed `or delete it: ccmorph rm my[proj]`, zsh ate the unquoted name,
+# and quoted, rm and mv refused the exact name the scanner had just printed
+# (while the refusal itself listed that name under `Profiles:`). Now the hint
+# runs as printed, rm removes the conf and mv renames it, the bare
+# "invalid profile name" line is folded into the one skip line, and a refusal
+# stops listing the name it refuses to touch.
+test_the_list_hint_removes_the_conf_it_skipped_gh_915() {
+  local test_home rc=0 out st skip_line del
+  test_home=$(mktemp -d)
+  setup_home "$test_home"
+  write_apikey_conf work 'api_key=sk_prod_test' 'base_url=http://127.0.0.1:9/v1'
+  install -m 600 "$REPO_ROOT/share/profile.conf.example" "$HOME/.config/ccmorph/my[proj].conf"
+  source "$CCMORPH_SOURCE"
+
+  out=$(ccmorph list 2>&1)
+  assert_contains "$out" "skipping invalid profile 'my[proj]'" \
+    'list must still say which conf it skipped (got: '"$out"')' || rc=1
+  # The bare "invalid profile name" line carried nothing the skip line lacks;
+  # it must be folded into that one line.
+  (( ${${(f)out}[(I)ccmorph: invalid profile name]} == 0 )) || {
+    print -u2 -- 'list must fold the bare invalid-name line into the skip line'
+    rc=1
+  }
+  # The delete command extracted from list's own output must run as printed —
+  # this is what the person pastes back, and in zsh an unquoted name there
+  # dies at the glob before ccmorph is ever reached.
+  skip_line=${${(M)${(f)out}:#*skipping invalid profile*}[-1]}
+  del=${skip_line#*or delete it: }
+  [[ $del == 'ccmorph rm '* ]] || {
+    print -u2 -- "the skip line must end with the delete command (got: $skip_line)"
+    rc=1
+  }
+  if (( rc == 0 )); then
+    print -r -- y | eval "$del"; st=$?
+    (( st == 0 )) || {
+      print -u2 -- "the delete command list printed must exit 0: $del (exit $st)"
+      rc=1
+    }
+    [[ ! -e "$HOME/.config/ccmorph/my[proj].conf" ]] || {
+      print -u2 -- 'the conf list pointed at must be gone'
+      rc=1
+    }
+    out=$(ccmorph list 2>&1)
+    assert_not_contains "$out" 'my[proj]' \
+      'the removed conf must not be skipped anymore' || rc=1
+    assert_contains "$out" 'work (API key' \
+      'the valid profile must still be listed' || rc=1
+  fi
+
+  # mv renames the skipped conf to a valid name — the README's non-hand-edit
+  # way out — and the conf loads under the new name.
+  install -m 600 "$REPO_ROOT/share/profile.conf.example" "$HOME/.config/ccmorph/my[proj].conf"
+  out=$(ccmorph mv 'my[proj]' renamed 2>&1); st=$?
+  (( st == 0 )) || {
+    print -u2 -- "mv must rename the skipped conf to a valid name (exit $st: $out)"
+    rc=1
+  }
+  [[ -f "$HOME/.config/ccmorph/renamed.conf" && ! -e "$HOME/.config/ccmorph/my[proj].conf" ]] || {
+    print -u2 -- 'mv must leave only the renamed conf'
+    rc=1
+  }
+  out=$(ccmorph list 2>&1)
+  assert_contains "$out" 'renamed (API key' \
+    'the renamed conf must load as a profile' || rc=1
+
+  # The refusals keep their teeth and stop advertising what they refuse: a
+  # word that names no conf is still refused, and the invalid name no longer
+  # stands under Profiles:.
+  install -m 600 "$REPO_ROOT/share/profile.conf.example" "$HOME/.config/ccmorph/my[proj].conf"
+  rm -f "$HOME/.config/ccmorph/renamed.conf"
+  out=$(ccmorph rm 'nope[' 2>&1); st=$?
+  (( st == 1 )) || {
+    print -u2 -- "rm must still refuse a word that names no conf (exit $st)"
+    rc=1
+  }
+  assert_contains "$out" "invalid profile name 'nope['" \
+    'the refusal must name the word' || rc=1
+  assert_not_contains "$out" 'my[proj]' \
+    'a refusal must not list the invalid name it refuses to touch' || rc=1
+  out=$(ccmorph use 'my[proj]' 2>&1); st=$?
+  (( st == 1 )) || {
+    print -u2 -- 'use must still refuse a name the validator rejects (exit '"$st"')'
+    rc=1
+  }
+  assert_contains "$out" "invalid profile name 'my[proj]'" \
+    'the refusal must name the refused word' || rc=1
+  assert_contains "$out" '. Profiles: proxy work' \
+    'the refusal must still list the valid names, minus the invalid one' || rc=1
+  assert_not_contains "$out" 'my[proj] proxy' \
+    'the invalid name must not stand under Profiles:' || rc=1
+
+  rm -rf "$test_home"
+  return $rc
+}
+
+# GH-915: quota silently dropped a conf the reader refuses — the person's own
+# profile vanished from a machine-readable report with exit 0 while inspect,
+# use and rm's error lists advertised it. quota now says the same skip line a
+# listing says, on stderr, so --json stdout stays valid JSON and the exit
+# stays 0.
+test_quota_warns_about_a_conf_it_cannot_read_gh_915() {
+  local test_home rc=0 st
+  test_home=$(mktemp -d)
+  setup_home "$test_home"
+  write_apikey_conf work 'api_key=sk_prod_test' 'base_url=http://127.0.0.1:9/v1'
+  install -m 600 "$REPO_ROOT/share/profile.conf.example" "$HOME/.config/ccmorph/my[proj].conf"
+  source "$CCMORPH_SOURCE"
+
+  ccmorph quota --json >"$test_home/out.json" 2>"$test_home/err"; st=$?
+  (( st == 0 )) || {
+    print -u2 -- "quota --json must still exit 0 (exit $st)"
+    rc=1
+  }
+  assert_contains "$(<"$test_home/err")" "skipping invalid profile 'my[proj]'" \
+    'quota --json must warn on stderr about the conf it cannot read' || rc=1
+  assert_not_contains "$(<"$test_home/out.json")" 'my[proj]' \
+    'the skipped conf must not enter the machine-readable report' || rc=1
+  assert_contains "$(<"$test_home/out.json")" '"work"' \
+    'the report must still carry the valid profile' || rc=1
+  python3 -c 'import json,sys; json.load(open(sys.argv[1]))' "$test_home/out.json" || {
+    print -u2 -- 'quota --json stdout must stay valid JSON'
+    rc=1
+  }
+
+  ccmorph quota >"$test_home/human" 2>"$test_home/err2"; st=$?
+  (( st == 0 )) || {
+    print -u2 -- "quota must still exit 0 (exit $st)"
+    rc=1
+  }
+  assert_contains "$(<"$test_home/err2")" "skipping invalid profile 'my[proj]'" \
+    'human quota must give the same skip notice' || rc=1
+  assert_not_contains "$(<"$test_home/human")" 'skipping invalid' \
+    'the notice must not enter quota table output' || rc=1
+  assert_contains "$(<"$test_home/human")" 'work' \
+    'the human table must still carry the valid profile' || rc=1
+
+  # A named profile whose conf cannot load is named too, not answered empty.
+  write_apikey_conf broken 'api_key=k' 'bogus_key=1'
+  ccmorph quota broken >/dev/null 2>"$test_home/err3"; st=$?
+  (( st == 0 )) || {
+    print -u2 -- "quota of an unloadable profile must still exit 0 (exit $st)"
+    rc=1
+  }
+  assert_contains "$(<"$test_home/err3")" "skipping invalid profile 'broken'" \
+    'a named quota must say why the profile answers nothing' || rc=1
+
+  rm -rf "$test_home"
+  return $rc
+}
+
 # Effort has a closed enum to validate against; a model id has none, so the only
 # guard was "no CR/LF" -- and a flag-shaped value sailed straight through. A user
 # typing `ccmorph set gw model --menu` (the flag form the design REJECTED in favour
@@ -12549,6 +12701,8 @@ run_test test_effort_command_leaves_native_per_model_state_untouched
 run_test test_effort_command_sets_the_profiles_default_effort
 run_test test_effort_command_refuses_a_level_claude_code_would_drop
 run_test test_one_invalid_conf_line_names_the_same_fault_to_every_reader
+run_test test_the_list_hint_removes_the_conf_it_skipped_gh_915
+run_test test_quota_warns_about_a_conf_it_cannot_read_gh_915
 run_test test_set_model_refuses_a_flag_shaped_value
 run_test test_set_model_refuses_an_unserved_id_and_saves_only_on_confirm_issue_267
 run_test test_set_model_says_saved_unchecked_when_the_endpoint_cannot_answer_issue_728

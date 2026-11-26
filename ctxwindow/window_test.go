@@ -894,3 +894,26 @@ func TestLockedTakesTheLegacyNamesRemovalAddresses(t *testing.T) {
 		t.Fatalf("a name past the storable bound must still be refused (exit %d, err %v)", code, err)
 	}
 }
+
+// GH-915: a conf the validator rejects on its name alone — `my[proj].conf`,
+// the shipped template copied under a name a person typed — is removable now,
+// and rm re-execs under this lock. The lock takes that exact on-disk name; a
+// word that is no conf on disk, and a separator that could leave the state
+// directory, are still refused.
+func TestLockedTakesASkippedConfsExactNameOnly(t *testing.T) {
+	e := setup(t)
+	child := lockChild(t)
+	write(t, filepath.Join(e.state, "my[proj].conf"), "type=apikey\napi_key=k\n")
+	code, err := windowRun([]string{"--locked", "my[proj]", child}, io.Discard, io.Discard)
+	if err != nil || code != 0 {
+		t.Fatalf("a skipped conf's exact name must lock: exit %d, err %v", code, err)
+	}
+	if _, err := os.Stat(filepath.Join(e.state, ".locks", "my[proj].lock")); err != nil {
+		t.Fatalf("the skipped conf's lock was not taken: %v", err)
+	}
+	for _, word := range []string{"nothere[", "my[proj]x", "../escape", "a/b"} {
+		if code, err := windowRun([]string{"--locked", word, child}, io.Discard, io.Discard); err == nil || code != 0 {
+			t.Fatalf("--locked %q must still be refused (exit %d, err %v)", word, code, err)
+		}
+	}
+}
