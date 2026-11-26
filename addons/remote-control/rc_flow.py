@@ -55,6 +55,7 @@ def requestheaders(flow, s) -> None:
         # model) is read back to the account's own model for that alias.
         flow.metadata[ACCOUNT_METADATA] = True
         flow.metadata["rc_account_tiers"] = _account_tiers(s)
+        flow.metadata["rc_word"] = "account"
         s.log(f"account   {req.method} {route}{via}")
         return
     upstream, key, tiers = s.upstream, s.key, s.tiers
@@ -77,6 +78,7 @@ def requestheaders(flow, s) -> None:
         req.headers[k] = v
     req.scheme, req.host, req.port = scheme, host, port
     flow.metadata["rc_route"] = True
+    flow.metadata["rc_word"] = target
     s.log(f"route     {req.method} {route}" + ("" if target == "route" else f" via {target}") + via)
 
 
@@ -127,10 +129,22 @@ async def request(flow, s) -> None:
 
 def responseheaders(flow, s) -> None:
     flow.response.stream = True          # SSE and bridge long-polls pass through live
-    if not flow.metadata.get("rc_route"):
+    word = flow.metadata.get("rc_word")
+    if word is None:                     # never an inference turn: nothing to answer for
         return
-    # Anthropic stamps its organization on every response; a routed call must not
-    # carry it. This is the proof the call left first-party, not an assumption.
+    # Anthropic stamps its organization on every response; that is the proof of which
+    # upstream answered, matched against the word the turn went out under (#920:
+    # requested-vs-served, per session turn — the profile Stark set must be the one
+    # that replies, and a turn answered by anything else says so, never a quiet
+    # success). A routed call must not carry it; an account call must.
     first_party = "anthropic-organization-id" in flow.response.headers
-    served = "ANTHROPIC (not routed!)" if first_party else f"{flow.request.host}:{flow.request.port}"
-    s.log(f"route     <- {flow.response.status_code} {flow.request.path.split('?', 1)[0]} served-by={served}")
+    account = bool(flow.metadata.get(ACCOUNT_METADATA))
+    if account:
+        ok, served = first_party, ("ANTHROPIC" if first_party else
+                                   f"{flow.request.host}:{flow.request.port} (no Anthropic signature)")
+    else:
+        ok = not first_party
+        served = "ANTHROPIC (not routed!)" if first_party else f"{flow.request.host}:{flow.request.port}"
+    s.log(("miss      " if not ok else "account   " if account else "route     ")
+          + f"<- {flow.response.status_code} {flow.request.path.split('?', 1)[0]} "
+            f"asked={word} served-by={served}")
