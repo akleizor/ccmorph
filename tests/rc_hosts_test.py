@@ -17,6 +17,14 @@ def load():
     return load_script(SCRIPT, "rc_hosts")
 
 
+def rc_start_mark(pid):
+    """rc_route.proc_started, loaded by path: the stamp's own reader, so this
+    test can name the mark it expects on the tree before #926, where rc-hosts
+    does not re-export it -- the regression must fail on the published record,
+    never on an AttributeError in its own fixture."""
+    return load_script(SCRIPT.parent / "rc_route.py", "rc_route").proc_started(pid)
+
+
 @pytest.fixture(autouse=True)
 def state_dir(tmp_path, monkeypatch):
     """A loaded module computes LOGS/EDGES/BUSY from CCMORPH_STATE_DIR at import;
@@ -1506,16 +1514,26 @@ def test_the_profile_tiers_are_read_from_ccmorph_get(monkeypatch):
     assert m.read_profile_tiers("gw") is None
 
 
-def test_hosted_record_is_the_routes_and_the_tier_overrides_gh_881():
+def test_hosted_record_is_the_routes_the_tier_overrides_and_its_writer_gh_881_926():
     """GH-881: what the supervisor alone knows -- the routes its parse() hosts
     and the `tier.` pins -- in one record `ccmorph doctor` reads, so no other
     reader re-parses rc-hosts. Routes are sorted; only the aliases a host
-    exports survive; the one line rule (cut at `#`, strip) reads `tier. haiku = y`."""
+    exports survive; the one line rule (cut at `#`, strip) reads `tier. haiku = y`.
+
+    GH-926: the record also names its writer -- the supervisor's pid and the
+    kernel's mark of when it started -- because it outlives a supervisor killed
+    past its clean stop, and doctor may believe a hosted claim only while that
+    exact process runs. Both halves are asserted: a pid alone is the number the
+    OS recycles (#206), and no later change may silently drop either."""
     m = load()
+    stamp = {"pid": os.getpid(), "started": rc_start_mark(os.getpid())}
+    assert stamp["started"], "the test host must read its own start mark"
     assert m.hosted_record({"other", "demo"},
                            "tier.opus=gpt-6-astra\ntier.bogus=x\ntier. haiku = y # note\n") == {
-        "routes": ["demo", "other"], "overrides": {"opus": "gpt-6-astra", "haiku": "y"}}
-    assert m.hosted_record(set(), "") == {"routes": [], "overrides": {}}
+        "routes": ["demo", "other"], "overrides": {"opus": "gpt-6-astra", "haiku": "y"},
+        "supervisor": stamp}
+    assert m.hosted_record(set(), "") == {
+        "routes": [], "overrides": {}, "supervisor": stamp}
 
 
 def test_main_publishes_the_routes_it_hosts_at_every_config_load_gh_881(tmp_path, monkeypatch):
@@ -1547,8 +1565,11 @@ def test_main_publishes_the_routes_it_hosts_at_every_config_load_gh_881(tmp_path
             raise SystemExit
 
     run_main(m, monkeypatch, tmp_path, cfg, start, sleep=sleep)
-    assert seen[0] == {"routes": ["demo", "gw"], "overrides": {"opus": "gpt-6-astra"}}
-    assert seen[-1] == {"routes": ["other"], "overrides": {}}   # the forwarded route= hosts nothing
+    stamp = {"pid": os.getpid(), "started": rc_start_mark(os.getpid())}
+    assert seen[0] == {"routes": ["demo", "gw"], "overrides": {"opus": "gpt-6-astra"},
+                       "supervisor": stamp}
+    assert seen[-1] == {"routes": ["other"], "overrides": {},
+                        "supervisor": stamp}   # the forwarded route= hosts nothing
     assert m.HOSTED.exists()                                    # a stop that was not clean leaves it
 
 
@@ -1581,7 +1602,9 @@ def test_a_publish_that_cannot_land_is_logged_once_and_retried_each_tick_gh_881(
 
     run_main(m, monkeypatch, tmp_path, cfg, start, sleep=sleep)
     assert capsys.readouterr().out.count("cannot publish") == 1
-    assert json.loads(m.HOSTED.read_text()) == {"routes": ["gw"], "overrides": {}}
+    assert json.loads(m.HOSTED.read_text()) == {
+        "routes": ["gw"], "overrides": {},
+        "supervisor": {"pid": os.getpid(), "started": rc_start_mark(os.getpid())}}
     assert sorted(p.name for p in m.HOSTED.parent.iterdir()) == ["hosted.json"]
 
 

@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -709,6 +710,35 @@ func (l *launcher) doctor(name string, verbose bool) int {
 	return failed
 }
 
+// hostedSupervisor is the identity a supervisor stamps into hosted.json since
+// #926: the pid it wrote the record from, and that process's start mark
+// exactly as the record's writer spelled it (rc_route.proc_started). Both
+// halves together are the identity — the OS hands a dead process's number to a
+// later one, which answers to the pid alone (#206).
+type hostedSupervisor struct {
+	Pid     int    `json:"pid"`
+	Started string `json:"started"`
+}
+
+// hostedSupervisorRuns reports whether the supervisor a hosted record names
+// still runs: its pid must hold a process and that process's kernel start mark
+// must be the one the record carries. A nil stamp is a record written before
+// #926 — no identity to check — and keeps the behavior that record always had.
+// A stamp missing either half can prove nothing, so it is not believed. The
+// mark is spelled `darwin:seconds.microseconds` by the Python writer and
+// `seconds.microseconds` by util.ProcStartToken, so its platform prefix is
+// the only difference to normalize.
+func hostedSupervisorRuns(s *hostedSupervisor) bool {
+	if s == nil {
+		return true
+	}
+	if s.Pid <= 0 || s.Started == "" {
+		return false // a stamp without both halves is not identity, and tests nothing
+	}
+	cur, ok := util.ProcStartToken(s.Pid)
+	return ok && strings.TrimPrefix(s.Started, "darwin:") == cur
+}
+
 // doctorRemoteControl compares the tiers a hosted edge publishes it pins against
 // the ones this profile itself maps (GH-881): until #815 the hosts supervisor
 // kept its own hand-kept copy of the route profile's tier map, and a drifted
@@ -729,16 +759,35 @@ func (l *launcher) doctor(name string, verbose bool) int {
 // is not this edge (#846). A drift warns without weighing on the verdict — the
 // profile itself still launches, only the hosted route is stale (the masking
 // rule of #293).
+//
+// The record can outlive the supervisor that wrote it: unpublish_hosted runs
+// only on the clean return after the tick loop, so a SIGKILL, a crash loop
+// under KeepAlive (a config parse() keeps dying, nothing republishes) or a
+// reboot before any GUI login leaves the file behind, and the state root
+// survives reboots (#926). Since #926 the record also carries its writer's
+// identity — the pid and the kernel's mark of its start — and when that exact
+// process is gone (its pid holds nothing, or the number belongs to a later
+// process whose start mark moved) doctor names the stale record and prints no
+// row that claims hosted: the claim is exactly what the stamp disproves. A
+// record written before the stamp existed keeps the behavior it had: nobody's
+// doctor goes quiet merely because their supervisor has not restarted yet.
 func (l *launcher) doctorRemoteControl(name string, f map[string]string) {
 	raw, err := paths.ReadRegularFile(filepath.Join(l.dir, "profiles", ".rc-bridge", "hosted.json"))
 	if err != nil {
 		return // nothing published (no supervisor ran, or it stopped cleanly), or no regular file: no row, no waiting
 	}
 	var hosted struct {
-		Routes    []string          `json:"routes"`
-		Overrides map[string]string `json:"overrides"`
+		Routes     []string          `json:"routes"`
+		Overrides  map[string]string `json:"overrides"`
+		Supervisor *hostedSupervisor `json:"supervisor"`
 	}
 	if json.Unmarshal(raw, &hosted) != nil || !slices.Contains(hosted.Routes, name) {
+		return
+	}
+	if !hostedSupervisorRuns(hosted.Supervisor) {
+		l.status("INFO", "remote control: not hosted; the record was left by supervisor "+
+			strconv.Itoa(hosted.Supervisor.Pid)+", which is not running — start it with "+
+			"launchctl kickstart -k gui/$(id -u)/com.ccmorph.rc-hosts")
 		return
 	}
 	overrides := hosted.Overrides
