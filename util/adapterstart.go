@@ -30,6 +30,19 @@ func adapterReadyLimit() time.Duration {
 	return 600 * time.Second
 }
 
+// adapterNow and adapterTicker are the readiness loop's clock and poll, package
+// vars so a test can drive the bound in virtual time: a starved host stretches
+// the real gap between polls, and only a controlled clock can tell that
+// starvation from an ignored bound (#895). Production keeps the real clock and
+// a 200 ms poll; a test supplies a clock it sets and a channel it ticks.
+var (
+	adapterNow    = time.Now
+	adapterTicker = func() (<-chan time.Time, func()) {
+		tick := time.NewTicker(200 * time.Millisecond)
+		return tick.C, tick.Stop
+	}
+)
+
 // adapterStart is `util adapter-start <core> <profile> <model or ""> <parent pid> <log>`:
 // start `<core> adapter` for a launch and wait for its first readiness line. Prints
 // PID=<n> and then PORT=<n> or NATIVE=1; exit 1 with the reason on stderr —
@@ -79,8 +92,9 @@ func adapterStart(args []string, _ io.Reader, out, errw io.Writer) int {
 	if model != "" {
 		label += " (" + model + ")"
 	}
-	start, tick := time.Now(), time.NewTicker(200*time.Millisecond)
-	defer tick.Stop()
+	start := adapterNow()
+	tick, stopTick := adapterTicker()
+	defer stopTick()
 	fail := func(msg string) int {
 		_ = syscall.Kill(cmd.Process.Pid, syscall.SIGTERM)
 		fmt.Fprintln(errw, "ccmorph: "+msg)
@@ -110,10 +124,11 @@ func adapterStart(args []string, _ io.Reader, out, errw io.Writer) int {
 				return 0
 			}
 			return fail(fmt.Sprintf("'%s': adapter exited before readiness; session not started.", profile))
-		case <-tick.C:
+		case <-tick:
 		}
-		waited := int(time.Since(start) / time.Second)
-		if time.Since(start) >= limit {
+		elapsed := adapterNow().Sub(start)
+		waited := int(elapsed / time.Second)
+		if elapsed >= limit {
 			return fail(fmt.Sprintf("'%s': adapter timed out after %ds; session not started.", profile, waited))
 		}
 		if waited > said && waited == 1 {
