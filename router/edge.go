@@ -83,10 +83,10 @@ func promptKey(prompt string) string { return agentproxy.PromptKey(prompt) }
 
 func edgeAgents() string { return filepath.Join(rcBridge(), "agents") }
 
-// leavePick leaves the pick for the agent whose prompt this is, where the proxy
-// claims it on that agent's first request.
-func leavePick(prompt, word, model string) error {
-	return agentproxy.LeavePick(edgeAgents(), prompt, agentproxy.Pick{Word: word, Model: model})
+// leavePick leaves the pick for the agent whose prompt this is, in its session's
+// folder, where the proxy claims it on that agent's first request.
+func leavePick(session, prompt, word, model string) error {
+	return agentproxy.LeavePick(edgeAgents(), session, prompt, agentproxy.Pick{Word: word, Model: model})
 }
 
 // dropAgent removes a stopped agent's binding (rc_route.agent_target).

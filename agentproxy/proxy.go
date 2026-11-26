@@ -157,8 +157,9 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 func (p *Proxy) forward(w http.ResponseWriter, r *http.Request, u *url.URL) {
 	d := &decision{url: u}
 	if agent := r.Header.Get(AgentHeader); agent != "" && isInference(strings.TrimPrefix(u.Path, originPath(p.Origin))) {
+		session := r.Header.Get(SessionHeader)
 		pick, ok := Bound(p.Dir, agent)
-		if !ok && HasPending(p.Dir) {
+		if !ok && HasPending(p.Dir, session) {
 			body, err := io.ReadAll(r.Body)
 			r.Body.Close()
 			if err != nil {
@@ -166,7 +167,7 @@ func (p *Proxy) forward(w http.ResponseWriter, r *http.Request, u *url.URL) {
 				return
 			}
 			d.body = body
-			pick, ok = Claim(p.Dir, agent, body, time.Now())
+			pick, ok = Claim(p.Dir, session, agent, body, time.Now())
 		}
 		if ok {
 			p.route(r, d, pick)
