@@ -1006,6 +1006,106 @@ def test_a_session_word_overrides_the_shared_switch_for_its_own_requests(tmp_pat
     assert flow("../inference").metadata["rc_route"] is True
 
 
+def test_every_session_turn_answers_which_upstream_served_it(tmp_path, monkeypatch):
+    """GH-920: the profile set in Stark must be the upstream that answers. Turns
+    driven in the shapes Claude Code really uses — the pick file named by the cse id,
+    the request carrying the UUIDv5 header its child stamps — and the debug log
+    answering every turn requested-vs-served: the word the pick set, and the
+    endpoint that replied. A turn answered by anything but the picked endpoint is a
+    miss, never a quiet success: a routed turn carrying Anthropic's signature, a
+    reply from an endpoint other than the one the request left for, and a pick the
+    proxy holds no endpoint for (it falls back to the edge's route, #595) all say so
+    (2026-11-25: picks set in Stark stopped applying altogether, and nothing in the
+    log said so)."""
+    from types import SimpleNamespace
+    from rc_route import header_id
+    state = tmp_path / "state"
+    (state / "sessions").mkdir(parents=True)
+    (state / "inference").write_text("route\n")
+    (state / "sessions" / "cse_01UYCe7WrYRm399JWcJrn7Rd").write_text("gw\n")
+    (state / "sessions" / "cse_account").write_text("account\n")
+    (state / "sessions" / "cse_orphan").write_text("ds\n")     # a pick no proxy holds an endpoint for
+    (state / "switch-gw.json").write_text(json.dumps(
+        {"upstream": "http://127.0.0.1:54505", "key": "route-key", "tiers": {}}))
+    addon = _switch_addon(monkeypatch, state)
+
+    def turn(cse, reply, answers=None):
+        f = SimpleNamespace(metadata={}, request=SimpleNamespace(
+            pretty_host="api.anthropic.com", path="/v1/messages", method="POST",
+            headers={"authorization": "Bearer ACCOUNT-SECRET",
+                     "x-claude-code-session-id": header_id(cse)},
+            scheme="https", host="api.anthropic.com", port=443))
+        addon.requestheaders(f)
+        # The connection that answered: the destination it was sent to, unless the
+        # test names another endpoint that replied.
+        where = answers or (f.request.host, f.request.port)
+        addon.responseheaders(SimpleNamespace(
+            metadata=f.metadata, request=f.request,
+            server_conn=SimpleNamespace(address=where),
+            response=SimpleNamespace(status_code=200, headers=reply)))
+
+    turn("cse_01UYCe7WrYRm399JWcJrn7Rd", {})                     # its pick's endpoint answers
+    turn("cse_01UYCe7WrYRm399JWcJrn7Rd", {"anthropic-organization-id": "org"})
+    turn("cse_01UYCe7WrYRm399JWcJrn7Rd", {}, answers=("127.0.0.1", 60111))   # another endpoint replied
+    turn("cse_orphan", {})                                       # the pick fell back to the route
+    turn("cse_account", {"anthropic-organization-id": "org"}, answers=("160.79.104.10", 443))
+    turn("cse_account", {}, answers=("160.79.104.10", 443))
+    turn("cse_wordless", {})                                     # follows the shared route
+    turn("cse_01UYCe7WrYRm399JWcJrn7Rd", {}, answers=("127.0.0.2", 54505))   # another IP, same port
+    served = [ln for ln in (state / "addon.log").read_text().splitlines() if "served-by=" in ln]
+    assert len(served) == 8                                      # every turn, and only the turns
+    assert [ln.split()[1] for ln in served] == ["route", "miss", "miss", "miss",
+                                                "account", "miss", "route", "miss"]
+    assert "asked=gw served-by=127.0.0.1:54505" in served[0]     # the pick served its session
+    assert "asked=gw served-by=ANTHROPIC" in served[1]           # subscription answered a routed turn
+    assert "asked=gw served-by=127.0.0.1:60111" in served[2]     # left for 54505, answered by 60111
+    assert "asked=ds via=route served-by=127.0.0.1:60111" in served[3]   # the pick was not served
+    assert "asked=account served-by=ANTHROPIC" in served[4]
+    assert "asked=account served-by=160.79.104.10:443 (no Anthropic signature)" in served[5]
+    assert "asked=route served-by=127.0.0.1:60111" in served[6]  # shared word, no false miss
+    assert "asked=gw served-by=127.0.0.2:54505" in served[7]     # another IP on the pick's port
+
+
+def test_which_upstream_served_compares_a_named_upstream_by_host(tmp_path, monkeypatch):
+    """A named upstream is served only when that name answered. mitmproxy's
+    Server.address carries the host the request left for — a hostname stays a
+    hostname, and the resolved IP is Server.peername, which the verdict must never
+    read — so a reply from another name on the same port is a miss, and the pick's
+    own name is not made a miss by the IP it resolved to (#920, review
+    #hive-repro-ca48c8e1)."""
+    from types import SimpleNamespace
+    from rc_route import header_id
+    state = tmp_path / "state"
+    (state / "sessions").mkdir(parents=True)
+    (state / "inference").write_text("route\n")
+    (state / "sessions" / "cse_named").write_text("named\n")
+    (state / "switch-named.json").write_text(json.dumps(
+        {"upstream": "https://gw.example", "key": "route-key", "tiers": {}}))
+    addon = _switch_addon(monkeypatch, state)
+
+    def turn(address, peername):
+        f = SimpleNamespace(metadata={}, request=SimpleNamespace(
+            pretty_host="api.anthropic.com", path="/v1/messages", method="POST",
+            headers={"authorization": "Bearer ACCOUNT-SECRET",
+                     "x-claude-code-session-id": header_id("cse_named")},
+            scheme="https", host="api.anthropic.com", port=443))
+        addon.requestheaders(f)
+        assert (f.request.host, f.request.port) == ("gw.example", 443)
+        addon.responseheaders(SimpleNamespace(
+            metadata=f.metadata, request=f.request,
+            server_conn=SimpleNamespace(address=address, peername=peername),
+            response=SimpleNamespace(status_code=200, headers={})))
+
+    turn(("gw.example", 443), ("192.0.2.1", 443))      # the pick's own name answered
+    turn(("other.example", 443), ("192.0.2.2", 443))   # another name, same port
+    turn(("gw.example", 8443), ("192.0.2.1", 8443))    # the pick's name, another port
+    served = [ln for ln in (state / "addon.log").read_text().splitlines() if "served-by=" in ln]
+    assert [ln.split()[1] for ln in served] == ["route", "miss", "miss"]
+    assert "asked=named served-by=gw.example:443" in served[0]     # the peername IP is no mismatch
+    assert "asked=named served-by=other.example:443" in served[1]
+    assert "asked=named served-by=gw.example:8443" in served[2]
+
+
 def test_the_addon_reads_a_handoff_once_and_keeps_it_thereafter(tmp_path, monkeypatch):
     """The handoff is the whole of a bring-up: read once, deleted with the read, then
     remembered for every later turn — and its tiers are exactly what pinned_tiers says."""
