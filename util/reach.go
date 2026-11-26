@@ -249,6 +249,11 @@ func ReachBoundSeconds() int {
 	return max(int((reachBound()+time.Second-1)/time.Second), 1)
 }
 
+// reachStart starts curl. A package var, like reachStop and connectProbe, so a
+// test can hold the start the way a saturated scheduler does and prove the probe
+// does not blame the gateway for it (#935).
+var reachStart = func(cmd *exec.Cmd) error { return cmd.Start() }
+
 // reachStop is the probe's stop: a timer that fires after d, what is left of
 // the bound counted from the call. A package var, like connectProbe, so a test
 // about what the probe reads from a curl it stopped can stop curl once its stub
@@ -320,9 +325,17 @@ func ReachListing(base, key, via string, strip []string, progress func()) Reach 
 		})
 		cmd.Env = env
 	}
-	if err := cmd.Start(); err != nil {
+	if err := reachStart(cmd); err != nil {
 		return Reach{}
 	}
+	// The stop is the call's deadline, as it always was; requestStart is when
+	// the request could first run. cmd.Start blocks through the scheduler's
+	// fork/exec, and a starved host can hold it past the whole bound, leaving
+	// the request none of its window — the loaded gate's red: a 136 ms start
+	// against a 142 ms window left 38 ms of curl's own run and no answer
+	// (#935). That is the scheduler's time, not the gateway's silence, so the
+	// stop below withholds its verdict when less than half the window was left.
+	requestStart := time.Now()
 	done := make(chan error, 1)
 	go func() { done <- cmd.Wait() }()
 	// Both timers count from the call, not from curl's start. curl is stopped
@@ -331,7 +344,8 @@ func ReachListing(base, key, via string, strip []string, progress func()) Reach 
 	tick := time.NewTimer(reachProgressAfter() - time.Since(start))
 	defer tick.Stop()
 	ticked := reachProgressTick(tick)
-	stop, stopTimer := reachStop(bound - bound/20 - time.Since(start))
+	stopAt := start.Add(bound - bound/20)
+	stop, stopTimer := reachStop(stopAt.Sub(time.Now()))
 	defer stopTimer()
 	killed, said := false, false
 	var err error
@@ -364,6 +378,16 @@ func ReachListing(base, key, via string, strip []string, progress func()) Reach 
 	}
 	if killed && got > 0 {
 		return Reach{} // stopped once the gateway had begun to answer: a slow answer, as above
+	}
+	// A stop that left the request less than half its window never gave it a
+	// fair hearing: the scheduler spent the rest before curl could run, so
+	// there is no evidence of silence to name. The launch goes on and the
+	// adapter's and listing's own bounds judge the route; naming the gateway
+	// dead here was the false timeout of a healthy endpoint under load — a
+	// loaded run measured a 136 ms start against a 142 ms window, the stop
+	// firing with 38 ms run and no answer (#935).
+	if killed && stopAt.Sub(requestStart) < (bound-bound/20)/2 {
+		return Reach{}
 	}
 	why := whyUnreachableWithin(base, exit, complaint.String(), time.Since(start), viaProxy, bound+reachWaitDelay)
 	return Reach{Why: why, Waited: why != "" && (exit == 28 || exit == -1)}
