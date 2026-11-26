@@ -2056,14 +2056,17 @@ profile, the hook falls back to the session's native aliases.
 Every other session the launcher opens with the router on runs behind the
 launcher's agent proxy (`agentproxy/`, wired in `cli/agentproxy.go`), which
 keeps the same pick protocol in `run/agent-proxy.<launcher pid>/agents` and
-names that dir to the session in `CCMORPH_AGENT_PROXY`. It lives and dies with
-the launcher. A session on Anthropic's own endpoint keeps
+names that dir to the session in `CCMORPH_AGENT_PROXY`. Each Claude Code run
+gets its own proxy, stopped when that run exits. A session on Anthropic's own endpoint keeps
 `api.anthropic.com` as its base URL, so Claude Code keeps its first-party
 behaviour, and reaches it through the proxy as `HTTPS_PROXY`: the proxy
 decrypts only `api.anthropic.com`, with a leaf from ccmorph's own CA
 (`agent-proxy/ca.pem`, key 0600, generated on first use), which only that
 Claude Code trusts through `NODE_EXTRA_CA_CERTS` (a bundle of the CA and any
-the launcher already trusted). Every other host is a CONNECT tunnel the proxy
+the session already trusted; the session's own `HTTPS_PROXY` becomes the
+proxy's upstream). Bash commands get the session's own values back through a
+`CLAUDE_ENV_FILE` the launcher writes (after the person's own, if set), so
+curl or Python in a session never meet the proxy. Every other host is a CONNECT tunnel the proxy
 never reads. A session on any other endpoint gets the proxy as its base URL,
 and the proxy sends everything on to that endpoint. Only a request whose agent
 holds a pick changes: it leaves for the picked profile with that profile's

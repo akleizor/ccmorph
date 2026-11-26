@@ -48,7 +48,9 @@ func (t Target) setAuth(h http.Header) {
 		h.Set("Authorization", "Bearer "+t.OAuth)
 	} else {
 		h.Set("X-Api-Key", t.Key)
-		h.Set("Authorization", "Bearer "+t.Key)
+		if !t.FirstParty() { // first party reads a bearer as OAuth; a gateway may read either
+			h.Set("Authorization", "Bearer "+t.Key)
+		}
 	}
 	h.Del("Anthropic-Beta")
 	if len(betas) > 0 {

@@ -16,12 +16,11 @@ import (
 	"strings"
 	"sync"
 	"time"
-
-	"github.com/akleizor/ccmorph/netroute"
 )
 
-// Proxy is one session's agent proxy.
-type Proxy struct {
+// Options is one session's proxy: fixed for its life, so a session that
+// ends takes its proxy with it and the next one starts its own.
+type Options struct {
 	// Dir holds the picks (the protocol in picks.go); Close removes it.
 	Dir string
 	// Resolve is where a pick is served; an error leaves the request on the
@@ -30,8 +29,20 @@ type Proxy struct {
 	// Logf records a routing decision; never a credential.
 	Logf func(format string, args ...any)
 	// Origin is where a request that names no host goes: the session's own
-	// base URL when it is not first party. nil for an account session.
+	// base URL, path included, when it is not first party. nil for an
+	// account session.
 	Origin *url.URL
+	// Upstream is the proxy the session itself was given (its HTTPS_PROXY),
+	// which every outbound call and tunnel takes; nil dials directly.
+	Upstream *url.URL
+	// TLS is the trust outbound calls use: the system's plus the session's
+	// own extra CA. nil is Go's default.
+	TLS *tls.Config
+}
+
+// Proxy is one session's agent proxy.
+type Proxy struct {
+	Options
 
 	ca   *CA
 	leaf *tls.Certificate
@@ -54,10 +65,11 @@ type decision struct {
 }
 
 // Start listens on a loopback port and serves until Close.
-func Start(dir string, ca *CA, resolve func(Pick) (Target, error), logf func(string, ...any)) (*Proxy, error) {
-	if logf == nil {
-		logf = func(string, ...any) {}
+func Start(ca *CA, o Options) (*Proxy, error) {
+	if o.Logf == nil {
+		o.Logf = func(string, ...any) {}
 	}
+	dir := o.Dir
 	leaf, err := ca.Leaf(anthropicHost)
 	if err != nil {
 		return nil, err
@@ -69,10 +81,10 @@ func Start(dir string, ca *CA, resolve func(Pick) (Target, error), logf func(str
 	if err != nil {
 		return nil, err
 	}
-	p := &Proxy{Dir: dir, Resolve: resolve, Logf: logf, ca: ca, leaf: leaf, ln: ln}
+	p := &Proxy{Options: o, ca: ca, leaf: leaf, ln: ln}
 	tr := http.DefaultTransport.(*http.Transport).Clone()
-	tr.Proxy = http.ProxyFromEnvironment     // the launcher's own: the user's proxy, never this one
-	tr.TLSClientConfig = netroute.ExtraCAs() // the system's trust and the launcher's extra CA
+	tr.Proxy = func(*http.Request) (*url.URL, error) { return o.Upstream, nil }
+	tr.TLSClientConfig = o.TLS
 	tr.ForceAttemptHTTP2 = true
 	p.rp = &httputil.ReverseProxy{
 		Transport:     tr,
@@ -132,7 +144,7 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	switch {
 	case u.IsAbs(): // a plain-HTTP forward-proxy request
 	case p.Origin != nil:
-		u.Scheme, u.Host = p.Origin.Scheme, p.Origin.Host
+		u = *join(p.Origin, r.URL)
 	default:
 		http.Error(w, "agent proxy: no origin for "+r.URL.Path, http.StatusBadGateway)
 		return
@@ -144,7 +156,7 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 // else where it was going.
 func (p *Proxy) forward(w http.ResponseWriter, r *http.Request, u *url.URL) {
 	d := &decision{url: u}
-	if agent := r.Header.Get(AgentHeader); agent != "" && isInference(u.Path) {
+	if agent := r.Header.Get(AgentHeader); agent != "" && isInference(strings.TrimPrefix(u.Path, originPath(p.Origin))) {
 		pick, ok := Bound(p.Dir, agent)
 		if !ok && HasPending(p.Dir) {
 			body, err := io.ReadAll(r.Body)
@@ -178,10 +190,28 @@ func (p *Proxy) route(r *http.Request, d *decision, pick Pick) {
 		d.body = body
 	}
 	d.body = rewriteBody(d.body, pick.Model, t)
-	out := *d.url
-	out.Scheme, out.Host = t.Base.Scheme, t.Base.Host
-	d.url, d.target, d.pick = &out, &t, pick
+	out := join(t.Base, &url.URL{Path: strings.TrimPrefix(d.url.Path, originPath(p.Origin)), RawQuery: d.url.RawQuery})
+	d.url, d.target, d.pick = out, &t, pick
 	p.Logf("agent proxy: route %s %s via %s", r.Method, out.Path, pick.Word)
+}
+
+// join is the request's path and query under base: a base with a path
+// (https://host/anthropic) keeps it in front of /v1/messages.
+func join(base, req *url.URL) *url.URL {
+	u := *base
+	u.Path = strings.TrimSuffix(base.Path, "/") + req.Path
+	u.RawPath = ""
+	u.RawQuery = req.RawQuery
+	return &u
+}
+
+// originPath is the session's own base path, which a routed request leaves
+// behind for its target's.
+func originPath(o *url.URL) string {
+	if o == nil {
+		return ""
+	}
+	return strings.TrimSuffix(o.Path, "/")
 }
 
 func isInference(path string) bool {
@@ -209,7 +239,7 @@ func (p *Proxy) connect(w http.ResponseWriter, r *http.Request) {
 		p.serveTLS(conn)
 		return
 	}
-	up, err := dialTunnel(r.Context(), r.Host)
+	up, err := dialTunnel(r.Context(), r.Host, p.Upstream)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadGateway)
 		return
@@ -298,12 +328,11 @@ func (c *closeConn) Close() error {
 	return err
 }
 
-// dialTunnel reaches addr for a tunnel, through the launcher's own HTTPS
-// proxy when it names one.
-func dialTunnel(ctx context.Context, addr string) (net.Conn, error) {
+// dialTunnel reaches addr for a tunnel, through via when the session was
+// given a proxy.
+func dialTunnel(ctx context.Context, addr string, via *url.URL) (net.Conn, error) {
 	var d net.Dialer
-	via, err := http.ProxyFromEnvironment(&http.Request{URL: &url.URL{Scheme: "https", Host: addr}})
-	if err != nil || via == nil {
+	if via == nil {
 		return d.DialContext(ctx, "tcp", addr)
 	}
 	c, err := d.DialContext(ctx, "tcp", via.Host)

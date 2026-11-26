@@ -4,7 +4,6 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/json"
-	"encoding/pem"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -17,8 +16,8 @@ import (
 )
 
 type seen struct {
-	auth, key, beta, agent string
-	body                   map[string]any
+	auth, key, beta, agent, path string
+	body                         map[string]any
 }
 
 func recorder(t *testing.T, tlsServer bool, org string) (*httptest.Server, chan seen) {
@@ -27,7 +26,7 @@ func recorder(t *testing.T, tlsServer bool, org string) (*httptest.Server, chan 
 	h := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var body map[string]any
 		json.NewDecoder(r.Body).Decode(&body)
-		got <- seen{r.Header.Get("Authorization"), r.Header.Get("X-Api-Key"), r.Header.Get("Anthropic-Beta"), r.Header.Get(AgentHeader), body}
+		got <- seen{r.Header.Get("Authorization"), r.Header.Get("X-Api-Key"), r.Header.Get("Anthropic-Beta"), r.Header.Get(AgentHeader), r.URL.Path, body}
 		if org != "" {
 			w.Header().Set("anthropic-organization-id", org)
 		}
@@ -51,10 +50,6 @@ func harness(t *testing.T) (*Proxy, *http.Client, chan seen, chan seen, *httptes
 	t.Helper()
 	first, firstGot := recorder(t, true, "org-1")
 	gw, gwGot := recorder(t, false, "")
-	// The proxy's outbound trust is the launcher's extra CA: the test server's.
-	caFile := filepath.Join(t.TempDir(), "up.pem")
-	os.WriteFile(caFile, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: first.Certificate().Raw}), 0o600)
-	t.Setenv("NODE_EXTRA_CA_CERTS", caFile)
 	t.Setenv("HTTPS_PROXY", "")
 	t.Setenv("https_proxy", "")
 	u, _ := url.Parse(first.URL)
@@ -66,10 +61,14 @@ func harness(t *testing.T) (*Proxy, *http.Client, chan seen, chan seen, *httptes
 	if err != nil {
 		t.Fatal(err)
 	}
-	gwURL, _ := url.Parse(gw.URL)
-	p, err := Start(filepath.Join(t.TempDir(), "agents"), ca, func(p Pick) (Target, error) {
-		return Target{Base: gwURL, Key: "gw-key-" + p.Word}, nil
-	}, t.Logf)
+	// The gateway's base carries a path, as https://host/anthropic does.
+	gwURL, _ := url.Parse(gw.URL + "/gw")
+	// The proxy's outbound trust is the session's extra CA: the test server's.
+	up := x509.NewCertPool()
+	up.AddCert(first.Certificate())
+	p, err := Start(ca, Options{Dir: filepath.Join(t.TempDir(), "agents"), TLS: &tls.Config{RootCAs: up},
+		Resolve: func(p Pick) (Target, error) { return Target{Base: gwURL, Key: "gw-key-" + p.Word}, nil },
+		Logf:    t.Logf})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -131,6 +130,9 @@ func TestPickedAgentGoesToItsProfile(t *testing.T) {
 	}
 	send(t, c, "agent1", "write the report")
 	got := <-gw
+	if got.path != "/gw/v1/messages" {
+		t.Fatalf("the target's base path is lost: %q", got.path)
+	}
 	if got.auth != "Bearer gw-key-ds" || got.key != "gw-key-ds" || strings.Contains(got.beta, "oauth-") {
 		t.Fatalf("credential: %+v", got)
 	}
@@ -200,5 +202,81 @@ func TestServedModel(t *testing.T) {
 	}
 	if got := servedModel("opus", "claude-opus-5-5", map[string]string{"opus": "claude-opus-5-1[1m]"}); got != "claude-opus-5-1" {
 		t.Errorf("pinned tier: %q", got)
+	}
+}
+
+func TestAGatewaySessionKeepsItsBasePath(t *testing.T) {
+	gw, got := recorder(t, false, "")
+	ca, err := LoadCA(filepath.Join(t.TempDir(), "ca"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	origin, _ := url.Parse(gw.URL + "/anthropic")
+	p, err := Start(ca, Options{Dir: filepath.Join(t.TempDir(), "agents"), Origin: origin, Logf: t.Logf,
+		Resolve: func(Pick) (Target, error) { return Target{}, errNotServedTest }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer p.Close()
+	resp, err := http.Post("http://127.0.0.1:"+itoa(p.Port())+"/v1/messages?beta=true", "application/json", strings.NewReader(`{"model":"m"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if g := <-got; g.path != "/anthropic/v1/messages" {
+		t.Fatalf("the session's base path is lost: %q", g.path)
+	}
+}
+
+var errNotServedTest = io.EOF
+
+func TestAnAPIKeyOnFirstPartyIsNotSentAsABearer(t *testing.T) {
+	h := http.Header{}
+	h.Set("Authorization", "Bearer sk-ant-oat-session")
+	Target{Base: &url.URL{Scheme: "https", Host: anthropicHost}, Key: "sk-ant-api"}.setAuth(h)
+	if h.Get("Authorization") != "" || h.Get("X-Api-Key") != "sk-ant-api" {
+		t.Fatalf("first party gets the key alone: %v", h)
+	}
+}
+
+func TestLaunchersStartingTogetherKeepOneMatchingCA(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "ca")
+	pems := make(chan string, 8)
+	for i := 0; i < 8; i++ {
+		go func() {
+			ca, err := LoadCA(dir)
+			if err != nil {
+				pems <- "error: " + err.Error()
+				return
+			}
+			pems <- string(ca.PEM)
+		}()
+	}
+	first := <-pems
+	for i := 1; i < 8; i++ {
+		if p := <-pems; p != first {
+			t.Fatalf("launchers kept different CAs: %.40q vs %.40q", first, p)
+		}
+	}
+	if _, err := readCA(dir); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestAMismatchedCAIsReplaced(t *testing.T) {
+	a, b := filepath.Join(t.TempDir(), "a"), filepath.Join(t.TempDir(), "b")
+	if _, err := LoadCA(a); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := LoadCA(b); err != nil {
+		t.Fatal(err)
+	}
+	key, _ := os.ReadFile(filepath.Join(b, caKeyFile))
+	os.WriteFile(filepath.Join(a, caKeyFile), key, 0o600)
+	if _, err := readCA(a); err == nil {
+		t.Fatal("a key from another CA is accepted")
+	}
+	if _, err := LoadCA(a); err != nil {
+		t.Fatalf("a mismatched pair is not replaced: %v", err)
 	}
 }

@@ -89,7 +89,7 @@ func claudeSession(args []string, _ io.Reader, out, errw io.Writer) int {
 			clear = append(clear, k)
 		}
 	}
-	clear = append(clear, "CCMORPH_SET_ENV")
+	clear = append(clear, "CCMORPH_SET_ENV", "CCMORPH_AGENT_PROXY") // an outer session's agent proxy is not this one's
 	// `claude --bare` sets CLAUDE_CODE_SIMPLE in its own children; a nested launch
 	// must not inherit that session's value.
 	if os.Getenv("CLAUDE_CODE_CHILD_SESSION") == "1" {
