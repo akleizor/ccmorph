@@ -129,7 +129,8 @@ class InstalledCliTest(unittest.TestCase):
         self.assertEqual(inspected.returncode, 0, inspected.stderr)
         self.assertIn('sonnet', inspected.stdout)
         self.assertNotIn('sk-ant-oat01-installed-cli-fixture-not-real-0000000000', inspected.stdout)
-        self.assertEqual(self._run_cli([self.cli, 'cred', 'demo']).stdout, 'sk-ant-oat01-installed-cli-fixture-not-real-0000000000')
+        self.assertEqual(self._run_cli([self.cli, 'cred', 'demo']).stdout,
+                         'sk-ant-oat01-installed-cli-fixture-not-real-0000000000\n')
 
     def test_run_launches_named_profile(self):
         profile, _ = self._launch([self.cli, 'run', 'demo', '--version'])

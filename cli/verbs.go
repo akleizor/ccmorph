@@ -414,11 +414,11 @@ func (l *launcher) cred(args []string) int {
 		l.err("sign in again: ccmorph login " + name)
 		return 1
 	}
-	if isTTY(1) {
-		fmt.Println(c)
-	} else {
-		fmt.Print(c)
-	}
+	// One line, whatever stdout is: the secret and exactly one newline. The
+	// bare value with no newline welded itself to the next thing printed —
+	// a shell prompt, another tool's output (GH-971) — and a terminal already
+	// turns the newline into the CRLF it needs.
+	fmt.Println(c)
 	return 0
 }
 

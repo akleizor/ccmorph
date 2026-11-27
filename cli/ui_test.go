@@ -1149,3 +1149,69 @@ func TestCutIDsPartIdsOnlyALengthTellsApartIssue385(t *testing.T) {
 		reads[f] = true
 	}
 }
+
+// captureStderr runs f with os.Stderr swapped for a pipe and returns what it
+// printed, including anything f left unterminated.
+func captureStderr(t *testing.T, f func()) string {
+	t.Helper()
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	old := os.Stderr
+	os.Stderr = w
+	f()
+	os.Stderr = old
+	w.Close()
+	b, err := io.ReadAll(r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(b)
+}
+
+// GH-971: a refusal with no terminal lists the values a direct command takes,
+// one bare ID per line. It printed each menu's whole row — id, label, kind and
+// endpoint, tab-separated — so a person read the menu's internal format above
+// the line telling them what to pass, and the listing named columns no direct
+// command takes.
+func TestNoTerminalRefusalListsBareIDsOnly(t *testing.T) {
+	rows := []string{
+		"personal\tpersonal\tAPI key\thttp://127.0.0.1:9\tdefault",
+		"@keep\tKeep picker-beta",
+		"@custom\tA custom id",
+		"work\twork\tAPI key\thttp://127.0.0.1:9\t",
+	}
+	for _, tc := range []struct {
+		name string
+		last string
+		run  func()
+	}{
+		{"search with no fzf", "ccmorph: selection needs a terminal or fzf; pass the value directly",
+			func() { uiTheme{}.refuseNoTerminal(rows, false) }},
+		{"search with fzf", "ccmorph: selection needs a terminal; pass the value directly",
+			func() { uiTheme{}.refuseNoTerminal(rows, true) }},
+		{"native", "ccmorph: selection needs a terminal; pass the value directly",
+			func() {
+				old := isTTY
+				isTTY = func(int) bool { return false }
+				defer func() { isTTY = old }()
+				uiTheme{}.native("Profile", rows, "")
+			}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			out := captureStderr(t, tc.run)
+			if strings.Contains(out, "\t") {
+				t.Fatalf("a refusal printed the menu's row format: %q", out)
+			}
+			lines := strings.Split(strings.TrimSuffix(out, "\n"), "\n")
+			if len(lines) < 2 || lines[len(lines)-1] != tc.last {
+				t.Fatalf("the refusal is not the last line: %q", out)
+			}
+			want := []string{"personal", "work", tc.last}
+			if got := lines; strings.Join(got, "|") != strings.Join(want, "|") {
+				t.Fatalf("listing = %q, want %q", got, want)
+			}
+		})
+	}
+}

@@ -8,6 +8,7 @@ isolated HOME with a stub `claude`; nothing touches the network or a real home.
 import fcntl
 import json
 import os
+import pty
 import shutil
 import stat
 import subprocess
@@ -859,8 +860,13 @@ def test_the_profile_list_appears_only_under_a_word_that_could_be_a_profile(box)
 
 def test_cred_prints_the_stored_secret_bare_and_refuses_when_there_is_none(box):
     seed(box)
-    assert box.run('cred', 'tok').stdout == 'sk-ant-oat-canary'
-    assert box.run('cred', 'gw').stdout == 'canary-key'
+    # GH-971: the value is a line of its own — exactly one newline, so a
+    # terminal prompt or the next tool's output never welds onto the secret.
+    assert box.run('cred', 'tok').stdout == 'sk-ant-oat-canary\n'
+    assert box.run('cred', 'gw').stdout == 'canary-key\n'
+    # get api_key runs the same code, so a script capturing either gets the
+    # same bytes.
+    assert box.run('get', 'gw', 'api_key').stdout == box.run('cred', 'gw').stdout
     out = box.run('cred', 'work')
     assert out.returncode == 1 and out.stdout == '' and 'stores no credential' in out.stderr
     # GH-790: the refusal puts an article before the kind label, so it must
@@ -1425,14 +1431,42 @@ def test_router_dispatch_help_prints_its_flags_and_runs_nothing(box, argv):
 
 def test_router_dispatch_help_after_the_delimiter_is_the_workers(box):
     # #784: after -- the words are the worker's claude flags (INTENT 6), so a
-    # --help there is not the router's page.
+    # --help there is not the router's page. GH-971: no task either, so the
+    # refusal is the missing task's with the usage line, and stdout stays empty.
     box.env['XDG_STATE_HOME'] = str(box.home / '.local/state')
     seed(box)
     result = box.run('router', 'dispatch', '--', '--help')
     assert 'usage: ccmorph router dispatch' not in result.stdout
     assert not result.stdout.startswith('Usage: ccmorph router'), result.stdout
-    assert 'non-empty prompt' in result.stderr, result.stderr
-    assert result.returncode == 1
+    assert result.stdout == '', result.stdout
+    assert 'ccmorph: router: dispatch needs a task: give it as words or on stdin' in result.stderr, result.stderr
+    assert 'usage: ccmorph router [on|off|status|dispatch [--dry-run]|accept|report]' in result.stderr
+    assert result.returncode == 2
+
+
+def test_router_dispatch_never_reads_a_terminal_and_refuses_an_empty_task(box):
+    """GH-971: `router dispatch` with no task read stdin silently. On a
+    terminal it looked hung — no prompt, no usage line, Ctrl-C the only way
+    out — and on EOF it routed the empty task and printed a real pick as if
+    asked. A missing task is refused at once, and a terminal is never read."""
+    box.env['XDG_STATE_HOME'] = str(box.home / '.local/state')
+    seed(box)
+    master, slave = pty.openpty()
+    try:
+        # A read of the terminal would hang: the shared bound ends it as a failure.
+        result = subprocess.run(
+            [str(ROOT / 'bin/ccmorph'), 'router', 'dispatch', '--dry-run'],
+            env=box.env, stdin=slave, capture_output=True, text=True, timeout=HANG_TIMEOUT)
+    finally:
+        os.close(slave)
+        os.close(master)
+    assert result.returncode == 2, (result.stdout, result.stderr)
+    assert result.stdout == '', result.stdout
+    assert 'dispatch needs a task: give it as words or on stdin' in result.stderr, result.stderr
+    # The same refusal on an EOF that no person typed into.
+    result = box.run('router', 'dispatch', '--dry-run')
+    assert result.returncode == 2 and result.stdout == '', (result.stdout, result.stderr)
+    assert 'dispatch needs a task' in result.stderr, result.stderr
 
 
 ROUTER_REFUSED = [
