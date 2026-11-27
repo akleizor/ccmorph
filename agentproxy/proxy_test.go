@@ -1,6 +1,7 @@
 package agentproxy
 
 import (
+	"bytes"
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/json"
@@ -401,5 +402,57 @@ func TestAMismatchedCAIsReplaced(t *testing.T) {
 	}
 	if _, err := LoadCA(a); err != nil {
 		t.Fatalf("a mismatched pair is not replaced: %v", err)
+	}
+}
+
+func TestACompressedAgentTurnInASessionIsClaimedAndStaysCompressed(t *testing.T) {
+	type got struct {
+		enc  string
+		body []byte
+	}
+	seenc := make(chan got, 1)
+	gw := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		seenc <- got{r.Header.Get("Content-Encoding"), b}
+	}))
+	defer gw.Close()
+	ca, err := LoadCA(filepath.Join(t.TempDir(), "ca"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	origin, _ := url.Parse("http://127.0.0.1:1") // the session's own route: never reached
+	gwURL, _ := url.Parse(gw.URL)
+	dir := filepath.Join(t.TempDir(), "agents")
+	p, err := Start(ca, Options{Dir: dir, Origin: origin, Logf: t.Logf,
+		Resolve: func(Pick) (Target, error) { return Target{Base: gwURL, Key: "k"}, nil }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer p.Close()
+	const prompt = "Reply with ALPHA."
+	plain := `{"model":"claude-haiku-5-5","messages":[{"role":"user","content":"` + prompt + `"}]}`
+	if err := LeavePick(dir, "s1", prompt, Pick{Word: "gw", Model: "picked-model"}); err != nil {
+		t.Fatal(err)
+	}
+	req, _ := http.NewRequest("POST", "http://127.0.0.1:"+itoa(p.Port())+"/v1/messages", bytes.NewReader(encodeBody([]byte(plain), gzipCoding)))
+	req.Header.Set("Content-Encoding", "gzip")
+	req.Header.Set(AgentHeader, "agent-1")
+	req.Header.Set(SessionHeader, "s1")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	var g got
+	select {
+	case g = <-seenc:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the agent's turn never reached its pick's endpoint")
+	}
+	h := http.Header{}
+	h.Set("Content-Encoding", g.enc)
+	body, _, err := decodeBody(g.body, h, 1<<20)
+	if g.enc != "gzip" || err != nil || !strings.Contains(string(body), `"model":"picked-model"`) {
+		t.Fatalf("the gzipped first turn was not claimed and sent on gzipped: enc=%q err=%v %.200s", g.enc, err, body)
 	}
 }

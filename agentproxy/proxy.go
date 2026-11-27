@@ -69,6 +69,9 @@ type decision struct {
 	target *Target
 	pick   Pick
 	body   []byte
+	// The launcher's read of body: decoded, and the coding it came in.
+	plain  []byte
+	coding coding
 	// The edge's decision about the request, and the address the connection
 	// that answered was dialled for ("" when none can be read).
 	edge   *edgeState
@@ -233,14 +236,14 @@ func (p *Proxy) forward(w http.ResponseWriter, r *http.Request, u *url.URL) {
 		session := r.Header.Get(SessionHeader)
 		pick, ok := Bound(p.Dir, agent)
 		if !ok && HasPending(p.Dir, session) {
-			body, err := io.ReadAll(r.Body)
-			r.Body.Close()
-			if err != nil {
-				w.WriteHeader(http.StatusBadRequest)
+			// A pick waits for this agent: a body that cannot be read goes
+			// nowhere, rather than to the session's route with the pick unmet.
+			if err := d.read(r); err != nil {
+				p.Logf("agent proxy: %s %s: %v", r.Method, u.Path, err)
+				w.WriteHeader(http.StatusBadGateway)
 				return
 			}
-			d.body = body
-			pick, ok = Claim(p.Dir, session, agent, body, time.Now())
+			pick, ok = Claim(p.Dir, session, agent, d.plain, time.Now())
 		}
 		if ok {
 			p.route(r, d, pick)
@@ -274,21 +277,37 @@ func (f failClosed) RoundTrip(r *http.Request) (*http.Response, error) {
 	return f.next.RoundTrip(r)
 }
 
+// read buffers the request body as it came (body) and decoded (plain).
+func (d *decision) read(r *http.Request) error {
+	wire, whole, err := readUpTo(r, inferenceMax)
+	if err != nil {
+		return err
+	}
+	if !whole { // r.Body still sends every byte as it came
+		return errTooLarge
+	}
+	d.body = wire
+	d.plain, d.coding, err = decodeBody(wire, r.Header, inferenceMax)
+	return err
+}
+
 func (p *Proxy) route(r *http.Request, d *decision, pick Pick) {
 	t, err := p.Resolve(pick)
 	if err != nil {
 		p.Logf("agent proxy: %s cannot be served (%v); the agent stays on the session's route", pick.Word, err)
 		return
 	}
-	if d.body == nil {
-		body, err := io.ReadAll(r.Body)
-		r.Body.Close()
-		if err != nil {
+	if d.plain == nil {
+		if err := d.read(r); err != nil {
+			p.Logf("agent proxy: %s cannot be read (%v); the agent stays on the session's route", pick.Word, err)
 			return
 		}
-		d.body = body
 	}
-	d.body = rewriteBody(d.body, pick.Model, t)
+	// The body is read decoded and goes on in the coding it came in: byte for
+	// byte when nothing changed.
+	if out := rewriteBody(d.plain, pick.Model, t); !bytes.Equal(out, d.plain) {
+		d.body = encodeBody(out, d.coding)
+	}
 	out := join(t.Base, &url.URL{Path: strings.TrimPrefix(d.url.Path, originPath(p.Origin)), RawQuery: d.url.RawQuery})
 	d.url, d.target, d.pick = out, &t, pick
 	p.Logf("agent proxy: route %s %s via %s", r.Method, out.Path, pick.Word)
