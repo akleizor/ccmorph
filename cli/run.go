@@ -1874,10 +1874,11 @@ func (l *launcher) routeRefusal(name string) string {
 
 // reachGateway is the launch's first question to a gateway (#260): the
 // profile's base_url and api_key — the route profile.Env builds, since an
-// env.* line may not override either (profile.BackendEnv) — asked once with
+// env.* line may not override either (profile.BackendEnv) — asked with
 // doctor's bounds, through the profile's env.CCMORPH_UPSTREAM_PROXY (via)
-// when it names one, the route the session's own requests take. A progress line follows one second of
-// waiting. why is the cause, said here in the sentence models and doctor use,
+// when it names one, the route the session's own requests take; one connect
+// timeout inside the bounds is dialed again before the question ends (#1021).
+// A progress line follows one second of waiting. why is the cause, said here in the sentence models and doctor use,
 // "" when the gateway answered or failed in a way the four causes do not name;
 // down is true when nothing answered within the bound: then the route check is
 // named too, and the caller ends the launch, because every later wait (the

@@ -276,9 +276,23 @@ type Reach struct {
 	Waited bool   // nothing answered within the bound: curl timed out, or was stopped at the bound
 }
 
-// ReachListing is the launch's early question to a gateway (#260): one
-// listing request with doctor's bounds (two seconds to connect, five in all),
-// so a gateway that never answers cannot hold a launch silent. The request is
+// reachProbe is one launch question's shared setting: what to ask and the
+// promise all its dials answer to, so a dial can state the whole probe's wait
+// and never outlast its deadline.
+type reachProbe struct {
+	listing string // the listing request's URL, the launch's own shape
+	config  string // curl's stdin config: the key, the profile's proxy route
+	base    string // the gateway endpoint, for the sentence's host and port
+	via     bool   // the request goes through the profile's own proxy
+	env     []string
+	start   time.Time     // when the probe began
+	stopAt  time.Time     // the deadline every dial shares
+	bound   time.Duration // the promise the progress line advertises
+}
+
+// ReachListing is the launch's early question to a gateway (#260): a listing
+// request with doctor's bounds (two seconds to connect, five in all), so a
+// gateway that never answers cannot hold a launch silent. The request is
 // the launch listing's own shape, so a stub that answers the listing answers
 // this. progress runs once, if the request is still running after
 // reachProgressAfter. Any HTTP answer, an error status included, is an answer:
@@ -288,20 +302,18 @@ type Reach struct {
 // exempts the gateway; empty or unusable, the environment's resolution
 // stands. strip names environment keys the request must not carry (the
 // Remote Control edge's proxy, which a named profile never dials through).
+//
+// One connect timeout inside the bound is not yet the silence a launch ends a
+// turn on (#1021): a route that was down for two seconds and back a second
+// later lost a turn whose retry 11 s later succeeded, on the sentence "after
+// 2 seconds" — three fifths of the promised bound never spent. A dial whose
+// own connect timeout fires while the probe's window is still open is answered
+// by a second dial given the rest of that window whole; the question, however
+// many dials, stays inside the bound the progress line advertised.
 func ReachListing(base, key, via string, strip []string, progress func()) Reach {
 	start := time.Now()
 	bound := reachBound()
-	connect := min(bound, 2*time.Second)
 	listing := ctxwindow.APIURL(base, "/v1/models?limit=1000")
-	// -D - writes the response headers to stdout the moment they arrive and
-	// -N keeps curl from holding them back, so a gateway that has begun to
-	// answer is seen before the probe stops curl; real curl holds a short body
-	// until the transfer ends. A proxy's own CONNECT reply is not the gateway's
-	// answer and stays out (--suppress-connect-headers).
-	args := []string{"-K", "-", "-sS", "-f", "-N", "-D", "-", "--suppress-connect-headers",
-		"--connect-timeout", seconds(connect), "--max-time", seconds(bound),
-		listing, "-H", "anthropic-version: 2023-06-01"}
-	cmd := exec.Command("curl", args...)
 	config, viaProxy := keyedConfig(key), false
 	if proxy := netroute.Parse(via); proxy != nil {
 		// On curl's stdin, never its argv: the proxy URL may carry a password.
@@ -312,21 +324,67 @@ func ReachListing(base, key, via string, strip []string, progress func()) Reach 
 			viaProxy = true
 		}
 	}
-	cmd.Stdin = strings.NewReader(config)
+	var env []string
+	if len(strip) > 0 {
+		env = slices.DeleteFunc(os.Environ(), func(e string) bool {
+			k, _, _ := strings.Cut(e, "=")
+			return slices.Contains(strip, k)
+		})
+	}
+	// progress is the probe's promise, not one dial's: one line after one
+	// second of the whole question, even when the probe asks it twice.
+	if progress != nil {
+		ask, said := progress, false
+		progress = func() {
+			if !said {
+				said = true
+				ask()
+			}
+		}
+	}
+	// curl is stopped with a twentieth of the bound to spare, so the probe has
+	// returned, curl reaped, within the bound: never later than doctor's own
+	// request, in one dial or two.
+	p := reachProbe{listing: listing, config: config, base: base, via: viaProxy, env: env,
+		start: start, stopAt: start.Add(bound - bound/20), bound: bound}
+	r, retry := reachDial(p, min(bound, 2*time.Second), bound, false, progress)
+	if !retry {
+		return r
+	}
+	left := p.stopAt.Sub(time.Now())
+	r, _ = reachDial(p, left, left, true, progress)
+	return r
+}
+
+// reachDial asks the gateway once, curl's connect bound and total window as
+// given, inside the probe p's shared deadline, and says what the probe would
+// report if this dial ended it. retry is true when the dial's own connect
+// timeout ended it — curl's 28, not the probe's stop, which has no time left
+// to ask with — and at least a second of the window remains for another dial
+// to be worth starting (#1021). retryAfter says this dial is that other dial:
+// its silence is the whole probe's, so the sentence counts the probe's wait,
+// never curl's count of one dial.
+func reachDial(p reachProbe, connect, window time.Duration, retryAfter bool, progress func()) (r Reach, retry bool) {
+	// -D - writes the response headers to stdout the moment they arrive and
+	// -N keeps curl from holding them back, so a gateway that has begun to
+	// answer is seen before the probe stops curl; real curl holds a short body
+	// until the transfer ends. A proxy's own CONNECT reply is not the gateway's
+	// answer and stays out (--suppress-connect-headers).
+	args := []string{"-K", "-", "-sS", "-f", "-N", "-D", "-", "--suppress-connect-headers",
+		"--connect-timeout", seconds(connect), "--max-time", seconds(window),
+		p.listing, "-H", "anthropic-version: 2023-06-01"}
+	cmd := exec.Command("curl", args...)
+	cmd.Stdin = strings.NewReader(p.config)
 	var complaint strings.Builder
 	var got countedBytes
 	cmd.Stdout, cmd.Stderr = &got, &complaint
 	cmd.WaitDelay = reachWaitDelay
-	env := os.Environ()
-	if len(strip) > 0 {
-		env = slices.DeleteFunc(env, func(e string) bool {
-			k, _, _ := strings.Cut(e, "=")
-			return slices.Contains(strip, k)
-		})
-		cmd.Env = env
+	if p.env != nil {
+		cmd.Env = p.env
 	}
+	dialStart := time.Now()
 	if err := reachStart(cmd); err != nil {
-		return Reach{}
+		return Reach{}, false
 	}
 	// The stop is the call's deadline, as it always was; requestStart is when
 	// the request could first run. cmd.Start blocks through the scheduler's
@@ -338,33 +396,30 @@ func ReachListing(base, key, via string, strip []string, progress func()) Reach 
 	requestStart := time.Now()
 	done := make(chan error, 1)
 	go func() { done <- cmd.Wait() }()
-	// Both timers count from the call, not from curl's start. curl is stopped
-	// with a twentieth of the bound to spare, so the probe has returned, curl
-	// reaped, within the bound: never later than doctor's own request.
-	tick := time.NewTimer(reachProgressAfter() - time.Since(start))
+	// Both timers count from the call, not from curl's start.
+	tick := time.NewTimer(reachProgressAfter() - time.Since(p.start))
 	defer tick.Stop()
 	ticked := reachProgressTick(tick)
-	stopAt := start.Add(bound - bound/20)
-	stop, stopTimer := reachStop(stopAt.Sub(time.Now()))
+	stop, stopTimer := reachStop(p.stopAt.Sub(time.Now()))
 	defer stopTimer()
-	killed, said := false, false
+	killed, told := false, false
 	var err error
 	for waiting := true; waiting; {
 		select {
 		case err = <-done:
 			waiting = false
 		case <-ticked:
-			if !said && progress != nil {
+			if !told && progress != nil {
 				progress()
 			}
-			said = true
+			told = true
 		case <-stop:
 			killed = true
 			cmd.Process.Kill()
 		}
 	}
 	if err == nil {
-		return Reach{}
+		return Reach{}, false
 	}
 	// curl's own exit, never the stop's assumption: a probe the scheduler held
 	// across its stop wakes after curl has answered, and rewriting that answer
@@ -376,13 +431,13 @@ func ReachListing(base, key, via string, strip []string, progress func()) Reach 
 		exit = state.ExitCode()
 	}
 	if exit == 22 || refused.MatchString(complaint.String()) {
-		return Reach{} // an HTTP status is an answer
+		return Reach{}, false // an HTTP status is an answer
 	}
 	if m := bytesReceived.FindStringSubmatch(complaint.String()); m != nil && m[1] != "0" {
-		return Reach{} // a slow answer is still an answer: the listing's own wait judges it
+		return Reach{}, false // a slow answer is still an answer: the listing's own wait judges it
 	}
 	if killed && got > 0 {
-		return Reach{} // stopped once the gateway had begun to answer: a slow answer, as above
+		return Reach{}, false // stopped once the gateway had begun to answer: a slow answer, as above
 	}
 	// A stop that left the request less than half its window never gave it a
 	// fair hearing: the scheduler spent the rest before curl could run, so
@@ -390,12 +445,20 @@ func ReachListing(base, key, via string, strip []string, progress func()) Reach 
 	// adapter's and listing's own bounds judge the route; naming the gateway
 	// dead here was the false timeout of a healthy endpoint under load — a
 	// loaded run measured a 136 ms start against a 142 ms window, the stop
-	// firing with 38 ms run and no answer (#935).
-	if killed && stopAt.Sub(requestStart) < (bound-bound/20)/2 {
-		return Reach{}
+	// firing with 38 ms run and no answer (#935). The window is this dial's:
+	// a retry held by the same scheduler owes the probe no verdict either.
+	if killed && p.stopAt.Sub(requestStart) < p.stopAt.Sub(dialStart)/2 {
+		return Reach{}, false
 	}
-	why := whyUnreachableWithin(base, exit, complaint.String(), time.Since(start), viaProxy, bound+reachWaitDelay)
-	return Reach{Why: why, Waited: why != "" && (exit == 28 || exit == -1)}
+	words := complaint.String()
+	if retryAfter && (exit == 28 || exit == -1) {
+		words = "" // the whole probe's wait counts, not one dial's curl count (#1021)
+	}
+	why := whyUnreachableWithin(p.base, exit, words, time.Since(p.start), p.via, p.bound+reachWaitDelay)
+	// A dial's own timeout spent the connect bound but not the promise: the
+	// probe asks once more while a second of the window is left to ask with.
+	retry = !retryAfter && exit == 28 && p.stopAt.Sub(time.Now()) >= time.Second
+	return Reach{Why: why, Waited: why != "" && (exit == 28 || exit == -1)}, retry
 }
 
 // countedBytes counts what curl wrote to stdout (the response headers, then

@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 	"testing"
@@ -262,6 +263,77 @@ func TestReachListingPrintsProgressAndGivesUpOnASilentGateway(t *testing.T) {
 	if !r.Waited || !strings.HasPrefix(r.Why, "no answer from 10.255.255.1 port 8080 after 1 second") ||
 		!strings.Contains(r.Why, "private network") {
 		t.Fatalf("verdict %+v, want a waited no-answer naming the host and port", r)
+	}
+}
+
+// GH-1021: two seconds of connect silence is not yet the silence a launch may
+// end a turn on — the probe's five-second promise has a second dial in it. A
+// gateway that answers the retry has not lost the turn; one silent through
+// both gets a verdict that counts the whole probe, never curl's count of its
+// last dial alone. The retry takes the rest of the bound whole, so the two
+// dials together still stay inside the promise the progress line made.
+func TestReachListingDialsAgainWithinItsBoundAfterOneConnectTimeout(t *testing.T) {
+	count := `n=$(cat "$REACH_DIALS" 2>/dev/null || echo 0); n=$((n+1)); echo "$n" > "$REACH_DIALS"`
+	silence := `printf '%s\n' 'curl: (28) Failed to connect to 127.0.0.1 port 9 after 2003 ms: Timeout was reached' >&2; exit 28`
+	bounds := func(request string) (out [][2]string) {
+		lines := strings.Split(request, "\n")
+		for i, line := range lines {
+			if (line == "ARG=--connect-timeout" || line == "ARG=--max-time") && i+1 < len(lines) {
+				out = append(out, [2]string{strings.TrimPrefix(line, "ARG="), strings.TrimPrefix(lines[i+1], "ARG=")})
+			}
+		}
+		return out
+	}
+	for _, c := range []struct{ name, body, want string }{
+		{"a retry that answers", count + "\nif [ \"$n\" = 1 ]; then " + silence + "\nfi\nprintf '{\"data\":[]}'", ""},
+		{"a retry silent too", count + "\n" + silence, "no answer from 127.0.0.1 port 9 after 1 second " + PrivateNetworkAdvice},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			// The product's own bounds, cleared so an exported knob cannot
+			// stand in for the 5 s promise this test reads (#902).
+			t.Setenv("CCMORPH_REACH_PROGRESS", "")
+			t.Setenv("CCMORPH_REACH_BOUND", "")
+			dials := filepath.Join(t.TempDir(), "dials")
+			t.Setenv("REACH_DIALS", dials)
+			dir := reachCurl(t, c.body)
+			warmCurl(t, dir)
+			os.Remove(dials) // the warm run is not one of the probe's dials
+			start := time.Now()
+			r := ReachListing("http://127.0.0.1:9", "k", "", nil, nil)
+			if took := time.Since(start); took > 5*time.Second+reachWaitDelay {
+				t.Fatalf("the probe took %v, past the bound plus the reap grace it promises", took)
+			}
+			asked, err := os.ReadFile(dials)
+			if err != nil {
+				t.Fatalf("the probe made no dials of its own: %v (verdict %+v)", err, r)
+			}
+			if n := strings.TrimSpace(string(asked)); n != "2" {
+				t.Fatalf("the probe dialed %s times, want the connect timeout answered by a second dial: verdict %+v", n, r)
+			}
+			request, _ := os.ReadFile(filepath.Join(dir, "request"))
+			b := bounds(string(request))
+			if len(b) != 4 {
+				t.Fatalf("dial bounds %v, want two dials each naming connect and total", b)
+			}
+			if b[0] != [2]string{"--connect-timeout", "2"} || b[1] != [2]string{"--max-time", "5"} {
+				t.Fatalf("the first dial's bounds are %v, want doctor's 2 s inside the 5 s bound", b[:2])
+			}
+			if b[2][1] != b[3][1] {
+				t.Fatalf("the retry's bounds are %v, want one window: the rest of the bound, used whole", b[2:])
+			}
+			if left, err := strconv.ParseFloat(b[2][1], 64); err != nil || left <= 0 || left >= 5 {
+				t.Fatalf("the retry's window is %q, want the rest of the 5 s bound: %v", b[2][1], err)
+			}
+			if c.want == "" {
+				if r != (Reach{}) {
+					t.Fatalf("got %+v, want nothing to say about a gateway that answered the retry", r)
+				}
+				return
+			}
+			if !r.Waited || r.Why != c.want {
+				t.Fatalf("got %+v, want the whole probe's waited no-answer %q, not curl's count of one dial", r, c.want)
+			}
+		})
 	}
 }
 
