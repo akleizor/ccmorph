@@ -6229,3 +6229,30 @@ def test_session_titles_name_every_session_active_and_archived(monkeypatch, caps
     monkeypatch.setattr(m, "sessions", fail)
     assert m.main(["--session-titles"]) == 1
     assert capsys.readouterr().out == ""
+
+
+def test_session_titles_degrades_when_the_login_or_reply_dies(monkeypatch, capsys):
+    """The two failures this module already owns at LOGIN_ERRORS — a cut-off reply
+    (http.client.IncompleteRead) and a hung `security` lookup (subprocess.TimeoutExpired)
+    — are neither an OSError, so a narrower except in session_titles() let them escape
+    as a traceback where the contract says: exit 1, one line on stderr (#1001)."""
+    import http.client
+    import subprocess
+    m = load()
+    monkeypatch.setattr(m, "account_token", lambda: "tok")
+
+    def cut(token, status):
+        raise http.client.IncompleteRead(b"")
+    monkeypatch.setattr(m, "sessions", cut)
+    assert m.main(["--session-titles"]) == 1
+    out = capsys.readouterr()
+    assert out.out == ""
+    assert "ccmorph-rc-hosts: the sessions could not be read" in out.err
+
+    def hung():
+        raise subprocess.TimeoutExpired("security", 10)
+    monkeypatch.setattr(m, "account_login", hung)
+    assert m.main(["--session-titles"]) == 1
+    out = capsys.readouterr()
+    assert out.out == ""
+    assert "ccmorph-rc-hosts: the sessions could not be read" in out.err
