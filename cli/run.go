@@ -1628,11 +1628,13 @@ func (l *launcher) nestedEdgeEnv(keys ...string) []string {
 // providerStartRefusal is why a profile's bridge cannot start at all, in the
 // words its own launch would say; "" when the prerequisites are there. hop asks
 // before it ends the session it runs in (#286).
-func (l *launcher) providerStartRefusal(name string) string {
+func (l *launcher) providerStartRefusal(name string) string { return bridgeRefusal(l.dir, name) }
+
+func bridgeRefusal(dir, name string) string {
 	if _, err := exec.LookPath("cliproxyapi"); err != nil {
 		return "cliproxyapi not found — install it: " + util.ClipInstallStep()
 	}
-	root := filepath.Join(l.dir, "auth")
+	root := filepath.Join(dir, "auth")
 	if fi, err := os.Lstat(root); err == nil && fi.Mode()&os.ModeSymlink != 0 {
 		return "auth directory root is a symlink, refusing: " + root
 	}
@@ -1646,21 +1648,20 @@ func (l *launcher) providerStartRefusal(name string) string {
 	return ""
 }
 
-// providerStart starts or joins the profile's shared bridge, recording the
-// handle every session of the profile shares. A route env joins it too, and a
-// holder process keeps the route's use of it until the route retires (#300).
-func (l *launcher) providerStart(name string) bool {
-	if why := l.providerStartRefusal(name); why != "" {
-		l.err(why)
-		return false
+// acquireBridge starts or joins the profile's shared bridge and holds this
+// caller's use of it until the returned bridge is released. It reads no
+// launcher state, so the agent proxy's goroutines may call it; the bridge's own
+// notices go to errw.
+func acquireBridge(dir, libexec, logPath, name string, errw io.Writer) (*util.SharedBridge, error) {
+	if why := bridgeRefusal(dir, name); why != "" {
+		return nil, errors.New(why)
 	}
 	bin, _ := exec.LookPath("cliproxyapi")
-	root := filepath.Join(l.dir, "auth")
+	root := filepath.Join(dir, "auth")
 	auth := filepath.Join(root, name)
-	l.logInit()
 	start := func() (pid, port, key, tmp string, ok bool) {
-		cmd := exec.Command(filepath.Join(l.libexec, "ccmorph-core"), "util", "bridge-start", name, bin, auth, l.logOrNull())
-		cmd.Stderr = os.Stderr
+		cmd := exec.Command(filepath.Join(libexec, "ccmorph-core"), "util", "bridge-start", name, bin, auth, logPath)
+		cmd.Stderr = errw
 		out, err := cmd.Output()
 		if err != nil {
 			return "", "", "", "", false
@@ -1681,15 +1682,34 @@ func (l *launcher) providerStart(name string) bool {
 		return pid, port, key, tmp, true
 	}
 	b, ok, err := util.AcquireBridge(root, name, start)
+	if err != nil {
+		return nil, err
+	}
+	if !ok {
+		return nil, util.ErrBridgeNotStarted
+	}
+	return b, nil
+}
+
+// providerStart starts or joins the profile's shared bridge, recording the
+// handle every session of the profile shares. A route env joins it too, and a
+// holder process keeps the route's use of it until the route retires (#300).
+func (l *launcher) providerStart(name string) bool {
+	if why := l.providerStartRefusal(name); why != "" {
+		l.err(why)
+		return false
+	}
+	l.logInit()
+	b, err := acquireBridge(l.dir, l.libexec, l.logOrNull(), name, os.Stderr)
 	if err != nil && !errors.Is(err, util.ErrBridgeNotStarted) {
 		l.err(err.Error())
 	}
-	if !ok {
+	if err != nil {
 		return false
 	}
 	l.providerBridge = b
 	l.providerPID, l.providerPort, l.providerKey, l.providerTD = b.PID, b.Port, b.Key, b.TmpDir
-	l.providerAuth, l.providerActive = auth, name
+	l.providerAuth, l.providerActive = filepath.Join(l.dir, "auth", name), name
 	return true
 }
 

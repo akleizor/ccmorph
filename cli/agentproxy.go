@@ -1,10 +1,12 @@
 package cli
 
 import (
+	"context"
 	"crypto/tls"
 	"crypto/x509"
 	"errors"
 	"fmt"
+	"io"
 	"net/url"
 	"os"
 	"os/exec"
@@ -16,6 +18,7 @@ import (
 	"time"
 
 	"github.com/akleizor/ccmorph/agentproxy"
+	"github.com/akleizor/ccmorph/quota"
 	"github.com/akleizor/ccmorph/router"
 	"github.com/akleizor/ccmorph/util"
 )
@@ -31,6 +34,8 @@ type agentHop struct {
 
 	mu      sync.Mutex
 	targets map[string]*target
+	bridges []*util.SharedBridge // provider bridges this session holds a use of
+	auth    []string             // each one's auth dir, for its release
 	logMu   sync.Mutex
 }
 
@@ -42,9 +47,15 @@ type target struct {
 	t    agentproxy.Target
 	err  error
 	at   time.Time
+	sub  bool // a subscription token, which its own sessions refresh in place
 }
 
 const failureKept = time.Minute
+
+// subTokenKept is how long a subscription token read stands: the account's
+// own Claude Code sessions refresh the access token in the keychain, so a
+// long agent run reads it again rather than send an expired one.
+const subTokenKept = 5 * time.Minute
 
 var anthropicURL = &url.URL{Scheme: "https", Host: "api.anthropic.com"}
 
@@ -189,13 +200,21 @@ func (h *agentHop) bashEnv(env []string, theirs string) (string, error) {
 
 func shellQuote(s string) string { return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'" }
 
-// stop ends the proxy and removes its run dir. The adapters it started end
+// stop ends the proxy and removes its run dir, and lets go of the provider
+// bridges it joined: the last user out stops one. The adapters it started end
 // with the Claude Code process they were started for.
 func (h *agentHop) stop() {
 	if h == nil {
 		return
 	}
 	h.p.Close()
+	h.mu.Lock()
+	bridges, auth := h.bridges, h.auth
+	h.bridges, h.auth = nil, nil
+	h.mu.Unlock()
+	for i, b := range bridges {
+		b.Release(auth[i])
+	}
 	os.RemoveAll(h.run)
 }
 
@@ -205,7 +224,9 @@ var errNotServed = errors.New("not served by the agent proxy")
 // agentProxyServes is whether the agent proxy can serve a profile of this type:
 // one the hook may leave a pick for. It reads only the launcher's own copy of
 // the profile, never the session's env.
-func agentProxyServes(typ string) bool { return typ == "token" || typ == "apikey" || typ == "proxy" }
+func agentProxyServes(typ string) bool {
+	return typ == "token" || typ == "apikey" || typ == "proxy" || typ == "provider" || typ == "sub"
+}
 
 // resolver is where a pick's profile is served. Only the launcher's state is
 // read, never a method that changes it: this runs on the proxy's goroutines.
@@ -236,7 +257,28 @@ func (h *agentHop) resolver(l *launcher) func(agentproxy.Pick) (agentproxy.Targe
 				t.Tiers[tier] = v
 			}
 		}
-		if typ == "token" {
+		switch typ {
+		case "sub":
+			tok, err := subToken(filepath.Join(profiles, pick.Word), quota.SubscriptionToken, l.claudeAuthCtx)
+			if err != nil {
+				return agentproxy.Target{}, err
+			}
+			t.OAuth = tok
+			return t, nil
+		case "provider":
+			// The profile's bridge, joined or started as its own launch does,
+			// and held for this session until it ends.
+			b, err := acquireBridge(dir, filepath.Dir(core), logPath, pick.Word, io.Discard)
+			if err != nil {
+				return agentproxy.Target{}, err
+			}
+			auth := filepath.Join(dir, "auth", pick.Word)
+			h.mu.Lock()
+			h.bridges, h.auth = append(h.bridges, b), append(h.auth, auth)
+			h.mu.Unlock()
+			t.Base, t.Key = &url.URL{Scheme: "http", Host: "127.0.0.1:" + b.Port}, b.Key
+			return t, nil
+		case "token":
 			if t.OAuth, _ = envGet(env, "CLAUDE_CODE_OAUTH_TOKEN"); t.OAuth == "" {
 				return agentproxy.Target{}, errors.New("no OAuth token")
 			}
@@ -270,14 +312,39 @@ func (h *agentHop) resolver(l *launcher) func(agentproxy.Pick) (agentproxy.Targe
 		id := pick.Word + "\x00" + pick.Model
 		h.mu.Lock()
 		e := h.targets[id]
-		if e == nil || (e.err != nil && time.Since(e.at) > failureKept) {
+		if e == nil || (e.err != nil && time.Since(e.at) > failureKept) || (e.sub && time.Since(e.at) > subTokenKept) {
 			e = &target{}
 			h.targets[id] = e
 		}
 		h.mu.Unlock()
-		e.once.Do(func() { e.t, e.err = resolve(pick); e.at = time.Now() })
+		e.once.Do(func() {
+			e.t, e.err = resolve(pick)
+			h.mu.Lock()
+			e.at, e.sub = time.Now(), e.t.OAuth != ""
+			h.mu.Unlock()
+		})
 		return e.t, e.err
 	}
+}
+
+// subToken is the access token of a Claude account's sign-in, as its own launch
+// would find it: read from the keychain item Claude Code keeps for the config
+// dir. An expired one is refreshed by Claude Code itself (`claude auth status`
+// renews the sign-in as any launch does, under its own lock), never by a token
+// call of ccmorph's: a second refresh would spend the single-use refresh token
+// under the sessions that hold it.
+func subToken(dir string, read func(string) (string, string, error), auth func(context.Context, string, ...string) *exec.Cmd) (string, error) {
+	tok, _, err := read(dir)
+	if err == nil || !strings.Contains(err.Error(), "expired") {
+		return tok, err
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	cmd := auth(ctx, dir, "status")
+	cmd.WaitDelay = time.Second
+	cmd.Run()
+	tok, _, err = read(dir)
+	return tok, err
 }
 
 // startAdapter is `util adapter-start` for one profile and model: its port,

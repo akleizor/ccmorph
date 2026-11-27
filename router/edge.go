@@ -93,7 +93,8 @@ func leavePick(session, prompt, word, model string) error {
 func dropAgent(agent string) { agentproxy.DropAgent(edgeAgents(), agent) }
 
 // proxyServes is whether the launcher's agent proxy can carry profile's sign-in:
-// a subscription token or an API key (cli.agentProxyServes keeps the same list).
+// a subscription sign-in or token, an API key, a gateway or a provider
+// (cli.agentProxyServes keeps the same list).
 func proxyServes(profile string) bool {
 	path, err := ctxwindow.ProfilePath(profile)
 	if err != nil {
@@ -103,5 +104,9 @@ func proxyServes(profile string) bool {
 	if err != nil {
 		return false
 	}
-	return f["type"] == "token" || f["type"] == "apikey" || f["type"] == "proxy"
+	switch f["type"] {
+	case "token", "apikey", "proxy", "provider", "sub":
+		return true
+	}
+	return false
 }

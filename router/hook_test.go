@@ -550,9 +550,21 @@ func TestPreToolUseHandsAnotherProfilesPickToTheAgentProxy(t *testing.T) {
 		t.Fatal("a stopped agent's binding is removed")
 	}
 
-	// A sign-in the proxy cannot carry (another subscription account) keeps the
+	// A provider or another subscription account is left for the proxy too.
+	for _, typ := range []string{"provider", "sub"} {
+		if err := os.WriteFile(filepath.Join(root, "there.conf"), []byte("type="+typ+"\nprovider=codex\nemail=a@b\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		out.Reset()
+		PreToolUse(strings.NewReader(agentCall), &out)
+		if !strings.Contains(out.String(), "through the agent proxy") {
+			t.Fatalf("a %s pick goes through the agent proxy: %s", typ, out.String())
+		}
+	}
+
+	// A profile of a type the proxy cannot carry keeps the
 	// session's own alias.
-	if err := os.WriteFile(filepath.Join(root, "there.conf"), []byte("type=sub\n"), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(root, "there.conf"), []byte("type=bogus\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	out.Reset()

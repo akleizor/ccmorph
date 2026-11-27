@@ -2077,12 +2077,12 @@ curl or Python in a session never meet the proxy. Every other host is a CONNECT 
 never reads. A session on any other endpoint gets the proxy as its base URL,
 and the proxy sends everything on to that endpoint. Only a request whose agent
 holds a pick changes: it leaves for the picked profile with that profile's
-credential (a Claude token as OAuth bearer, an API key, a gateway through an
-adapter started for that profile and model and tied to the Claude process), its
+credential (a Claude token, or another Claude account's keychain sign-in, as OAuth bearer; an API key; a gateway through an
+adapter started for that profile and model and tied to the Claude process; a provider profile through its shared bridge, joined or started as its own launch does and released when the session ends), its
 model set to the pick, and, off first party, the fields only first party
 accepts made portable as the edge does. Main-thread requests pass through
-untouched. The hook leaves a pick only for a profile the proxy can carry
-(`token`, `apikey`, `proxy`); any other falls back to the session's aliases.
+untouched. An expired account sign-in is renewed by Claude Code itself (`claude auth status`), never by a token call of ccmorph's. The hook leaves a pick only for a profile the proxy can carry
+(`token`, `apikey`, `proxy`, `provider`, `sub`); any other falls back to the session's aliases.
 
 One route, in order:
 
