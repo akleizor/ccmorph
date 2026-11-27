@@ -5619,6 +5619,178 @@ def test_a_restart_rehands_the_live_word_without_manual_repair(tmp_path, monkeyp
         assert len(w.children) == 2 and m.INFERENCE.read_text() == "oli\n"
 
 
+def test_a_restart_rehands_a_session_word_too(tmp_path, monkeypatch):
+    """GH-977: `--switch --session` hands one phone session its own profile and
+    leaves its word in <state>/sessions/<id>; the endpoint lives only in the edge's
+    proxy, and the re-hand loop asked after only the SHARED word. An edge or proxy
+    restart therefore kept the shared word served and dropped every session's pick:
+    the session fell to the edge's route while Stark still showed the profile it
+    chose — the #920 miss reborn through the door #595 left open. A session's word
+    is now kept held the same way the live word is, writes no word, and never
+    moves the shared switch."""
+    m = load()
+    w = _switcher(m, monkeypatch, tmp_path)
+    w.edge("gateway", 500)
+    m.INFERENCE.write_text("route\n")                 # no inference= line: every host follows the route
+    m.SESSION_WORDS.mkdir(parents=True, exist_ok=True)
+    (m.SESSION_WORDS / "cse_one").write_text("kimi\n")
+    sw = m.Switcher()
+    sw.reload("")                                     # the config asks for nothing the switch must move
+    sw.tend(0)                                        # records the (empty) ask
+    assert w.children == []
+    sw.tend(1)                                        # the pick has no endpoint yet: bring it up
+    assert [c.word for c in w.children] == ["kimi"]
+    w.finish(w.children[0])
+    for t in range(2, 5):
+        sw.tend(t)
+    assert len(w.children) == 1                       # held: nothing re-handed
+    w.proxy_restart(500)                              # the proxy forgets every endpoint it held
+    sw.tend(5)
+    assert [c.word for c in w.children] == ["kimi", "kimi"]
+    assert w.children[1].rehand                       # upkeep writes no word
+    assert m.INFERENCE.read_text() == "route\n"       # the shared word never moved
+    w.finish(w.children[1])
+    for t in range(6, 9):
+        sw.tend(t)
+    assert len(w.children) == 2 and m.INFERENCE.read_text() == "route\n"
+
+
+@pytest.mark.parametrize("shared, files, expected", [
+    pytest.param("route", {"cse_a": "account", "cse_b": "route", "cse_c": "not a word!"}, [],
+                 id="words-that-need-no-endpoint-ask-for-nothing"),
+    pytest.param("oli", {"cse_a": "kimi"}, ["oli", "kimi"],
+                 id="the-shared-word-goes-first-and-the-session-follows"),
+    pytest.param("kimi", {"cse_a": "kimi"}, ["kimi"],
+                 id="a-session-on-the-live-word-asks-for-one-child-not-two"),
+])
+def test_rehand_orders_the_words_and_writes_none_of_them(tmp_path, monkeypatch, shared, files, expected):
+    """GH-977 edges: words that name no endpoint (account, route, garbage) never
+    ask for a child; the shared word is kept before any session's; one word wants
+    one endpoint however many files name it. No re-hand ever moves the switch."""
+    m = load()
+    w = _switcher(m, monkeypatch, tmp_path)
+    w.edge("gateway", 500)
+    m.INFERENCE.write_text(shared + "\n")
+    m.WANTED.write_text(("" if shared == "route" else shared) + "\n")   # the ask already applied
+    m.SESSION_WORDS.mkdir(parents=True, exist_ok=True)
+    for sid, word in files.items():
+        (m.SESSION_WORDS / sid).write_text(word + "\n")
+    sw = m.Switcher()
+    sw.reload("" if shared == "route" else shared)
+    for i, word in enumerate(expected):
+        sw.tend(i)
+        assert w.children[i].word == word and w.children[i].rehand
+        w.finish(w.children[i])
+    sw.tend(len(expected))
+    assert len(w.children) == len(expected)                             # held: nothing further asked
+    assert m.INFERENCE.read_text() == shared + "\n"                     # upkeep wrote no word
+
+
+@pytest.mark.parametrize("shared, files, failing, expected_first", [
+    pytest.param("route", {"cse_a": "gone", "cse_b": "kimi"}, {"gone"}, ["gone", "kimi"],
+                 id="a-failing-first-session-word"),
+    pytest.param("oli", {"cse_a": "kimi"}, {"oli"}, ["oli", "kimi"],
+                 id="a-failing-shared-word"),
+    pytest.param("route", {"cse_a": "gone", "cse_b": "kimi"}, {"gone", "kimi"}, ["gone", "kimi"],
+                 id="every-word-failing-takes-turns"),
+])
+def test_a_word_whose_rehand_fails_never_starves_the_others(tmp_path, monkeypatch, shared, files,
+                                                           failing, expected_first):
+    """GH-977: rehand dispatched the first unheld word every tick and returned, so a
+    word whose --switch kept failing (a deleted profile, a dead upstream) was retried
+    for good and every word behind it was never handed -- a session's pick set in
+    Stark, never served, by one bad neighbour. A word whose re-hand failed now goes
+    behind the words that have not, and is tried again afterwards, never dropped."""
+    m = load()
+    w = _switcher(m, monkeypatch, tmp_path)
+    w.edge("gateway", 500)
+    m.INFERENCE.write_text(shared + "\n")
+    m.WANTED.write_text(("" if shared == "route" else shared) + "\n")   # the ask already applied
+    m.SESSION_WORDS.mkdir(parents=True, exist_ok=True)
+    for sid, word in files.items():
+        (m.SESSION_WORDS / sid).write_text(word + "\n")
+    sw = m.Switcher()
+    sw.reload("" if shared == "route" else shared)
+    for t in range(400):
+        sw.tend(t)
+        if w.children and w.children[-1].rc is None:
+            w.finish(w.children[-1], rc_=1 if w.children[-1].word in failing else 0)
+    words = [c.word for c in w.children]
+    assert words[:2] == expected_first                   # the failed word does not hold the queue
+    assert all(c.rehand for c in w.children)             # upkeep writes no word
+    wanted = {word for word in [*files.values(), shared] if word not in ("route", "account")}
+    assert wanted <= set(words), f"{wanted - set(words)} never handed"
+    for word in failing:
+        assert words.count(word) >= 2, f"{word} was dropped after its failure"
+    for word in set(words) - failing:
+        assert words.count(word) == 1, f"{word} was re-handed though the proxy holds it"
+    if failing >= set(words):
+        assert all(a != b for a, b in zip(words, words[1:]))   # takes turns, no word twice in a row
+    assert m.INFERENCE.read_text() == shared + "\n"             # upkeep wrote no word
+
+
+def test_a_word_whose_rehand_fails_then_succeeds_is_held_and_forgets_its_mark(tmp_path, monkeypatch):
+    """GH-977 edge: a word that failed and then goes through is held like any
+    other and stops being re-handed; its failure mark is forgotten, so its next
+    failure is ordered among equals, not behind a history it no longer has."""
+    m = load()
+    w = _switcher(m, monkeypatch, tmp_path)
+    w.edge("gateway", 500)
+    m.INFERENCE.write_text("route\n")
+    m.WANTED.write_text("\n")
+    m.SESSION_WORDS.mkdir(parents=True, exist_ok=True)
+    (m.SESSION_WORDS / "cse_a").write_text("gone\n")
+    (m.SESSION_WORDS / "cse_b").write_text("kimi\n")
+    sw = m.Switcher()
+    sw.reload("")
+    sw.tend(0)
+    assert [c.word for c in w.children] == ["gone"]
+    w.finish(w.children[0], rc_=1)               # its first re-hand fails
+    sw.tend(1)                                   # the failure is recorded, the next try waits
+    assert sw.failed == {"gone": 1}
+    sw.tend(3)                                   # the word that never failed goes first
+    assert [c.word for c in w.children] == ["gone", "kimi"]
+    w.finish(w.children[1])
+    sw.tend(4)                                   # the failed word is tried again
+    assert [c.word for c in w.children] == ["gone", "kimi", "gone"]
+    w.finish(w.children[2])                      # this time it succeeds
+    sw.tend(5)
+    assert sw.failed == {}                       # its mark is forgotten
+    for t in range(6, 10):
+        sw.tend(t)
+    assert len(w.children) == 3                  # held: nothing re-handed
+    assert m.INFERENCE.read_text() == "route\n"
+
+
+def test_a_word_whose_rehand_fails_and_is_named_no_more_forgets_its_mark(tmp_path, monkeypatch):
+    """GH-977 edge: when a session's file is gone, no word names that profile any
+    more; its failure mark must not outlive it and order a later word behind a
+    ghost."""
+    m = load()
+    w = _switcher(m, monkeypatch, tmp_path)
+    w.edge("gateway", 500)
+    m.INFERENCE.write_text("route\n")
+    m.WANTED.write_text("\n")
+    m.SESSION_WORDS.mkdir(parents=True, exist_ok=True)
+    (m.SESSION_WORDS / "cse_a").write_text("gone\n")
+    (m.SESSION_WORDS / "cse_b").write_text("kimi\n")
+    sw = m.Switcher()
+    sw.reload("")
+    sw.tend(0)
+    w.finish(w.children[0], rc_=1)
+    sw.tend(1)                                   # the failure is recorded, the next try waits
+    assert sw.failed == {"gone": 1}
+    (m.SESSION_WORDS / "cse_a").unlink()         # its session is gone: no file names the word
+    sw.tend(3)                                   # the next unheld word is handed, the mark dropped
+    assert [c.word for c in w.children] == ["gone", "kimi"]
+    assert sw.failed == {}
+    w.finish(w.children[1])
+    for t in range(4, 7):
+        sw.tend(t)
+    assert [c.word for c in w.children] == ["gone", "kimi"]   # the absent word is never retried
+    assert m.INFERENCE.read_text() == "route\n"
+
+
 def _two_account_profiles(state_dir: Path) -> None:
     """Two Claude account profiles on the machine: the state under which the
     one-shot `default_account()` refuses, and a refusal there is SystemExit."""

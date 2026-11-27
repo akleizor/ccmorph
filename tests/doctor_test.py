@@ -1443,6 +1443,67 @@ def test_doctor_reports_a_hosted_edge_only_when_its_pins_are_the_question_gh_881
         assert rows == [], result.stdout
 
 
+@pytest.mark.parametrize("case", [
+    "miss",       # the live edge recorded misses: a WARN names them and keeps its last line
+    "clean",      # turns served as picked: an INFO says so
+    "stale",      # the record is an earlier proxy's at this pid: it answers nothing
+    "no-held",    # no held record to say which proxy the served record is this run's
+    "absent",     # no record yet: a fresh edge has no history to report
+    "fifo",       # a FIFO under served.4242.json: refused, never waited on (#654 rule)
+])
+def test_doctor_answers_whether_the_edge_served_what_sessions_picked_gh_977(tmp_path, case):
+    """GH-977: the per-turn asked-vs-served verdict (#920) reached only the --debug
+    log, so a pick set in Stark and served elsewhere was audited and forgotten and
+    Alex found the next miss before any check did. The proxy now keeps the outcome
+    in the state dir and doctor answers the outcome on the hosted row: misses warn
+    with the last miss line, a clean run says so, and nothing is claimed for a
+    record an earlier proxy wrote (identity is pid AND start, the #595 rule --
+    served and held must name the same edge run)."""
+    base = rc_state(hosts=RC_HOSTS, tiers={"fable": "gpt-6-astra", "haiku": "deepseek-v4.1-flash"})
+
+    def outcome(state, turns, misses, last=None, started="edge-s1"):
+        bridge = state / "profiles" / ".rc-bridge"
+        (bridge / "held.4242.json").write_text(json.dumps(
+            {"edge": 4242, "edge_started": started, "profiles": {}}))
+        (bridge / "served.4242.json").write_text(json.dumps(
+            {"edge": 4242, "edge_started": started, "turns": turns, "misses": misses,
+             "last_miss": {"at": 1, "line": last} if last else None}))
+
+    def make(state):
+        base(state)
+        if case == "miss":
+            outcome(state, 9, 2, last="asked=kimi via=route served-by=127.0.0.1:60111")
+        elif case == "clean":
+            outcome(state, 5, 0)
+        elif case == "stale":
+            outcome(state, 9, 2, last="asked=kimi served-by=x", started="edge-s0")
+            (state / "profiles" / ".rc-bridge" / "held.4242.json").write_text(json.dumps(
+                {"edge": 4242, "edge_started": "edge-s1", "profiles": {}}))
+        elif case == "no-held":
+            outcome(state, 9, 2, last="asked=kimi served-by=x")
+            (state / "profiles" / ".rc-bridge" / "held.4242.json").unlink()
+        elif case == "fifo":
+            outcome(state, 5, 0)
+            p = state / "profiles" / ".rc-bridge" / "served.4242.json"
+            p.unlink()
+            os.mkfifo(p)
+
+    result, _, _ = run_doctor(tmp_path, RC_GATEWAY_CONF, OK_CURL, setup=make)
+    assert result.returncode == 0, result.stdout
+    rows = [line for line in result.stdout.splitlines() if "session turn" in line]
+    if case == "miss":
+        assert rows == ["WARN remote control: 2 of 9 session turns since this edge started "
+                        "were served by another endpoint than the pick chose; last: asked=kimi "
+                        "via=route served-by=127.0.0.1:60111"], rows
+        # the profile itself still runs: the outcome warns without weighing on the verdict
+        assert result.stdout.splitlines()[-1] == "OK ready: start it with ccmorph run demo", result.stdout
+    elif case == "clean":
+        assert rows == ["INFO remote control: all 5 session turns since this edge started "
+                        "were served by the endpoint their pick chose"], rows
+    else:
+        assert rows == [], result.stdout
+
+
 @pytest.mark.parametrize("case", ["gateway-ok", "missing-credential", "malformed-listing", "nothing-to-pick-gh-862"])
 def test_doctor_ends_with_a_verdict(tmp_path, case):
     """The last line answers the only question a person has: is this profile

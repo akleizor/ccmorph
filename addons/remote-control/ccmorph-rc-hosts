@@ -2388,6 +2388,8 @@ class Switcher:
         self.backoff, self.next_try = BACKOFF_MIN, 0.0
         self.said = None                 # the last waiting line, logged once
         self.failure = None              # the last OSError logged, so a lasting refusal is one line
+        self.failed = {}                 # word -> sequence number of its last failed re-hand
+        self.fails = 0                   # the last number handed out of self.failed
 
     @staticmethod
     def recorded():
@@ -2470,8 +2472,12 @@ class Switcher:
                     log(f"inference: {word} landed, then the switch was set to {self.base} by hand")
                 if applies:
                     self.record_after(word)
+                self.failed.pop(word, None)  # the word is served again: it is no longer behind
             else:
                 self.next_try = now + self.backoff
+                if not applies:          # a re-hand that failed goes behind the words that have not
+                    self.fails += 1
+                    self.failed[word] = self.fails
                 log(f"inference: {word} bring-up failed (rc={rc}); retrying in {self.backoff:g}s "
                     f"(see {LOGS / 'switch.log'})")
                 self.backoff = min(self.backoff * 2, BACKOFF_MAX)
@@ -2535,22 +2541,54 @@ class Switcher:
             self.fail((word, type(e).__name__, e.errno),
                       f"inference {word}: not applied ({e}); retrying next tick")
 
+    def session_words(self) -> list[str]:
+        """The words the phone sessions chose for themselves (`--switch --session`),
+        deduplicated in a stable order: two sessions on one profile want one
+        endpoint. Their files outlive the proxy that served them, so the words in
+        them are asks the Switcher must keep served (GH-977)."""
+        try:
+            names = sorted(os.listdir(SESSION_WORDS))
+        except OSError:
+            return []
+        out = []
+        for name in names:
+            try:
+                word = (SESSION_WORDS / name).read_text().strip()
+            except OSError:
+                continue                      # vanished or unreadable this once: its next word waits
+            if word and word not in out:
+                out.append(word)
+        return out
+
     def rehand(self) -> None:
-        """Keep the LIVE word's endpoint in the live edge's proxy: re-run --switch for
-        whatever the switch file names -- the config's profile or a manual one --
-        when that proxy does not say it holds it (an edge or proxy restart, or an
-        adapter that stopped answering). It never changes which profile is live."""
-        word = live_word()
-        if word in (None, "account", "route") or not SWITCH_WORD.fullmatch(word):
+        """Keep every held-on-demand word's endpoint in the live edge's proxy: the
+        LIVE word (whatever the switch file names -- the config's profile or a
+        manual one) and every session's own word, re-running --switch for each when
+        that proxy does not say it holds it (an edge or proxy restart, or an
+        adapter that stopped answering). A session's word names an endpoint exactly
+        like the live word does, and a proxy keeps its endpoints only in memory, so
+        without this an edge restart left every session on the route while Stark
+        still showed the profile it had chosen -- the pick that is set but not
+        served again (GH-977, #595's remaining door). The shared word goes first;
+        one child per tick, the rest land on later ticks. It never changes which
+        profile is live, and words that need no endpoint (account, route) are
+        never asked about. A word whose re-hand child failed goes behind the
+        words that have not, so one broken word cannot keep another session's
+        pick unserved (GH-977)."""
+        words = list(dict.fromkeys([live_word(), *self.session_words()]))
+        words = [w for w in words if w not in (None, "account", "route") and SWITCH_WORD.fullmatch(w)]
+        if not words:
             return
         n, edge = self.edge()
         if n != 1:
-            self.say(f"inference: {word} waits for exactly one live shared edge to hold its endpoint ({n} live)")
+            self.say(f"inference: {words[0]} waits for exactly one live shared edge to hold its endpoint ({n} live)")
             return
-        if self.held(word, edge):
-            self.said = None
+        unheld = [w for w in words if not self.held(w, edge)]
+        self.failed = {w: k for w, k in self.failed.items() if w in unheld}
+        if unheld:
+            self.dispatch(min(unheld, key=lambda w: self.failed.get(w, 0)), applies=False)
             return
-        self.dispatch(word, applies=False)
+        self.said = None
 
 
 class Clock:
