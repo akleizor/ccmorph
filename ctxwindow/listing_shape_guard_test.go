@@ -67,6 +67,7 @@ import (
 // must still match, so the list cannot hide a stale or misspelt exemption.
 var dataKeyOwners = map[string]string{
 	"ctxwindow/listing.go ListingShape":        "the shared verdict itself",
+	"agentproxy/edgebody.go slimResult":        "an image block's base64 data in a Remote Control event upload, not a /v1/models listing",
 	"quota/balance.go balanceReaders":          "Moonshot's and SiliconFlow's balance replies (balanceField paths), not a /v1/models listing",
 	"quota/balance.go openrouterBalance":       "OpenRouter's credits reply, not a /v1/models listing",
 	"quota/balance.go zhipuBalance":            "Zhipu's balance reply, not a /v1/models listing",

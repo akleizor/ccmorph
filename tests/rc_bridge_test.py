@@ -1,4 +1,5 @@
-"""Remote Control bridge add-on: routing decision and credential isolation."""
+"""Remote Control launcher: credential isolation, edge handoffs and the proxy's start. The
+request routing is the Go edge proxy's (agentproxy/edge*_test.go)."""
 import contextlib
 import json
 import os
@@ -17,76 +18,24 @@ import pytest
 from support import HANG_TIMEOUT, load_script, proxy_took, wait_until
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "addons" / "remote-control"))
-from rc_route import ACCOUNT_METADATA, inference_target, is_inference, reroute  # noqa: E402
 
 OAUTH = "sk-ant-oat01-ACCOUNT-SECRET"
 
 
-@pytest.mark.parametrize("host,path", [
-    ("api.anthropic.com", "/v1/messages"),
-    ("api.anthropic.com", "/v1/messages?beta=true"),
-    ("API.anthropic.com.", "/v1/messages/count_tokens"),
-])
-def test_inference_is_rerouted(host, path):
-    assert is_inference(host, path)
 
 
-@pytest.mark.parametrize("host,path", [
-    ("api.anthropic.com", "/v1/code/sessions/abc/worker/heartbeat"),
-    ("api.anthropic.com", "/v1/environments/bridge"),
-    ("api.anthropic.com", "/api/oauth/validate"),
-    ("api.anthropic.com", "/v1/messagesX"),
-    ("evil.example", "/v1/messages"),
-    ("api.anthropic.com.evil.example", "/v1/messages"),
-])
-def test_everything_else_passes_through(host, path):
-    assert not is_inference(host, path)
 
 
-def test_account_credential_never_reaches_the_route():
-    headers = {"Authorization": f"Bearer {OAUTH}", "X-Api-Key": OAUTH, "Cookie": f"s={OAUTH}",
-               "anthropic-beta": "oauth-2025-04-20,fine-grained-tool-streaming-2025-05-14",
-               "anthropic-version": "2023-06-01", "Host": "api.anthropic.com"}
-    out, target = reroute(headers, "https://gw.example:18443", "route-key")
-    assert OAUTH not in repr(out)
-    assert out["x-api-key"] == "route-key" and out["authorization"] == "Bearer route-key"
-    assert out["anthropic-beta"] == "fine-grained-tool-streaming-2025-05-14"
-    assert out["anthropic-version"] == "2023-06-01"
-    assert out["host"] == "gw.example:18443"
-    assert target == ("https", "gw.example", 18443)
 
 
-def test_only_oauth_beta_means_no_beta_header():
-    out, _ = reroute({"anthropic-beta": "oauth-2025-04-20"}, "http://127.0.0.1:5000", "k")
-    assert "anthropic-beta" not in out
 
 
-def test_loopback_adapter_target():
-    _, target = reroute({}, "http://127.0.0.1:54505", "k")
-    assert target == ("http", "127.0.0.1", 54505)
 
 
-def test_non_http_upstream_is_refused():
-    with pytest.raises(ValueError):
-        reroute({}, "file:///etc/passwd", "k")
 
 
-def test_first_party_only_thinking_display_is_made_portable():
-    from rc_route import normalize_body
-    body = {"thinking": {"type": "adaptive", "display": "updates"}}
-    assert normalize_body(body)
-    assert body["thinking"] == {"type": "adaptive", "display": "omitted"}
 
 
-def test_first_party_cache_scope_is_dropped_but_the_breakpoint_kept():
-    from rc_route import normalize_body
-    cc = lambda: {"type": "ephemeral", "ttl": "1h", "scope": "global"}
-    body = {"system": [{"type": "text", "text": "a"}, {"type": "text", "text": "b", "cache_control": cc()}],
-            "messages": [{"role": "user", "content": [{"type": "text", "text": "q", "cache_control": cc()}]}],
-            "tools": [{"name": "t", "cache_control": cc()}]}
-    assert normalize_body(body)
-    assert "scope" not in repr(body)
-    assert body["system"][1]["cache_control"] == {"type": "ephemeral", "ttl": "1h"}
 
 
 def _turn(header_tail, messages):
@@ -99,69 +48,12 @@ def _turn(header_tail, messages):
             "messages": messages}
 
 
-def test_consecutive_first_party_turns_share_a_cacheable_prefix():
-    """The route caches on the request prefix, so a prompt cache only survives if
-    turn 2's body literally starts with turn 1's. A first-party login puts six
-    per-request fields in the billing header, which rewrote that prefix every turn."""
-    from rc_route import normalize_body
-    asked = [{"role": "user", "content": [{"type": "text", "text": "q"}]}]
-    t1 = _turn(" cch=1f2e3; cc_prompt_id=11111111-1111-4111-8111-111111111111; cc_turn_origin=user;"
-               " cc_prompt_index=0; cc_turn_index=1;", asked)
-    t2 = _turn(" cch=9a8b7; cc_prev_req=req_011CAbc; cc_prompt_id=22222222-2222-4222-8222-222222222222;"
-               " cc_turn_origin=user; cc_prompt_index=1; cc_turn_index=2;",
-               asked + [{"role": "assistant", "content": [{"type": "text", "text": "a"}]},
-                        {"role": "user", "content": [{"type": "text", "text": "q2"}]}])
-    assert normalize_body(t1) and normalize_body(t2)
-    # What the route caches is the body's text: every byte of turn 1, up to the closers
-    # of its message list and body, opens turn 2 — which then goes on with a comma.
-    t1_json, t2_json = json.dumps(t1), json.dumps(t2)
-    assert t2_json.startswith(t1_json[:-2])
-    assert t2_json[len(t1_json) - 2] == ","
-    assert t2["system"][0]["text"] == "x-anthropic-billing-header: cc_version=2.1.302.a1b; cc_entrypoint=sdk-cli;"
 
 
-@pytest.mark.parametrize("tail,left", [
-    (" cch=abc cc_workload=cron;", " cc_workload=cron;"),   # no ";" yet: the next field stays
-    ("\tcch=abc;\ncc_workload=cron;", "\ncc_workload=cron;"),  # its own separator goes, the next one stays
-])
-def test_a_turn_field_never_takes_its_neighbour_with_it(tail, left):
-    from rc_route import normalize_body
-    head = "x-anthropic-billing-header: cc_version=2.1.302.a1b; cc_entrypoint=sdk-cli;"
-    body = {"system": [{"type": "text", "text": head + tail}]}
-    assert normalize_body(body)
-    assert body["system"][0]["text"] == head + left
 
 
-@pytest.mark.parametrize("body", [
-    {"thinking": {"type": "adaptive", "display": "omitted"}},
-    {"thinking": {"type": "adaptive", "display": "summarized"}},
-    {"thinking": {"type": "disabled"}},
-    {"messages": []},
-    {"system": [{"type": "text", "text": "a", "cache_control": {"type": "ephemeral"}}]},
-    {"system": [{"type": "text", "text": "x-anthropic-billing-header: cc_version=2.1.302.a1b;"
-                                         " cc_entrypoint=cli; cc_workload=cron; cc_is_subagent=true;"
-                                         " cc_gateway=env;"}]},
-    [],
-])
-def test_portable_bodies_are_left_alone(body):
-    from rc_route import normalize_body
-    before = repr(body)
-    assert not normalize_body(body)
-    assert repr(body) == before
 
 
-@pytest.mark.parametrize("model,sent", [
-    ("claude-fable-5-1", "gpt-6-astra"),
-    ("claude-fable-5", "gpt-6-astra"),
-    ("fable", "gpt-6-astra"),
-    ("claude-opus-5-5", "claude-opus-5-5"),
-    ("gpt-6-astra", "gpt-6-astra"),
-])
-def test_pinned_tier_covers_full_ids(model, sent):
-    from rc_route import normalize_body
-    body = {"model": model}
-    assert normalize_body(body, {"fable": "gpt-6-astra"}) == (model != sent)
-    assert body["model"] == sent
 
 
 def _launcher():
@@ -224,7 +116,7 @@ def test_route_profile_is_resolved_through_route_env(monkeypatch):
 
 
 def test_adapter_keeps_the_ambient_proxy_but_no_inherited_credential(monkeypatch):
-    # The session loses every proxy (its one proxy is the mitmdump), but the
+    # The session loses every proxy (its one proxy is the edge proxy), but the
     # adapter dials the route's real endpoint and must reach it the same way
     # everything else does — through whatever HTTPS_PROXY the caller exported.
     rc = _launcher()
@@ -556,72 +448,8 @@ def test_sessions_send_the_whole_conversation_never_a_server_thread():
     assert rc.session_env({}, {}, True)["CLAUDE_CODE_TETHER_LIVE"] == "0"
 
 
-def test_event_uploads_keep_only_what_the_phone_shows():
-    from rc_route import TEXT_MAX, is_event_upload, slim_events
-    assert is_event_upload("api.anthropic.com", "/v1/code/sessions/cse_01Ab/worker/events")
-    assert not is_event_upload("api.anthropic.com", "/v1/code/sessions/cse_01Ab/worker/events/stream")
-    long = "x" * (TEXT_MAX * 3)
-    shot = {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": "A" * 200_000}}
-    icon = {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": "B" * 500}}
-    body = {"worker_epoch": 1, "events": [
-        {"payload": {"type": "control_response", "response": {"response": {
-            "models": [{"value": "opus"}],
-            "commands": [{"name": "a", "argumentHint": "<x>", "description": "long"}]}}}},
-        {"payload": {"type": "assistant", "wire_tool_inputs": {"t": {"command": "ls"}}, "message": {"content": [
-            {"type": "thinking", "thinking": "why", "signature": "S" * 900},
-            {"type": "tool_use", "id": "t", "input": {"command": "ls"}}]}}},
-        {"payload": {"type": "user", "message": {"content": [
-            {"type": "tool_result", "tool_use_id": "t", "content": [shot, icon, {"type": "text", "text": long}]},
-            {"type": "tool_result", "tool_use_id": "u", "content": long}]},
-         "tool_use_result": {"originalFile": long, "structuredPatch": [{"lines": ["-a", "+b"]}], "stdout": long}}},
-    ]}
-    assert slim_events(body, lambda data, kind: ("C" * 9, "image/jpeg"))
-    listing, said, result = (e["payload"] for e in body["events"])
-    assert listing["response"]["response"]["commands"] == [{"name": "a", "argumentHint": "<x>"}]
-    assert listing["response"]["response"]["models"] == [{"value": "opus"}]
-    assert "wire_tool_inputs" not in said
-    assert said["message"]["content"][0] == {"type": "thinking", "thinking": "why", "signature": ""}
-    assert said["message"]["content"][1]["input"] == {"command": "ls"}
-    first, second = result["message"]["content"]
-    assert first["content"][0]["source"] == {"type": "base64", "media_type": "image/jpeg", "data": "C" * 9}
-    assert first["content"][1] == icon
-    assert first["content"][2]["text"].startswith("x" * TEXT_MAX) and len(first["content"][2]["text"]) < TEXT_MAX + 100
-    assert len(second["content"]) < TEXT_MAX + 100
-    assert result["tool_use_result"] == {"structuredPatch": [{"lines": ["-a", "+b"]}]}   # the diff stays
-    assert not slim_events(body, lambda data, kind: None)   # already slim: nothing to do
-    # A tool_result without `content` has always gained `content: null`; that key
-    # insertion is a change the flag has to carry, like any rewrite of its value.
-    bare = {"events": [{"payload": {"type": "user", "message": {"content": [
-        {"type": "tool_result", "tool_use_id": "v"}]}}}]}
-    assert slim_events(bare, lambda data, kind: None)
-    assert bare["events"][0]["payload"]["message"]["content"][0]["content"] is None
-    assert not slim_events(bare, lambda data, kind: None)
 
 
-def test_one_event_upload_is_serialized_at_most_once(monkeypatch):
-    """slim_events knows what it changed while it walks the body; re-encoding a
-    multi-MB upload to diff it against itself doubled every session open."""
-    import rc_route
-    serialized = []
-    real_encode = rc_route.encode_json
-
-    def counting(obj, ensure_ascii=False):
-        serialized.append(1)
-        return real_encode(obj, ensure_ascii=ensure_ascii)
-
-    monkeypatch.setattr(rc_route, "encode_json", counting)
-    body = {"events": [
-        {"payload": {"type": "user", "message": {"content": [
-            {"type": "tool_result", "tool_use_id": "t", "content": [
-                {"type": "image", "source": {"type": "base64", "media_type": "image/png",
-                                             "data": "A" * 200_000}},
-                {"type": "text", "text": "x" * 10_000}]}]},
-         "tool_use_result": {"stdout": "y" * 10_000}}}]}
-    assert rc_route.slim_events(body, lambda data, kind: ("C" * 9, "image/jpeg"))
-    assert len(serialized) <= 1, f"one upload serialized the body {len(serialized)} times"
-    serialized.clear()
-    assert not rc_route.slim_events(body, lambda data, kind: ("C" * 9, "image/jpeg"))
-    assert len(serialized) <= 1, f"an already-slim upload serialized the body {len(serialized)} times"
 
 
 def test_the_proxy_inherits_a_raised_open_file_limit(monkeypatch):
@@ -711,85 +539,17 @@ def test_default_account_names_claude_account_profiles(tmp_path, monkeypatch, ca
     assert "subscription" not in err
 
 
-def test_a_route_pinned_tier_is_served_as_the_targets_own_model():
-    """A session's env pins the route's fable (gpt-6-astra) on the bare alias. Under
-    another target that id is read back to fable and served as the target's fable;
-    the account (family=False) changes nothing else the phone picked."""
-    from rc_route import normalize_body, set_model
-    route = {"fable": "gpt-6-astra", "opus": "claude-opus-5-5"}
-    gpro = {"fable": "claude-opus-4-6-thinking", "opus": "claude-opus-4-6-thinking"}
-    body = {"model": "gpt-6-astra"}
-    assert normalize_body(body, gpro, route) and body["model"] == "claude-opus-4-6-thinking"
-    body = {"model": "gpt-6-astra"}
-    assert set_model(body, {"fable": "claude-fable-5-2"}, route, family=False)
-    assert body["model"] == "claude-fable-5-2"
-    body = {"model": "claude-sonnet-5-5"}
-    assert not set_model(body, {"sonnet": "x"}, route, family=False)
-    body = {"model": "gpt-6-astra"}
-    assert not normalize_body(body, route, route)           # on the route itself nothing moves
 
 
-def test_a_session_word_is_read_only_from_a_plain_id(tmp_path):
-    from rc_route import session_target
-    (tmp_path / "cse_1").write_text("gw\n")
-    (tmp_path / "bad").write_text("not a word!\n")
-    assert session_target(str(tmp_path), "cse_1") == "gw"
-    assert session_target(str(tmp_path), "bad") is None
-    assert session_target(str(tmp_path), "missing") is None
-    assert session_target(str(tmp_path), "../" + tmp_path.name + "/cse_1") is None
-    assert session_target(None, "cse_1") is None
 
 
-def test_a_session_word_is_found_by_the_header_claude_code_really_sends(tmp_path):
-    """Claude Code sends a UUIDv5 of the session's --sdk-url, never the cse_ id (2026-11-25)."""
-    from rc_route import header_id, session_target
-    # a real pair: the Start UI host's --sdk-url id and the transcript id its requests carried
-    assert header_id("cse_01UYCe7WrYRm399JWcJrn7Rd") == "c3ca46e6-52e5-57cc-a1c3-6a9e88650085"
-    (tmp_path / "cse_01UYCe7WrYRm399JWcJrn7Rd").write_text("account\n")
-    (tmp_path / "cse_other").write_text("gw\n")
-    assert session_target(str(tmp_path), "c3ca46e6-52e5-57cc-a1c3-6a9e88650085") == "account"
-    assert session_target(str(tmp_path), header_id("cse_other")) == "gw"
-    assert session_target(str(tmp_path), header_id("cse_absent")) is None
 
 
-def test_inference_switch_is_read_live_and_defaults_to_the_route(tmp_path):
-    switch = tmp_path / "inference"
-    assert inference_target(None) == "route"
-    assert inference_target(str(switch)) == "route"          # no file: the route, as before
-    switch.write_text("account\n")
-    assert inference_target(str(switch)) == "account"        # the next turn sees it, no restart
-    switch.write_text("route\n")
-    assert inference_target(str(switch)) == "route"
-    switch.write_text("oli\n")
-    assert inference_target(str(switch)) == "oli"            # a profile --switch brought up
-    switch.write_text("../etc/x\n")
-    assert inference_target(str(switch)) == "route"          # not a profile name: the route
 
 
 ADDON = Path(__file__).resolve().parent.parent / "addons" / "remote-control" / "rc_addon.py"
 
 
-def _addon(monkeypatch, tmp_path, word):
-    """The addon loaded with a stub mitmproxy: its decision, not the proxy, is
-    what these tests read. The end-to-end path is rc_bridge_failclosed_test.py,
-    which needs a real mitmdump; this table runs wherever the suite does."""
-    import types
-    http = types.ModuleType("mitmproxy.http")
-    http.HTTPFlow = type("HTTPFlow", (), {})
-    package = types.ModuleType("mitmproxy")
-    package.http = http
-    monkeypatch.setitem(sys.modules, "mitmproxy", package)
-    monkeypatch.setitem(sys.modules, "mitmproxy.http", http)
-    key = tmp_path / "route-key"
-    key.write_text("route-key")
-    switch = tmp_path / "inference"
-    switch.write_text(word + "\n")
-    monkeypatch.setenv("RC_UPSTREAM", "http://127.0.0.1:5000")
-    monkeypatch.setenv("RC_KEY_FILE", str(key))
-    monkeypatch.setenv("RC_INFERENCE", str(switch))
-    for name in ("RC_TIERS", "RC_LOG", "RC_SOURCE"):
-        monkeypatch.delenv(name, raising=False)
-    return load_script(ADDON, "rc_addon_decision")
 
 
 class _Flow:
@@ -809,41 +569,10 @@ class _Flow:
         self.metadata = {}
 
 
-@pytest.mark.parametrize("word, first_party", [("account", True), ("route", False)])
-def test_the_account_word_marks_what_it_leaves_first_party(word, first_party, tmp_path, monkeypatch):
-    """GH-594: the account word hands the call to Anthropic untouched, on the
-    destination the fail-closed guard closes. It must mark that flow, and the
-    route word must not: only the addon's mark tells a legitimate account call
-    from one no addon ever saw."""
-    addon = _addon(monkeypatch, tmp_path, word)
-    flow = _Flow()
-    addon.requestheaders(flow)
-    assert (flow.metadata.get(ACCOUNT_METADATA) is True) == first_party
-    if first_party:
-        assert (flow.request.scheme, flow.request.host) == ("https", "api.anthropic.com")
-        assert flow.request.headers == {"authorization": "Bearer ACCOUNT"}
-    else:
-        assert flow.metadata["rc_route"] is True
-        assert flow.request.headers["x-api-key"] == "route-key"
 
 
-def test_the_guard_exempts_the_mark_the_account_branch_sets(tmp_path, monkeypatch):
-    """The launcher's block_list and the addon name one metadata key: the guard
-    closes the account destination for every flow without it, and the account
-    branch is the only code that sets it."""
-    addon = _addon(monkeypatch, tmp_path, "account")
-    assert f"!~meta {ACCOUNT_METADATA}" in _launcher().FAIL_CLOSED
 
 
-def test_a_pinned_tier_reaches_the_backend_without_the_context_marker():
-    """oli pins opus to claude-opus-5-5[1m]; its backend 404s on the marker (2026-11-16)."""
-    from rc_route import normalize_body
-    body = {"model": "claude-opus-5-5"}
-    normalize_body(body, {"opus": "claude-opus-5-5[1m]"})
-    assert body["model"] == "claude-opus-5-5"
-    body = {"model": "claude-opus-5-5[1m]"}
-    assert normalize_body(body, {"opus": "claude-opus-5-5[1m]"})
-    assert body["model"] == "claude-opus-5-5"
 
 
 def test_an_rc_session_loads_the_router_plugin_while_the_router_is_on(tmp_path, monkeypatch):
@@ -890,33 +619,6 @@ def _switch_state(tmp_path, monkeypatch):
 _BOOT_TIERS = {"sonnet": "boot-route-sonnet"}
 
 
-def _switch_addon(monkeypatch, state):
-    """rc_addon loaded the way ccmorph-rc loads it: a private copy configured through
-    the environment alone. mitmproxy only ever appears in the hook signatures, and the
-    suite runs without it, so where it is not installed the name resolves to a stub;
-    neither the handoff read nor the routing decision reaches past it."""
-    from types import ModuleType, SimpleNamespace
-    key = state / "route-key"
-    key.parent.mkdir(parents=True, exist_ok=True)
-    key.write_text("route-key\n")
-    monkeypatch.setenv("RC_UPSTREAM", "http://127.0.0.1:60111")
-    monkeypatch.setenv("RC_KEY_FILE", str(key))
-    monkeypatch.setenv("RC_INFERENCE", str(state / "inference"))
-    monkeypatch.setenv("RC_LOG", str(state / "addon.log"))
-    # Every RC_* the add-on reads at import is pinned here, never inherited from the
-    # suite's environment (REVIEW.md: a test that cannot fail).
-    monkeypatch.setenv("RC_TIERS", json.dumps(_BOOT_TIERS))
-    monkeypatch.delenv("RC_PARENT_PID", raising=False)
-    monkeypatch.delenv("RC_PARENT_STARTED", raising=False)
-    monkeypatch.delenv("RC_SOURCE", raising=False)
-    try:
-        import mitmproxy  # noqa: F401
-    except ImportError:
-        mitm = ModuleType("mitmproxy")
-        mitm.http = SimpleNamespace(HTTPFlow=object)
-        monkeypatch.setitem(sys.modules, "mitmproxy", mitm)
-    path = Path(__file__).resolve().parent.parent / "addons" / "remote-control" / "rc_addon.py"
-    return load_script(path, "rc_addon_switch")
 
 
 def test_a_switch_handoff_pins_its_tiers_through_pinned_tiers(tmp_path, monkeypatch):
@@ -984,138 +686,12 @@ def test_an_account_switch_records_the_accounts_own_tiers(tmp_path, monkeypatch)
     assert json.loads((rc.STATE / "account-tiers.json").read_text()) == {"fable": "claude-fable-5-2"}
 
 
-def test_a_session_word_overrides_the_shared_switch_for_its_own_requests(tmp_path, monkeypatch):
-    """The proxy reads X-Claude-Code-Session-Id on every turn: that session's word
-    wins, a session with none (or another) follows the shared switch."""
-    from types import SimpleNamespace
-    state = tmp_path / "state"
-    (state / "sessions").mkdir(parents=True)
-    (state / "inference").write_text("route\n")
-    (state / "sessions" / "cse_mine").write_text("account\n")
-    addon = _switch_addon(monkeypatch, state)
-
-    def flow(sid):
-        f = SimpleNamespace(metadata={}, request=SimpleNamespace(
-            pretty_host="api.anthropic.com", path="/v1/messages", method="POST",
-            headers={"authorization": "Bearer ACCOUNT-SECRET", "x-claude-code-session-id": sid},
-            scheme="https", host="api.anthropic.com", port=443))
-        addon.requestheaders(f)
-        return f
-    assert flow("cse_mine").metadata.get(ACCOUNT_METADATA) is True
-    assert flow("cse_other").metadata["rc_route"] is True
-    assert flow("../inference").metadata["rc_route"] is True
 
 
-def test_every_session_turn_answers_which_upstream_served_it(tmp_path, monkeypatch):
-    """GH-920: the profile set in Stark must be the upstream that answers. Turns
-    driven in the shapes Claude Code really uses — the pick file named by the cse id,
-    the request carrying the UUIDv5 header its child stamps — and the debug log
-    answering every turn requested-vs-served: the word the pick set, and the
-    endpoint that replied. A turn answered by anything but the picked endpoint is a
-    miss, never a quiet success: a routed turn carrying Anthropic's signature, a
-    reply from an endpoint other than the one the request left for, and a pick the
-    proxy holds no endpoint for (it falls back to the edge's route, #595) all say so
-    (2026-11-25: picks set in Stark stopped applying altogether, and nothing in the
-    log said so)."""
-    from types import SimpleNamespace
-    from rc_route import header_id
-    state = tmp_path / "state"
-    (state / "sessions").mkdir(parents=True)
-    (state / "inference").write_text("route\n")
-    (state / "sessions" / "cse_01UYCe7WrYRm399JWcJrn7Rd").write_text("gw\n")
-    (state / "sessions" / "cse_account").write_text("account\n")
-    (state / "sessions" / "cse_orphan").write_text("ds\n")     # a pick no proxy holds an endpoint for
-    (state / "switch-gw.json").write_text(json.dumps(
-        {"upstream": "http://127.0.0.1:54505", "key": "route-key", "tiers": {}}))
-    addon = _switch_addon(monkeypatch, state)
-
-    def turn(cse, reply, answers=None):
-        f = SimpleNamespace(metadata={}, request=SimpleNamespace(
-            pretty_host="api.anthropic.com", path="/v1/messages", method="POST",
-            headers={"authorization": "Bearer ACCOUNT-SECRET",
-                     "x-claude-code-session-id": header_id(cse)},
-            scheme="https", host="api.anthropic.com", port=443))
-        addon.requestheaders(f)
-        # The connection that answered: the destination it was sent to, unless the
-        # test names another endpoint that replied.
-        where = answers or (f.request.host, f.request.port)
-        addon.responseheaders(SimpleNamespace(
-            metadata=f.metadata, request=f.request,
-            server_conn=SimpleNamespace(address=where),
-            response=SimpleNamespace(status_code=200, headers=reply)))
-
-    turn("cse_01UYCe7WrYRm399JWcJrn7Rd", {})                     # its pick's endpoint answers
-    turn("cse_01UYCe7WrYRm399JWcJrn7Rd", {"anthropic-organization-id": "org"})
-    turn("cse_01UYCe7WrYRm399JWcJrn7Rd", {}, answers=("127.0.0.1", 60111))   # another endpoint replied
-    turn("cse_orphan", {})                                       # the pick fell back to the route
-    turn("cse_account", {"anthropic-organization-id": "org"}, answers=("160.79.104.10", 443))
-    turn("cse_account", {}, answers=("160.79.104.10", 443))
-    turn("cse_wordless", {})                                     # follows the shared route
-    turn("cse_01UYCe7WrYRm399JWcJrn7Rd", {}, answers=("127.0.0.2", 54505))   # another IP, same port
-    served = [ln for ln in (state / "addon.log").read_text().splitlines() if "served-by=" in ln]
-    assert len(served) == 8                                      # every turn, and only the turns
-    assert [ln.split()[1] for ln in served] == ["route", "miss", "miss", "miss",
-                                                "account", "miss", "route", "miss"]
-    assert "asked=gw served-by=127.0.0.1:54505" in served[0]     # the pick served its session
-    assert "asked=gw served-by=ANTHROPIC" in served[1]           # subscription answered a routed turn
-    assert "asked=gw served-by=127.0.0.1:60111" in served[2]     # left for 54505, answered by 60111
-    assert "asked=ds via=route served-by=127.0.0.1:60111" in served[3]   # the pick was not served
-    assert "asked=account served-by=ANTHROPIC" in served[4]
-    assert "asked=account served-by=160.79.104.10:443 (no Anthropic signature)" in served[5]
-    assert "asked=route served-by=127.0.0.1:60111" in served[6]  # shared word, no false miss
-    assert "asked=gw served-by=127.0.0.2:54505" in served[7]     # another IP on the pick's port
 
 
-def test_which_upstream_served_compares_a_named_upstream_by_host(tmp_path, monkeypatch):
-    """A named upstream is served only when that name answered. mitmproxy's
-    Server.address carries the host the request left for — a hostname stays a
-    hostname, and the resolved IP is Server.peername, which the verdict must never
-    read — so a reply from another name on the same port is a miss, and the pick's
-    own name is not made a miss by the IP it resolved to (#920, review
-    #hive-repro-ca48c8e1)."""
-    from types import SimpleNamespace
-    from rc_route import header_id
-    state = tmp_path / "state"
-    (state / "sessions").mkdir(parents=True)
-    (state / "inference").write_text("route\n")
-    (state / "sessions" / "cse_named").write_text("named\n")
-    (state / "switch-named.json").write_text(json.dumps(
-        {"upstream": "https://gw.example", "key": "route-key", "tiers": {}}))
-    addon = _switch_addon(monkeypatch, state)
-
-    def turn(address, peername):
-        f = SimpleNamespace(metadata={}, request=SimpleNamespace(
-            pretty_host="api.anthropic.com", path="/v1/messages", method="POST",
-            headers={"authorization": "Bearer ACCOUNT-SECRET",
-                     "x-claude-code-session-id": header_id("cse_named")},
-            scheme="https", host="api.anthropic.com", port=443))
-        addon.requestheaders(f)
-        assert (f.request.host, f.request.port) == ("gw.example", 443)
-        addon.responseheaders(SimpleNamespace(
-            metadata=f.metadata, request=f.request,
-            server_conn=SimpleNamespace(address=address, peername=peername),
-            response=SimpleNamespace(status_code=200, headers={})))
-
-    turn(("gw.example", 443), ("192.0.2.1", 443))      # the pick's own name answered
-    turn(("other.example", 443), ("192.0.2.2", 443))   # another name, same port
-    turn(("gw.example", 8443), ("192.0.2.1", 8443))    # the pick's name, another port
-    served = [ln for ln in (state / "addon.log").read_text().splitlines() if "served-by=" in ln]
-    assert [ln.split()[1] for ln in served] == ["route", "miss", "miss"]
-    assert "asked=named served-by=gw.example:443" in served[0]     # the peername IP is no mismatch
-    assert "asked=named served-by=other.example:443" in served[1]
-    assert "asked=named served-by=gw.example:8443" in served[2]
 
 
-def test_the_addon_reads_a_handoff_once_and_keeps_it_thereafter(tmp_path, monkeypatch):
-    """The handoff is the whole of a bring-up: read once, deleted with the read, then
-    remembered for every later turn — and its tiers are exactly what pinned_tiers says."""
-    rc, route_env = _switch_state(tmp_path, monkeypatch)
-    rc.switch("gw", "me")
-    addon = _switch_addon(monkeypatch, rc.STATE)
-    got = addon._switched("gw")
-    assert got == ("http://127.0.0.1:54505", "route-key", rc.pinned_tiers(route_env))
-    assert not (rc.STATE / "switch-gw.json").exists()      # the key lived one hop, never on disk
-    assert addon._switched("gw") == got                    # brought up once; every turn follows
 
 
 def test_a_switch_whose_word_never_lands_leaves_no_handoff_holding_the_key(tmp_path, monkeypatch):
@@ -1157,32 +733,6 @@ def test_a_switch_whose_handoff_rename_fails_leaves_no_temp_holding_the_key(tmp_
     assert not (rc.STATE / "inference").exists()
 
 
-@pytest.mark.parametrize("handoff,port,log", [
-    pytest.param(None, 60111, "has no endpoint in this proxy", id="never-brought-up-keeps-the-route"),
-    pytest.param({"upstream": "http://127.0.0.1:54505", "key": "route-key",
-                  "tiers": {"sonnet": "claude-sonnet-5-5"}}, 54505, "via gw",
-                 id="brought-up-moves-the-turn"),
-])
-def test_a_switch_word_moves_the_turn_only_where_a_profile_was_brought_up(tmp_path, monkeypatch,
-                                                                          handoff, port, log):
-    """A word file can name a profile `--switch` never raised; the turn then stays on
-    the edge's route with a named reason — never guessed at, never failed."""
-    from types import SimpleNamespace
-    state = tmp_path / "state"
-    state.mkdir()
-    (state / "inference").write_text("gw\n")
-    if handoff:
-        (state / "switch-gw.json").write_text(json.dumps(handoff))
-    addon = _switch_addon(monkeypatch, state)
-    flow = SimpleNamespace(metadata={}, request=SimpleNamespace(
-        pretty_host="api.anthropic.com", path="/v1/messages", method="POST",
-        headers={"authorization": "Bearer ACCOUNT-SECRET"},
-        scheme="https", host="api.anthropic.com", port=443))
-    addon.requestheaders(flow)
-    assert flow.request.port == port                        # the handoff's adapter, or the route
-    assert log in (state / "addon.log").read_text()
-    assert flow.metadata["rc_route"] is True
-    assert flow.metadata["rc_tiers"] == (handoff["tiers"] if handoff else _BOOT_TIERS)
 
 
 def _edge_spawn_state(tmp_path, monkeypatch):
@@ -1203,7 +753,7 @@ def _edge_spawn_state(tmp_path, monkeypatch):
 
 
 class _SpawnedProxy:
-    """The mitmdump the launcher watches at startup: dead at once, or alive."""
+    """The edge proxy the launcher watches at startup: dead at once, or alive."""
 
     def __init__(self, exit_code=None):
         self.returncode = exit_code
@@ -1235,34 +785,33 @@ def _stub_proxy_spawn(rc, monkeypatch, exit_code):
 
 
 @pytest.mark.parametrize("shape,message", [
-    pytest.param("no-mitmdump", "mitmdump not found", id="mitmdump-not-on-path"),
-    pytest.param("proxy-exits", "proxy exited during startup", id="stub-mitmdump-dies-at-once"),
+    pytest.param("no-binary", "not found", id="edge-proxy-binary-missing"),
+    pytest.param("proxy-exits", "proxy exited during startup", id="stub-proxy-dies-at-once"),
     pytest.param("no-ca", "proxy CA not generated", id="ca-never-generated"),
-    pytest.param("key-unconsumed", "did not consume the route key", id="addon-never-loads"),
+    pytest.param("key-unconsumed", "did not consume the route key", id="proxy-never-reads-the-key"),
 ])
 def test_no_failed_start_ever_leaves_the_route_key_behind(tmp_path, monkeypatch, capsys, shape, message):
-    """issue #777: the key file's only unlink lived in the addon, so every start
-    that died after `mkstemp` — missing mitmdump, dead proxy, missing CA, and the
+    """issue #777: the key file's only unlink lived in the proxy, so every start
+    that died after `mkstemp` — missing binary, dead proxy, missing CA, and the
     very path that prints "refusing to continue" — left the profile's real API key
     in STATE. This is the sweep: after any failing start, no route-key.* survives."""
     import argparse
-    import os
     rc = _edge_spawn_state(tmp_path, monkeypatch)
-    if shape == "no-mitmdump":
-        monkeypatch.setenv("PATH", str(tmp_path / "no-bin"))         # PATH without mitmdump
+    if shape == "no-binary":
+        monkeypatch.setattr(rc, "ADAPTER", tmp_path / "no-bin" / "ccmorph-core")
     else:
-        stub = tmp_path / "bin" / "mitmdump"                         # a mitmdump that never really runs
+        stub = tmp_path / "bin" / "ccmorph-core"                     # a core that never really runs
         stub.parent.mkdir()
         stub.write_text("#!/bin/sh\nexit 0\n")
         stub.chmod(0o755)
-        monkeypatch.setenv("PATH", str(stub.parent) + os.pathsep + os.environ["PATH"])
+        monkeypatch.setattr(rc, "ADAPTER", stub)
         if shape == "proxy-exits":                                   # wait_listening stays real
             _stub_proxy_spawn(rc, monkeypatch, 1)
-        else:                                                        # listens; addon is the question
+        else:                                                        # listens; the key is the question
             _stub_proxy_spawn(rc, monkeypatch, None)
             monkeypatch.setattr(rc, "wait_listening", lambda *a, **k: None)
             if shape == "key-unconsumed":
-                ca = rc.STATE / "mitm" / "mitmproxy-ca-cert.pem"     # a proxy that did come up
+                ca = rc.STATE / "edge-ca" / "ca.pem"                # a proxy that did come up
                 ca.parent.mkdir(parents=True, exist_ok=True)
                 ca.write_text("stub ca")
     with pytest.raises(SystemExit):
@@ -1282,9 +831,9 @@ def test_a_start_removes_what_a_killed_launcher_left_and_keeps_live_ones(tmp_pat
     gone.wait()
     dead_key = rc.STATE / f"route-key.{gone.pid}.abc"
     dead_key.write_text("secret")
-    dead_addon = rc.STATE / f"addon.{gone.pid}.abc"
+    dead_addon = rc.STATE / f"addon.{gone.pid}.abc"       # a copy an older version made
     dead_addon.mkdir()
-    (dead_addon / "rc_addon.py").write_text("")
+    (dead_addon / "old.py").write_text("")
     live = rc.STATE / f"{rc.owned_prefix('route-key')}abc"
     live.write_text("in use")
     rc.sweep_orphans(rc.STATE)
@@ -1384,7 +933,7 @@ rc.retire_route_with = lambda *a: None
 rc.adapter_env = lambda: {}
 rc.start_adapter = lambda *a: "http://127.0.0.1:1"
 rc.strip_env = lambda: ()
-rc.shutil.which = lambda name: "/test/" + name
+rc.ADAPTER = __import__("pathlib").Path(path)           # any existing file: the proxy spawn is stubbed
 class Proxy:
     returncode = None
     def poll(self): return self.returncode
@@ -1393,8 +942,8 @@ class Proxy:
     def wait(self, timeout=None): return self.returncode
 proxy = Proxy()
 def spawn(cmd, env=None, **kw):
-    os.unlink(env["RC_KEY_FILE"])                     # the addon loaded and consumed the key
-    (rc.STATE / "mitm" / "mitmproxy-ca-cert.pem").write_text("ca")
+    os.unlink(env["RC_KEY_FILE"])                     # the proxy read the key and removed it
+    (rc.STATE / "edge-ca" / "ca.pem").write_text("ca")
     return proxy
 rc.subprocess.Popen = spawn
 rc.wait_listening = lambda *a, **k: os.kill(os.getpid(), signal.SIGHUP)
@@ -1417,24 +966,23 @@ raise SystemExit(2)
 @pytest.mark.parametrize("shape,message", [
     pytest.param("never-listens", "did not start listening", id="proxy-never-listens"),
     pytest.param("no-ca", "proxy CA not generated", id="ca-never-generated"),
-    pytest.param("key-unconsumed", "did not consume the route key", id="addon-never-loads"),
+    pytest.param("key-unconsumed", "did not consume the route key", id="proxy-never-reads-the-key"),
     pytest.param("healthy", None, id="healthy-start-keeps-its-proxy"),
 ])
 def test_a_failed_start_stops_the_proxy_it_spawned(tmp_path, monkeypatch, capsys, shape, message):
-    """issue #777: a failed start removes the route key, and the addon reads that key
-    on load and is what follows our pid. A proxy left behind would never load it, so
-    it would outlive us holding its port (on --edge, the fixed one every restart
+    """issue #777: a failed start must not leave the proxy it spawned running: it
+    would outlive us holding its port (on --edge, the fixed one every restart
     needs). The start that gives up stops the proxy it spawned; a healthy one keeps it."""
     import argparse
     import os
     import subprocess
 
     rc = _edge_spawn_state(tmp_path, monkeypatch)
-    stub = tmp_path / "bin" / "mitmdump"
+    stub = tmp_path / "bin" / "ccmorph-core"
     stub.parent.mkdir()
     stub.write_text("#!/bin/sh\nexit 0\n")
     stub.chmod(0o755)
-    monkeypatch.setenv("PATH", str(stub.parent) + os.pathsep + os.environ["PATH"])
+    monkeypatch.setattr(rc, "ADAPTER", stub)
     real = rc.subprocess.Popen
     spawned = []
 
@@ -1442,7 +990,7 @@ def test_a_failed_start_stops_the_proxy_it_spawned(tmp_path, monkeypatch, capsys
         if cmd[0] == "zsh":
             return real(cmd, env=env, **kw)
         if shape == "healthy":
-            os.unlink(env["RC_KEY_FILE"])                            # the addon consumed it
+            os.unlink(env["RC_KEY_FILE"])                            # the proxy consumed it
         spawned.append(real([sys.executable, "-c", "import time; time.sleep(600)"],
                             stdin=subprocess.DEVNULL, start_new_session=True))
         return spawned[-1]
@@ -1453,7 +1001,7 @@ def test_a_failed_start_stops_the_proxy_it_spawned(tmp_path, monkeypatch, capsys
     else:
         monkeypatch.setattr(rc, "wait_listening", lambda *a, **k: None)
     if shape in ("key-unconsumed", "healthy"):
-        ca = rc.STATE / "mitm" / "mitmproxy-ca-cert.pem"
+        ca = rc.STATE / "edge-ca" / "ca.pem"
         ca.parent.mkdir(parents=True, exist_ok=True)
         ca.write_text("stub ca")
     try:
@@ -1610,27 +1158,6 @@ raise SystemExit(3)
     assert list(state.rglob("route-key.*")) == []
 
 
-def _hot_addon(monkeypatch, tmp_path):
-    """The addon as a running proxy holds it: its own private copy, and RC_SOURCE the
-    install's folder it reloads rc_flow and rc_route from."""
-    import shutil
-    src, private = tmp_path / "src", tmp_path / "addon.x"
-    for d in (src, private):
-        d.mkdir()
-        for name in ("rc_addon.py", "rc_flow.py", "rc_route.py"):
-            shutil.copy(ADDON.parent / name, d / name)
-    state = tmp_path / "state"
-    state.mkdir()
-    (state / "inference").write_text("route\n")
-    (state / "route-key").write_text("route-key")
-    for k, v in {"RC_UPSTREAM": "http://127.0.0.1:60111", "RC_KEY_FILE": str(state / "route-key"),
-                 "RC_INFERENCE": str(state / "inference"), "RC_LOG": str(state / "addon.log"),
-                 "RC_SOURCE": str(src), "RC_TIERS": "{}"}.items():
-        monkeypatch.setenv(k, v)
-    monkeypatch.delenv("RC_PARENT_PID", raising=False)
-    addon = load_script(private / "rc_addon.py", "rc_addon_hot")
-    monkeypatch.setattr(addon, "RECHECK", 0)
-    return addon, src, state
 
 
 def _routed_port(addon):
@@ -1639,358 +1166,26 @@ def _routed_port(addon):
     return flow.request.port
 
 
-def test_a_routing_change_reaches_the_running_proxy_with_no_restart(tmp_path, monkeypatch):
-    """A routing fix used to need the proxy restarted, which took every phone session's
-    turn with it. rc_flow and rc_route now reload from the install when they change;
-    the key, held by the loader, stays. A file that does not load (a checkout half
-    written) keeps the running code, and its next change is loaded."""
-    import os
-    addon, src, state = _hot_addon(monkeypatch, tmp_path)
-    assert _routed_port(addon) == 60111
-    flow_py = src / "rc_flow.py"
-    good = flow_py.read_text()
-    flow_py.write_text(good.replace("upstream, key, tiers = s.upstream, s.key, s.tiers",
-                                    "upstream, key, tiers = 'http://127.0.0.1:60222', s.key, s.tiers"))
-    os.utime(flow_py, ns=(1, 2_000_000_000_000_000_000))
-    assert _routed_port(addon) == 60222                        # no restart: the next request
-    flow_py.write_text("def requestheaders(:\n")
-    os.utime(flow_py, ns=(1, 3_000_000_000_000_000_000))
-    assert _routed_port(addon) == 60222                        # broken: the running code stays
-    assert "failed" in (state / "addon.log").read_text()
-    flow_py.write_text(good)
-    os.utime(flow_py, ns=(1, 4_000_000_000_000_000_000))
-    assert _routed_port(addon) == 60111
-    assert "rc_flow" not in sys.modules                         # nothing else sees the reload
 
 
-def test_the_proxy_takes_a_handoff_without_waiting_for_a_request(tmp_path, monkeypatch):
-    """A session's profile can sit idle for days, and the handoff is its key on disk
-    until the proxy reads it. The proxy now looks every half second, not on the next
-    request for that profile."""
-    import json
-    addon, _, state = _hot_addon(monkeypatch, tmp_path)
-    hand = state / "switch-gw.json"
-    hand.write_text(json.dumps({"upstream": "http://127.0.0.1:54505", "key": "k2", "tiers": {}}))
-    import threading
-    threading.Thread(target=addon._take_handoffs, daemon=True).start()
-    assert wait_until(lambda: not hand.exists(), HANG_TIMEOUT)
-    assert addon.SWITCHED["gw"] == ("http://127.0.0.1:54505", "k2", {})
 
 
-def test_a_taken_handoff_is_recorded_before_it_can_be_seen_gone(tmp_path, monkeypatch):
-    """issue #900: the take removed the handoff before its record landed, so the one
-    signal that says "taken" — the file is gone — could be read with nothing
-    switched: the poller's own watcher caught SWITCHED empty a statement after its
-    wait passed (CI run 45562448374). Hook the removal itself: every path that makes
-    a valid handoff vanish, by unlink or by the take's rename, must find the record
-    already in SWITCHED."""
-    import json
-    addon, _, state = _hot_addon(monkeypatch, tmp_path)
-    hand = state / "switch-gw.json"
-    hand.write_text(json.dumps({"upstream": "http://127.0.0.1:54505", "key": "k2", "tiers": {}}))
-
-    expect = ["http://127.0.0.1:54505"]     # the upstream the record holds at each removal
-    def recorded(what):                     # the hook fires while the name still stands
-        assert addon.SWITCHED.get("gw", (None,))[0] == expect[0], \
-            f"the {what} removed the handoff before recording it"
-
-    class WatchedPath(type(addon.Path())):  # the handoff removed by name (issue #900's read)
-        def unlink(self, missing_ok=False):
-            if self.name == "switch-gw.json":
-                recorded("unlink")
-            return super().unlink(missing_ok=missing_ok)
-
-    real = addon.os                         # and the rename is what a take makes gone
-    class WatchedOs:
-        def __getattr__(self, name):
-            return getattr(real, name)
-
-        def rename(self, src, dst):
-            if Path(src).name == "switch-gw.json":
-                recorded("rename")
-            return real.rename(src, dst)
-
-    monkeypatch.setattr(addon, "Path", WatchedPath)
-    monkeypatch.setattr(addon, "os", WatchedOs())
-    assert addon._switched("gw") == ("http://127.0.0.1:54505", "k2", {})
-    assert not hand.exists()                # the take happened, hooks and all
-    # A re-hand over an endpoint already held: at the removal the record is the new
-    # one, not merely the old one still standing.
-    expect[0] = "http://127.0.0.1:54506"
-    hand.write_text(json.dumps({"upstream": "http://127.0.0.1:54506", "key": "k3", "tiers": {}}))
-    assert addon._switched("gw") == ("http://127.0.0.1:54506", "k3", {})
-    assert not hand.exists()
 
 
-@pytest.mark.parametrize("body", [
-    pytest.param(b'{"upstream": "http://127.0.0.1:54505"}', id="parses-but-holds-no-key"),
-    pytest.param(b'{"key": "k2"}', id="parses-but-holds-no-upstream"),
-    pytest.param(b"not json", id="does-not-parse"),
-    pytest.param(b"\xff", id="invalid-utf8"),
-])
-def test_a_handoff_holding_no_endpoint_is_removed_without_recording_anything(
-        tmp_path, monkeypatch, body):
-    """A switch-<profile>.json that can route nothing — it does not decode or parse
-    (the publish is atomic, so this is garbage, not a half write), or lacks the
-    upstream or key an endpoint needs — is a credential held for nothing: one look
-    removes it and records nothing, and it never lingers to be re-polled every half
-    second (issue #900: pin the hygiene choice — today the fieldless one is already
-    gone silently and the unparseable one stays forever)."""
-    addon, _, state = _hot_addon(monkeypatch, tmp_path)
-    hand = state / "switch-gw.json"
-    hand.write_bytes(body)
-    assert addon._switched("gw") is None
-    assert not hand.exists()
-    assert not list(state.glob("switch-*")) and not list(state.glob("taken.*"))
-    assert addon.SWITCHED == {} and getattr(addon, "HELD", {}) == {}   # HELD: the #595 record
 
 
-def test_a_failed_handoff_rename_leaves_the_endpoint_untouched(tmp_path, monkeypatch):
-    """#900 review: the record runs ahead of the rename so a gone handoff always
-    has its record — but a take that moved nothing must not leave a switched
-    endpoint behind a handoff that still stands. A failed rename restores the
-    endpoint and the held word: the switch's wait ends in its own cleanup as if
-    nothing had happened, and every later look finds the state as it was."""
-    import json
-    addon, _, state = _hot_addon(monkeypatch, tmp_path)
-    hand = state / "switch-gw.json"
-    hand.write_text(json.dumps({"upstream": "http://127.0.0.1:54505", "key": "k1",
-                                "tiers": {}, "id": "h1"}))
-    assert addon._switched("gw") == ("http://127.0.0.1:54505", "k1", {})    # the baseline
-    real = addon.os
-    class RenamesRefused:
-        def __getattr__(self, name):
-            return getattr(real, name)
-
-        def rename(self, src, dst, *args, **kw):
-            raise OSError("rename refused")
-    monkeypatch.setattr(addon, "os", RenamesRefused())
-    hand.write_text(json.dumps({"upstream": "http://127.0.0.1:54599", "key": "k2",
-                                "tiers": {}, "id": "h2"}))
-    assert addon._switched("gw") == ("http://127.0.0.1:54505", "k1", {})    # not the new one
-    assert addon.SWITCHED["gw"] == ("http://127.0.0.1:54505", "k1", {})     # endpoint unchanged
-    assert addon.HELD["gw"] == "h1"                                         # and the same word held
-    assert hand.exists()                                                    # stands there for a retry
-    assert not list(state.glob("taken.*"))
-    # A profile with no prior entry: the failed take restores "absent" — pops its
-    # own record rather than leaving a None behind one that never switches.
-    (state / "switch-no.json").write_text(json.dumps({"upstream": "http://127.0.0.1:54598",
-                                                      "key": "k9", "tiers": {}, "id": "h9"}))
-    assert addon._switched("no") is None
-    assert "no" not in addon.SWITCHED and "no" not in addon.HELD
 
 
-def test_a_take_that_puts_another_edge_handoff_back_switches_nothing(tmp_path, monkeypatch):
-    """The same rule on the take's other failed path (#900 review): when the rename
-    moved a replacement edge's publication, that one is put back — and the record
-    written before the rename goes back too. What this proxy took was not its own,
-    so the endpoint, the held word and held.<pid>.json all stay exactly as they were."""
-    import json
-    addon, bridge = _proxy_addon(monkeypatch, tmp_path, 500, "start-500")
-    hand = bridge / "switch-oli.json"
-    def payload(start, upstream, id_):
-        return json.dumps({"upstream": upstream, "key": "k", "tiers": {}, "id": id_,
-                           "edge": 500, "edge_started": start})
-    hand.write_text(payload("start-500", "u1", "h1"))
-    assert addon._switched("oli") == ("u1", "k", {})            # the baseline
-    real = addon.os
-    class PublishedMeanwhile:
-        def __getattr__(self, name):
-            return getattr(real, name)
-
-        def rename(self, src, dst, *args, **kw):
-            Path(src).write_text(json.dumps({"upstream": "other", "key": "k", "tiers": {},
-                                             "id": "h600", "edge": 600,
-                                             "edge_started": "start-600"}))
-            return real.rename(src, dst)                        # the take moves theirs
-    monkeypatch.setattr(addon, "os", PublishedMeanwhile())
-    hand.write_text(payload("start-500", "u2", "h2"))
-    assert addon._switched("oli") == ("u1", "k", {})            # ours was replaced: nothing switched
-    assert addon.SWITCHED["oli"] == ("u1", "k", {})
-    assert addon.HELD["oli"] == "h1"
-    assert json.loads(hand.read_text())["id"] == "h600"         # theirs stands, taken by its proxy
-    assert not list(bridge.glob("taken.*"))
-    assert json.loads((bridge / "held.500.json").read_text())["profiles"] == {"oli": "h1"}
 
 
-@pytest.mark.parametrize("first", [
-    pytest.param("valid", id="read-an-older-handoff-of-this-edge"),
-    pytest.param("garbage", id="read-garbage"),
-])
-def test_a_same_edge_replacement_the_take_moves_is_recorded_before_it_is_acknowledged(
-        tmp_path, monkeypatch, first):
-    """#900 review: a publication for this very edge can land on the name between
-    the take's read and its rename, so the rename moves one the take never read. No
-    take by name can record it before that syscall (no proxy code runs between the
-    writer's replace and the rename). What the take does: the moved file decides,
-    its endpoint and id are recorded before held.<pid>.json names it and before
-    _switched returns, and it is acknowledged once. ccmorph-rc's .switch.lock keeps
-    its own publishes from replacing a standing handoff."""
-    import json
-    addon, bridge = _proxy_addon(monkeypatch, tmp_path, 500, "start-500")
-    hand = bridge / "switch-oli.json"
-    def payload(upstream, id_):
-        return json.dumps({"upstream": upstream, "key": "k", "tiers": {}, "id": id_,
-                           "edge": 500, "edge_started": "start-500"})
-    hand.write_text(payload("old", "h1") if first == "valid" else "not json")
-    pending = bridge / "newer"
-    pending.write_text(payload("new", "h2"))           # the next publication, about to land
-    real = addon.os
-    at_move = []                                       # SWITCHED right after the move
-    class ReplacedBeforeTheRename:
-        def __getattr__(self, name):
-            return getattr(real, name)
-
-        def rename(self, src, dst, *args, **kw):
-            if os.fspath(src) == str(hand) and pending.exists():
-                real.replace(pending, hand)             # same edge, published mid-take
-            result = real.rename(src, dst, *args, **kw)
-            at_move.append(addon.SWITCHED.get("oli"))
-            return result
-    monkeypatch.setattr(addon, "os", ReplacedBeforeTheRename())
-    says = []                                          # each acknowledgement, and the record then
-    real_publish = addon._publish_held
-    def publish():
-        says.append((dict(addon.HELD), addon.SWITCHED.get("oli")))
-        real_publish()
-    monkeypatch.setattr(addon, "_publish_held", publish)
-    assert addon._switched("oli") == ("new", "k", {})   # the moved one is the one taken
-    # At the move the record is the publication the take read (none for garbage).
-    assert at_move == [("old", "k", {}) if first == "valid" else None]
-    assert says == [({"oli": "h2"}, ("new", "k", {}))]  # recorded before the only word names it
-    assert addon.HELD["oli"] == "h2"
-    assert not hand.exists()
-    assert list(bridge.glob("switch-*")) == [] and not list(bridge.glob("taken.*"))
-    assert json.loads((bridge / "held.500.json").read_text())["profiles"] == {"oli": "h2"}
 
 
-def test_a_handoff_rewritten_in_place_before_the_move_is_recorded_at_the_move(tmp_path, monkeypatch):
-    """#900 review: a writer can rewrite the handoff in place while the take's
-    rename resolves its destination — after the take's read and before the kernel
-    moves the file. That is the same publication (same device and inode), so the
-    take's last look reads until two looks agree and records the bytes that move.
-    An atomically replaced handoff is a different file: it is not recorded at the
-    move, and the same-edge test above pins that."""
-    import json
-    addon, bridge = _proxy_addon(monkeypatch, tmp_path, 500, "start-500")
-    hand = bridge / "switch-oli.json"
-    def payload(upstream, id_):
-        return json.dumps({"upstream": upstream, "key": "k", "tiers": {}, "id": id_,
-                           "edge": 500, "edge_started": "start-500"})
-    hand.write_text(payload("old", "h1"))
-    real_read = addon.Path.read_text
-    reads = []
-    def race_read(self, *args, **kw):
-        text = real_read(self, *args, **kw)
-        if self == hand:
-            reads.append(text)
-            if len(reads) == 2:                # the take's last look, mid-read
-                hand.write_text(payload("new", "h2"))
-        return text
-    monkeypatch.setattr(addon.Path, "read_text", race_read)
-    real = addon.os
-    at_move = []
-    class Watched:
-        def __getattr__(self, name):
-            return getattr(real, name)
-
-        def rename(self, src, dst, *args, **kw):
-            result = real.rename(src, dst, *args, **kw)
-            if os.fspath(src) == str(hand):
-                at_move.append((addon.SWITCHED.get("oli"), addon.HELD.get("oli")))
-            return result
-    monkeypatch.setattr(addon, "os", Watched())
-    assert addon._switched("oli") == ("new", "k", {})
-    assert at_move == [(("new", "k", {}), "h2")]    # the bytes that moved were recorded
-    assert not hand.exists() and not list(bridge.glob("taken.*"))
-    assert json.loads((bridge / "held.500.json").read_text())["profiles"] == {"oli": "h2"}
 
 
-@pytest.mark.parametrize("meanwhile", [
-    pytest.param("withdrawn", id="the-switch-withdrew-it"),
-    pytest.param("garbage", id="rewritten-in-place-with-garbage"),
-    pytest.param("inplace-invalid-utf8", id="rewritten-in-place-with-invalid-utf8"),
-    pytest.param("replaced-invalid-utf8", id="atomically-replaced-by-invalid-utf8"),
-])
-def test_a_take_that_moved_nothing_of_its_own_leaves_the_endpoint_untouched(
-        tmp_path, monkeypatch, meanwhile):
-    """#900 review: the record runs ahead of the rename, so a take whose rename then
-    finds the handoff withdrawn (FileNotFoundError), or moves garbage — non-JSON or
-    invalid UTF-8, rewritten in place or atomically replaced — must remove the
-    garbage and put the endpoint and the held word back as they were."""
-    import json
-    addon, bridge = _proxy_addon(monkeypatch, tmp_path, 500, "start-500")
-    hand = bridge / "switch-oli.json"
-    def payload(upstream, id_):
-        return json.dumps({"upstream": upstream, "key": "k", "tiers": {}, "id": id_,
-                           "edge": 500, "edge_started": "start-500"})
-    hand.write_text(payload("old", "h1"))
-    assert addon._switched("oli") == ("old", "k", {})            # the baseline
-    prior = (bridge / "held.500.json").read_bytes()
-    hand.write_text(payload("new", "h2"))
-    pending = bridge / "garbage"
-    if meanwhile == "replaced-invalid-utf8":
-        pending.write_bytes(b"\xff")
-    real = addon.os
-    at_move = []
-    class ChangedBeforeTheRename:
-        def __getattr__(self, name):
-            return getattr(real, name)
-
-        def rename(self, src, dst, *args, **kw):
-            if os.fspath(src) == str(hand):
-                if meanwhile == "withdrawn":
-                    real.unlink(hand)
-                elif meanwhile == "garbage":
-                    hand.write_text("not json")
-                elif meanwhile == "inplace-invalid-utf8":
-                    hand.write_bytes(b"\xff")
-                elif meanwhile == "replaced-invalid-utf8" and pending.exists():
-                    real.replace(pending, hand)
-                result = real.rename(src, dst, *args, **kw)
-                at_move.append((addon.SWITCHED.get("oli"), addon.HELD.get("oli")))
-                return result
-            return real.rename(src, dst, *args, **kw)
-    monkeypatch.setattr(addon, "os", ChangedBeforeTheRename())
-    assert addon._switched("oli") == ("old", "k", {})
-    if meanwhile in ("garbage", "inplace-invalid-utf8"):
-        assert at_move == [(("old", "k", {}), "h1")]
-    assert addon.SWITCHED["oli"] == ("old", "k", {}) and addon.HELD["oli"] == "h1"
-    assert list(bridge.glob("switch-*")) == [] and not list(bridge.glob("taken.*"))
-    assert (bridge / "held.500.json").read_bytes() == prior
-    assert json.loads((bridge / "held.500.json").read_text())["profiles"] == {"oli": "h1"}
 
 
-def test_another_edges_handoff_holding_no_endpoint_is_removed_after_one_look(tmp_path, monkeypatch):
-    """#900 review: a handoff tagged for another edge that carries no endpoint is no
-    publication any proxy can wait behind: one look removes it, nothing recorded.
-    One that does carry an endpoint is still never touched."""
-    import json
-    addon, bridge = _proxy_addon(monkeypatch, tmp_path, 500, "start-500")
-    hand = bridge / "switch-oli.json"
-    hand.write_text(json.dumps({"key": "k", "edge": 600, "edge_started": "start-600"}))
-    assert addon._switched("oli") is None
-    assert not hand.exists() and not list(bridge.glob("taken.*"))
-    assert addon.SWITCHED == {} and addon.HELD == {}
-    hand.write_text(json.dumps({"upstream": "u", "key": "k", "id": "h6",
-                                "edge": 600, "edge_started": "start-600"}))
-    assert addon._switched("oli") is None and hand.exists()      # theirs, untouched
 
 
-def test_a_held_record_that_cannot_be_written_never_cuts_the_take_short(tmp_path, monkeypatch):
-    """#900 review: an OSError writing held.<pid>.json must not escape _switched,
-    where it would end the take poller's thread; the endpoint taken stays held."""
-    import json
-    addon, bridge = _proxy_addon(monkeypatch, tmp_path, 500, "start-500")
-    hand = bridge / "switch-oli.json"
-    hand.write_text(json.dumps({"upstream": "u", "key": "k", "tiers": {}, "id": "h1",
-                                "edge": 500, "edge_started": "start-500"}))
-    def refused():
-        raise PermissionError("cannot publish held record")
-    monkeypatch.setattr(addon, "_publish_held", refused)
-    assert addon._switched("oli") == ("u", "k", {})
-    assert addon.HELD["oli"] == "h1"
-    assert not hand.exists() and not list(bridge.glob("taken.*"))
 
 
 def test_a_handoff_no_proxy_takes_is_removed_and_nothing_changes(tmp_path, monkeypatch):
@@ -2487,70 +1682,10 @@ def test_a_switch_lands_only_once_the_edges_proxy_says_it_holds_the_handoff(tmp_
     assert not rc.handoff_taken(hand, payload, 0.2)       # still on disk: not taken
 
 
-def _proxy_addon(monkeypatch, tmp_path, parent, started):
-    """rc_addon as the proxy of edge `parent` (whose start is `started`) loads it."""
-    from types import ModuleType, SimpleNamespace
-    try:
-        import mitmproxy  # noqa: F401
-    except ImportError:
-        mitm = ModuleType("mitmproxy")
-        mitm.http = SimpleNamespace(HTTPFlow=object)
-        monkeypatch.setitem(sys.modules, "mitmproxy", mitm)
-    bridge = tmp_path / "bridge"
-    bridge.mkdir(exist_ok=True)
-    key = tmp_path / f"route-key.{len(list(tmp_path.glob('route-key.*')))}"
-    key.write_text("sk-route")
-    for k, v in {"RC_UPSTREAM": "http://127.0.0.1:9", "RC_KEY_FILE": str(key), "RC_TIERS": "{}",
-                 "RC_INFERENCE": str(bridge / "inference"), "RC_PARENT_PID": str(parent),
-                 "RC_PARENT_STARTED": started}.items():
-        monkeypatch.setenv(k, v)
-    for k in ("RC_LOG", "RC_SOURCE"):
-        monkeypatch.delenv(k, raising=False)
-    return load_script(ADDON, "rc_addon_proxy"), bridge
 
 
-def test_a_proxy_takes_only_its_own_edges_handoff_and_says_what_it_holds(tmp_path, monkeypatch):
-    """issue #595: every proxy took every handoff, so a bridge's own proxy could take
-    the one --switch meant for the edge, and nothing said what any proxy held. A
-    proxy takes a handoff naming its edge (pid and start) only, and names what it
-    holds in held.<pid>.json -- before it deletes the handoff."""
-    addon, bridge = _proxy_addon(monkeypatch, tmp_path, 500, "start-500")
-    addon._publish_held()                                 # what running() writes at start
-    held = bridge / "held.500.json"
-    assert json.loads(held.read_text()) == {"edge": 500, "edge_started": "start-500", "profiles": {}}
-    hand = bridge / "switch-oli.json"
-    for other in ({"edge": 600, "edge_started": "start-600"}, {"edge": 500, "edge_started": "other-500"}):
-        hand.write_text(json.dumps({"upstream": "u", "key": "k", "tiers": {}, "id": "h0", **other}))
-        assert addon._switched("oli") is None and hand.exists()
-    hand.write_text(json.dumps({"upstream": "u", "key": "k", "tiers": {}, "id": "h1",
-                                "edge": 500, "edge_started": "start-500"}))
-    assert addon._switched("oli") == ("u", "k", {})
-    assert not hand.exists()
-    assert json.loads(held.read_text())["profiles"] == {"oli": "h1"}
-    assert "k" not in held.read_text().replace('"oli"', "")   # no key in what it says
-    addon.done()
-    assert not held.exists()                              # what it held goes with it
 
 
-def test_a_delayed_proxy_never_removes_a_handoff_published_after_its_take(tmp_path, monkeypatch):
-    """issue #595 review: a proxy read the handoff, then unlinked the path later; a
-    switch for the edge that replaced its own could publish there meanwhile, and the
-    old proxy deleted that handoff, which the replacement's proxy never got. The take
-    moves the one publication it read, so the newer handoff stays where it was."""
-    addon, bridge = _proxy_addon(monkeypatch, tmp_path, 500, "old")
-    hand = bridge / "switch-oli.json"
-    def payload(start):
-        return json.dumps({"upstream": "u", "key": "k", "tiers": {}, "id": start,
-                           "edge": 500, "edge_started": start})
-    hand.write_text(payload("old"))
-    held = addon._publish_held
-    def replaced_meanwhile():                 # the replacement edge's switch publishes now
-        hand.write_text(payload("new"))
-        held()
-    monkeypatch.setattr(addon, "_publish_held", replaced_meanwhile)
-    assert addon._switched("oli") == ("u", "k", {})
-    assert json.loads(hand.read_text())["id"] == "new"
-    assert not list(bridge.glob("taken.*"))   # what it took holds no key on disk
 
 
 def test_a_held_record_goes_with_the_edge_it_describes(tmp_path, monkeypatch):
@@ -2582,50 +1717,6 @@ def test_a_held_record_goes_with_the_edge_it_describes(tmp_path, monkeypatch):
     assert sorted(p.name for p in tmp_path.glob("switch-*")) == ["switch-live.json"]
 
 
-@pytest.mark.parametrize("now, kept", [
-    pytest.param("another-process", False, id="pid-reused-by-another-process-drops-the-key-issue-595"),
-    pytest.param(None, True, id="live-pid-whose-start-cannot-be-read-keeps-it"),
-    pytest.param("taker", True, id="the-taker-itself-keeps-it"),
-])
-def test_a_proxy_killed_mid_take_leaves_no_key_once_its_pid_is_reused(tmp_path, monkeypatch, now, kept):
-    """issue #595 review: a proxy that died between moving a handoff aside
-    (taken.<pid>.*) and removing it left the key on disk, and once the OS gave its
-    pid to another process the sweep kept it, because that pid answered. The taken
-    name carries the taker's own start; another start at that pid proves the taker
-    gone. A start that cannot be read proves nothing: the file stays."""
-    rc = _launcher()
-    bridge = tmp_path / "bridge"
-    bridge.mkdir()
-    edge = os.getpid()
-    start = rc.edge_started(edge)
-    (bridge / "switch-oli.json").write_text(json.dumps(
-        {"upstream": "http://127.0.0.1:9", "key": "sk-synthetic-switch", "tiers": {}, "id": "h1",
-         "edge": edge, "edge_started": start}))
-    (tmp_path / "route-key").write_text("sk-synthetic-route")
-    crash = ("import os, runpy, sys\n"
-             "g = runpy.run_path(sys.argv[1])['_switched'].__globals__\n"
-             "sys.path.insert(0, os.path.dirname(sys.argv[1]))\n"
-             "import rc_route\n"
-             "print(rc_route.proc_started(os.getpid()), flush=True)\n"
-             "g['_publish_held'] = lambda: os._exit(73)\n"      # killed mid-take
-             "g['_switched']('oli')\n")
-    env = {**os.environ, "RC_UPSTREAM": "http://127.0.0.1:9", "RC_KEY_FILE": str(tmp_path / "route-key"),
-           "RC_INFERENCE": str(bridge / "inference"), "RC_PARENT_PID": str(edge),
-           "RC_PARENT_STARTED": start, "RC_LOG": ""}
-    proxy = subprocess.Popen([sys.executable, "-c", crash, str(ADDON)], env=env,
-                             stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-    out, err = proxy.communicate(timeout=HANG_TIMEOUT)
-    assert proxy.returncode == 73, err
-    taker, taker_start = proxy.pid, out.strip()
-    left = list(bridge.glob(f"taken.{taker}.*.oli.json"))
-    assert len(left) == 1 and "sk-synthetic-switch" in left[0].read_text()   # the crash left the key
-    assert left[0].name.split(".")[2] == rc.rc_route.start_tag(taker_start)  # named by the taker's start
-    real_kill, real_start = os.kill, rc.rc_route.proc_started
-    monkeypatch.setattr(os, "kill", lambda pid, sig: None if (pid, sig) == (taker, 0) else real_kill(pid, sig))
-    monkeypatch.setattr(rc.rc_route, "proc_started",
-                        lambda pid: (taker_start if now == "taker" else now) if pid == taker else real_start(pid))
-    rc.sweep_orphans(bridge)
-    assert left[0].exists() is kept
 
 
 def test_a_taken_file_whose_takers_start_is_unknown_is_judged_by_its_pid(tmp_path, monkeypatch):
@@ -2645,131 +1736,18 @@ def test_a_taken_file_whose_takers_start_is_unknown_is_judged_by_its_pid(tmp_pat
     assert [p.name for p in tmp_path.glob("taken.*")] == [f"taken.{me}.unknown.oli.json"]
 
 
-def test_a_proxy_shutdown_never_removes_the_held_record_a_replacement_wrote(tmp_path, monkeypatch):
-    """issue #595 review: done() read held.<pid>.json, found its own record, then
-    unlinked the name; the proxy of a replacement edge given the same pid could write
-    its own record in between, and the old proxy removed that one. The record is
-    moved aside and checked where it lies: the replacement's goes back, and a record
-    that was never ours is not touched."""
-    addon, bridge = _proxy_addon(monkeypatch, tmp_path, 500, "old")
-    held = bridge / "held.500.json"
-    old = {"edge": 500, "edge_started": "old", "profiles": {"oli": "h-old"}}
-    new = {"edge": 500, "edge_started": "new", "profiles": {"oli": "h-new"}}
-    held.write_text(json.dumps(old))
-    real_read = Path.read_text
-    def read(path, *a, **kw):
-        out = real_read(path, *a, **kw)
-        if path == held:                            # the replacement's proxy writes now
-            (bridge / "new-held").write_text(json.dumps(new))
-            (bridge / "new-held").replace(held)
-        return out
-    with monkeypatch.context() as m:
-        m.setattr(Path, "read_text", read)
-        addon.done()
-    assert json.loads(held.read_text()) == new
-    assert sorted(p.name for p in bridge.glob("held.*")) == ["held.500.json"]   # nothing left aside
-    addon.done()                                    # never ours from the start: not touched
-    assert json.loads(held.read_text()) == new
 
 
-def test_the_note_and_switch_both_skip_an_edge_record_naming_another_route(tmp_path, monkeypatch):
-    """#846 kept beside #595: a record naming another route is a case twin's, not
-    this route's edge. --switch's count (live_edge) and the fallback note's count
-    (rc_route.route_edge) both skip it, so the note names no --switch that refuses."""
-    import rc_route
-    rc = _launcher()
-    edges = tmp_path / "bridge" / "edges"
-    edges.mkdir(parents=True)
-    pem = tmp_path / "ca.pem"
-    pem.write_text("ca")
-    (edges / "GW.json").write_text(json.dumps(
-        {"pid": os.getpid(), "port": 47101, "ca": str(pem), "route": "gw"}))
-    monkeypatch.setattr(rc_route.socket, "create_connection", lambda *a, **k: contextlib.nullcontext())
-    monkeypatch.setattr(rc, "EDGES", edges)
-    assert rc.live_edge("GW") is None
-    assert rc_route.switch_edge(edges) == (0, None)
-    assert rc.switch_edge(edges, lambda f: rc.live_edge(f.stem)) == (0, None)
-    note = rc_route.lost_endpoint_note("oli", edges.parent, os.getpid())
-    assert "--switch" not in note and "(0 live)" in note
 
 
-@pytest.mark.parametrize("edges, ca, start, mine, names", [
-    pytest.param(1, True, True, True, True, id="this-proxys-edge-names-the-switch-that-lands"),
-    pytest.param(1, True, True, False, False, id="another-edges-proxy-names-no-switch-issue-595"),
-    pytest.param(1, False, True, True, False, id="ca-gone-names-no-switch-that-refuses-issue-595"),
-    pytest.param(2, True, True, True, False, id="two-live-edges-name-no-switch-that-refuses-issue-595"),
-    pytest.param(1, True, False, True, False, id="unreadable-edge-start-names-no-switch-that-refuses-issue-595"),
-    pytest.param(1, True, True, "recycled", False,
-                 id="proxy-of-an-earlier-process-at-the-edges-pid-names-no-switch-issue-595-review"),
-    pytest.param(1, True, True, "unknown", False,
-                 id="proxy-that-knows-no-edge-start-names-no-switch-issue-595-review"),
-])
-def test_the_note_names_switch_only_where_switch_lands(tmp_path, monkeypatch, edges, ca, start, mine, names):
-    """issue #595: the turn's note named `ccmorph-rc <p> --switch` in cases that
-    command refuses (no single live edge, a CA gone, a start it cannot read), or
-    hands to another proxy than the one printing the note. It names the command
-    only where it hands the endpoint to this very proxy, by the rule --switch uses:
-    the edge's pid AND start, since a proxy whose edge's pid went to a replacement
-    is never handed anything (issue #595 review)."""
-    import rc_route
-    rc = _launcher()
-    if not start:
-        monkeypatch.setattr(rc_route, "proc_started", lambda pid: None)
-    bridge = tmp_path / "bridge"
-    (bridge / "edges").mkdir(parents=True)
-    pem = tmp_path / "ca.pem"
-    if ca:
-        pem.write_text("ca")
-    for i in range(edges):
-        (bridge / "edges" / f"e{i}.json").write_text(json.dumps(
-            {"pid": os.getpid(), "port": 47101 + i, "ca": str(pem)}))
-    monkeypatch.setattr(rc_route.socket, "create_connection", lambda *a, **k: contextlib.nullcontext())
-    monkeypatch.setattr(rc, "STATE", bridge)
-    monkeypatch.setattr(rc, "EDGES", bridge / "edges")
-    monkeypatch.setattr(rc, "INFERENCE", bridge / "inference")
-    monkeypatch.setattr(rc, "profile_type", lambda p: "apikey")
-    monkeypatch.setattr(rc, "resolve_route", lambda p: {"ANTHROPIC_API_KEY": "sk-oli"})
-    monkeypatch.setattr(rc, "retire_route_with", lambda *a: None)
-    monkeypatch.setattr(rc, "get_tiers", lambda p: {})
-    monkeypatch.setattr(rc, "sidecar", lambda p, owner, started: ("http://127.0.0.1:45111", 4321))
-    monkeypatch.setattr(rc, "handoff_taken", proxy_took(rc))
-    proxy_start = {"recycled": "an-earlier-start", "unknown": None}.get(mine, rc_route.proc_started(os.getpid()))
-    note = rc_route.lost_endpoint_note("oli", bridge, os.getpid() if mine else 1, None, proxy_start)
-    assert ("ccmorph-rc oli --switch" in note) is names
-    if names:
-        rc.switch("oli", "alex")
-        assert (bridge / "inference").read_text() == "oli\n"
-    else:
-        assert "--switch" not in note
-        if mine is True:                    # this edge's own proxy: the switch it was not told refuses
-            with pytest.raises(SystemExit):
-                rc.switch("oli", "alex")
 
 
-def test_a_sessions_note_names_the_session_switch(tmp_path, monkeypatch):
-    """A session's own word is repaired by `--switch --session <id>`; the shared
-    switch would move every other host too."""
-    import rc_route
-    bridge = tmp_path / "bridge"
-    (bridge / "edges").mkdir(parents=True)
-    pem = tmp_path / "ca.pem"
-    pem.write_text("ca")
-    (bridge / "edges" / "gw.json").write_text(json.dumps({"pid": os.getpid(), "port": 47101, "ca": str(pem)}))
-    monkeypatch.setattr(rc_route.socket, "create_connection", lambda *a, **k: contextlib.nullcontext())
-    note = rc_route.lost_endpoint_note("oli", bridge, os.getpid(), "cse_01ABC",
-                                       rc_route.proc_started(os.getpid()))
-    assert "`ccmorph-rc oli --switch --session cse_01ABC` hands it over" in note
 
 
 # Cross-profile subagents: the router's PreToolUse leaves a pick under the Agent
 # prompt's key; the proxy binds the subagent whose first request carries that
 # prompt, and sends every request of that agent to the pick.
 
-def _pending(agents, prompt, word, model, session):
-    from rc_route import prompt_key
-    folder = agents / "pending" / session
-    folder.mkdir(parents=True, exist_ok=True)
-    (folder / f"{prompt_key(prompt)}.json").write_text(json.dumps({"word": word, "model": model}))
 
 
 def _first_request(prompt):
@@ -2778,83 +1756,16 @@ def _first_request(prompt):
         {"type": "text", "text": prompt}]}]}
 
 
-def test_the_pending_key_is_the_routers():
-    """router/edge.go promptKey pins the same vector."""
-    from rc_route import prompt_key
-    assert prompt_key("  say hi\n") == "53eae7058490affdf5ca03d9cc9f08b34b7f408f21f6f8a5e397068709243ede"
 
 
-def test_a_pick_binds_the_one_agent_whose_prompt_it_names(tmp_path):
-    from rc_route import agent_target, claim_agent, has_pending
-    agents = tmp_path / "agents"
-    _pending(agents, "Fix parse()", "kathy", "claude-sonnet-5-5", "s1")
-    assert has_pending(str(agents), "s1")
-    assert claim_agent(str(agents), "a1", _first_request("other work"), time.time(), "s1") is None
-    assert claim_agent(str(agents), "a1", _first_request("Fix parse()\n"), time.time(), "s1") == \
-        {"word": "kathy", "model": "claude-sonnet-5-5"}
-    assert not has_pending(str(agents), "s1")
-    assert agent_target(str(agents), "a1")["word"] == "kathy"
-    # Same-session fan-out, identical prompt: the pick went to the first agent;
-    # the second finds none and falls through to the session's own route (#959).
-    assert claim_agent(str(agents), "a2", _first_request("Fix parse()"), time.time(), "s1") is None
-    for bad in ("../a1", "a/1", "", None):
-        assert agent_target(str(agents), bad) is None
 
 
-def test_two_sessions_picks_for_one_prompt_never_cross(tmp_path):
-    """#959 probe arm 1: the pick's name held no session, so session 2's pick
-    overwrote session 1's and session 1's agent bound to session 2's profile.
-    Each pick now names its session and a claim reads only its own folder."""
-    from rc_route import agent_target, claim_agent, has_pending
-    agents = tmp_path / "agents"
-    _pending(agents, "Review the diff before merge", "gw1", "m1", "s1")
-    _pending(agents, "Review the diff before merge", "gw2", "m2", "s2")
-    assert has_pending(str(agents), "s1") and has_pending(str(agents), "s2")
-    assert claim_agent(str(agents), "agent1a", _first_request("Review the diff before merge"),
-                       time.time(), "s1") == {"word": "gw1", "model": "m1"}
-    assert claim_agent(str(agents), "agent2a", _first_request("Review the diff before merge"),
-                       time.time(), "s2") == {"word": "gw2", "model": "m2"}
-    assert agent_target(str(agents), "agent1a")["word"] == "gw1"
-    assert agent_target(str(agents), "agent2a")["word"] == "gw2"
 
 
-def test_a_foreign_stale_pick_never_binds_a_later_agent(tmp_path):
-    """#959 probe arm 2: a routed call that died before its agent's first request
-    left its pick waiting; any later Agent call with the same prompt bound it,
-    even one the router never routed. A pick binds only an agent of the session
-    that left it, so a foreign later call falls through to its own session."""
-    from rc_route import claim_agent, has_pending
-    agents = tmp_path / "agents"
-    _pending(agents, "Review the diff before merge", "gw9", "m9", "s1")
-    assert has_pending(str(agents), "s1") and not has_pending(str(agents), "s2")
-    assert claim_agent(str(agents), "agentB", _first_request("Review the diff before merge"),
-                       time.time(), "s2") is None
-    # The foreign claim took nothing: the pick still waits for session 1's agent.
-    assert has_pending(str(agents), "s1")
-    assert claim_agent(str(agents), "agentA", _first_request("Review the diff before merge"),
-                       time.time(), "s1") == {"word": "gw9", "model": "m9"}
 
 
-@pytest.mark.parametrize("session", [None, "", "../s1", "a/b", " s1"])
-def test_a_claim_without_a_named_session_binds_nothing(tmp_path, session):
-    """A request that names no session cannot claim a pick: nothing ties it to one."""
-    from rc_route import claim_agent, has_pending
-    agents = tmp_path / "agents"
-    _pending(agents, "Fix parse()", "kathy", "m", "s1")
-    assert has_pending(str(agents), session) is False
-    assert claim_agent(str(agents), "a1", _first_request("Fix parse()"), time.time(), session) is None
-    assert has_pending(str(agents), "s1")
 
 
-def test_a_pick_nobody_claims_is_swept(tmp_path):
-    from rc_route import PENDING_TTL, claim_agent, has_pending
-    agents = tmp_path / "agents"
-    _pending(agents, "late", "kathy", "m", "s1")
-    old = time.time() - PENDING_TTL - 5
-    os.utime(next((agents / "pending" / "s1").iterdir()), (old, old))
-    # Same session, expired: only the sweep keeps this matching pick from binding.
-    assert claim_agent(str(agents), "a1", _first_request("late"), time.time(), "s1") is None
-    assert not has_pending(str(agents), "s1")
 
 
 def _agent_flow(agent, body, session=None):
@@ -2867,46 +1778,6 @@ def _agent_flow(agent, body, session=None):
     return flow
 
 
-def test_a_picked_subagent_is_parked_then_sent_to_its_pick(tmp_path, monkeypatch):
-    """The pick is read from the body, so requestheaders parks the request on a port
-    nothing answers (fail closed if the addon died there); `request` claims the pick,
-    routes the agent and names the pick's model. Its later requests route from the
-    headers alone, and the main thread never waits on a pick."""
-    import asyncio
-    addon = _addon(monkeypatch, tmp_path, "account")
-    _pending(tmp_path / "agents", "Fix parse()", "route", "kimi-k3", "s1")
-
-    main = _agent_flow(None, _first_request("Fix parse()"), "s1")
-    addon.requestheaders(main)
-    assert main.metadata.get(ACCOUNT_METADATA) is True               # the session's own word
-
-    # Another session's agent with the same prompt is never parked on this pick.
-    foreign = _agent_flow("b1", _first_request("Fix parse()"), "s2")
-    addon.requestheaders(foreign)
-    assert foreign.metadata.get(ACCOUNT_METADATA) is True
-
-    flow = _agent_flow("a1", _first_request("Fix parse()"), "s1")
-    addon.requestheaders(flow)
-    assert (flow.request.scheme, flow.request.host, flow.request.port) == ("http", "127.0.0.1", 9)
-    asyncio.run(addon.request(flow))
-    assert flow.metadata["rc_route"] is True and flow.metadata["rc_word"] == "route"
-    assert (flow.request.host, flow.request.port) == ("127.0.0.1", 5000)
-    assert flow.request.headers["x-api-key"] == "route-key"
-    assert json.loads(flow.request.content)["model"] == "kimi-k3"
-
-    # Same-session fan-out, identical prompt: the first agent took the pick, so
-    # the second is not parked and falls through to the session's own route.
-    fanout = _agent_flow("a3", _first_request("Fix parse()"), "s1")
-    addon.requestheaders(fanout)
-    assert fanout.metadata.get(ACCOUNT_METADATA) is True               # no pick left: not parked
-
-    later = _agent_flow("a1", {"model": "claude-sonnet-5-5", "messages": [{"role": "user", "content": "go on"}]}, "s1")
-    addon.requestheaders(later)
-    assert later.metadata["rc_route"] is True and "rc_parked" not in later.metadata
-
-    other = _agent_flow("a2", _first_request("unrelated"), "s1")
-    addon.requestheaders(other)
-    assert other.metadata.get(ACCOUNT_METADATA) is True               # no pick waits: not parked
 
 
 def test_a_rehand_holds_a_profile_without_a_word(tmp_path, monkeypatch):

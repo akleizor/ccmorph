@@ -1,6 +1,6 @@
 """The core runs on no interpreter (#36 step 4).
 
-Everything but the Remote Control add-on (addons/remote-control, a mitmproxy add-on)
+Everything but the Remote Control launcher (addons/remote-control)
 is zsh and the compiled `ccmorph-core`. This pins that: no core file names python3,
 and nothing in the core path runs the Python helper files that step 5 deletes.
 """

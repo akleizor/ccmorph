@@ -25,7 +25,6 @@ if [[ "${1:-}" == --uninstall ]]; then
   exit 0
 fi
 
-command -v mitmdump >/dev/null || print -u2 "note: mitmdump not found — brew install mitmproxy"
 mkdir -p "$BIN"
 for cmd in ccmorph-rc ccmorph-rc-hosts; do
   if [[ -e "$BIN/$cmd" && ! -L "$BIN/$cmd" ]] || [[ -L "$BIN/$cmd" && "$(readlink "$BIN/$cmd")" != "$HERE/$cmd" ]]; then

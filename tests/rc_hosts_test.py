@@ -4098,7 +4098,7 @@ def _spaced_install(tmp_path):
     import shutil
     here = tmp_path / "Application Support" / "cc morph" / "remote-control"
     here.mkdir(parents=True)
-    for name in ("ccmorph-rc-hosts", "ccmorph-rc", "rc_route.py", "rc_flow.py", "rc_addon.py"):
+    for name in ("ccmorph-rc-hosts", "ccmorph-rc", "rc_route.py"):
         shutil.copy(SCRIPT.parent / name, here / name)
     return load_script(here / "ccmorph-rc-hosts", "rc_hosts")
 
@@ -4480,7 +4480,7 @@ def test_every_shipped_python_helper_uses_nothing_newer_than_the_python_38_floor
     interpreter. One rule set over every shipped Python file: a python shebang,
     a uv inline script, or any .py under addons/. And on that floor the add-on's
     PEP 585 builtins and PEP 604 | in an annotation need "from __future__ import
-    annotations" or the import itself evaluates them (rc_addon's tuple | None
+    annotations" or the import itself evaluates them (a tuple | None
     raised TypeError on <= 3.9, 2026-11-16)."""
     import ast
     import subprocess

@@ -83,7 +83,7 @@ func TestASessionWordIsFoundByTheHeaderClaudeCodeSends(t *testing.T) {
 	dir := t.TempDir()
 	write(t, filepath.Join(dir, "cse_1"), []byte("gw\n"))
 	write(t, filepath.Join(dir, "bad"), []byte("not a word!\n"))
-	for sid, want := range map[string]string{"cse_1": "gw", "bad": "", "missing": "", "../" + filepath.Base(dir) + "/cse_1": ""} {
+	for sid, want := range map[string]string{"cse_1": "gw", "bad": "", "missing": "", "../sessions/cse_1": "", "a/../cse_1": ""} {
 		if got := sessionTarget(dir, sid); got != want {
 			t.Errorf("%q: got %q want %q", sid, got, want)
 		}

@@ -325,7 +325,7 @@ def helper_cmd(name, binary=None):
 
 def proxy_took(rc):
     """ccmorph-rc's handoff_taken as the shared edge's proxy answers it (issue #595):
-    the proxy says it holds the handoff -- held.<edge>.json names its id, as rc_addon
+    the proxy says it holds the handoff -- held.<edge>.json names its id, as the Go edge
     writes it -- and the file stays, so a test can read what was handed over."""
     import json
 

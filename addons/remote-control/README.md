@@ -13,7 +13,8 @@ removes the feature (see [Boundary](#boundary)).
 
 - macOS: the supervisor is a launchd LaunchAgent (`com.ccmorph.rc-hosts`).
 - The `claude` CLI and `zsh`, as ccmorph itself.
-- Python 3.8 or newer, and [mitmproxy](https://mitmproxy.org) (`brew install mitmproxy`).
+- Python 3.8 or newer for the launcher and the supervisor. The proxy is ccmorph's own
+  (`ccmorph-core edge-proxy`); there is nothing else to install.
 - Two ccmorph profiles: a Claude account profile (the account the phone
   signs in with) and an endpoint profile (the route that serves inference).
   `ccmorph add` creates both — see [First use](#first-use).
@@ -173,11 +174,9 @@ providers carries thinking blocks the previous one signed; a provider may refuse
 The proxy takes a handoff within a second, not on the next request for that profile,
 and only the proxy of the edge it names takes it: `--switch` waits until that proxy
 says it holds it, and removes the handoff and leaves the word as it was when it does
-not. What the proxy does with each request (`rc_flow.py`, `rc_route.py`)
-reloads from the install when either file changes, on the next request, with no
-restart; a file that does not load leaves the running code in place. The key and the
-endpoints live in `rc_addon.py`, and a change to it, or to the launcher, still needs
-the edge restarted. Restarting the edge alone (its fixed port and CA stay) does not stop
+not. What the proxy does with each request, the key and the endpoints are
+compiled into `ccmorph-core` (`agentproxy/edge*.go`), so a change to them, or to the
+launcher, needs the edge restarted after `make shim`. Restarting the edge alone (its fixed port and CA stay) does not stop
 a session's process; restarting `ccmorph-rc-hosts` stops every host and its sessions.
 
 `ccmorph-rc-hosts` pins the route profile's tiers (each alias its profile maps outside
@@ -192,7 +191,7 @@ and start so a record a killed supervisor left behind is never believed; `ccmorp
 ## How it works
 
 Remote Control is offered only to a claude.ai-authenticated process talking to
-api.anthropic.com, so that stays true. A loopback mitmproxy, trusted by this process
+api.anthropic.com, so that stays true. A loopback proxy (`ccmorph-core edge-proxy`), trusted by this process
 tree only, moves `api.anthropic.com/v1/messages` to the route profile (through its
 `ccmorph-core adapter` when the endpoint needs one). Bridge, OAuth and telemetry traffic
 reach Anthropic untouched; other hosts are not intercepted at all.
@@ -208,11 +207,11 @@ the Mac is never touched.
 
 | Guarantee | Enforced by |
 |---|---|
-| The claude.ai credential never reaches the route | `rc_route.reroute`; `tests/rc_bridge_test.py` |
-| A dead route is an error, never a fallback to the subscription | `tests/rc_bridge_failclosed_test.py` |
-| The route key is in no argv, environment, or lingering file | 0600 file deleted on read; `mitmdump` is resolved before it is written, and every later exit including TERM/HUP/QUIT/INT unlinks it (a signal the caller ignores stays ignored); a `--switch` handoff holding the key is staged in a 0600 temp only that switch owns and written with TERM/HUP/QUIT/INT deferred until it is live or gone; `tests/rc_bridge_test.py` (`-k 'no_failed_start or termination_during_proxy_startup or as_the_route_key_file or termination_during_a_switch or switch_whose'`) and `tests/rc_route_key_repro_test.py` |
-| Routed responses are verified, not assumed | every inference turn's reply line pairs the word the pick set with the endpoint that answered (`asked=` / `served-by=`, `via=` when a fallback routed it); Anthropic's organization header is the first-party proof and the response-side connection's host and port are the endpoint proof (mitmproxy's `Server.address`, the name the request left for, never the resolved `peername`), so a turn answered by anything else — a routed turn carrying the header, an account turn without it, a reply from an endpoint other than the one the request left for, or a pick the proxy holds no endpoint for (it falls back to the edge's route, issue #595) — is logged `miss` (#920: requested-vs-served per session turn, so a pick that is set but not served says so); `tests/rc_bridge_test.py` |
-| No system trust change | CA lives in `profiles/.rc-bridge/mitm` (0700); only `NODE_EXTRA_CA_CERTS` of this process |
+| The claude.ai credential never reaches the route | `agentproxy/edge_proxy_test.go` (`TestEdge*`) |
+| A dead route is an error, never a fallback to the subscription | `agentproxy/edge_proxy_test.go` (dead route and no-first-party tests) |
+| The route key is in no argv, environment, or lingering file | 0600 file deleted on read; the proxy binary is checked before the file is written, and every later exit including TERM/HUP/QUIT/INT unlinks it (a signal the caller ignores stays ignored); a `--switch` handoff holding the key is staged in a 0600 temp only that switch owns and written with TERM/HUP/QUIT/INT deferred until it is live or gone; `tests/rc_bridge_test.py` (`-k 'no_failed_start or termination_during_proxy_startup or as_the_route_key_file or termination_during_a_switch or switch_whose'`) and `tests/rc_route_key_repro_test.py` |
+| Routed responses are verified, not assumed | every inference turn's reply line pairs the word the pick set with the endpoint that answered (`asked=` / `served-by=`, `via=` when a fallback routed it); Anthropic's organization header is the first-party proof and the response-side connection's host and port are the endpoint proof (the address the connection was dialled for, never the resolved peer), so a turn answered by anything else — a routed turn carrying the header, an account turn without it, a reply from an endpoint other than the one the request left for, or a pick the proxy holds no endpoint for (it falls back to the edge's route, issue #595) — is logged `miss` (#920: requested-vs-served per session turn, so a pick that is set but not served says so); `agentproxy/edge_test.go` |
+| No system trust change | CA lives in `profiles/.rc-bridge/edge-ca` (0700); only `NODE_EXTRA_CA_CERTS` of this process |
 | No orphans | proxy and adapter follow the Claude pid and exit with it; a start that fails stops the proxy it spawned (`tests/rc_bridge_test.py -k failed_start_stops`) |
 | A network outage never restarts the edge or a running host; Claude Code's own backoff reconnects, the supervisor relaunches a bridge that quit and hands back processless sessions | `edge_down` probes loopback only; `tests/rc_bridge_test.py`, `tests/rc_hosts_test.py` (`-k outage`) |
 

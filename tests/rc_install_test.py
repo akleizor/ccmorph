@@ -66,6 +66,6 @@ def test_the_page_opens_with_requirements_and_reach_before_the_first_command():
     install route, and carry the commands that get a working clone."""
     text = README.read_text(encoding="utf-8")
     opening = text.split("ccmorph-rc <route-profile>", 1)[0]
-    for word in ("macOS", "Python", "mitmproxy", "Homebrew", "one-line", "clone"):
+    for word in ("macOS", "Python", "Homebrew", "one-line", "clone"):
         assert word in opening, f"the opening no longer names {word}"
     assert "git clone" in opening and "addons/remote-control/install.sh" in opening

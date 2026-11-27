@@ -33,7 +33,7 @@ with tempfile.TemporaryDirectory() as root:
                           retire_route_with=lambda *a: None, strip_env=tuple,
                           start_adapter=lambda *a: 'http://127.0.0.1:1',
                           wait_listening=lambda *a, **k: os.kill(os.getpid(), signal.SIGTERM))
-                rc['shutil'].which = lambda name: '/test/' + name
+                rc['ADAPTER'] = rc['Path']('/bin/sh')   # any existing file: Popen below is stubbed
                 rc['subprocess'].Popen = lambda *a, **k: object()
             return stub_start_dependencies
         sys.settrace(stub_start_dependencies)

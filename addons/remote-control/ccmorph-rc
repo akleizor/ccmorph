@@ -8,7 +8,7 @@ Claude Code only offers Remote Control to a claude.ai-authenticated session that
 talks to api.anthropic.com. This add-on keeps that true for the process, and moves
 only `/v1/messages` to the route profile through a scoped TLS proxy:
 
-  claude remote-control ──HTTPS_PROXY──▶ mitmdump (loopback, this launch only)
+  claude remote-control ──HTTPS_PROXY──▶ ccmorph-core edge-proxy (loopback, this launch only)
       api.anthropic.com/v1/messages ──▶ route profile (its ccmorph-core adapter if needed)
       every other host/path            ──▶ unchanged
 
@@ -57,8 +57,7 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 # the routing decision beside this script, however it was loaded (test, install, exec)
 sys.path.insert(0, str(HERE))
-from rc_route import (ACCOUNT_METADATA, SESSION_ID, edge_name, route_edge,  # noqa: E402
-                      switch_edge)
+from rc_route import SESSION_ID, edge_name, route_edge, switch_edge  # noqa: E402
 import rc_route  # noqa: E402  (rc_route.proc_started: the one start identity, looked up per call)
 LIB_DIR = Path(os.environ.get("CCMORPH_LIB_DIR") or HERE.parent.parent / "lib")
 CCMORPH = LIB_DIR / "ccmorph.sh"
@@ -118,7 +117,7 @@ ADAPTER_MODEL_CAPABILITIES = "-mid_conv_system,-mid_conv_tool_change,-per_turn_e
 # matters most here: it outranks the keychain login and is inference-only, so Remote
 # Control refuses it ("requires a full-scope login token").
 # The proxy half of strip_env(), which only the SESSION may lose: its one proxy is
-# the mitmdump below, so an inherited one would take `/v1/messages` somewhere else.
+# the edge proxy below, so an inherited one would take `/v1/messages` somewhere else.
 # The adapter is the opposite case — it dials the route's real endpoint, which on a
 # private network is reachable only through the proxy the caller exported.
 PROXY_ENV = ("HTTP_PROXY", "http_proxy", "HTTPS_PROXY", "https_proxy", "ALL_PROXY", "all_proxy")
@@ -503,22 +502,6 @@ def sidecar(profile: str, owner: int, started: str) -> tuple[str, int | None]:
         return str(upstream), pid
 
 
-# The addon is the only thing standing between Claude and api.anthropic.com. Two
-# ways it can go missing while the proxy keeps running, each observed live:
-#  - mitmproxy hot-reloads a -s script when its file changes, and a failed reload
-#    leaves the proxy running with NO addon (an upgrade of this directory did it);
-#  - any other load error after startup.
-# Either way the proxy would forward inference to Anthropic on the account's own
-# credential. So the proxy runs a private copy that nothing else writes, and a
-# built-in block_list answers 502 to any /v1/messages still addressed to
-# api.anthropic.com. A rerouted request carries the route's host, so it never
-# matches. The account word is a legitimate first-party call on that very
-# destination: the addon marks the flow it leaves untouched, and the guard exempts
-# that mark. Only the addon sets it, so a missing addon still matches and closes.
-FAIL_CLOSED = (rf"|(~d ^api\.anthropic\.com$ & ~u /v1/messages & !~meta {ACCOUNT_METADATA})"
-               "|502")
-
-
 def owned_prefix(kind: str) -> str:
     """A per-launch file's prefix names its launcher, so a later start can tell it is orphaned."""
     return f"{kind}.{os.getpid()}."
@@ -610,26 +593,16 @@ def sweep_orphans(parent: Path) -> None:
                 path.unlink()
 
 
-def private_addon(parent: Path) -> Path:
-    """Copy the addon and its module into a fresh 0700 directory; return the script."""
-    run = Path(tempfile.mkdtemp(prefix=owned_prefix("addon"), dir=parent))
-    for name in ("rc_addon.py", "rc_flow.py", "rc_route.py"):
-        # copy, not copy2: mitmproxy loads a -s script only if its mtime beats its
-        # last load (0), so a source delivered with epoch timestamps never loads.
-        shutil.copy(HERE / name, run / name)
-    return run / "rc_addon.py"
-
-
-def proxy_command(mitmdump: str, port: int, confdir: Path, script: Path) -> list[str]:
-    return [mitmdump, "-q", "--listen-host", "127.0.0.1", "--listen-port", str(port),
-            "--set", f"confdir={confdir}", "--set", f"block_list={FAIL_CLOSED}",
-            "--allow-hosts", r"^api\.anthropic\.com(:443)?$", "-s", str(script)]
+def proxy_command(port: int, caddir: Path) -> list[str]:
+    """The edge proxy: ccmorph-core's agentproxy in edge mode. The CA it keeps in
+    `caddir` is made on first use from the one mitmproxy kept (STATE/mitm), so a
+    session that started under the old proxy keeps trusting this one."""
+    return [str(ADAPTER), "edge-proxy", "--listen", f"127.0.0.1:{port}", "--ca-dir", str(caddir),
+            "--legacy-ca", str(STATE / "mitm" / "mitmproxy-ca.pem")]
 
 
 def stop_proxy(proc) -> None:
-    """Stop the proxy a failed start spawned. The addon is what follows our pid, and
-    it reads the route key on load: once the key is gone it never loads, so nothing
-    else would stop this proxy (on --edge it would hold the fixed port for good)."""
+    """Stop the proxy a failed start spawned, so it never holds the fixed port of an --edge."""
     proc.terminate()
     try:
         proc.wait(timeout=5)
@@ -646,16 +619,16 @@ def own_edge(route: str, me: int, args, fixed_port: int | None):
     key = route_env.get("ANTHROPIC_API_KEY") or die(f"route profile '{route}' has no key")
     route_env.get("ANTHROPIC_BASE_URL") or die(f"route profile '{route}' has no endpoint")
 
-    mitmdump = shutil.which("mitmdump") or die("mitmdump not found: brew install mitmproxy")
+    ADAPTER.exists() or die(f"{ADAPTER} not found: the edge proxy is part of ccmorph-core")
 
     upstream = start_adapter(route, me, adapter_env())
 
     STATE.mkdir(parents=True, exist_ok=True)
     STATE.chmod(0o700)
     sweep_orphans(STATE)
-    confdir = STATE / "mitm"
-    confdir.mkdir(exist_ok=True)
-    confdir.chmod(0o700)
+    caddir = STATE / "edge-ca"
+    caddir.mkdir(exist_ok=True)
+    caddir.chmod(0o700)
     # finally handles Python exceptions, but the default TERM/HUP/QUIT disposition
     # exits without unwinding. Block them across mkstemp + assignment, install cleanup
     # handlers, then unblock: even a pending signal cannot land in the tiny window
@@ -694,15 +667,14 @@ def own_edge(route: str, me: int, args, fixed_port: int | None):
         proxy_env = {k: v for k, v in os.environ.items() if k not in strip_env()}
         proxy_env.update(RC_UPSTREAM=upstream, RC_KEY_FILE=key_file, RC_PARENT_PID=str(me),
                          RC_PARENT_STARTED=edge_started(me) or "",
-                         RC_TIERS=json.dumps(pinned_tiers(os.environ)), RC_INFERENCE=str(INFERENCE),
-                         RC_SOURCE=str(HERE))
+                         RC_TIERS=json.dumps(pinned_tiers(os.environ)), RC_INFERENCE=str(INFERENCE))
         if args.debug:
             proxy_env["RC_LOG"] = str(STATE / "debug.log")
         proxy = subprocess.Popen(
-            proxy_command(mitmdump, port, confdir, private_addon(STATE)),
+            proxy_command(port, caddir),
             env=proxy_env, stdin=subprocess.DEVNULL, start_new_session=True)
         wait_listening(port, proxy, "proxy")
-        ca = confdir / "mitmproxy-ca-cert.pem"
+        ca = caddir / "ca.pem"
         if not ca.exists():
             die(f"proxy CA not generated at {ca}")
         if os.path.exists(key_file):
@@ -719,7 +691,7 @@ def own_edge(route: str, me: int, args, fixed_port: int | None):
                     os.close(fd)
             if key_file is not None:
                 with suppress(OSError):
-                    os.unlink(key_file)      # already gone when the addon consumed the key
+                    os.unlink(key_file)      # already gone when the proxy consumed the key
             if proxy is not None and not started:
                 # Best effort: nothing raised while stopping it may replace the error
                 # (or the 128+signal exit) that ended this start.

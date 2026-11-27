@@ -18,7 +18,7 @@ import (
 // prompt>.json, in the folder of the session that left it; the proxy binds it to
 // the agent whose first request carries that prompt by renaming it to
 // <dir>/<agent id>.json; SubagentStop removes the binding. The Remote Control
-// proxy (rc_route.claim_agent) keeps the same layout in the edge's bridge dir.
+// proxy (agentproxy.Claim) keeps the same layout in the edge's bridge dir.
 
 // AgentHeader names the subagent a request comes from.
 const AgentHeader = "x-claude-code-agent-id"
