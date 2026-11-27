@@ -2312,6 +2312,174 @@ def test_every_processless_session_is_handed_back_and_retried_slowly(tmp_path, m
     assert sorted(posts[3:]) == ["cse_01PARKED", "cse_01UNARCH"]   # still dead: retried slowly
 
 
+def test_a_session_the_server_never_starts_is_parked_not_rewoken_forever(tmp_path, monkeypatch,
+                                                                         capsys):
+    """#974: one session answered 200 to 232 hand-backs and never spawned, every
+    REWAKE_AFTER for 40 hours. The hand-backs must stop at REWAKE_TRIES, park the
+    session until its next input, and the log must say once why they stopped."""
+    import json
+    m = load()
+    repo = tmp_path / "repo"
+    (repo / ".claude").mkdir(parents=True)
+    (repo / ".claude" / "rc-host.json").write_text(json.dumps({"environmentId": "env_01R"}))
+    active = [{"id": "cse_01DEAD", "environment_id": "env_01R", "connection_status": "disconnected",
+               "external_metadata": {}, "user_message_count": 4,
+               "last_event_at": "2026-11-25T04:50:00Z"},
+              {"id": "cse_01WOKEN", "environment_id": "env_01R", "connection_status": "disconnected",
+               "external_metadata": {}}]
+    posts = []
+
+    def api(method, path, token, body=None):
+        if method == "POST":
+            posts.append(body["session_id"])
+            assert path == "/v1/environments/env_01R/bridge/reconnect"
+            return {}
+        return {"data": active}
+    clock = [1000.0]
+    monkeypatch.setattr(m, "api", api)
+    monkeypatch.setattr(m, "account_token", lambda: "tok")
+    monkeypatch.setattr(m.time, "time", lambda: clock[0])
+    done, failed, parked, tries = {}, set(), {}, {}
+
+    def check():
+        return m.recover_processless([str(repo)], done, {str(repo)}, failed, parked, tries)
+
+    check()                                      # a host restart's death: its one hand-back goes out
+    assert sorted(posts) == ["cse_01DEAD", "cse_01WOKEN"]
+    active[1]["connection_status"] = "connected"    # WOKEN's wake worked: it started
+    for _ in range(m.REWAKE_TRIES - 1):             # DEAD stays processless between checks
+        clock[0] += m.REWAKE_AFTER
+        check()
+    assert posts.count("cse_01DEAD") == m.REWAKE_TRIES   # a fixed number of tries, no more
+    capsys.readouterr()
+    clock[0] += m.REWAKE_AFTER
+    check()                                        # still no process after the last hand-back
+    assert posts.count("cse_01DEAD") == m.REWAKE_TRIES   # parked: no further POST
+    assert "cse_01DEAD" in parked
+    out = capsys.readouterr().out
+    assert out.count("cse_01DEAD") == 1 and "parked" in out   # named once, with the reason
+    for _ in range(3):                             # and silent from then on
+        clock[0] += m.REWAKE_AFTER
+        check()
+    assert posts.count("cse_01DEAD") == m.REWAKE_TRIES
+    assert "cse_01DEAD" not in capsys.readouterr().out
+    active[0]["user_message_count"] = 5            # its owner messages it on the phone
+    check()
+    assert posts.count("cse_01DEAD") == m.REWAKE_TRIES + 1 and "cse_01DEAD" not in parked
+    active[0]["connection_status"] = "connected"   # it started: the tries are cleared
+    check()
+    active[0]["connection_status"] = "disconnected"    # a later death gets them again
+    clock[0] += m.REWAKE_AFTER
+    check()
+    assert posts.count("cse_01DEAD") == m.REWAKE_TRIES + 2
+
+
+def test_a_session_that_only_ever_gets_500_parks_too(tmp_path, monkeypatch):
+    """The same forever loop with an error answer: a persistent 500 every
+    REWAKE_AFTER is a hand-back the server answered and nothing started, so it
+    caps and parks like a 200; only a transient (no answer) is not counted."""
+    import urllib.error
+    m, repo, posts, clock = _failing_hand_back(
+        tmp_path, monkeypatch, lambda p: urllib.error.HTTPError(p, 500, "no", {}, None))
+    done, failed, parked, tries = {}, set(), {}, {}
+    per = []
+    for _ in range(m.REWAKE_TRIES + 2):
+        before = len(posts)
+        m.recover_processless([str(repo)], done, {str(repo)}, failed, parked, tries)
+        per.append(len(posts) - before)
+        clock[0] += m.REWAKE_AFTER
+    assert per == [1] * m.REWAKE_TRIES + [0, 0]
+    assert "cse_01B" in parked
+
+
+def test_a_parked_session_remembered_lost_is_held_back_by_both_paths(tmp_path, monkeypatch):
+    """The park only holds if recover_interrupted honors it: remembered `lost`, a
+    parked session was POSTed at by the other recovery path every RECOVER_EVERY
+    under a persistent 500 -- a fourth hand-back in the very cycle the log said it
+    parked, a fifth 20 s later, forever. As the supervisor runs it, through cycle()."""
+    import json
+    import urllib.error
+    m = load()
+    monkeypatch.setattr(m, "BUSY", tmp_path / "busy.json")
+    m.BUSY.write_text(json.dumps({"cse_01B": "lost"}))
+    repo = tmp_path / "repo"
+    (repo / ".claude").mkdir(parents=True)
+    (repo / ".claude" / "rc-host.json").write_text(json.dumps({"environmentId": "env_01R"}))
+    row = {"id": "cse_01B", "environment_id": "env_01R", "connection_status": "disconnected"}
+    posts, lines = [], []
+
+    def api(method, path, token, body=None):
+        posts.append(body["session_id"])
+        raise urllib.error.HTTPError(path, 500, "no", {}, None)
+    clock = [1000.0]
+    monkeypatch.setattr(m, "api", api)
+    monkeypatch.setattr(m, "account_token", lambda: "tok")
+    monkeypatch.setattr(m, "host_sessions", lambda *_: ("tok", [(str(repo), row)]))
+    monkeypatch.setattr(m, "log", lines.append)
+    monkeypatch.setattr(m, "keep_login_fresh", lambda *a: None)
+    monkeypatch.setattr(m, "restart_logged_out", lambda *a: None)
+    monkeypatch.setattr(m.time, "time", lambda: clock[0])
+    monkeypatch.setattr(m, "IDLE_CHECK", float("inf"))
+    state = m.Clock()
+    state.last_recover = clock[0] - m.RECOVER_EVERY
+    hosts = {str(repo): SimpleNamespace(folder=str(repo), proc=True, started=0)}
+
+    def tick(step=None):
+        m.cycle(hosts, [str(repo)], clock[0], state)
+        clock[0] += step if step is not None else m.REWAKE_AFTER
+    for _ in range(m.REWAKE_TRIES):                  # three answered, failed hand-backs
+        tick()
+    assert len(posts) == m.REWAKE_TRIES
+    lines.clear()
+    tick()                                           # the cap cycle: parked, named once
+    tick(m.RECOVER_EVERY)                            # and silent from there on
+    assert len(posts) == m.REWAKE_TRIES              # the other path POSTed at a parked session
+    assert sum("parked" in line for line in lines) == 1
+    assert all("recovery failed" not in line for line in lines)
+
+
+def test_a_park_does_not_carry_across_a_new_unarchive(tmp_path, monkeypatch):
+    """`done` and `tries` are keyed by (id, unarchived_epoch); a park keyed by the
+    id alone suppresses the new unarchive's first hand-back whenever the server's
+    message count and event stamp come back unchanged -- main sends one there, so
+    the park must belong to the epoch it was made in."""
+    import json
+    m = load()
+    repo = tmp_path / "repo"
+    (repo / ".claude").mkdir(parents=True)
+    (repo / ".claude" / "rc-host.json").write_text(json.dumps({"environmentId": "env_01R"}))
+    row = {"id": "cse_01DEAD", "environment_id": "env_01R", "connection_status": "disconnected",
+           "user_message_count": 4, "last_event_at": "2026-11-25T04:50:00Z",
+           "external_metadata": {"unarchived_epoch": 1}}
+    active = [row]
+    posts = []
+
+    def api(method, path, token, body=None):
+        if method == "POST":
+            posts.append(body["session_id"])
+            return {}
+        return {"data": active}
+    clock = [1000.0]
+    monkeypatch.setattr(m, "api", api)
+    monkeypatch.setattr(m, "account_token", lambda: "tok")
+    monkeypatch.setattr(m.time, "time", lambda: clock[0])
+    done, failed, parked, tries = {}, set(), {}, {}
+
+    def check():
+        m.recover_processless([str(repo)], done, {str(repo)}, failed, parked, tries)
+        clock[0] += m.REWAKE_AFTER
+    for _ in range(m.REWAKE_TRIES + 1):              # capped and parked under epoch 1
+        check()
+    assert len(posts) == m.REWAKE_TRIES and "cse_01DEAD" in parked
+    active.clear()                                   # archived: gone from the active list
+    check()
+    row["external_metadata"]["unarchived_epoch"] = 2  # unarchived again: fresh worktree, same stamps
+    active.append(row)
+    check()
+    assert len(posts) == m.REWAKE_TRIES + 1          # the new epoch gets its hand-back
+    assert "cse_01DEAD" not in parked
+
+
 def test_an_idle_session_parks_and_wakes_only_on_input(tmp_path, monkeypatch):
     """21 idle phone sessions held 3.2 GB, some 2.5 days old (2026-11-19): an idle
     session's process ends after park_hours and comes back on its next message."""
