@@ -173,6 +173,58 @@ def test_every_kind_paragraph_carries_one_strict_seen_line():
         'remove the Seen line with its kind. (GH-916)')
 
 
+# The record line as the lessons ledger must re-count it: the record alone
+# closes the line, and its parentheses hold nothing but full dates.
+SEEN_RECORD = re.compile(r"Seen (\d+)× \(([^()]*)\)\.$")
+FULL_DATE = re.compile(r"\d{4}-\d{2}-\d{2}")
+
+
+def test_every_seen_record_says_exactly_what_the_ledger_counts():
+    # GH-1017's landing refusal: kind 1's record read
+    # `Seen 2× (2026-10, 2026-10 — …predate the 2026-10-26 history squash…)`,
+    # while `lessons ccmorph` printed `Seen 1x 2026-10-26` for it — the ledger
+    # re-counts each kind from the full `YYYY-MM-DD` dates on the Seen record,
+    # as distinct days, and ignores everything the record cannot be a date in.
+    # So a record with prose or month-only tokens inside its parentheses, a
+    # note sharing the record's line before or after it, a repeated date
+    # entry, or a count above its distinct dates is REVIEW.md stating a fact
+    # the ledger will not print — the same mistake the caught kind is about
+    # (a reader turning an unparseable shape into a confident count), written
+    # into the ledger's own input. A kind's dating notes belong in the
+    # paragraph text; the record line states only the days.
+    bad = []
+    for i, line in enumerate(_lines(), 1):
+        if not SEEN_MARKER.search(line):
+            continue
+        rec = SEEN_RECORD.search(line)
+        if rec is None or line[:rec.start()].strip() or line[rec.end():].strip():
+            bad.append((i, 'the Seen marker is not the whole record '
+                           '`Seen <n>× (<dates>).` closing its line — prose '
+                           'shares the line, and one reader counts it while '
+                           'the ledger does not'))
+            continue
+        inner = rec.group(2)
+        dates = FULL_DATE.findall(inner)
+        if ', '.join(dates) != inner:
+            bad.append((i, f'the record holds more than dates as `d1, d2, …`: '
+                           f'{inner!r} — the ledger counts only full '
+                           '`YYYY-MM-DD` days from it'))
+        elif dates != sorted(dates) or len(set(dates)) != len(dates):
+            bad.append((i, f'the record\'s dates repeat or are out of order: '
+                           f'{inner!r} — the ledger keeps distinct days'))
+        elif int(rec.group(1)) != len(dates):
+            bad.append((i, f'the record counts {rec.group(1)} but lists '
+                           f'{len(dates)} distinct days: {inner!r} — the '
+                           'ledger prints the number of days it holds'))
+    assert not bad, (
+        f'cause: Seen records the lessons ledger will count differently than '
+        f'they read (line, defect): {bad}. fix: a record line is only '
+        '`Seen <n>× (<date>, <date>, …).` — full `YYYY-MM-DD` dates, one per '
+        'distinct day, ascending, and n their number; move dating notes into '
+        'the kind\'s paragraph text, which the ledger does not count. '
+        '(GH-1017)')
+
+
 def test_the_promotion_threshold_records_keep_their_dates():
     # GH-916's three Seen-3× kinds are recorded incidents. The live ledger may
     # promote one: its paragraph then leaves the kinds section (its number's
