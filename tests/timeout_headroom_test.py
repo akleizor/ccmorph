@@ -8,9 +8,12 @@ no traceback and no timeout text. The children had finished or were still
 completing; the scheduler had starved them past the per-test ceiling.
 
 This file pins both halves of the fix: the global ceiling in pytest.ini stays
-60 s, and a per-test `@pytest.mark.timeout(300)` keeps its own budget on an
-xdist worker even when the command line sets a lower one — for a plain function
-and for a `unittest.TestCase` method, the two shapes the marked tests use.
+60 s, and a per-test `@pytest.mark.timeout(SPAWN_TEST_BUDGET)` keeps its own
+budget on an xdist worker even when the command line sets a lower one — for a
+plain function and for a `unittest.TestCase` method, the two shapes the marked
+tests use. Since GH-976 the budget is derived from HANG_TIMEOUT and conftest.py
+applies it to every test that can wait on a real process, so the population is
+no longer a hand list.
 """
 import os
 import re
@@ -23,7 +26,7 @@ from pathlib import Path
 
 import pytest
 
-from support import HANG_TIMEOUT
+from support import HANG_TIMEOUT, SPAWN_TEST_BUDGET
 
 
 def test_the_suite_ceiling_stays_sixty_seconds(request):
@@ -33,12 +36,14 @@ def test_the_suite_ceiling_stays_sixty_seconds(request):
 # GH-932: the probe spawns a pytest session and an xdist worker, so it is
 # bound by process starts under the gate's load; its children are the pytest
 # interpreter and the worker it starts.
-@pytest.mark.timeout(300)
+@pytest.mark.timeout(SPAWN_TEST_BUDGET)
 def test_a_marked_test_keeps_its_budget_where_the_ceiling_kills_an_unmarked_one(tmp_path):
     pytest.importorskip("xdist")
     # The real conftest is what selects the thread method on a worker; copy it
-    # so the probe reproduces the night shape and not a bare pytest.
-    shutil.copy(Path(__file__).parent / "conftest.py", tmp_path / "conftest.py")
+    # so the probe reproduces the night shape and not a bare pytest. It imports
+    # support for the spawn-bound walk (#976), so that goes beside it.
+    for name in ("conftest.py", "support.py"):
+        shutil.copy(Path(__file__).parent / name, tmp_path / name)
     (tmp_path / "pytest.ini").write_text("[pytest]\ntimeout = 60\n")
     (tmp_path / "probe_test.py").write_text(
         "import time\n"
