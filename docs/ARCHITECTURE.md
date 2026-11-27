@@ -263,10 +263,11 @@ MCP credentials (through capsules), settings, history, and tooling are **global 
 | MCP credentials | global | owned by MCP capsules (`~/.agents/mcp/<name>/state/`); every profile reaches the same local service, so one grant serves every profile and every agent. A remote OAuth MCP joins as a capsule, never through Claude Code's per-profile store. |
 | Session history | global, merged per profile | every profile links `projects/`, `paste-cache` and `history.jsonl` into `~/.claude`, so `/resume`, the prompt history and pasted text see every profile's sessions (#177). A profile's pre-existing history merges into the store first, by copy-and-verify — destination-local temp file, fsync, size and hash read back, a `link(2)` publish that never overwrites — so a store on another filesystem, reached through a link, takes every file; the originals go only where nothing touched them since the walk, and only the dirs left empty are removed — a file that arrives mid-merge, or a line appended to a copied file, keeps the profile on its own dir for the next launch. Prompt history shares by appending, under one machine-wide lock beside the shared file, the records the shared file lacks (deduplicated, in their own timestamp order): the file's inode never changes, so concurrent merges and concurrent claude appends lose nothing. A same-name entry the store already holds wins unless it is a carried link giving way or a byte-identical duplicate; a divergent one is kept side by side in `projects.premigration.<pid>.<n>` and reported. A profile with a live session (`sessions/<pid>.json`, checked under the profile's setup lock) is left unchanged at launch — no swap, no failure — and merges at the next idle launch, because Claude Code's sandbox quarantines a replaced `projects/` and its transcript appends reopen by pathname. A merge that cannot complete leaves the profile on its own copy, logged, and the launch still succeeds. A profile whose `projects` links at the user's own store on another disk merges the same way, its disk left intact. A hop, or `--resume <id>` naming a session from anywhere, links that one transcript and its sidecar dir into the target (`_ccm_carry_session`); Claude Code appends through the link, so the history stays one file. |
 | Adapter probe cache | **per endpoint**, shared across profiles | `.adapter-cache/<sha256(base_url)[:16]>.json`, beside the profile dirs — keyed by endpoint so a second profile on an already-classified gateway starts instantly; the stored `endpoint` is re-checked on read, so a moved URL or hash collision re-probes instead of mis-serving |
-| Adapter runtime config, auth, and log | per launch | mode-0700 directory under `${TMPDIR:-/tmp}`; removed on exit |
+| Adapter runtime config and auth | per adapter | mode-0700 directory under `${TMPDIR:-/tmp}`; removed when the adapter exits |
+| Gateway adapter (record, mutex, users lock, log) | per (profile, model, conf, core binary) — shared by every session with that key | `<state>/auth/.<profile>.adapter.<key>{,.lock,.users,.log}`; `rm` and `mv` of the profile take them. The log holds one adapter's lifetime, so a launch ending never takes it away |
 | `settings.json` | **generated** per profile | canonical `~/.claude/settings.json` + the profile's `settings.profile.json` layer + saved model defaults, written by `settings-compose` at launch; edits made to it are folded back into the layer — see [Launch contract](#launch-contract-arguments-pass-through) |
 | Shared harness layer — `skills`, `plugins`, `commands`, `hooks`, `output-styles`, `agents`, `session-env`, `file-history`, `CLAUDE.md`, `keybindings.json`, `settings.local.json` | global | one manifest (`sharedDirs` and `sharedFiles = []string` in `util/setup.go`), symlinked into `~/.claude`. Dirs are created-and-linked even while empty, so content installed later reaches every profile; a file appearing in `~/.claude` after a profile existed is linked by the next launch's setup pass. A profile-local REAL dir is merged into the shared store and linked only for the mergeable stores — `agents`, `session-env`, `file-history`, `paste-cache` — never overwriting an existing entry (a divergent same-name file is parked beside the profile dir and reported, and the originals go only after every file verified). Links move as links, not followed (a symlinked dir is one link): an absolute link as is, a relative one rewritten to an absolute path — into the shared store when its target is inside the migrated tree, else to the target's physical path — and its original is removed only once the new link exists; one that resolves nowhere, or cannot be created in the store, is parked with the divergent keeps in `<name>.premigration.<pid>.<n>` and reported, to be reconciled through its owning tool instead. A profile-local real file is a deliberate override, respected. Claude may persist the profile spelling used during installation in its plugin indexes; `_ccm_normalize_plugin_index_paths` maps only those stale `installLocation`/`installPath` prefixes back to an existing canonical `~/.claude/plugins` target. It never changes source URLs, package metadata, or missing targets. |
-| Translator instance | per credential domain | one adapter per credential domain when translation is required; native endpoints use none |
+| Translator instance | per credential domain — one adapter per credential domain | one adapter (and its translator child) per key of profile, model, conf content and core binary, however many sessions use it: a hundred sessions on one gateway model run one adapter. Native endpoints use none |
 | MCP servers | per profile | each profile keeps the `mcpServers` it was seeded with at provision (or added via `claude mcp add`); nothing projects an external set onto it at launch. |
 
 ### Launch contract: arguments pass through
@@ -459,6 +460,11 @@ a shell redirection to an unwritable log fails before the adapter process starts
 The adapter therefore probes the log path first and falls back to `/dev/null`, so
 optional diagnostics can never become a launch dependency.
 
+The one exception is a gateway adapter's own stderr: it is shared by sessions, so it
+logs beside its record (`<state>/auth/.<profile>.adapter.<key>.log`), emptied when
+a new adapter starts for that key, never into the log of the launch that
+happened to start it.
+
 ### The isolation boundary is the credential, not the profile
 
 What isolation protects is **authority to spend**. So the unit that must not be
@@ -469,7 +475,7 @@ endpoint freely.
 |---|---|---|---|
 | Local models | **none** | ollama `:11434`, direct | any number of profiles — safe |
 | Codex | OAuth token in `~/.cli-proxy-api` (one file) | dedicated cliproxyapi `:<translator-port>` | `codex` alone |
-| Private gateway | API key held in the profile conf | per-session adapter, ephemeral port | `gateway` alone |
+| Private gateway | API key held in the profile conf | one shared adapter per model, ephemeral port | `gateway` alone |
 
 Two consequences that look contradictory until the rule is stated:
 
@@ -543,7 +549,7 @@ also serves OpenAI-shaped models needs translation. Automatic launch classificat
 selects native pass-through or `ccmorph-core adapter`; nothing about it is specific to
 a vendor or model list.
 
-Lifecycle, per session:
+Lifecycle, per adapter (shared by every session of one profile and model):
 
 1. Read endpoint and credential from the profile via `ccmorph _env`.
 2. Ask the endpoint what it serves. Discovery must **not** send
@@ -557,6 +563,19 @@ Lifecycle, per session:
 4. Render a `0600` cliproxyapi config under `<profile>/adapter/`.
 5. Supervise cliproxyapi on an ephemeral loopback port; print `PORT=<n>`.
 6. Rewrite `ANTHROPIC_BASE_URL` to that port, then launch Claude Code.
+
+Steps 4 and 5 run once per key — profile, bare model id, the conf's content (a
+rotated key or `base_url` is a new adapter) and the `ccmorph-core` binary (an
+upgrade is a new adapter). A launch takes the key's mutex, takes a shared lock on
+its users file, and reads its record: an adapter that is running with the key's
+`--shared <base>` argument is joined and its `PORT` handed back at once; else one
+is started (own session, so no terminal's Ctrl-C reaches it) and recorded. The
+same mechanism shares the provider bridge. The last session out (`Release`)
+stops it; a launcher never signals an adapter other sessions hold, and a hop
+releases its use of the profile it leaves. An adapter whose last session was
+SIGKILLed notices on its own poll, under the mutex, that no one holds the users
+lock any more, removes its record and exits. `--parent-pid` stays for callers
+without sessions (the Remote Control edge, tests); `--port` runs until signalled.
 
 ### The long-lived endpoint form
 
@@ -600,7 +619,7 @@ for one process per profile.
   INT handler unwinds the relay loop and loses a queued profile hop.
 - `SIGHUP` is trapped. Without it, `tmux kill-session` left a `0600` config
   holding the credential on disk.
-- `--parent-pid` watchdog: the adapter exits when its launcher dies **[test]**.
+- `--parent-pid` watchdog: an adapter started with it exits when that process dies; a shared adapter instead exits when no session holds its users lock **[test]**.
 - Adapter reconciliation happens **inside** the relay loop, because a hop changes
   the profile and therefore the required instance.
 - **The adapter always runs locally**, in the launcher's own process tree, so it

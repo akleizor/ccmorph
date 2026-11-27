@@ -1879,7 +1879,7 @@ func TestLaunchPassWaitsForEveryProcessItStarts(t *testing.T) {
 	pidfile := filepath.Join(libexec, "probe.pid")
 	// Only the sizing probe blocks: it stands in for metadata work that takes
 	// longer than the session — exactly the case a pass must not leave behind.
-	body := "#!/bin/sh\nif [ \"$1\" = context-probe ]; then echo $$ > '" + pidfile +
+	body := "#!/bin/sh\nif [ \"$1\" = adapter ]; then echo NATIVE=1; fi\nif [ \"$1\" = context-probe ]; then echo $$ > '" + pidfile +
 		"'; read x < '" + release + "'; fi\nexit 0\n"
 	if err := os.WriteFile(filepath.Join(libexec, "ccmorph-core"), []byte(body), 0o755); err != nil {
 		t.Fatal(err)
@@ -2004,7 +2004,7 @@ func TestAGatewayThatRejectsTheKeyRefusesTheLaunchBeforeAnyAdapter(t *testing.T)
 			if strings.Contains(out, "adapter") {
 				t.Fatalf("a profile doctor says needs no translator must not mention an adapter, got: %s", out)
 			}
-			if log := calls(); strings.Contains(log, "adapter-start") {
+			if log := calls(); adapterStarted(log) {
 				t.Fatalf("the adapter started for a rejected key:\n%s", log)
 			}
 			if probes != 1 {
@@ -2019,14 +2019,13 @@ func TestAGatewayThatRejectsTheKeyRefusesTheLaunchBeforeAnyAdapter(t *testing.T)
 // name a command that disagrees with it. A bare death still gets the route
 // checks (#286, #374).
 func TestAnAdapterRefusalStandsAlone(t *testing.T) { // issue #374
-	refusal := "ccmorph: the endpoint rejected the API key (HTTP 401); replace it: ccmorph config gw374b"
 	for _, tc := range []struct {
 		name    string
 		body    string
 		why     string
 		refused bool
 	}{
-		{"a refused key", "echo " + util.Refused + "; echo '" + refusal + "' >&2; exit 1", "rejected the API key", true},
+		{"a refused key", "echo 'EXIT=the endpoint rejected the API key (HTTP 401); replace it: ccmorph config gw374b'; exit 1", "rejected the API key", true},
 		{"a bare death", "echo 'ccmorph: gw374b: adapter exited before readiness; session not started.' >&2; exit 1", "exited before readiness", false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -2073,7 +2072,7 @@ func TestAnAdapterRefusalStandsAlone(t *testing.T) { // issue #374
 // print-and-exit --help/-v — has no session for a gateway to serve: it starts
 // neither the adapter nor the bridge, asks the route nothing, and execs claude
 // with the arguments passed through even while the endpoint is unreachable
-// (#650, INTENT promise 6). The stub core dies on adapter-start the way the
+// (#650, INTENT promise 6). The stub core dies on the adapter the way the
 // real adapter dies against an endpoint that does not answer, so a launch
 // that waits on readiness cannot reach claude.
 func TestALaunchThatOpensNoSessionPassesThroughADeadGateway(t *testing.T) {
@@ -2098,7 +2097,7 @@ func TestALaunchThatOpensNoSessionPassesThroughADeadGateway(t *testing.T) {
 			log := filepath.Join(libexec, "calls.log")
 			os.WriteFile(filepath.Join(libexec, "ccmorph-core"), []byte(
 				"#!/bin/sh\n{ for a do printf '%s\\n' \"$a\"; done; printf '.\\n'; } >> '"+log+"'\n"+
-					"if [ \"$1\" = util ] && [ \"$2\" = adapter-start ]; then\n"+
+					"if [ \"$1\" = adapter ]; then\n"+
 					"  echo \"ccmorph: 'gw650': adapter exited before readiness; session not started.\" >&2\n"+
 					"  exit 1\nfi\nexit 0\n"), 0o755)
 
@@ -2123,7 +2122,7 @@ func TestALaunchThatOpensNoSessionPassesThroughADeadGateway(t *testing.T) {
 			}
 			b, _ := os.ReadFile(log)
 			calls := string(b)
-			if strings.Contains(calls, "adapter-start") {
+			if adapterStarted(calls) {
 				t.Fatalf("the adapter started for a launch that opens no session:\n%s", calls)
 			}
 			if !strings.Contains(calls, "--\n"+strings.Join(argv, "\n")+"\n.") {
@@ -2138,7 +2137,7 @@ func TestALaunchThatOpensNoSessionPassesThroughADeadGateway(t *testing.T) {
 // the arguments exactly as given (INTENT promise 6). There the lone word
 // `version` is a one-word prompt, so it opens a session and takes the route
 // path; only the public `ccmorph run` verb reads it as the version request
-// (#650, cli/main.go runVerb). The stub core dies on adapter-start the way the
+// (#650, cli/main.go runVerb). The stub core dies on the adapter the way the
 // real adapter dies against an endpoint that does not answer, so the readiness
 // refusal proves the session path ran, and claude never receives --version.
 func TestALoneVersionStaysAPromptOffTheRunVerb(t *testing.T) {
@@ -2165,7 +2164,7 @@ func TestALoneVersionStaysAPromptOffTheRunVerb(t *testing.T) {
 			log := filepath.Join(libexec, "calls.log")
 			os.WriteFile(filepath.Join(libexec, "ccmorph-core"), []byte(
 				"#!/bin/sh\n{ for a do printf '%s\\n' \"$a\"; done; printf '.\\n'; } >> '"+log+"'\n"+
-					"if [ \"$1\" = util ] && [ \"$2\" = adapter-start ]; then\n"+
+					"if [ \"$1\" = adapter ]; then\n"+
 					"  echo \"ccmorph: 'gw650': adapter exited before readiness; session not started.\" >&2\n"+
 					"  exit 1\nfi\nexit 0\n"), 0o755)
 
@@ -2187,7 +2186,7 @@ func TestALoneVersionStaysAPromptOffTheRunVerb(t *testing.T) {
 			if rc == 0 {
 				t.Fatalf("rc 0: a lone `version` off the run verb is a prompt, and its session cannot start on a dead route:\n%s\n%s", out, calls)
 			}
-			if !strings.Contains(calls, "adapter-start") {
+			if !adapterStarted(calls) {
 				t.Fatalf("a lone `version` off the run verb opens a session, so it must take the route path:\n%s", calls)
 			}
 			if !strings.Contains(out, "adapter exited before readiness; session not started.") {
@@ -2673,7 +2672,7 @@ func TestARunOnAGatewayThatNeverAnswersExitsTheGatewayClass(t *testing.T) {
 		if !strings.Contains(out, "Waiting for 'gw723' gateway") {
 			t.Fatalf("the pass must wait on the listing before giving up on it: %s", out)
 		}
-		if b, _ := os.ReadFile(log); strings.Contains(string(b), "adapter-start") || strings.Contains(string(b), "--\n") {
+		if b, _ := os.ReadFile(log); adapterStarted(string(b)) || strings.Contains(string(b), "--\n") {
 			t.Fatalf("the launch reached the route or claude despite the outage:\n%s", b)
 		}
 	})

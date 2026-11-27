@@ -14,7 +14,7 @@ import (
 
 // gw862 is one gateway profile, gw862, on a fake route listing $LISTING
 // (model-a and model-b unless a test overrides it), a stub claude, and a core
-// that logs every call and refuses adapter-start; HOME holds shared as
+// that logs every call and refuses the adapter; HOME holds shared as
 // ~/.claude/settings.json ("" for none). GH-862.
 func gw862(t *testing.T, extraConf, shared string) (state, profiles, libexec string, calls func() string) {
 	t.Helper()
@@ -50,7 +50,7 @@ func gw862(t *testing.T, extraConf, shared string) (state, profiles, libexec str
 	log := filepath.Join(libexec, "calls.log")
 	if err := os.WriteFile(filepath.Join(libexec, "ccmorph-core"), []byte(
 		"#!/bin/sh\n{ for a do printf '%s\\n' \"$a\"; done; printf '.\\n'; } >> '"+log+"'\n"+
-			"if [ \"$1\" = util ] && [ \"$2\" = adapter-start ]; then\n"+
+			"if [ \"$1\" = adapter ]; then\n"+
 			"  echo \"ccmorph: 'gw862': adapter exited before readiness; session not started.\" >&2\n"+
 			"  exit 1\nfi\nexit 0\n"), 0o755); err != nil {
 		t.Fatal(err)
@@ -88,7 +88,7 @@ func TestRunNamesExcludedModelsThatLeaveNothingIssue862(t *testing.T) {
 				t.Fatalf("terminal=%v: the gateway answered; the refusal still says %q:\n%s", terminal, never, out)
 			}
 		}
-		if c := calls(); strings.Contains(c, "adapter-start") {
+		if c := calls(); adapterStarted(c) {
 			t.Fatalf("terminal=%v: the adapter started after a refusal:\n%s", terminal, c)
 		}
 	}
@@ -289,7 +289,7 @@ func TestRunWithoutATerminalNamesAnUnservedAliasIssue862(t *testing.T) {
 			if rc != 1 {
 				t.Fatalf("rc %d, want 1:\n%s", rc, out)
 			}
-			if c := calls(); strings.Contains(c, "adapter-start") {
+			if c := calls(); adapterStarted(c) {
 				t.Fatalf("the adapter started after the refusal:\n%s", c)
 			}
 		})
@@ -301,7 +301,7 @@ func TestRunWithoutATerminalNamesAnUnservedAliasIssue862(t *testing.T) {
 			t.Fatalf("a mapped tier starts the session it names:\n%s", out)
 		}
 		c := calls()
-		if !strings.Contains(c, "adapter-start") || !strings.Contains(c, "model-a") {
+		if !adapterStarted(c) || !strings.Contains(c, "model-a") {
 			t.Fatalf("the launch did not start the adapter with the mapped id:\n%s", c)
 		}
 	})
@@ -355,7 +355,7 @@ func TestRunInATerminalOffersThePickerForAnUnservedAliasIssue862(t *testing.T) {
 		if args := readBack(t, argsFile); !strings.Contains(args, "Model — gw862 (opus is not served here)") {
 			t.Fatalf("the picker heading does not name the alias:\n%s", args)
 		}
-		if c := calls(); strings.Contains(c, "adapter-start") {
+		if c := calls(); adapterStarted(c) {
 			t.Fatalf("the adapter started after a cancelled picker:\n%s", c)
 		}
 		f := map[string]string{}
@@ -391,7 +391,7 @@ func TestRunInATerminalOffersThePickerForAnUnservedAliasIssue862(t *testing.T) {
 		if strings.Contains(out, "is a Claude model alias") {
 			t.Fatalf("a mapped tier was refused:\n%s", out)
 		}
-		if c := calls(); !strings.Contains(c, "adapter-start") || !strings.Contains(c, "model-a") {
+		if c := calls(); !adapterStarted(c) || !strings.Contains(c, "model-a") {
 			t.Fatalf("the launch did not start the adapter with the mapped id:\n%s", c)
 		}
 	})
@@ -445,7 +445,7 @@ func TestTheAliasRefusalSendsNoRequestOfItsOwnIssue862(t *testing.T) {
 			if got := count(); got != good {
 				t.Fatalf("the refusal sent its own request: %d curl calls, %d with a good listing", got, good)
 			}
-			if strings.Contains(calls(), "adapter-start") {
+			if adapterStarted(calls()) {
 				t.Fatalf("the adapter started after the refusal:\n%s", calls())
 			}
 		})
@@ -461,7 +461,7 @@ func TestRunWithExclusionsThatLeaveAModelOrMeetAnEmptyListingIssue862(t *testing
 		if strings.Contains(out, "no cached or served picker models remain") {
 			t.Fatalf("no terminal: one model left was refused:\n%s", out)
 		}
-		if !strings.Contains(calls(), "adapter-start") {
+		if !adapterStarted(calls()) {
 			t.Fatalf("no terminal: the launch stopped before the adapter:\n%s\n%s", out, calls())
 		}
 		t.Setenv("TERM", "xterm-256color")
@@ -486,7 +486,7 @@ func TestRunWithExclusionsThatLeaveAModelOrMeetAnEmptyListingIssue862(t *testing
 				t.Fatalf("terminal=%v: rc %d, want 1 with the exclusions refusal:\n%s", terminal, rc, out)
 			}
 		}
-		if strings.Contains(calls(), "adapter-start") {
+		if adapterStarted(calls()) {
 			t.Fatalf("the adapter started after a refusal:\n%s", calls())
 		}
 	})
@@ -532,7 +532,7 @@ func TestDoctorAndRunNameTheSameCauseAndFixIssue862(t *testing.T) {
 					t.Fatalf("terminal=%v: run rc %d, want 1 with the cause %q and the fix %q:\n%s", terminal, rc, tc.cause, fix, stderr)
 				}
 			}
-			if c := calls(); strings.Contains(c, "adapter-start") {
+			if c := calls(); adapterStarted(c) {
 				t.Fatalf("a launch started the adapter:\n%s", c)
 			}
 		})
@@ -576,7 +576,7 @@ func TestRunRefusedKeyDoesNotOpenTheAliasPickerIssue862(t *testing.T) {
 	if got := count(); got != 0 {
 		t.Fatalf("the launch sent %d listing request(s) with a refused key", got)
 	}
-	if c := calls(); strings.Contains(c, "adapter-start") {
+	if c := calls(); adapterStarted(c) {
 		t.Fatalf("an adapter started:\n%s", c)
 	}
 }
@@ -642,7 +642,7 @@ func TestDoctorAndRunStopOnAListingWithNoModelToPickIssue862(t *testing.T) {
 					t.Fatalf("terminal=%v: a picker opened without a row to pick", terminal)
 				}
 			}
-			if c := calls(); strings.Contains(c, "adapter-start") {
+			if c := calls(); adapterStarted(c) {
 				t.Fatalf("an adapter started with no model to serve:\n%s", c)
 			}
 		})
@@ -666,7 +666,7 @@ func TestDoctorAndRunStopOnAListingWithNoModelToPickIssue862(t *testing.T) {
 			t.Fatalf("doctor rc %d; a terminal launch stops at the empty picker:\n%s", rc, out)
 		}
 		_, stderr := launchAs(t, false, state, profiles, libexec, "gw862", nil)
-		if strings.Contains(stderr, util.NoUsableModel("gw862")) || !strings.Contains(calls(), "adapter-start") {
+		if strings.Contains(stderr, util.NoUsableModel("gw862")) || !adapterStarted(calls()) {
 			t.Fatalf("no terminal: a cached model was refused before the adapter:\n%s\n%s", stderr, calls())
 		}
 		t.Setenv("TERM", "xterm-256color")
@@ -676,4 +676,10 @@ func TestDoctorAndRunStopOnAListingWithNoModelToPickIssue862(t *testing.T) {
 			t.Fatalf("terminal: run rc %d, want 1 with %q and no picker:\n%s", runRC, util.NoUsableModel("gw862"), stderr)
 		}
 	})
+}
+
+// adapterStarted is whether a stub core's call log shows a launch starting the
+// adapter: a call whose first argument is `adapter`.
+func adapterStarted(calls string) bool {
+	return strings.HasPrefix(calls, "adapter\n") || strings.Contains(calls, ".\nadapter\n")
 }

@@ -56,6 +56,16 @@ func adapterStart(args []string, _ io.Reader, out, errw io.Writer) int {
 		return 2
 	}
 	core, profile, model, parent, logPath := args[0], args[1], args[2], args[3], args[4]
+	return spawnAdapter(core, profile, model, []string{"--parent-pid", parent}, false, logPath, out, errw)
+}
+
+// spawnAdapter starts `<core> adapter <profile> --auto [--model m] <lifetime>`
+// and waits for its first readiness line, as adapterStart's doc says. lifetime
+// is what ends the adapter: --parent-pid <launcher> for a private one, --shared
+// <base> for one every session of a key shares. A shared adapter gets a session
+// of its own, so a Ctrl-C or a hang-up on the terminal of the launch that
+// happened to start it never reaches the sessions that joined it.
+func spawnAdapter(core, profile, model string, lifetime []string, detach bool, logPath string, out, errw io.Writer) int {
 	// The bare id is the one the adapter is asked for and the one the
 	// progress line names: a trailing [1m] is ccmorph's own context-window
 	// marker, an internal that a person saw in "Starting adapter for
@@ -65,7 +75,7 @@ func adapterStart(args []string, _ io.Reader, out, errw io.Writer) int {
 	if bare != "" {
 		argv = append(argv, "--model", bare)
 	}
-	argv = append(argv, "--parent-pid", parent)
+	argv = append(argv, lifetime...)
 	logf, err := os.OpenFile(logPath, os.O_WRONLY|os.O_APPEND|os.O_CREATE, 0o600)
 	if err != nil {
 		logf, _ = os.OpenFile(os.DevNull, os.O_WRONLY, 0)
@@ -81,6 +91,9 @@ func adapterStart(args []string, _ io.Reader, out, errw io.Writer) int {
 	devnull, _ := os.Open(os.DevNull)
 	defer devnull.Close()
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = devnull, ready, logf
+	if detach {
+		cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+	}
 	if cmd.Start() != nil {
 		fmt.Fprintf(errw, "ccmorph: '%s': adapter exited before readiness; session not started.\n", profile)
 		return 1

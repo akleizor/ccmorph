@@ -157,7 +157,7 @@ func (l *launcher) rm(args []string) int {
 	} else if err != nil {
 		l.err("kept " + live + ": " + err.Error())
 	}
-	for _, p := range util.BridgeFiles(filepath.Join(l.dir, "auth"), name) {
+	for _, p := range append(util.BridgeFiles(filepath.Join(l.dir, "auth"), name), util.AdapterFiles(filepath.Join(l.dir, "auth"), name)...) {
 		os.Remove(p)
 	}
 	// The clear reads the active file's own content, not l.active(): that read
@@ -301,6 +301,14 @@ func moveBridgeFiles(root, from, to string) bool {
 				}
 			}
 			return false
+		}
+	}
+	// A shared adapter's key names the profile it was made for, so none carries
+	// over: its files go, and an adapter still running on them sees them gone and
+	// ends.
+	for _, name := range []string{from, to} {
+		for _, f := range util.AdapterFiles(root, name) {
+			os.Remove(f)
 		}
 	}
 	return true

@@ -18,16 +18,29 @@
 # pass once ps reports it reparented to PID 1, so a stranger's live pid never
 # keeps it serving, whatever its output is.
 parent=""
+shared=""
 prev=""
 for arg in "$@"; do
+  [ "$prev" = --shared ] && shared="$arg"
   [ "$prev" = --parent-pid ] && parent="$arg"
   case "$arg" in --parent-pid=*) parent="${arg#--parent-pid=}" ;; esac
   prev="$arg"
 done
+# A shared adapter (one per profile, model and conf; every session of that key
+# holds LOCK_SH on <base>.users) lives while some session holds that file: the
+# real adapter polls the lock itself. The double asks lsof about once a second
+# and leaves once nothing holds the file or its mutex file is gone.
 claimed=""
 [ "${_fake_claimed:-}" = 1 ] && [ "${_fake_parent:-}" = "$parent" ] && claimed=1
 pass=0
 while :; do
+  if [ -n "$shared" ]; then
+    pass=$(( pass + 1 ))
+    if [ $(( pass % 5 )) -eq 0 ]; then
+      [ -e "$shared.lock" ] || exit 0
+      [ -n "$(lsof -t "$shared.users" 2>/dev/null)" ] || exit 0
+    fi
+  fi
   if [ -n "$parent" ]; then
     kill -0 "$parent" 2>/dev/null || exit 0
     [ -n "$claimed" ] || kill -0 "$PPID" 2>/dev/null || exit 0

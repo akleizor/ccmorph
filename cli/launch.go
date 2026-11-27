@@ -45,6 +45,7 @@ type launcher struct {
 	migrated            bool
 
 	adapterPID              int
+	sharedAdapter           *util.SharedAdapter
 	adapterProfile          string
 	adapterPort             string
 	providerPID, providerTD string

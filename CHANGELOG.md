@@ -11,6 +11,8 @@
 
 - **`ccmorph` no longer keeps a zsh process beside every session and MCP server.** The `ccmorph` executable now becomes `ccmorph-core` instead of waiting on it, so each session and each `ccmorph router mcp` server is one process fewer. The PID is the same, and the core already forwards TERM and HUP to Claude Code, so `kill <ccmorph pid>` still ends the session.
 
+- **One adapter per gateway model, not one per session.** Every `ccmorph run <gateway-profile>` used to start its own `ccmorph-core adapter` (and its own `cliproxyapi` in translator mode), so 100 sessions meant 100 adapters. Sessions with the same profile, model, conf and core binary now share one adapter through the lock-file mechanism the provider bridge already uses: the first launch starts it, the others join it at once, the last session out stops it, and an adapter whose sessions were all killed ends by itself within a poll. A rotated key or `base_url`, another model or a new core binary gets its own. The adapter's log moved beside its record in `auth/`; `rm` and `mv` take it. `ccmorph hop` names the current profile from the session's config dir for a shared adapter.
+
 ### Added
 
 - **`ccmorph doctor` answers whether a hosted edge served what its sessions picked.** The edge's proxy now keeps the asked-vs-served outcome of its session turns (counted since that edge run, with the last miss) beside its held record, and doctor reads the live edge's answer — a pick set in the phone and answered elsewhere now warns on the check, without anyone starting the edge with `--debug` or reading a log.

@@ -207,8 +207,9 @@ def launch(tmp_path):
                 pass
         log = tmp_path / "launch.json"
         row = json.loads(log.read_text()) if log.exists() else None
-        adapter_log = temp_dir / f"ccmorph-{os.getuid()}.log"
-        adapter_text = adapter_log.read_text() if adapter_log.exists() else ""
+        # The adapter is shared by the sessions of its key and logs beside its
+        # record, not into one launch's log.
+        adapter_text = "".join(p.read_text() for p in sorted((state / "auth").glob(".gw.adapter.*.log")))
         detail = (f"exit={process.returncode}\nstdout={stdout}\nstderr={stderr}\n"
                   f"launch={row}\nupstream={requests}\nadapter={adapter_text}")
         assert process.returncode == 0, detail

@@ -14,7 +14,6 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"syscall"
 	"time"
 
 	"github.com/akleizor/ccmorph/agentproxy"
@@ -32,11 +31,12 @@ type agentHop struct {
 	p   *agentproxy.Proxy
 	run string // its run dir: picks, the trust bundle, the Bash env file
 
-	mu      sync.Mutex
-	targets map[string]*target
-	bridges []*util.SharedBridge // provider bridges this session holds a use of
-	auth    []string             // each one's auth dir, for its release
-	logMu   sync.Mutex
+	mu       sync.Mutex
+	targets  map[string]*target
+	bridges  []*util.SharedBridge  // provider bridges this session holds a use of
+	auth     []string              // each one's auth dir, for its release
+	adapters []*util.SharedAdapter // gateway adapters this session holds a use of
+	logMu    sync.Mutex
 }
 
 // target is one profile and model's resolution, made once: requests for it
@@ -201,8 +201,7 @@ func (h *agentHop) bashEnv(env []string, theirs string) (string, error) {
 func shellQuote(s string) string { return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'" }
 
 // stop ends the proxy and removes its run dir, and lets go of the provider
-// bridges it joined: the last user out stops one. The adapters it started end
-// with the Claude Code process they were started for.
+// bridges and gateway adapters it joined: the last user out stops one.
 func (h *agentHop) stop() {
 	if h == nil {
 		return
@@ -210,8 +209,12 @@ func (h *agentHop) stop() {
 	h.p.Close()
 	h.mu.Lock()
 	bridges, auth := h.bridges, h.auth
-	h.bridges, h.auth = nil, nil
+	adapters := h.adapters
+	h.bridges, h.auth, h.adapters = nil, nil, nil
 	h.mu.Unlock()
+	for _, a := range adapters {
+		a.Release()
+	}
 	for i, b := range bridges {
 		b.Release(auth[i])
 	}
@@ -232,17 +235,6 @@ func agentProxyServes(typ string) bool {
 // read, never a method that changes it: this runs on the proxy's goroutines.
 func (h *agentHop) resolver(l *launcher) func(agentproxy.Pick) (agentproxy.Target, error) {
 	dir, profiles, core, logPath := l.dir, l.profileDirs, filepath.Join(l.libexec, "ccmorph-core"), l.logOrNull()
-	// An agent's adapter lives as long as the Claude Code process that asked
-	// for it, never named by the launcher's pid: that is how `ccmorph hop`
-	// finds the session's own gateway (util.SessionAdapter).
-	parent := func() int {
-		l.mu.Lock()
-		defer l.mu.Unlock()
-		if l.child != nil {
-			return l.child.Pid
-		}
-		return 0
-	}
 	resolve := func(pick agentproxy.Pick) (agentproxy.Target, error) {
 		typ, env, err := util.ProfileEnv(dir, profiles, pick.Word, func(string) {})
 		if err != nil {
@@ -293,13 +285,22 @@ func (h *agentHop) resolver(l *launcher) func(agentproxy.Pick) (agentproxy.Targe
 		if native {
 			return t, nil
 		}
-		pp := parent()
-		if pp == 0 {
-			return agentproxy.Target{}, errors.New("no Claude Code process")
+		// The adapter is the one every session of this profile and model shares,
+		// held for this session until it ends.
+		sa, ok := util.AcquireAdapter(core, filepath.Join(dir, "auth"), pick.Word, pick.Model, filepath.Join(dir, pick.Word+".conf"), io.Discard)
+		if !ok {
+			return agentproxy.Target{}, fmt.Errorf("adapter for %s did not start", pick.Word)
 		}
-		port, err := startAdapter(core, pick.Word, pick.Model, pp, logPath)
-		if err != nil {
-			return agentproxy.Target{}, err
+		port := sa.Port
+		if sa.Native {
+			port = ""
+		} else if port == "" {
+			sa.Release()
+			return agentproxy.Target{}, fmt.Errorf("adapter for %s named no port", pick.Word)
+		} else {
+			h.mu.Lock()
+			h.adapters = append(h.adapters, sa)
+			h.mu.Unlock()
 		}
 		if port != "" { // else the endpoint serves this model as it is
 			t.Base = &url.URL{Scheme: "http", Host: "127.0.0.1:" + port}
@@ -345,35 +346,4 @@ func subToken(dir string, read func(string) (string, string, error), auth func(c
 	cmd.Run()
 	tok, _, err = read(dir)
 	return tok, err
-}
-
-// startAdapter is `util adapter-start` for one profile and model: its port,
-// "" when the profile serves that model natively.
-func startAdapter(core, name, model string, parent int, logPath string) (string, error) {
-	out, err := exec.Command(core, "util", "adapter-start", core, name, model, strconv.Itoa(parent), logPath).Output()
-	if err != nil {
-		return "", fmt.Errorf("adapter for %s did not start", name)
-	}
-	pid, port, native := 0, "", false
-	for _, line := range strings.Split(string(out), "\n") {
-		k, v, _ := strings.Cut(line, "=")
-		switch {
-		case k == "PID":
-			pid, _ = strconv.Atoi(v)
-		case k == "PORT":
-			port = v
-		case line == "NATIVE=1":
-			native = true
-		}
-	}
-	if native {
-		if pid > 0 { // the one this call just started, which nothing needs
-			syscall.Kill(pid, syscall.SIGTERM)
-		}
-		return "", nil
-	}
-	if port == "" {
-		return "", fmt.Errorf("adapter for %s named no port", name)
-	}
-	return port, nil
 }

@@ -1937,60 +1937,41 @@ func (l *launcher) adapterStart(name, model string) bool {
 		l.err("profile '" + name + "' needs an adapter but " + bin + " is not executable")
 		return false
 	}
-	l.logInit()
-	cmd := exec.Command(bin, "util", "adapter-start", bin, name, model, fmt.Sprint(l.launcherPID), l.logOrNull())
-	cmd.Stderr = os.Stderr
-	out, err := cmd.Output()
-	if err != nil {
+	// The adapter is shared by every session of this profile and model: joined
+	// when one runs, started when none does, and held until adapterStop.
+	sa, ok := util.AcquireAdapter(bin, filepath.Join(l.dir, "auth"), name, model, l.conf(name), os.Stderr)
+	if !ok {
 		// A refusal the adapter worded itself — the cause and the one command
 		// that repairs it — is the whole message: the route checks would repeat
 		// the cause and name a command that disagrees with it (#374). A bare
 		// death or a timeout still gets plain words first when the cause is the
 		// route itself (#286), then the one command that diagnoses the route.
-		if !strings.Contains(string(out), util.Refused) {
+		if !sa.Refused {
 			if why := l.routeRefusal(name); why != "" {
 				fmt.Fprintln(os.Stderr, "  "+why+".")
 			}
 			fmt.Fprintln(os.Stderr, "  Check the route: ccmorph doctor "+name)
 		}
-		if l.logPath != "" && paths.Exists(l.logPath) {
-			fmt.Fprintln(os.Stderr, "  Log: "+l.logPath)
+		if sa.Log != "" && paths.Exists(sa.Log) {
+			fmt.Fprintln(os.Stderr, "  Log: "+sa.Log)
 		}
 		return false
 	}
-	for _, line := range strings.Split(string(out), "\n") {
-		k, v, _ := strings.Cut(line, "=")
-		switch {
-		case k == "PID":
-			fmt.Sscan(v, &l.adapterPID)
-		case k == "PORT":
-			l.adapterPort = v
-		case line == "NATIVE=1":
-			l.adapterStop()
-			l.adapterProfile, l.adapterPort = name, ""
-			return true
-		}
-	}
 	l.adapterProfile = name
+	if sa.Native {
+		l.adapterPort = ""
+		return true
+	}
+	l.sharedAdapter, l.adapterPID, l.adapterPort = sa, sa.PID, sa.Port
 	return true
 }
 
-// adapterStop is _ccm_adapter_stop: TERM, 12s for the adapter to stop its own
-// child, then KILL.
+// adapterStop lets go of this launch's use of the adapter. The adapter itself
+// is never signalled here while another session holds it: the last session out
+// stops it, and one whose holders all died ends by itself.
 func (l *launcher) adapterStop() {
-	if pid := l.adapterPID; pid > 0 {
-		syscall.Kill(pid, syscall.SIGTERM)
-		alive := func() bool { return syscall.Kill(pid, 0) == nil }
-		for i := 0; alive() && i < 240; i++ {
-			time.Sleep(50 * time.Millisecond)
-		}
-		if alive() {
-			syscall.Kill(pid, syscall.SIGKILL)
-			for i := 0; alive() && i < 40; i++ {
-				time.Sleep(50 * time.Millisecond)
-			}
-		}
-	}
+	l.sharedAdapter.Release()
+	l.sharedAdapter = nil
 	l.adapterPID, l.adapterProfile, l.adapterPort = 0, "", ""
 }
 

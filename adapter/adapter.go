@@ -5,7 +5,7 @@
 // gateway fronting several vendors often does not: models may answer only the
 // OpenAI /responses dialect, or only /v1/chat/completions, and some reject
 // parameters Claude Code always sends. cliproxyapi is the translator. It runs one
-// instance per profile because its config has no way to reference a credential
+// instance per credential domain because its config has no way to reference a credential
 // (a shared instance would let any profile spend any other profile's key), with
 // its config rendered at launch and removed on exit. Which dialect a model serves
 // is probed, never written down, and the verdicts are cached per endpoint at
@@ -21,7 +21,8 @@
 // passes, then stays in the foreground supervising the translator. Anything else
 // goes to stderr. It exits non-zero without printing PORT if it cannot serve. It
 // terminates the translator and removes the rendered config when signalled or
-// when --parent-pid disappears.
+// when --parent-pid disappears, or, with --shared <base>, when no session holds
+// the users file <base>.users any more (one adapter per key, util.AcquireAdapter).
 package adapter
 
 import (
@@ -273,6 +274,7 @@ func mustJSON(v any) string {
 type cliArgs struct {
 	profile        string
 	parentPID      int
+	shared         string // the shared-adapter base: lives while any session holds its users file
 	printConfig    bool
 	auto           bool
 	model          string
@@ -289,7 +291,7 @@ type cliArgs struct {
 	probeFailed bool // --print-config only: classify failed, rows are the cache's (GH-592)
 }
 
-const usage = "usage: ccmorph-adapter [-h] [--parent-pid PARENT_PID] [--print-config] [--auto]\n" +
+const usage = "usage: ccmorph-adapter [-h] [--parent-pid PARENT_PID] [--shared BASE] [--print-config] [--auto]\n" +
 	"                       [--model MODEL] [--inbound-token | --inbound-token-file FILE]\n" +
 	"                       [--port PORT] profile\n"
 
@@ -334,6 +336,8 @@ func parseArgs(argv []string) *cliArgs {
 		switch name {
 		case "--parent-pid":
 			a.parentPID = number()
+		case "--shared":
+			a.shared = value()
 		case "--print-config":
 			a.printConfig = true
 		case "--auto":
@@ -384,6 +388,13 @@ func (a *cliArgs) releasePort() {
 func (a *cliArgs) checkParent(shutdown func(int)) {
 	if a.parentPID != 0 && syscall.Kill(a.parentPID, 0) != nil {
 		logf("parent gone, shutting down")
+		shutdown(0)
+	}
+	// A shared adapter outlives the launch that started it: it ends when no
+	// session holds its users file, which also reaps the one left by a last
+	// session that was killed without a chance to release it.
+	if a.shared != "" && util.SharedAdapterIdle(a.shared, os.Getpid()) {
+		logf("no session uses this adapter, shutting down")
 		shutdown(0)
 	}
 }

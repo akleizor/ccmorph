@@ -428,7 +428,7 @@ def test_a_killed_launch_leaves_no_adapter_stub_behind(launch):
 
     The launcher's EXIT trap is the only thing that stops the stub, and a
     SIGKILL skips it (issues #385/#386); like the real adapter, the stub must
-    die with the --parent-pid it was handed.
+    die once no session holds the adapter it was started as (--shared).
     """
     # Hold the launch open so the stub is up when the launcher is killed.
     (launch.home / 'bin' / 'claude').write_text('#!/bin/sh\nsleep 5\n')
@@ -450,9 +450,10 @@ def test_a_killed_launch_leaves_no_adapter_stub_behind(launch):
         stub_pid = int(pids[0])
         argv = subprocess.run(['ps', '-ww', '-o', 'args=', '-p', str(stub_pid)],
                               capture_output=True, text=True, timeout=HANG_TIMEOUT).stdout
-        # The core starts the adapter, so its OS parent is the starter; what reaps
-        # it is --parent-pid, which must name the launch itself.
-        assert f'--parent-pid {proc.pid}' in argv, 'the stub must watch the launch process'
+        # The adapter is shared by the sessions of its key, so no launch is its
+        # parent: what reaps it once every session is gone is the users lock the
+        # --shared base names.
+        assert ' --shared ' in argv, 'the stub must watch the sessions that hold it'
         proc.kill()  # SIGKILL skips the EXIT trap that normally stops the stub
         proc.wait(timeout=HANG_TIMEOUT)
 

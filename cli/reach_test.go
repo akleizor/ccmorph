@@ -4,6 +4,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -84,7 +85,7 @@ func TestRunGivesUpOnASilentGatewayWithAProgressLine(t *testing.T) {
 		if strings.Count(out, progress) != 1 || !strings.HasSuffix(out, want) || strings.Index(out, progress) > strings.Index(out, want) {
 			t.Fatalf("terminal=%v: want one progress line, then the ending\n%s\ngot:\n%s", terminal, want, out)
 		}
-		if strings.Contains(calls(), "adapter-start") {
+		if adapterStarted(calls()) {
 			t.Fatalf("terminal=%v: the adapter started on a silent gateway:\n%s", terminal, calls())
 		}
 		outs[terminal] = out
@@ -110,7 +111,7 @@ func TestRunNamesARefusedGatewayTheSameWithAndWithoutATerminal(t *testing.T) {
 		log := filepath.Join(libexec, "calls.log")
 		os.WriteFile(filepath.Join(libexec, "ccmorph-core"), []byte(
 			"#!/bin/sh\n{ for a do printf '%s\\n' \"$a\"; done; printf '.\\n'; } >> '"+log+"'\n"+
-				"if [ \"$1\" = util ] && [ \"$2\" = adapter-start ]; then\n"+
+				"if [ \"$1\" = adapter ]; then\n"+
 				"  echo \"ccmorph: 'gw260': adapter exited before readiness; session not started.\" >&2\n"+
 				"  exit 1\nfi\nexit 0\n"), 0o755)
 		rc, out := launchAs(t, terminal, state, profiles, libexec, "gw260", nil)
@@ -123,10 +124,15 @@ func TestRunNamesARefusedGatewayTheSameWithAndWithoutATerminal(t *testing.T) {
 		if strings.Contains(out, "network") || strings.Contains(out, "did not answer") || strings.Contains(out, "Checking") {
 			t.Fatalf("terminal=%v: a refused port is not a network problem and needs no wait:\n%s", terminal, out)
 		}
-		if b, _ := os.ReadFile(log); !strings.Contains(string(b), "adapter-start") {
+		if b, _ := os.ReadFile(log); !adapterStarted(string(b)) {
 			t.Fatalf("terminal=%v: the launch did not go on to its adapter:\n%s", terminal, b)
 		}
 		outs[terminal], rcs[terminal] = out, rc
+	}
+	// The adapter's log sits in each launch's own state dir, named by its key.
+	key := regexp.MustCompile(`Log: \S+`)
+	for k := range outs {
+		outs[k] = key.ReplaceAllString(outs[k], "Log: -")
 	}
 	if outs[true] != outs[false] || rcs[true] != rcs[false] {
 		t.Fatalf("the terminal launch (rc %d) ended differently:\n%s\nno terminal (rc %d):\n%s", rcs[true], outs[true], rcs[false], outs[false])
@@ -153,7 +159,7 @@ func TestRunInteractiveOnAnUnreachableGatewayEndsOnTheRouteCheck(t *testing.T) {
 			if rc != 1 || out != want {
 				t.Fatalf("terminal=%v: rc %d, out:\n%s\nwant rc 1 and:\n%s", terminal, rc, out, want)
 			}
-			if strings.Contains(calls(), "adapter-start") {
+			if adapterStarted(calls()) {
 				t.Fatalf("terminal=%v: the adapter started:\n%s", terminal, calls())
 			}
 		}
@@ -170,7 +176,7 @@ func TestRunInteractiveOnAnUnreachableGatewayEndsOnTheRouteCheck(t *testing.T) {
 		"ccmorph: could not reach 'http://10.255.255.1:8080' — no answer from 10.255.255.1 port 8080 after 1 second " +
 		"(if it is an internal endpoint, connect your private network and try again)\n" +
 		"  Check the route: ccmorph doctor gwi\n"
-	if rc != util.RCGatewayDown || out != silent || strings.Contains(calls(), "adapter-start") {
+	if rc != util.RCGatewayDown || out != silent || adapterStarted(calls()) {
 		t.Fatalf("silent gateway: rc %d, out:\n%s\nwant rc %d and:\n%s", rc, out, util.RCGatewayDown, silent)
 	}
 }

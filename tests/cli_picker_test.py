@@ -297,11 +297,12 @@ def run_pty(command, env, exchanges=(), size=(24, 100), library=CCMORPH):
     return process.returncode, out.decode('utf-8', 'replace'), missed
 
 
-# Stop a launch at the adapter boundary: a core whose `util adapter-start` reports
-# the model it was asked for (on stderr) and fails, all else the real core.
+# Stop a launch at the adapter boundary: a core whose `adapter` reports the model
+# it was asked for as its refusal (the launch prints it on stderr) and fails, all
+# else the real core.
 ADAPTER_BOUNDARY = r'''mkdir -p "$HOME/core"
 printf '%s\n' '#!/bin/sh' "real='$_CCMORPH_LIBEXEC_DIR/ccmorph-core'" \
-  'if [ "$1 $2" = "util adapter-start" ]; then printf "SELECTED=<%s>\n" "$5" >&2; exit 1; fi' \
+  'if [ "$1" = adapter ]; then m=; p=; for a in "$@"; do [ "$p" = --model ] && m=$a; p=$a; done; printf "EXIT=SELECTED=<%s>\n" "$m"; exit 1; fi' \
   'exec "$real" "$@"' > "$HOME/core/ccmorph-core"
 chmod +x "$HOME/core/ccmorph-core"
 _CCMORPH_LIBEXEC_DIR="$HOME/core"
@@ -595,7 +596,10 @@ class PickerTTYTest(unittest.TestCase):
                     self.assertNotIn('SELECTED=', out)
                 self.assertFalse((self.tmp / 'fzf.log').exists(), out)  # no picker opened
                 self.assertEqual(rc, headless.returncode, out + headless.stderr)
-                self.assertEqual(last_lines(out), last_lines(headless.stderr), out + headless.stderr)
+                # The adapter's log is named by its key, and each launch's core is a
+                # fresh stub, so the key is the one part that may differ.
+                key = lambda lines: [re.sub(r'\.adapter\.[0-9a-f]{16}', '.adapter.KEY', x) for x in lines]
+                self.assertEqual(key(last_lines(out)), key(last_lines(headless.stderr)), out + headless.stderr)
 
     # GH-932: two `run_pty` children (`ccmorph run demo`), each a zsh that
     # sources lib/ccmorph.sh and is HANG_TIMEOUT (120 s) bounded; on the night
