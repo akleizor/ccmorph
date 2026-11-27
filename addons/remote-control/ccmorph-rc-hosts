@@ -1886,6 +1886,23 @@ def recover_processless(folders: list[str], done: dict[tuple[str, int], float],
     return sent
 
 
+def session_titles() -> dict | None:
+    """Every session of the account, active and archived, as {id: {title, archived}}, so a
+    cost ledger keyed by transcript can name what each session was about. None when the
+    list could not be read. Run on request (`ccmorph-rc-hosts --session-titles`)."""
+    try:
+        token = account_token()
+        out = {}
+        for status in ("archived", "active"):
+            for s in sessions(token, status):
+                if s.get("id"):
+                    out[s["id"]] = {"title": s.get("title") or "", "archived": status == "archived"}
+        return out
+    except (OSError, ValueError, KeyError) as e:
+        log(f"session titles: {e}")
+        return None
+
+
 def list_sessions(folders: list[str]) -> dict | None:
     """The active phone sessions of these repo hosts, each with the word it routes by
     (its own from `ccmorph-rc <profile> --switch --session <id>`, else null: the shared
@@ -2614,7 +2631,17 @@ def main(argv: list[str]) -> int:
                     help="folder list to watch (default: $CCMORPH_STATE_DIR/rc-hosts)")
     ap.add_argument("--list-sessions", action="store_true",
                     help="print the repo hosts' active sessions and each one's own profile as JSON, then exit")
+    ap.add_argument("--session-titles", action="store_true",
+                    help="print every session's title, active and archived, as JSON, then exit")
     args = ap.parse_args(argv)
+    if args.session_titles:
+        with redirect_stdout(sys.stderr):
+            record = session_titles()
+        if record is None:
+            print("ccmorph-rc-hosts: the sessions could not be read", file=sys.stderr)
+            return 1
+        print(json.dumps({"sessions": record}))
+        return 0
     config = Path(args.config) if args.config else STATE_ROOT / "rc-hosts"
     if args.list_sessions:
         try:

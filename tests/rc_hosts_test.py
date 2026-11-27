@@ -6203,3 +6203,29 @@ def test_list_sessions_prints_only_json_and_asks_only_about_repo_hosts(tmp_path,
     assert json.loads(out.out) == {"account": "me", "sessions": []}
     assert "check failed" in out.err
     assert asked == [[str(tmp_path / "a")]]
+
+
+def test_session_titles_name_every_session_active_and_archived(monkeypatch, capsys):
+    """A cost ledger keyed by transcript names each session by its title: `--session-titles`
+    prints both lists as JSON on stdout alone; an active listing wins over an archived one."""
+    import json
+    m = load()
+    monkeypatch.setattr(m, "account_token", lambda: "tok")
+    lists = {"active": [{"id": "cse_a", "title": "Stark UI"}],
+             "archived": [{"id": "cse_b", "title": "Old"}, {"id": "cse_a", "title": "stale"}, {"title": "no id"}]}
+
+    def fetch(token, status):
+        m.log("fetched " + status)
+        return lists[status]
+    monkeypatch.setattr(m, "sessions", fetch)
+    assert m.main(["--session-titles"]) == 0
+    out = capsys.readouterr()
+    assert json.loads(out.out) == {"sessions": {"cse_a": {"title": "Stark UI", "archived": False},
+                                                "cse_b": {"title": "Old", "archived": True}}}
+    assert "fetched" in out.err
+
+    def fail(token, status):
+        raise OSError("offline")
+    monkeypatch.setattr(m, "sessions", fail)
+    assert m.main(["--session-titles"]) == 1
+    assert capsys.readouterr().out == ""
