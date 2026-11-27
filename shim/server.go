@@ -655,6 +655,9 @@ func (s *Server) relay(rq *request) {
 	}
 	if sidecar != nil {
 		sidecar.retries = retries
+		// The lineage is of the bytes that produced the recorded response: the
+		// final version, after resolve, hooks, masking and any 400 resend.
+		sidecar.lineageHead, sidecar.lineage = lineageOf(body, d)
 	}
 	defer up.close()
 	h := rq.w.Header()
