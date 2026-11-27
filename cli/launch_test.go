@@ -1811,6 +1811,82 @@ func TestSetupDirReleasesTheLiveLockOfTheProfileAHopLeaves(t *testing.T) {
 	}
 }
 
+// GH-983: a launch pass starts the sizing probe beside the session, never
+// before it, but it must not walk away from it: the pass joins every process
+// it starts before it returns. The FIFO keeps the probe alive until the pass's
+// own join releases it, so a pass that returns without the join leaves a live
+// child behind and the seam records nothing. The probe is started before the
+// session stub runs, so a pass that returns without joining fails here rather
+// than at some later TempDir cleanup (the filed macOS failure).
+func TestLaunchPassWaitsForEveryProcessItStarts(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	for _, name := range []string{"HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy", "ALL_PROXY", "all_proxy", "NO_PROXY", "no_proxy"} {
+		t.Setenv(name, "")
+	}
+	curlLog := filepath.Join(t.TempDir(), "requests")
+	launchCurl(t, "case \" $* \" in *' -f '*) { printf 'ARGS %s\\n' \"$*\"; cat; printf '.\\n'; } >> '"+curlLog+"';; esac\nexit 0")
+	state, profiles := gatewayProfile(t, "gw983", "type=apikey\nbase_url=http://10.0.0.5:8080\napi_key=k")
+	libexec := t.TempDir()
+	release := filepath.Join(libexec, "release")
+	if err := syscall.Mkfifo(release, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	pidfile := filepath.Join(libexec, "probe.pid")
+	// Only the sizing probe blocks: it stands in for metadata work that takes
+	// longer than the session — exactly the case a pass must not leave behind.
+	body := "#!/bin/sh\nif [ \"$1\" = context-probe ]; then echo $$ > '" + pidfile +
+		"'; read x < '" + release + "'; fi\nexit 0\n"
+	if err := os.WriteFile(filepath.Join(libexec, "ccmorph-core"), []byte(body), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	joined := ""
+	kept := false
+	saved := waitProbe
+	t.Cleanup(func() { waitProbe = saved })
+	waitProbe = func(cmd *exec.Cmd) {
+		kept = true
+		joined = strings.Join(cmd.Args, " ")
+		if err := cmd.Process.Signal(syscall.Signal(0)); err != nil {
+			t.Errorf("the pass joined a sizing probe that had already exited: %v", err)
+			_ = cmd.Process.Kill()
+			_ = cmd.Wait()
+			return
+		}
+		f, err := os.OpenFile(release, os.O_WRONLY, 0)
+		if err != nil {
+			t.Errorf("release the sizing probe: %v", err)
+			_ = cmd.Process.Kill()
+			_ = cmd.Wait()
+			return
+		}
+		f.WriteString("x\n")
+		f.Close()
+		if err := cmd.Wait(); err != nil {
+			t.Errorf("the joined sizing probe failed: %v", err)
+		}
+	}
+	launchAs(t, false, state, profiles, libexec, "gw983", []string{"--model", "m", "-p", "hi"})
+	if !kept {
+		// The pass walked away: release the probe it left blocked (it is
+		// waiting for this end of the FIFO), then end it, so a failure here
+		// does not leak a process into the rest of the suite.
+		if f, err := os.OpenFile(release, os.O_WRONLY, 0); err == nil {
+			f.WriteString("x\n")
+			f.Close()
+		}
+		if b, err := os.ReadFile(pidfile); err == nil {
+			if pid, err := strconv.Atoi(strings.TrimSpace(string(b))); err == nil {
+				_ = syscall.Kill(pid, syscall.SIGKILL)
+			}
+		}
+		t.Fatalf("the pass returned without joining the sizing probe it started")
+	}
+	if !strings.Contains(joined, "context-probe --declared-only --profile gw983") {
+		t.Fatalf("the pass joined %q, not the sizing probe it started", joined)
+	}
+}
+
 // coreCalls is a stub ccmorph-core that appends each invocation's argument
 // vector to a log, so a test can see every call, not only the last one.
 func coreCalls(t *testing.T) (dir string, calls func() string) {

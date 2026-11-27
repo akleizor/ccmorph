@@ -78,6 +78,10 @@ func nativeBase(base string) (b string, native bool) {
 // or the relaunch a hop asked for. Resolving the pass and running it are different
 // jobs, so launch only joins them.
 func (l *launcher) launch(name string, interactive, native bool, argv []string) (*relayNext, int) {
+	// Whatever the pass started, the pass joins before it returns: the sizing
+	// probe runs beside the session, but no launch leaves a process behind
+	// (#983).
+	defer l.awaitProbes()
 	plan, rc := l.resolveLaunch(name, interactive, native, argv)
 	if plan == nil {
 		return nil, rc
