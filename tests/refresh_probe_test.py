@@ -148,14 +148,37 @@ class DiscoveryHTTP(unittest.TestCase):
         # the real one, so the assertions see the product's own cleanup. The
         # fake bridge runs through {bridge}/config.yaml, as cliproxyapi runs
         # its rendered config, so the retirement's ownership check can prove
-        # the PID before it stops it (#408).
+        # the PID before it stops it (#408). It announces itself from inside
+        # the running process and the handle waits for that announcement:
+        # between fork and exec a pid still carries this shell's argv — no
+        # bridge in it — and under load that window outlives the whole run,
+        # so a handle naming it names a pid the ownership check cannot prove.
+        # The retirement then correctly refuses to touch it, the bridge execs
+        # into existence afterwards, and Ctrl-C is what retired nothing
+        # (GH-933). A ready file the bridge itself writes closes the window:
+        # by the time the handle exists, the kernel already shows that PID
+        # running {bridge}/config.yaml. The fake bridge is zsh, so it says -f:
+        # a machine's own ZDOTDIR/.zshenv is read by every nested zsh, and one
+        # that exits for a nested shell kills the fake bridge before its ready
+        # file, leaving the test red only where the operator has such a file
+        # (REVIEW.md rule 3). -f (NO_RCS) reads none of the operator's startup
+        # files, exactly as the real bridge — a Go binary — reads none.
         self.script.write_text(f"""ccmorph() {{
   case "$1" in
     _route_env)
       mkdir -p "{bridge}"
-      ln -s "$(command -v sleep)" "{bridge}/config.yaml"
-      "{bridge}/config.yaml" 300 </dev/null >/dev/null 2>&1 &
+      ln -s "$(command -v zsh)" "{bridge}/config.yaml"
+      "{bridge}/config.yaml" -f -c ': > "$1"; exec -a "$2" sleep "$3"' \\
+          x "{root}/ready" "{bridge}/config.yaml" 300 </dev/null >/dev/null 2>&1 &
       local pid=$!
+      for i in {{1..600}}; do
+        [[ -e "{root}/ready" ]] && break
+        sleep 0.05
+      done
+      if [[ ! -e "{root}/ready" ]]; then
+        print -u2 "the fake bridge never execed its config"
+        return 1
+      fi
       print -r -- "$pid" > "{root}/bridge.pid"
       print "ANTHROPIC_API_KEY=canary"
       print "ANTHROPIC_BASE_URL={self.base}"
