@@ -67,6 +67,10 @@ dropped by a bridge that has not started polling yet -- at most once per
 REWAKE_AFTER (bridge/reconnect, the call Claude Code itself uses to re-queue a
 session), which spawns it again in a fresh or the kept worktree. The same call
 brings back a session whose turn a host restart cut off (recover_interrupted).
+The server answers 200 to a wake it then never starts, so a session still
+processless after REWAKE_TRIES answered hand-backs is parked as an idle one is:
+handed back no more until its next input, instead of every REWAKE_AFTER forever
+(#974: one session, 232 hand-backs in 40 hours, none of them spawned it).
 
 A host can also stay alive and still be unable to log its sessions in: Claude Code
 reads the account token when it starts, and a long-running host kept one the
@@ -203,6 +207,7 @@ LOGIN_LOST = re.compile(
     r"|Remote Control is only available with claude\.ai subscriptions")
 RECOVER_EVERY = 20     # seconds between unarchive checks: one list call
 REWAKE_AFTER = 600     # seconds before the same processless session is handed back again
+REWAKE_TRIES = 3       # answered hand-backs that left it processless before it is parked (#974)
 LOGIN_RESTART_AFTER = 600   # seconds before the same host is restarted for its login again
 LOGIN_REFRESH_BEFORE = 600   # seconds of account token left when Claude Code is asked to refresh it
 LOGIN_REFRESH_RETRY = 120    # seconds between attempts: Claude Code refreshes only inside its own buffer
@@ -1772,7 +1777,8 @@ def park_idle(folders: list[str], now: float, parked: dict[str, tuple], limit: f
 def recover_processless(folders: list[str], done: dict[tuple[str, int], float],
                         up: set[str],
                         failed: "set[tuple[str, int]] | None" = None,
-                        parked: "dict[str, tuple] | None" = None) -> dict[str, bool]:
+                        parked: "dict[str, tuple] | None" = None,
+                        tries: "dict[tuple[str, int], int] | None" = None) -> dict[str, bool]:
     """Hand every active, processless session of a repo host back to it.
 
     A phone session must answer whenever it is opened. Its process can end while
@@ -1785,7 +1791,11 @@ def recover_processless(folders: list[str], done: dict[tuple[str, int], float],
 
     One hand-back per session per REWAKE_AFTER (`done`), and at once again after a
     new unarchive: a session that keeps failing to start is retried slowly, never
-    in a loop. A connected one already has its process.
+    in a loop. A connected one already has its process. A session the server keeps
+    answering without ever starting (`tries` counts the answered hand-backs that
+    found it processless again, #974) is parked once `REWAKE_TRIES` of them have
+    passed, exactly as an idle one is: no more hand-backs, no more log lines, until
+    it gets input or is opened and connects; the one park line says why.
 
     Only a folder in `up` is asked about (`Host.proc` set, started at least
     RECOVER_EVERY ago), as in recover_interrupted: work queued for a host still
@@ -1805,6 +1815,8 @@ def recover_processless(folders: list[str], done: dict[tuple[str, int], float],
     """
     if failed is None:
         failed = set()
+    if tries is None:
+        tries = {}
     sent: dict[str, bool] = {}
     folders = [f for f in folders if f in up]
     if not folders:                       # nothing hosts these sessions yet
@@ -1813,34 +1825,52 @@ def recover_processless(folders: list[str], done: dict[tuple[str, int], float],
     now = time.time()
     parked = {} if parked is None else parked
     for folder, s in found:
+        sid = s.get("id", "")
+        key = (sid, (s.get("external_metadata") or {}).get("unarchived_epoch") or 0)
         if s.get("connection_status") == "connected":
-            parked.pop(s.get("id", ""), None)      # woken some other way: no longer parked
+            parked.pop(sid, None)                # woken some other way: no longer parked
+            tries.pop(key, None)                 # it started: a later death gets its hand-backs
             continue
-        if s.get("id") in parked:
-            if not woke(s, parked[s["id"]]):
+        if sid in parked:
+            if not woke(s, parked[sid]):
                 continue                           # parked and nothing new: stay processless
-            parked.pop(s["id"])
-            log(f"{folder}: {s['id']} got input; waking it")
-        key = (s.get("id", ""), (s.get("external_metadata") or {}).get("unarchived_epoch") or 0)
+            parked.pop(sid)
+            tries.pop(key, None)                   # its input came: the hand-backs start over
+            log(f"{folder}: {sid} got input; waking it")
         if now - done.get(key, float("-inf")) < REWAKE_AFTER:
             if key in failed:
-                sent[key[0]] = False
+                sent[sid] = False
             continue
-        sent[key[0]] = False
+        if tries.get(key, 0) >= REWAKE_TRIES:
+            # #974: the server answered every hand-back and the process never came.
+            # A 200 means re-queued, not started; park it as park_idle does, so its
+            # next input (or its owner opening it) is what tries again, and the one
+            # line here is all the log says about it from now on.
+            parked[sid] = (s.get("user_message_count") or 0, stamp(s.get("last_event_at")) or 0)
+            tries.pop(key, None)
+            log(f"{folder}: {sid} still had no process after {REWAKE_TRIES} hand-backs; "
+                f"parked until it gets input")
+            continue
+        sent[sid] = False
         try:
             api("POST", f"/v1/environments/{s['environment_id']}/bridge/reconnect", token,
-                {"session_id": key[0]})
-            sent[key[0]] = True
+                {"session_id": sid})
+            sent[sid] = True
             done[key] = now
+            tries[key] = tries.get(key, 0) + 1
             failed.discard(key)
-            log(f"{folder}: {key[0]} had no process; handed back to its host")
+            log(f"{folder}: {sid} had no process; handed back to its host")
         except urllib.error.HTTPError as e:
             # The server answered: any status waits REWAKE_AFTER, 400/404 for good.
+            # An answered error is the same forever loop as an answered 200 (#974),
+            # so it counts toward the park too; only a transient (no answer) does not.
             done[key] = float("inf") if e.code in (400, 404) else now
+            if e.code not in (400, 404):
+                tries[key] = tries.get(key, 0) + 1
             failed.add(key)
-            log(f"{folder}: {key[0]} recovery failed: HTTP {e.code}")
+            log(f"{folder}: {sid} recovery failed: HTTP {e.code}")
         except TRANSIENT as e:                    # transient: the next check retries
-            log(f"{folder}: {key[0]} recovery failed: {e}")
+            log(f"{folder}: {sid} recovery failed: {e}")
     return sent
 
 
@@ -2519,6 +2549,7 @@ class Clock:
         self.recovered: dict = {}
         self.hand_back_failed: set = set()   # keys in `recovered` whose last hand-back failed
         self.parked: dict = {}               # session id -> (user messages, last event) when parked
+        self.hand_back_tries: dict = {}      # keys whose hand-back found no process again (#974)
         self.refresher: subprocess.Popen | None = None   # the running account login refresh
         self.last_refresh = float("-inf")
         self.refresher_started = 0.0   # when the running refresh turn was started
@@ -2534,7 +2565,7 @@ def cycle(hosts: "dict[str, Host]", repos: list[str], now: float, clock: Clock) 
         restart_logged_out(hosts, now)   # a host that cannot log its sessions in: replace it
         up = {h.folder for h in hosts.values() if h.proc and now - h.started >= RECOVER_EVERY}
         handed_back = recover_processless(repos, clock.recovered, up, clock.hand_back_failed,
-                                          clock.parked)
+                                          clock.parked, clock.hand_back_tries)
         recover_interrupted(repos, up, handed_back)
     if now - clock.last_idle_check < IDLE_CHECK:
         return False
