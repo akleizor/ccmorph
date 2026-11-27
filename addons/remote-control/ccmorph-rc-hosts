@@ -1898,7 +1898,7 @@ def session_titles() -> dict | None:
                 if s.get("id"):
                     out[s["id"]] = {"title": s.get("title") or "", "archived": status == "archived"}
         return out
-    except (OSError, ValueError, KeyError) as e:
+    except LOGIN_ERRORS as e:
         log(f"session titles: {e}")
         return None
 
