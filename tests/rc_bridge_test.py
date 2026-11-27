@@ -15,7 +15,7 @@ from pathlib import Path
 
 import pytest
 
-from support import HANG_TIMEOUT, load_script, proxy_took, wait_until
+from support import HANG_TIMEOUT, _ScriptedTime, load_script, proxy_took, wait_until
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "addons" / "remote-control"))
 
@@ -1594,7 +1594,7 @@ def test_a_sidecar_that_refuses_to_die_aborts_the_switch_instead_of_doubling(tmp
     rc = _launcher()
     state, started, signals = _switch_rig(rc, monkeypatch, tmp_path, alive=True, serving=False)
     monkeypatch.setattr(rc.os, "kill", lambda pid, s: signals.append(s) or 0)   # never dies
-    monkeypatch.setattr(rc.time, "sleep", lambda _: None)                       # the wait, scripted
+    monkeypatch.setattr(rc, "time", _ScriptedTime(rc.time, None, lambda _: None))  # the wait, scripted
     with pytest.raises(SystemExit):
         rc.switch("oli", "alex")
     assert started == []                                  # never doubled: no replacement
