@@ -524,11 +524,22 @@ func (l *launcher) runLaunch(p *launchPlan) (*relayNext, int) {
 				}
 			}
 		}
+		// GH-969: the launch the terminal picker would have asked (the picker
+		// gate in resolveLaunch reads the same isTTY pair), with no terminal to
+		// ask in. It is refused below, after the checks that name a broken
+		// route, key or listing (#260, #723, #862), and nothing is sized for the
+		// session it will not open, so the refusal never waits on the sizing
+		// POST. Only `ccmorph run`'s own first pass with an empty argv owes it:
+		// an argv carrying the work, run's own `--`, `_ccm_launch -a` and a
+		// hop's relay pass launch as before.
+		unasked := l.runPass && !l.runSeparated && needsAdapter && opensSession && l.adapterProfile != name &&
+			flags.AskMissingModel && !subcommand && len(args) == 0 && explicit == "" && defaultModel == "" &&
+			p.reachWhy == "" && !(isTTY(0) && isTTY(2))
 		// The listing fetch, its unsized probe and the picker all speak to the
 		// session about to open: a launch that opens none asks the route nothing,
 		// so a dead endpoint cannot stall or refuse it (#650).
 		if opensSession {
-			if listing, ok := l.listing(base, key); ok {
+			if listing, ok := l.listing(base, key); ok && !unasked {
 				if unsized, ok := try(l, "listing-has-unsized", func() bool { return util.ListingHasUnsized(l.conf(name), listing) }); !ok || unsized {
 					l.logInit()
 					// The sizing save waits on the profile lock, which a person at
@@ -569,11 +580,17 @@ func (l *launcher) runLaunch(p *launchPlan) (*relayNext, int) {
 				// no cached protocol: the adapter has nothing to start. Say so in
 				// the picker's and doctor's words before it is asked (#862).
 				if explicit == "" && defaultModel == "" {
+					// unasked (above, #969): NoUsableModel where the listing names
+					// no chat model to pick, NoModelReason where one waits unsaved —
+					// the terminal launch's and doctor's sentences.
 					if listed := l.listed(base, key); util.NoModelToPick(l.conf(name), listed) {
-						if _, known := adapter.TranslatorVerdict(base, l.profileDirs, "", listed); !known {
+						if _, known := adapter.TranslatorVerdict(base, l.profileDirs, "", listed); !known || unasked {
 							l.err(util.NoUsableModel(name))
 							return nil, 1
 						}
+					} else if unasked {
+						l.err(util.NoModelReason(name))
+						return nil, 1
 					}
 				}
 				model, ok := l.adapterModel(name, penv, explicit, defaultModel)
