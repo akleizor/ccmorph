@@ -7,6 +7,10 @@
 
 ## Unreleased
 
+### Changed
+
+- **`ccmorph` no longer keeps a zsh process beside every session and MCP server.** The `ccmorph` executable now becomes `ccmorph-core` instead of waiting on it, so each session and each `ccmorph router mcp` server is one process fewer. The PID is the same, and the core already forwards TERM and HUP to Claude Code, so `kill <ccmorph pid>` still ends the session.
+
 ### Added
 
 - **`ccmorph doctor` answers whether a hosted edge served what its sessions picked.** The edge's proxy now keeps the asked-vs-served outcome of its session turns (counted since that edge run, with the last miss) beside its held record, and doctor reads the live edge's answer — a pick set in the phone and answered elsewhere now warns on the check, without anyone starting the edge with `--debug` or reading a log.

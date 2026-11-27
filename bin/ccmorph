@@ -123,4 +123,11 @@ source "$lib" || {
   exit 1
 }
 
+# The executable becomes the core: no zsh waits beside a session or an MCP
+# server for its whole life. The core forwards TERM and HUP to Claude Code
+# itself (cli/launch.go signals), and the PID stays this one, so
+# `kill <ccmorph pid>` still reaches the session. The `ccmorph` function keeps
+# its fork-and-forward for a shell that sources the library, and stays the
+# entry for a library that defines only it.
+(( $+functions[_ccm_main_exec] )) && [[ -n "${_CCMORPH_DIR:-}" ]] && _ccm_main_exec "$@"
 ccmorph "$@"
