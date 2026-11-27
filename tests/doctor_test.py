@@ -147,6 +147,29 @@ def test_doctor_names_the_one_cause_of_an_unreachable_gateway(tmp_path, case):
     assert "then: ccmorph run" not in out
 
 
+@pytest.mark.parametrize("case", ["ready", "may-not-start"])
+def test_doctor_exit_status_is_its_verdict_gh_970(tmp_path, case):
+    """GH-970: doctor only ever answered whether it itself ran, so
+    `ccmorph doctor gway && launch` read a profile whose own last line said
+    `may not start` as healthy. The exit status is the verdict's: 0 only when
+    the last line says ready, non-zero when it says may not start. The human
+    report is word for word what the same fixture printed before."""
+    if case == "ready":
+        conf = "type=apikey\nbase_url=https://example.test\napi_key=k\n"
+        result, _, _ = run_doctor(tmp_path, conf, OK_CURL)
+        assert result.stdout.splitlines()[-1] == (
+            "OK ready: start it with ccmorph run demo"), result.stdout
+    else:
+        curl = ("#!/bin/sh\n"
+                "printf 'curl: (7) Failed to connect to 127.0.0.1 port 18787: "
+                "Connection refused\\n' >&2\nexit 7\n")
+        conf = "type=apikey\nbase_url=http://127.0.0.1:18787\napi_key=k\n"
+        result, _, _ = run_doctor(tmp_path, conf, curl)
+        assert "WARN gateway: connection refused: 127.0.0.1 port 18787" in result.stdout, result.stdout
+        assert result.stdout.splitlines()[-1].startswith("WARN may not start"), result.stdout
+    assert (result.returncode != 0) == (case == "may-not-start"), result.stdout
+
+
 def test_doctor_reports_a_refused_api_key(tmp_path):
     # Claude Code stores a refusal in the profile's .claude.json; the credential
     # is still there, so only the stored answer tells doctor why a launch would
@@ -966,10 +989,11 @@ def test_doctor_admits_when_it_cannot_read_the_sign_in_state(tmp_path):
     not read."""
     claude = "#!/bin/sh\nexit 0\n"
     result, _, _ = run_doctor(tmp_path, "type=sub\nemail=test@example.test\n", claude=claude)
-    assert result.returncode == 0, result.stdout
+    # Unread is not healthy, and since GH-970 the exit code says so too: a
+    # verdict of may-not-start is exactly what a script must not launch on.
+    assert result.returncode != 0, result.stdout
     assert "credentials: cannot tell" in result.stdout
     assert "not signed in" not in result.stdout
-    # Unread is not healthy: the verdict must not say ready right after it.
     assert "may not start: check credentials" in result.stdout
     assert "ready: start it" not in result.stdout
 
@@ -1116,7 +1140,9 @@ def test_doctor_on_a_sub_profile_without_a_readable_sign_in_does_not_vouch(tmp_p
     assert ("WARN credentials: the sign-in was not checked (no stored sign-in could be read; "
             "the next session refreshes it if it can)") in result.stdout
     assert result.stdout.splitlines()[-1].startswith("WARN may not start"), result.stdout
-    assert result.returncode == 0, result.stdout
+    # Since GH-970 the exit code carries the verdict a reader without a
+    # terminal has: may not start is not a green light.
+    assert result.returncode != 0, result.stdout
     # The report keeps its shape with no sign-in to read: the endpoint is
     # Anthropic's own, so no adapter line; no SKIP line a first-time user
     # cannot act on; every line carries its status word.
@@ -1684,11 +1710,14 @@ def test_doctor_terminal_statuses(tmp_path):
            "CCMORPH_STATE_DIR": str(conf.parent), "CCMORPH_LIB_DIR": str(ROOT / "lib"),
            "TERM": "xterm-256color"}
     env.pop("NO_COLOR", None)
+    # The demo fixture keeps no stored sign-in, so its verdict says may not
+    # start, and since GH-970 that verdict is the exit status: 1 here guards
+    # the exit, every other assertion here guards the formatting.
     for overrides, profile, expected, code in [
-        ({}, "demo", "\x1b[38;2;215;119;87m✓\x1b[0m", 0),
+        ({}, "demo", "\x1b[38;2;215;119;87m✓\x1b[0m", 1),
         ({}, "missing", "\x1b[38;2;255;107;128m✗\x1b[0m", 1),
-        ({"NO_COLOR": "1"}, "demo", "✓ profile:", 0),
-        ({"TERM": "dumb"}, "demo", "✓ profile:", 0),
+        ({"NO_COLOR": "1"}, "demo", "✓ profile:", 1),
+        ({"TERM": "dumb"}, "demo", "✓ profile:", 1),
     ]:
         master, slave = pty.openpty()
         result = None

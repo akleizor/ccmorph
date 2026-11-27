@@ -251,7 +251,10 @@ def test_doctor_names_the_kind_and_the_endpoint(box):
     seed(box)
     (box.state / 'profiles/tok').mkdir()
     out = box.run('doctor', 'tok')
-    assert out.returncode == 0, out.stderr
+    # The offline box leaves the token unchecked, so the verdict says may not
+    # start, and since GH-970 the exit status follows the verdict's words.
+    assert out.returncode != 0, out.stderr
+    assert 'may not start' in out.stdout, out.stdout
     assert 'profile: tok (Claude token)' in out.stdout
     box.conf('bad', 'type=apikey\napi_key=canary-key\nbase_url=gateway.invalid\n')
     out = box.run('doctor', 'bad')
@@ -943,9 +946,11 @@ def test_the_unsaved_state_reads_the_same_words_on_every_screen_gh_381(box, name
     assert f'— {effort_words}' in out.stdout
     assert f'({words})' in out.stdout
     screens['inspect'] = out.stdout
-    # doctor: the effective rows answer what the session runs with.
+    # doctor: the effective rows answer what the session runs with. The box is
+    # offline by design, so this profile's own verdict is may-not-start, and
+    # since GH-970 the exit status is that verdict, not a constant zero.
     out = box.run('doctor', name)
-    assert out.returncode == 0, out.stderr
+    assert out.returncode != 0, out.stderr
     assert f'effective model: {words} (no saved model)' in out.stdout
     assert f'effective effort: {effort_words} (no saved effort)' in out.stdout
     screens['doctor'] = out.stdout
