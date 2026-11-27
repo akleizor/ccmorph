@@ -11,6 +11,7 @@ became gate rules. This guard runs the promoter's own path and regex against
 this checkout, so a future move or format drift fails here, in `make gate`,
 instead of silently deadening the ledger.
 """
+import datetime
 import re
 from pathlib import Path
 
@@ -53,6 +54,62 @@ DUE = {
     'A reader that snapshots the names it opens later':
         ['2026-11-14', '2026-11-16', '2026-11-17'],
 }
+
+# The ledger's counting rules, ported from `~/.agents/services/symphony/lessons`
+# (`ledger()`), the one function the nightly promoter counts a kind's days with.
+# A hand-written mirror of these rules drifted from them (GH-1017: two builds
+# trusted a ledger line they could not read), so the rules live here once, the
+# way KIND above is copied verbatim, and a test below pins them to the tool's
+# own self-test cases. When `lessons` changes its counting, change this port.
+LEDGER_KIND = re.compile(r"^(?:\*\*(\d+)\.\s+|(\d+)\.\s+\*\*)([^*]+?)\*\*", re.M)
+LEDGER_DATE = re.compile(r"\b(20\d\d-\d\d-\d\d)\b")
+LEDGER_SEEN = re.compile(r"^Seen (\d+)× \((.*)\)\.$")
+FIRST_DAY = "2026-10-26"  # the repo's first commit day (the history squash): the ledger's `since`
+
+
+def _ledger_chunks(part):
+    """[(number, title, last non-empty line)] per kind: the ledger's own chunking."""
+    marks = list(LEDGER_KIND.finditer(part))
+    out = []
+    for i, m in enumerate(marks):
+        end = marks[i + 1].start() if i + 1 < len(marks) else len(part)
+        chunk = part[m.start():end].split("\n## ", 1)[0]
+        lines = [line.strip() for line in chunk.splitlines() if line.strip()]
+        out.append((int(m.group(1) or m.group(2)), " ".join(m.group(3).split()).rstrip("."),
+                    lines[-1] if lines else ""))
+    return out
+
+
+def _ledger_days(last, since, until):
+    seen = LEDGER_SEEN.match(last)
+    days = {d.strip() for d in seen.group(2).split(",")} if seen else set()
+    return sorted(d for d in days if LEDGER_DATE.fullmatch(d) and since <= d <= until)
+
+
+def _ledger(text, since="", until="9999"):
+    """([(n, title, days)], {kinds named under Gate rules}) — what `lessons` prints, pure."""
+    parts = text.split("\n## Gate rules", 1)
+    body, gate = parts[0], (parts[1] if len(parts) > 1 else "")
+    rows = [(n, t, _ledger_days(last, since, until)) for n, t, last in _ledger_chunks(body)]
+    return rows, {int(n) for n in re.findall(r"kind (\d+)\b", gate)}
+
+
+def test_the_ported_ledger_counts_what_the_lessons_self_test_pins():
+    doc = ("# R\n\n**1. A.** Real: x (2026-08-26). Real again 2026-10-31, and 2026-10-31.\n"
+           "Seen 2× (2026-08-26, 2026-10-31, 2026-10-31).\n\n"
+           "**2. B.** Real 2026-10-01.\nSeen 1× (2026-10-01).\n\n"
+           "**3. C.** 2026-10-01 2026-10-02 2026-10-03\nSeen 3× (2026-10-01, 2026-10-02, 2026-10-03).\n\n"
+           "## Gate rules\n- kind 3: no C.\n")
+    rows, promoted = _ledger(doc)
+    assert rows == [(1, "A", ["2026-08-26", "2026-10-31"]), (2, "B", ["2026-10-01"]),
+                    (3, "C", ["2026-10-01", "2026-10-02", "2026-10-03"])], rows
+    assert promoted == {3}
+    assert _ledger("**4. Wrapped\ntitle.** 2026-01-01\nSeen 1× (2026-01-01).\n")[0] == [(4, "Wrapped title", ["2026-01-01"])]
+    assert _ledger("## What failure looks like here\n1. **Lost rows.** 2026-02-01\n   Example: `abc`.\nSeen 1× (2026-02-01).\n")[0] == [(1, "Lost rows", ["2026-02-01"])]
+    assert _ledger("**7. Q.** Quoted 2026-11-20; due 2027-03-01.\nSeen 1× (2026-11-14).\n", since="2026-11-01", until="2026-11-26")[0] == [(7, "Q", ["2026-11-14"])]
+    assert _ledger("**8. No line.** 2026-10-01 2026-10-02 2026-10-03\n")[0] == [(8, "No line", [])]
+    # the shape REVIEW.md's pre-squash records had: the ledger counts no day from it
+    assert _ledger("**1. A.** x\n  Seen 2× (2026-10, 2026-10 — a note).\n")[0] == [(1, "A", [])]
 
 
 def _lines():
@@ -171,6 +228,73 @@ def test_every_kind_paragraph_carries_one_strict_seen_line():
         f'kind, beside an unparseable one, or past the last kind): {orphaned}. '
         'fix: number the kind the Seen line counts for as `**N. Title**`, or '
         'remove the Seen line with its kind. (GH-916)')
+
+
+def _seen_defects(text, since, until):
+    """[(section, kind, defect)] for every kind paragraph whose record the ledger would count differently than it reads."""
+    parts = text.split("\n## Gate rules", 1)
+    bad = []
+    for label, part in (("kinds", parts[0]), ("Gate rules", parts[1] if len(parts) > 1 else "")):
+        for n, _, last in _ledger_chunks(part):
+            rec = LEDGER_SEEN.match(last)
+            if rec is None:
+                bad.append((label, n, "the paragraph's last line is not `Seen <n>× (<dates>).`: %r" % last[:60]))
+                continue
+            claimed = [d.strip() for d in rec.group(2).split(",")]
+            counted = _ledger_days(last, since, until)
+            if claimed != counted:
+                bad.append((label, n, "the ledger counts %s of the record's %s" % (counted, claimed)))
+            elif int(rec.group(1)) != len(counted):
+                bad.append((label, n, "the record says %s, the ledger counts %d" % (rec.group(1), len(counted))))
+    return bad
+
+
+def test_every_seen_record_says_exactly_what_the_ledger_counts():
+    # GH-1017: kind 1's record read `Seen 2× (2026-10, 2026-10 — …)`, which the
+    # ledger counts as no day at all, so a kind seen twice sat at zero. The
+    # `lessons` CLI cannot judge a branch (it reads origin/main:REVIEW.md), so
+    # the gate runs the ledger's own counting on this checkout's file.
+    until = (datetime.date.today() + datetime.timedelta(days=1)).isoformat()  # a day's slack: a timezone must not turn the gate red
+    bad = _seen_defects(LEDGER.read_text(encoding='utf-8'), FIRST_DAY, until)
+    assert not bad, (
+        f'cause: Seen records the lessons ledger counts differently than they read (section, kind, defect): {bad}. '
+        'fix: a kind paragraph ends with one line `Seen <n>× (<date>, <date>, …).` — full `YYYY-MM-DD` '
+        f'days, distinct, ascending, from {FIRST_DAY} (the first commit day; earlier incidents take that floor day) '
+        'on, n their number; dating notes go in the paragraph text above it, and nothing follows the record. (GH-1017)')
+
+
+def test_the_seen_record_guard_names_each_defect():
+    U = "2026-11-29"
+
+    def doc(record, tail="\n"):
+        return "## What failure looks like here\n\n**1. A.** prose\n" + record + tail
+
+    clean = ["  Seen 2× (2026-11-03, 2026-11-04).", "  Seen 1× (2026-10-26)."]
+    flagged = [
+        "  Seen 2× (2026-10, 2026-11-04).",             # month-only token
+        "  Seen 1× (2026-11-04 — a note).",              # prose inside the parentheses
+        "  Seen 2× (2026-11-04, 2026-11-04).",           # repeated day
+        "  Seen 3× (2026-11-03, 2026-11-04).",           # n above the days
+        "  Seen 1× (2026-11-03, 2026-11-04).",           # n below the days
+        "  Seen 2× (2026-11-04, 2026-11-03).",           # out of order
+        "  Seen 1× (2026-10-25).",                       # before the first commit day
+        "  Seen 1× (2099-01-01).",                       # after the window
+        "  Seen 1× (2026-11-04). a note",                # prose after the record
+        "prose Seen 1× (2026-11-04).",                   # prose before the record
+        "  Seen 1x (2026-11-04).",                       # letter x
+        "  Seen 1× (2026-11-04).\nmore prose",           # record is not the last line
+    ]
+    for record in clean:
+        assert not _seen_defects(doc(record), FIRST_DAY, U), record
+    for record in flagged:
+        assert _seen_defects(doc(record), FIRST_DAY, U), record
+    assert _seen_defects("## K\n\n**1. A.** prose only\n", FIRST_DAY, U)  # no record at all
+    # a `## ` heading ends the last kind's paragraph, so its record is still its last line
+    assert not _seen_defects(doc(clean[0], "\n## Caught by checks\n\n- kind 23: x\n"), FIRST_DAY, U)
+    # the Gate rules paragraphs are held to the same form
+    gate = ("## K\n\n**1. A.** p\n  Seen 1× (2026-11-04).\n\n## Gate rules\n\n"
+            "**1. G.** y\n  Seen 1× (2026-10).\n\n## Never blocks\n")
+    assert [d[0] for d in _seen_defects(gate, FIRST_DAY, U)] == ["Gate rules"]
 
 
 def test_the_promotion_threshold_records_keep_their_dates():
