@@ -2094,7 +2094,20 @@ claude.ai login), `route` (the edge's own endpoint) or a profile handed over by
 `ccmorph-rc <profile> --switch` (`switch-<profile>.json`, taken within 500 ms by
 the proxy of the edge it names, which records it in `held.<edge pid>.json`). A
 subagent's pick is the per-session pick above, so a pick reaches an RC agent through
-its own session's folder (#959). Each inference turn logs `asked=` and `served-by=`
+its own session's folder (#959). A switch takes effect at a session's next turn,
+never inside a tool loop: every backend wants its own reasoning blocks on the
+assistant turns of the current loop and accepts none before it, so a loop that
+changed backend halfway would carry the old backend's thinking into one that
+refuses it (llmgate to DeepSeek: `thinking ... must be passed back`; the reverse:
+a foreign signature on Anthropic). The edge keeps, in memory per session and agent
+id, the route that served the request that began the loop. A request whose last
+message is a user message holding a `tool_result` block continues the loop and goes
+to that route; anything else (a string or text prompt, an image, a stop-hook or
+resume continuation, which arrive as text) is a new turn: it takes the word held now
+and re-pins. The body is read for this only when the pin and the held word differ.
+No pin (edge restart, or idle past two hours) means the held word, as before. A
+subagent's loop is keyed apart from its session's, and a picked agent is bound to
+its pick for life, so neither has the exposure. Each inference turn logs `asked=` and `served-by=`
 (`miss` when another endpoint answered). Unrouted first-party inference never dials:
 a decision error is a 502, and the transport refuses `api.anthropic.com/v1/messages`
 unless the account word applies. Event uploads (`/v1/code/sessions/<cse>/worker/events`)

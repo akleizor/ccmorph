@@ -73,6 +73,7 @@ type Edge struct {
 	ownTag  string
 	handoff map[string]endpoint
 	held    map[string]any
+	pins    loopPins // each conversation's route for the loop it is in (edgeloop.go)
 }
 
 // endpoint is a profile `ccmorph-rc <profile> --switch` brought up beside the edge.
@@ -513,6 +514,7 @@ func (e *Edge) route(r *http.Request, u *url.URL, d *decision, word, via, model 
 		} else {
 			target = inferenceTarget(e.Inference)
 		}
+		target, via = e.pinned(r, d, target, via)
 	}
 	if target == "account" {
 		// A legitimate first-party call: left untouched on the session's own
@@ -566,6 +568,35 @@ func (e *Edge) route(r *http.Request, u *url.URL, d *decision, word, via, model 
 	}
 	e.logf("route     %s %s%s%s", r.Method, u.Path, note, via)
 	return nil
+}
+
+// pinned is where this request goes once its conversation's loop is honoured:
+// the word as read now (target, via) unless the request continues a tool loop
+// that began on another route, which stays there. A new turn takes the word
+// held now and pins it. The body is read only when the pin and the word differ.
+func (e *Edge) pinned(r *http.Request, d *decision, target, via string) (string, string) {
+	session := r.Header.Get(SessionHeader)
+	if session == "" {
+		return target, via
+	}
+	key, now := pinKey(session, r.Header.Get(AgentHeader)), time.Now()
+	if p, ok := e.pins.get(key, now); ok {
+		if p.target == target {
+			e.pins.set(key, target, via, now)
+			return target, via
+		}
+		if plain, err := e.plainBody(r, d, inferenceMax); err == nil {
+			if v, perr := ordjson.Parse(plain); perr == nil {
+				if o, ok := v.(*ordjson.Obj); ok && midLoop(o) {
+					e.pins.set(key, p.target, p.via, now)
+					e.logf("loop      %s stays on %s until its next turn (switch to %s waits)", session, p.target, target)
+					return p.target, p.via
+				}
+			}
+		}
+	}
+	e.pins.set(key, target, via, now)
+	return target, via
 }
 
 // setPick names the model outright when an agent's pick does.

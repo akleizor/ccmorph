@@ -40,6 +40,8 @@
 
 ### Fixed
 
+- **A Remote Control live profile switch waits for the session's next turn instead of cutting a tool loop in two.** The next request used to follow the switch even in the middle of a tool loop, so it carried the old backend's reasoning blocks and the new backend refused them (`content[].thinking in the thinking mode must be passed back` on DeepSeek, a foreign signature on Anthropic). The edge now pins a loop to the route that began it; a request ending in `tool_result` blocks stays there, and the next prompt takes the held route.
+
 - **A model alias from ~/.claude/settings.json no longer leaves a gateway profile
   unstartable behind a ready doctor.** `list` and `inspect` say where the shown
   model came from, `doctor` fails with run's own sentence and the command that
