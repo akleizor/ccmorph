@@ -131,6 +131,118 @@ typeset -gi _ccm_test_homes_mark=0
 typeset -gi _ccm_test_homes_exiting=0
 typeset -ga _ccm_test_leaked=()
 typeset -ga _ccm_test_kids=()
+# EPOCHREALTIME for the sweep's cap; the suite's header loads this too, and
+# the sweep is also run on its own from a source slice.
+zmodload zsh/datetime 2>/dev/null
+# How long, in tenths of a second, the sweep lets a test's leftovers leave on
+# their own before calling them leaks. A launch's background sizing pass is a
+# cold zsh plus the core, and a scheduler under gate load can hold it far past
+# the few tenths a quiet machine needed; a fixed 0.6 s window convicted it and
+# failed whichever test happened to be sweeping (#949). The suite's hang
+# detector is the only budget a healthy run may use -- a backstop far above
+# any healthy duration, never a deadline -- and a test proving the verdict
+# path shortens this rather than spending it.
+typeset -gi _ccm_test_sweep_patience=$(( CCMORPH_TEST_HANG_TIMEOUT * 10 ))
+# The exit and signal sweeps only reap, never judge a test, so they keep a
+# short grace: a landing batch's KILL must not land mid-sweep before the
+# sweep has TERMed what the killed test left (the stranded copies of #434).
+typeset -gi _ccm_test_sweep_exit_grace=6
+# How long (seconds) TERM gets before KILL. A count of sleeps stretches with
+# each look, exactly as the verdict's did, and a TERM-ignoring child under a
+# slow look would hold the suite far past this budget.
+typeset -gi _ccm_test_sweep_kill_grace=4
+
+# The stat field ps reports, or the same field from /proc when a sandbox
+# denies process tools: a zombie holds nothing open, and the sweep must be
+# able to say so even where ps is not answerable.
+_ccm_test_pid_state() {
+  local pid=$1 state
+  state=$(ps -o stat= -p $pid 2>/dev/null)
+  if [[ -z $state && -r /proc/$pid/stat ]]; then
+    state=$(</proc/$pid/stat 2>/dev/null) || return 0
+    state=${state##*) }
+    state=${state%% *}
+  fi
+  print -r -- $state
+}
+
+# The command behind a pid, for the leak line: ps when it answers, else the
+# kernel's own cmdline.
+_ccm_test_pid_command() {
+  local pid=$1 out
+  out=$(ps -o command= -p $pid 2>/dev/null)
+  if [[ -z $out && -r /proc/$pid/cmdline ]]; then
+    out=$(</proc/$pid/cmdline 2>/dev/null)
+    out=${out//$'\0'/ }
+  fi
+  print -r -- ${out% }
+}
+
+# The pids still alive and not zombies: a remembered descendant keeps the
+# sweep's wait alive the same way a visible child does, and a zombie a test
+# forgot to wait for holds nothing open. A pid is dropped only when it is
+# provably gone: a sandbox can refuse kill to a reparented child that /proc
+# still names.
+_ccm_test_pids_alive() {
+  local pid
+  for pid in "$@"; do
+    if ! kill -0 $pid 2>/dev/null && [[ ! -e /proc/$pid ]]; then
+      continue
+    fi
+    [[ $(_ccm_test_pid_state $pid) != Z* ]] || continue
+    print -r -- $pid
+  done
+}
+
+# The children of pid: pgrep when it answers, else the kernel's own list.
+_ccm_test_children_of() {
+  local pid=$1 raw c
+  local -a kids
+  raw=$(pgrep -P $pid 2>/dev/null)
+  for c in ${(f)raw}; do
+    [[ $c == <-> ]] && kids+=($c)
+  done
+  if (( ! $#kids )) && [[ -r /proc/$pid/task/$pid/children ]]; then
+    raw=$(</proc/$pid/task/$pid/children 2>/dev/null)
+    for c in ${=raw}; do
+      [[ $c == <-> ]] && kids+=($c)
+    done
+  fi
+  # Last resort: the ppid field of every /proc/<pid>/stat. A sandbox can hide
+  # the task/children file while the plain stat stays readable.
+  if (( ! $#kids )) && [[ -d /proc ]]; then
+    local d rest
+    for d in /proc/[0-9]*(N); do
+      [[ -r $d/stat ]] || continue
+      rest=$(<$d/stat 2>/dev/null) || continue
+      rest=${rest##*) }
+      [[ ${${rest#* }%% *} == $pid ]] && kids+=(${d:t})
+    done
+  fi
+  # macOS: ps and pgrep are not answerable in a sandbox, but libproc's
+  # per-process bsdinfo still answers, so the ppid scan runs there too.
+  if (( ! $#kids )) && [[ ! -d /proc ]] && command -v python3 >/dev/null 2>&1; then
+    raw=$(python3 -I -c 'import ctypes, sys
+try:
+    libproc = ctypes.CDLL("/usr/lib/libproc.dylib")
+    buf = (ctypes.c_int * 8192)()
+    n = libproc.proc_listpids(1, 0, ctypes.byref(buf), ctypes.sizeof(buf))
+    want = int(sys.argv[1])
+    out = []
+    for i in range(max(0, n) // 4):
+        pid = buf[i]
+        info = ctypes.create_string_buffer(136)
+        if libproc.proc_pidinfo(pid, 3, 0, info, 136) > 0 and ctypes.c_uint32.from_buffer(info, 16).value == want:
+            out.append(pid)
+    print("\n".join(str(x) for x in out))
+except Exception:
+    pass' $pid 2>/dev/null)
+    for c in ${(f)raw}; do
+      [[ $c == <-> ]] && kids+=($c)
+    done
+  fi
+  (( $#kids )) && print -rl -- $kids
+}
 
 _ccm_test_descendants_of() {
   local p c depth
@@ -138,7 +250,7 @@ _ccm_test_descendants_of() {
   for (( depth = 0; depth < 8 && $#frontier; depth++ )); do
     next=()
     for p in $frontier; do
-      for c in ${(f)"$(pgrep -P $p 2>/dev/null)"}; do
+      for c in ${(f)"$(_ccm_test_children_of $p)"}; do
         [[ -n $c ]] || continue
         found+=($c)
         next+=($c)
@@ -146,8 +258,60 @@ _ccm_test_descendants_of() {
     done
     frontier=($next)
   done
-  (( $#found )) && print -r -- $found
+  (( $#found )) && print -rl -- $found
 }
+
+# One libproc look that returns the whole tree below the given pids. On a
+# host that denies pgrep and ps a launcher can leave before a second look
+# walks its children, so the first look has to bring them back.
+_ccm_test_closure_of() {
+  python3 -I -c 'import ctypes, sys
+try:
+    libproc = ctypes.CDLL("/usr/lib/libproc.dylib")
+    buf = (ctypes.c_int * 8192)()
+    n = libproc.proc_listpids(1, 0, ctypes.byref(buf), ctypes.sizeof(buf))
+    kids = {}
+    for i in range(max(0, n) // 4):
+        pid = buf[i]
+        info = ctypes.create_string_buffer(136)
+        if libproc.proc_pidinfo(pid, 3, 0, info, 136) > 0:
+            kids.setdefault(ctypes.c_uint32.from_buffer(info, 16).value, []).append(pid)
+    roots = [int(a) for a in sys.argv[1:]]
+    seen, out, frontier = set(), [], list(roots)
+    while frontier:
+        nxt = []
+        for root in frontier:
+            for c in kids.get(root, []):
+                if c not in seen and c not in roots:
+                    seen.add(c)
+                    out.append(c)
+                    nxt.append(c)
+        frontier = nxt
+    print("\n".join(str(x) for x in out))
+except Exception:
+    pass' "$@" 2>/dev/null
+}
+
+# True where pgrep cannot answer (the macOS sandbox): ps and /proc are gone
+# too, so only libproc's own listing can show a tree. Answered once per
+# shell: the probe is a process, and a spawn here costs the sweep a tenth or
+# more of the launcher's life.
+typeset -gi _ccm_test_toolblind_cached=-1
+_ccm_test_toolblind() {
+  if (( _ccm_test_toolblind_cached < 0 )); then
+    local rc=0
+    pgrep -P $1 >/dev/null 2>&1 || rc=$?
+    if [[ ! -d /proc ]] && (( rc > 1 )) && command -v python3 >/dev/null 2>&1; then
+      typeset -gi _ccm_test_toolblind_cached=1
+    else
+      typeset -gi _ccm_test_toolblind_cached=0
+    fi
+  fi
+  (( _ccm_test_toolblind_cached ))
+}
+# Warm the answer at load: the probe is a process, and a spawn ahead of the
+# sweep's first look costs it more of a short-lived launcher than it has.
+_ccm_test_toolblind $$ >/dev/null 2>&1
 
 # Set _ccm_test_leaked (processes carrying one of the homes from $1 on in
 # their argv) and _ccm_test_kids (this shell's live direct children).
@@ -160,37 +324,80 @@ _ccm_test_collect_leaks() {
     home=${_ccm_test_homes[i]}
     _ccm_test_leaked+=(${(f)"$(pgrep -f -- "${home//./\\.}" 2>/dev/null)"})
   done
-  raw=(${(f)"$(pgrep -P $$ 2>/dev/null)"})
-  for pid in $raw; do
-    # pgrep -P $$ lists the $(...) subshell it ran in too, but that one is
-    # dead and reaped by the time this loop sees it; a zombie a test forgot
-    # to wait for holds nothing open either. Neither is a leak.
-    kill -0 $pid 2>/dev/null || continue
-    [[ $(ps -o stat= -p $pid 2>/dev/null) != Z* ]] || continue
-    _ccm_test_kids+=($pid)
-  done
+  # Without answerable tools the first look takes the whole tree, not only
+  # the direct children: a launcher that leaves can orphan its child before
+  # another look would walk it.
+  if _ccm_test_toolblind $$; then
+    raw=(${(f)"$(_ccm_test_closure_of $$)"})
+  else
+    raw=(${(f)"$(_ccm_test_children_of $$)"})
+  fi
+  # The $(...) subshell that listed them is dead and reaped by the time this
+  # loop sees it; a zombie a test forgot to wait for holds nothing open
+  # either. Neither is a leak.
+  _ccm_test_kids=(${(f)"$(_ccm_test_pids_alive $raw)"})
 }
 
 _ccm_test_sweep_homes() {
-  local from=$1 pid pass rc=0
-  local -a tree volley_tree
+  local from=$1 patience=${2:-$_ccm_test_sweep_patience}
+  local pid pass rc=0
+  local -i polled=0
+  local -F deadline=$(( EPOCHREALTIME + patience / 10.0 ))
+  local -a tree volley_tree tracked
   _ccm_test_collect_leaks $from
-  # A child can be a few tenths from its own exit when the test returns --
-  # the fake adapter polls its parent every 0.2 s -- so give the set that
-  # long to leave on its own before calling anything a leak. command sleep:
-  # tests shadow sleep with a clock-counting function, and a failed one
+  # A child can be seconds from its own exit when the test returns: the fake
+  # adapter polls its parent every 0.2 s, and a launch's background sizing
+  # pass is a cold zsh plus the core, which a scheduler under gate load can
+  # hold far past a quiet machine's few tenths (#949). So the per-test verdict
+  # is the children's own exit, never a fixed window: poll until the set is
+  # gone, bounded by the suite's hang detector -- a backstop far above any
+  # healthy duration, never a deadline. That bound is measured on the clock,
+  # not counted in sleeps: a look at a loaded host (or a sandbox that denies
+  # pgrep and ps, where the /proc or libproc fallback costs a process) can
+  # take longer than the sleep it follows, and a count would stretch the cap
+  # with it until a long-lived child left before the verdict. The exit and
+  # signal sweeps only reap, so they pass their own short grace. command
+  # sleep: tests shadow sleep with a clock-counting function, and a failed one
   # never unfunctions it. Spelled while: the retry cap sits in the condition
-  # next to the event it caps, the shape the hang-bound guard reads as a
-  # wait (#457).
+  # next to the event it caps, the shape the hang-bound guard reads as a wait
+  # (#457).
+  #
+  # A leftover's children can outlive it: once the parent exits the child is
+  # reparented, so pgrep -P can no longer reach it, and its argv need not
+  # carry a home (a launcher's children hide theirs). While a parent is still
+  # visible its tree is remembered, and the remembered pids keep the wait
+  # alive until they leave on their own or take the cleanup path below -- the
+  # longer grace must not trade a short window's catch for an orphan
+  # (landing refusal on #949).
   pass=0
-  while (( ++pass <= 3 && ( $#_ccm_test_leaked || $#_ccm_test_kids ) )); do
-    command sleep 0.2
+  while (( ++pass <= patience && EPOCHREALTIME < deadline && ( $#_ccm_test_leaked || $#_ccm_test_kids || $#tracked ) )); do
+    polled=1
+    # What this look saw stays tracked: the next look may no longer reach a
+    # child whose parent has gone, and the child itself must not be read as
+    # gone with it.
+    tracked+=($_ccm_test_leaked $_ccm_test_kids)
+    if _ccm_test_toolblind $$; then
+      tracked+=(${(f)"$(_ccm_test_closure_of $_ccm_test_leaked $_ccm_test_kids $tracked)"})
+    else
+      tracked+=(${(f)"$(_ccm_test_descendants_of $_ccm_test_leaked $_ccm_test_kids $tracked)"})
+    fi
+    tracked=(${(u)tracked})
+    tracked=(${(f)"$(_ccm_test_pids_alive $tracked)"})
+    command sleep 0.1
     _ccm_test_collect_leaks $from
   done
+  # The last look may predate the deadline: take one more so a child that
+  # left on the very edge is not convicted on a stale sighting.
+  (( polled )) && _ccm_test_collect_leaks $from
+  # A remembered child still alive is a leftover too: merge it so the print,
+  # the TERM and the ladder treat it like one.
+  tracked=(${(f)"$(_ccm_test_pids_alive $tracked)"})
+  _ccm_test_leaked+=($tracked)
+  _ccm_test_leaked=(${(u)_ccm_test_leaked})
   (( $#_ccm_test_leaked || $#_ccm_test_kids )) || return 0
   rc=1
   for pid in $_ccm_test_leaked $_ccm_test_kids; do
-    print -u2 -- "pid $pid outlived its test: $(ps -o command= -p $pid 2>/dev/null)"
+    print -u2 -- "pid $pid outlived its test: $(_ccm_test_pid_command $pid)"
     kill -TERM $pid 2>/dev/null
   done
   # A reaped child's own children can outlive it -- the launcher's are the
@@ -200,15 +407,17 @@ _ccm_test_sweep_homes() {
     kill -TERM $pid 2>/dev/null
   done
   pass=0
-  while (( ++pass <= 20 && ( $#_ccm_test_leaked || $#_ccm_test_kids ) )); do
+  local -F kill_deadline=$(( EPOCHREALTIME + _ccm_test_sweep_kill_grace ))
+  while (( ++pass <= 20 && EPOCHREALTIME < kill_deadline && ( $#_ccm_test_leaked || $#_ccm_test_kids || $#tracked ) )); do
     command sleep 0.2
     _ccm_test_collect_leaks $from
+    tracked=(${(f)"$(_ccm_test_pids_alive $tracked)"})
   done
-  for pid in $_ccm_test_leaked $_ccm_test_kids; do
+  for pid in $_ccm_test_leaked $_ccm_test_kids $tracked; do
     print -u2 -- "pid $pid ignored TERM; killing it"
     kill -KILL $pid 2>/dev/null
   done
-  tree=(${(f)"$(_ccm_test_descendants_of $_ccm_test_leaked $_ccm_test_kids)"})
+  tree=(${(f)"$(_ccm_test_descendants_of $_ccm_test_leaked $_ccm_test_kids $tracked)"})
   for pid in $volley_tree $tree; do
     kill -KILL $pid 2>/dev/null
   done
@@ -240,7 +449,7 @@ _ccm_test_wait_readable() {
 _ccm_test_sweep_on_exit() {
   local rc=$?
   (( _ccm_test_homes_exiting )) && return $rc
-  _ccm_test_sweep_homes $(( _ccm_test_homes_mark + 1 ))
+  _ccm_test_sweep_homes $(( _ccm_test_homes_mark + 1 )) $_ccm_test_sweep_exit_grace
   _ccm_test_remove_homes
   return $rc
 }
@@ -252,7 +461,7 @@ _ccm_test_sweep_on_exit() {
 _ccm_test_sweep_on_signal() {
   (( _ccm_test_homes_exiting )) && return 0
   typeset -gi _ccm_test_homes_exiting=1
-  _ccm_test_sweep_homes $(( _ccm_test_homes_mark + 1 ))
+  _ccm_test_sweep_homes $(( _ccm_test_homes_mark + 1 )) $_ccm_test_sweep_exit_grace
   _ccm_test_remove_homes
   exit $(( 128 + $1 ))
 }
@@ -14805,10 +15014,61 @@ test_leak_canary() {
   return 0
 }
 
+# GH-949: the old sweep convicted a leftover that was still on its way out --
+# 3 x 0.2 s of fixed grace lost to a saturated scheduler, and whichever test
+# happened to be sweeping went red with no assertion of its own. This canary
+# leaves a child that walks away only after that window; the wrapper asserts
+# the suite kept the test green and said nothing about a leak. Without
+# CCMORPH_TEST_SLOW_CANARY it is an ordinary passing test, so the suite's own
+# run costs nothing.
+test_slow_leak_canary() {
+  # CCMORPH_TEST_SLOW_CANARY names the pidfile the canary's child writes. The
+  # wrapper checks it: a fork that never happened would leave both the old and
+  # the new sweep quiet, and this regression would pass vacuously.
+  [[ -n "${CCMORPH_TEST_SLOW_CANARY:-}" ]] || return 0
+  command sleep 0.8 >/dev/null 2>&1 &!
+  local pid=$!
+  kill -0 $pid 2>/dev/null || {
+    print -u2 -- "the slow canary's child $pid did not start; the canary is broken, not the sweep"
+    return 1
+  }
+  print -r -- $pid > "${CCMORPH_TEST_SLOW_CANARY:?}"
+}
+
+test_a_leftover_that_leaves_after_the_old_grace_does_not_fail_its_test() {
+  local out st rc=0
+  local marker; marker=$(mktemp -d)
+  out=$(CCMORPH_TEST_SLOW_CANARY="$marker/child.pid" \
+    CCMORPH_TEST_FILTER=test_slow_leak_canary \
+    CCMORPH_TEST_SHARD=0/1 CCMORPH_TEST_JOBS=1 \
+    zsh "$REPO_ROOT/tests/ccmorph_test.zsh" 2>&1)
+  st=$?
+  [[ -s "$marker/child.pid" ]] || {
+    print -u2 -- 'the slow canary never proved its child started'
+    rc=1
+  }
+  (( st == 0 )) || {
+    print -u2 -- "a leftover that left on its own failed its test (status $st)"
+    rc=1
+  }
+  assert_contains "$out" 'PASS: test_slow_leak_canary' \
+    'the slow canary must run and pass' || rc=1
+  assert_not_contains "$out" 'outlived its test' \
+    'a child that leaves on its own must not be called a leak' || rc=1
+  rm -rf "$marker"
+  return $rc
+}
+
 test_a_test_that_leaks_a_child_is_failed_and_reaped() {
   local out st rc=0 pid
   local marker; marker=$(mktemp -d)
-  out=$(CCMORPH_TEST_LEAK_CANARY="$marker/leaker.pid" \
+  # The leaker never leaves, so the sweep's patience is spent in full before
+  # its verdict: hand this nested suite a short hang bound (the only budget
+  # the patience reads) instead of the 120 s a healthy process gets (#949).
+  # env, not a VAR=value prefix: the suite makes this variable readonly, and
+  # zsh refuses a prefix assignment to a readonly parameter.
+  out=$(env CCMORPH_TEST_LEAK_CANARY="$marker/leaker.pid" \
+    CCMORPH_TEST_HANG_TIMEOUT=2 \
     CCMORPH_TEST_FILTER=test_leak_canary \
     CCMORPH_TEST_SHARD=0/1 CCMORPH_TEST_JOBS=1 \
     zsh "$REPO_ROOT/tests/ccmorph_test.zsh" 2>&1)
@@ -14827,6 +15087,191 @@ test_a_test_that_leaks_a_child_is_failed_and_reaped() {
   rm -rf "$marker"
   return $rc
 }
+# GH-949: the sweep's verdict must be the children's own exit, not a count of
+# fixed sleeps. The collector is the seam between "is it still alive?" and
+# "convict?": the canaries above exercise real process listing, while these
+# two drift the event itself deterministically, so the old window and the new
+# patience are judged without waiting on a busy host's clock.
+test_the_sweep_waits_for_a_leftover_past_the_old_grace() {
+  # The leftover is alive on every collect through the sixth poll -- past the
+  # old 3 x 0.2 s window, whose fourth look still saw it and convicted -- and
+  # gone on the seventh. The sweep must let it leave and print no leak line.
+  # The reported pid is this test's own child, so a regression that convicts
+  # can only ever signal a process the test started.
+  local out rc=0 victim
+  command sleep 30 & victim=$!
+  out=$(
+    typeset -i calls=0
+    _ccm_test_collect_leaks() {
+      (( ++calls ))
+      if (( calls <= 6 )); then
+        _ccm_test_leaked=($victim)
+        _ccm_test_kids=()
+      else
+        # The child leaves on its own at the seventh look: kill it there so
+        # the sweep's own liveness check sees the same exit the fake reports.
+        kill -KILL $victim 2>/dev/null
+        _ccm_test_leaked=()
+        _ccm_test_kids=()
+      fi
+    }
+    _ccm_test_sweep_homes 1 2>&1
+  )
+  (( $? == 0 )) || {
+    print -u2 -- "the sweep convicted a leftover that left on its own: ${(qqq)out}"
+    rc=1
+  }
+  assert_not_contains "$out" 'outlived its test' \
+    'a leftover still on its way out must not be called a leak' || rc=1
+  kill -KILL $victim 2>/dev/null
+  wait $victim 2>/dev/null
+  return $rc
+}
+
+test_the_sweep_convicts_a_leftover_past_its_patience() {
+  # A child that genuinely ignores cleanup is still caught: the leftover is
+  # alive past a shortened patience -- the verdict path is the one a loaded
+  # host runs, only the bound is smaller -- and dies on the sweep's TERM.
+  # `victim`, not `pid`: the sweep locates its own `pid` and zsh's dynamic
+  # scope would hand that empty local to the fake collector.
+  local out rc=0 victim
+  command sleep 30 & victim=$!
+  out=$(
+    typeset -i calls=0
+    _ccm_test_sweep_patience=2
+    _ccm_test_collect_leaks() {
+      (( ++calls ))
+      if (( calls <= 3 )); then
+        _ccm_test_leaked=($victim)
+        _ccm_test_kids=()
+      else
+        _ccm_test_leaked=()
+        _ccm_test_kids=()
+      fi
+    }
+    _ccm_test_sweep_homes 1 2>&1
+  )
+  (( $? != 0 )) || {
+    print -u2 -- 'a leftover that outlived the patience was not convicted'
+    rc=1
+  }
+  assert_contains "$out" 'outlived its test' \
+    'a leftover that survives the patience must still be called a leak' || rc=1
+  kill -KILL $victim 2>/dev/null
+  wait $victim 2>/dev/null
+  return $rc
+}
+
+# GH-949 landing refusal: a launcher that returns can orphan a child whose
+# argv carries no home. The old short window caught it while the launcher was
+# still visible; the longer wait must remember the tree and keep the child
+# until it leaves or takes the cleanup path, not read the launcher's exit as
+# success.
+test_the_sweep_tracks_a_descendant_after_its_launcher_exits() {
+  local work log rc=0 leaf launcher
+  work=$(mktemp -d)
+  log="$work/verdict"
+  mkfifo "$work/hold" || { rm -rf "$work"; return 1; }
+  # The launcher ignores TERM, writes its child's pid, and leaves after two
+  # seconds -- after the sweep has seen and walked it, well inside the
+  # patience. The child is a plain sleep with no home in its argv, so only
+  # the remembered tree can convict it once it is reparented. The sweep runs
+  # first: waiting for the leaf file is another process, and on a sandboxed
+  # host a spawn costs it more of the launcher's life than the launcher has.
+  zsh -f -c '
+    trap "" TERM
+    exec 3<> "$1/hold"
+    command sleep 30 &
+    print -r -- $! > "$1/leaf"
+    read -t 2 -u 3 unused
+  ' child "$work" >/dev/null 2>&1 &
+  launcher=$!
+  local -i saved=$_ccm_test_sweep_patience
+  _ccm_test_sweep_patience=40
+  if _ccm_test_sweep_homes $(( _ccm_test_homes_mark + 1 )) 2>"$log"; then
+    print -u2 -- 'a descendant left behind by its launcher was not convicted'
+    rc=1
+  fi
+  _ccm_test_sweep_patience=$saved
+  local -i i=0
+  while [[ ! -s "$work/leaf" ]]; do
+    (( ++i < 200 )) || {
+      print -u2 -- 'the launcher never wrote its child pid; the canary is broken, not the sweep'
+      kill -KILL $launcher 2>/dev/null
+      rm -rf "$work"
+      return 1
+    }
+    command sleep 0.01
+  done
+  leaf=$(<"$work/leaf")
+  assert_contains "$(<"$log")" 'outlived its test' \
+    'a remembered descendant must still print the leak line' || rc=1
+  if kill -0 $leaf 2>/dev/null &&
+     [[ "$(ps -o stat= -p $leaf 2>/dev/null)" != Z* ]]; then
+    print -u2 -- "the orphaned descendant $leaf outlived the sweep"
+    rc=1
+  fi
+  kill -KILL $leaf $launcher 2>/dev/null
+  wait $launcher 2>/dev/null
+  rm -rf "$work"
+  return $rc
+}
+
+# GH-949 landing refusal, the other half: a remembered descendant that leaves
+# on its own after its launcher does is still on its way out, not a leak.
+test_the_sweep_forgives_a_tracked_descendant_that_leaves_on_its_own() {
+  local work log rc=0 leaf launcher
+  work=$(mktemp -d)
+  log="$work/verdict"
+  mkfifo "$work/hold" || { rm -rf "$work"; return 1; }
+  # The launcher leaves after two seconds; its child outlives it by a second
+  # and then goes on its own -- both inside the patience, so the sweep must
+  # end green and print nothing about a leak. The sweep runs first, as above.
+  zsh -f -c '
+    trap "" TERM
+    exec 3<> "$1/hold"
+    command sleep 3 &
+    print -r -- $! > "$1/leaf"
+    read -t 2 -u 3 unused
+  ' child "$work" >/dev/null 2>&1 &
+  launcher=$!
+  local -i saved=$_ccm_test_sweep_patience
+  _ccm_test_sweep_patience=40
+  if ! _ccm_test_sweep_homes $(( _ccm_test_homes_mark + 1 )) 2>"$log"; then
+    print -u2 -- 'a tracked descendant that left on its own was convicted'
+    rc=1
+  fi
+  _ccm_test_sweep_patience=$saved
+  local -i i=0
+  while [[ ! -s "$work/leaf" ]]; do
+    (( ++i < 200 )) || {
+      print -u2 -- 'the launcher never wrote its child pid; the canary is broken, not the sweep'
+      kill -KILL $launcher 2>/dev/null
+      rm -rf "$work"
+      return 1
+    }
+    command sleep 0.01
+  done
+  leaf=$(<"$work/leaf")
+  assert_not_contains "$(<"$log")" 'outlived its test' \
+    'a remembered descendant still on its way out must not be called a leak' || rc=1
+  if kill -0 $leaf 2>/dev/null &&
+     [[ "$(ps -o stat= -p $leaf 2>/dev/null)" != Z* ]]; then
+    print -u2 -- "the tracked descendant $leaf was still alive when the sweep gave up on it"
+    rc=1
+  fi
+  kill -KILL $leaf $launcher 2>/dev/null
+  wait $launcher 2>/dev/null
+  rm -rf "$work"
+  return $rc
+}
+
+run_test test_slow_leak_canary
+run_test test_the_sweep_waits_for_a_leftover_past_the_old_grace
+run_test test_the_sweep_convicts_a_leftover_past_its_patience
+run_test test_the_sweep_tracks_a_descendant_after_its_launcher_exits
+run_test test_the_sweep_forgives_a_tracked_descendant_that_leaves_on_its_own
+run_test test_a_leftover_that_leaves_after_the_old_grace_does_not_fail_its_test
 run_test test_leak_canary
 run_test test_a_test_that_leaks_a_child_is_failed_and_reaped
 
