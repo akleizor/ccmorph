@@ -66,6 +66,79 @@ func AdapterKey(name, model, confPath, core string) string {
 	return hex.EncodeToString(h.Sum(nil))[:16]
 }
 
+// sweepStaleAdapterKeys is a launch taking the dead keys of its profile with
+// it: a core rebuild or a conf edit makes a new key, and the old key's empty
+// lock and users files and its last log would otherwise pile up in the auth
+// dir until rm or mv takes the profile (#1020). A key goes only under its own
+// mutex, taken without waiting — a launch queued on it is a launch on that
+// key — and only while nobody holds its users lock. Best effort in every
+// direction: any doubt leaves the whole key for the next launch, and a
+// session queued on a swept key's mutex finds the files gone and starts its
+// own fresh adapter, the way the idle check leaves it.
+func sweepStaleAdapterKeys(root, name, keep string) {
+	prefix := "." + name + ".adapter."
+	bases := map[string]bool{}
+	for _, f := range AdapterFiles(root, name) {
+		base, suffix := f, false
+		for _, s := range []string{".lock", ".users", ".log"} {
+			if strings.HasSuffix(f, s) {
+				base, suffix = strings.TrimSuffix(f, s), true
+				break
+			}
+		}
+		if !suffix { // the record itself, or not one key's file at all
+			if key := strings.TrimPrefix(filepath.Base(f), prefix); key == filepath.Base(f) || strings.Contains(key, ".") {
+				continue
+			}
+		}
+		bases[base] = true
+	}
+	for base := range bases {
+		if base != keep {
+			sweepAdapterKey(base)
+		}
+	}
+}
+
+// sweepAdapterKey removes one dead key's file set, or leaves the key whole:
+// its mutex only if it can be taken without waiting, its users lock only if a
+// session does not hold it (one that cannot be read is held, as in othersHold),
+// and its recorded adapter stopped only while the process table proves that
+// pid runs this key's adapter — doubt is alive, as ever.
+func sweepAdapterKey(base string) {
+	mu, err := os.OpenFile(base+".lock", os.O_RDWR, 0) // no O_CREATE: a missing mutex is not one to sweep under
+	if err != nil {
+		return
+	}
+	defer mu.Close()
+	if syscall.Flock(int(mu.Fd()), syscall.LOCK_EX|syscall.LOCK_NB) != nil {
+		return // a launch or a release is on this key: it is alive
+	}
+	if users, err := os.OpenFile(base+".users", os.O_RDWR, 0); err == nil {
+		held := syscall.Flock(int(users.Fd()), syscall.LOCK_EX|syscall.LOCK_NB) != nil
+		users.Close()
+		if held {
+			return // a session still uses this key
+		}
+	} else if !os.IsNotExist(err) {
+		return // a lock that cannot be read is held: doubt never deletes
+	}
+	if raw, err := os.ReadFile(base); err == nil {
+		if pid, _, ok := parseAdapterRecord(string(raw)); ok {
+			yours, known := adapterOwns(pid, base)
+			if !known {
+				return // the table cannot answer for this pid: the next launch sweeps again
+			}
+			if yours {
+				stopProcess(pid) // the adapter its sessions left behind, under its own mutex
+			}
+		}
+	}
+	for _, f := range []string{base, base + ".lock", base + ".users", base + ".log"} {
+		os.Remove(f) // one key's file set; files already gone are swept
+	}
+}
+
 // adapterOwns is whether pid runs an adapter started with `--shared base`,
 // read from that pid's own argv argument by argument. known is false when the
 // read cannot answer for a pid that exists; doubt is read as alive.
@@ -139,6 +212,7 @@ func AcquireAdapter(core, root, name, model, confPath string, errw io.Writer) (*
 		fmt.Fprintf(errw, "ccmorph: could not lock %s: %v\n", base+".users", err)
 		return a, false
 	}
+	sweepStaleAdapterKeys(root, name, base)
 	if raw, err := os.ReadFile(base); err == nil {
 		if pid, port, ok := parseAdapterRecord(string(raw)); ok {
 			if yours, known := adapterOwns(pid, base); yours || !known {
