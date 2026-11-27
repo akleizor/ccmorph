@@ -16,6 +16,7 @@ write its row — no adapter holds one for it.
 """
 import json
 import os
+import shutil
 import stat
 import subprocess
 import time
@@ -124,11 +125,25 @@ http.server.HTTPServer(("127.0.0.1", port), H).serve_forever()
 
 
 class Box:
-    """An isolated HOME and state dir holding one ccmorph install's files."""
+    """An isolated HOME and state dir holding one ccmorph install's files.
 
-    def __init__(self, home):
+    The install sits where install.sh puts it — $XDG_CONFIG_HOME/ccmorph, the
+    core at libexec/ccmorph-core — while the launcher under test runs from the
+    checkout in ROOT, a build outside the install (#987). Every hook the
+    launcher writes names the install's core, and that core writes the rows.
+    """
+
+    def __init__(self, home, *, install=True):
         self.home = home
         self.state = home / ".config/ccmorph"
+        self.core = None
+        if install:
+            self.core = self.state / "libexec/ccmorph-core"
+            self.core.parent.mkdir(parents=True)
+            # A copy, never a link: the launch must name the install's own
+            # file, and a link back to the checkout would make the two one.
+            shutil.copy2(ROOT / "libexec/ccmorph-core", self.core)
+            self.core.chmod(0o755)
         (self.state / "profiles").mkdir(parents=True)
         (self.state / "auth/codex").mkdir(parents=True)
         (home / "bin").mkdir()
@@ -155,9 +170,12 @@ class Box:
         (self.state / ("%s.conf" % name)).write_text(text)
 
     def env(self):
+        # HOMEBREW_ too: a launch looks up brew's install through
+        # $HOMEBREW_PREFIX, and an inherited prefix would let a brew keg on
+        # the host machine answer for this isolated home (#987).
         env = {k: v for k, v in os.environ.items()
                if k != "CLAUDECODE"
-               and not k.startswith(("CCMORPH", "_CCMORPH", "CLAUDE_", "ANTHROPIC_", "XDG_"))}
+               and not k.startswith(("CCMORPH", "_CCMORPH", "CLAUDE_", "ANTHROPIC_", "XDG_", "HOMEBREW_"))}
         for k in ("HTTPS_PROXY", "https_proxy", "NO_PROXY", "no_proxy", "NODE_EXTRA_CA_CERTS"):
             env.pop(k, None)
         env.update(HOME=str(self.home), ZDOTDIR=str(self.home),
@@ -232,7 +250,7 @@ def test_one_turn_writes_one_row_with_profile_model_tokens_and_cost(tmp_path, pr
     text = files[0].read_text()
     assert "oauth-token-xyz" not in text and "Bearer" not in text
     hooks = box.hooks()
-    assert len(hooks) == 1 and hooks[0].startswith(str(ROOT / "libexec/ccmorph-core") + " usage-row "), hooks
+    assert len(hooks) == 1 and hooks[0].startswith(str(box.core) + " usage-row "), hooks
     assert "--profile " + profile in hooks[0] and "--pricing " + pricing in hooks[0]
 
 
@@ -369,3 +387,85 @@ def test_a_launch_repoints_a_stale_cellar_hook_onto_the_stable_path(tmp_path):
         " usage-row --profile sub --pricing anthropic"
     assert box.hooks() == [stable], (box.hooks(), box.log())
     assert len(box.wait_rows(1)) == 1, "the re-pointed hook must run and write the turn's row"
+
+
+def test_a_build_with_no_install_anywhere_never_names_its_own_core(tmp_path):
+    """#987: a launch ran the core of whichever build started it, and froze that
+    path into the profile's live hooks — so a session launched from a worktree
+    left the real profile running a missing file once the worktree was removed.
+    With no install on the machine there is no durable core to name, so a live
+    profile never gets this build's path: a fresh profile gets no hook at all,
+    and one that already carries a hook keeps that command verbatim."""
+    box = Box(tmp_path / "home", install=False)
+    box.conf("sub", "type=sub\nemail=me@example.invalid\n")
+    out = box.run("sub")
+    assert out.returncode == 0, out.stderr
+    assert box.hooks() == [], (box.hooks(), box.log())
+    settings = json.loads((box.state / "profiles/sub/settings.json").read_text())
+    named = [h["command"]
+             for event in ("SessionStart", "Stop", "SessionEnd")
+             for entry in settings.get("hooks", {}).get(event, [])
+             for h in entry.get("hooks", [])
+             if "ccmorph-core" in h.get("command", "")]
+    assert named == [], named
+
+    keep = "/gone/build/libexec/ccmorph-core usage-row --profile sub --pricing anthropic"
+    (box.state / "profiles/sub/settings.json").write_text(json.dumps({"hooks": {"Stop": [
+        {"hooks": [{"type": "command", "command": keep}]}]}}))
+    out = box.run("sub")
+    assert out.returncode == 0, out.stderr
+    assert box.hooks() == [keep], (box.hooks(), box.log())
+
+
+HOOK_EVENTS = ("SessionStart", "Stop", "SessionEnd")
+
+
+def usage_hooks(state):
+    """Every usage-row command the profiles under state carry, by (profile,
+    event) — the hooks the harness doctor's hook-live probe reads, and the
+    first word of each is the ccmorph-core a session will run."""
+    found = {}
+    for profile in sorted((Path(state) / "profiles").iterdir()):
+        if not profile.is_dir():
+            continue
+        try:
+            settings = json.loads((profile / "settings.json").read_text())
+        except (OSError, ValueError):
+            continue
+        for event in HOOK_EVENTS:
+            for entry in settings.get("hooks", {}).get(event, []):
+                for h in entry.get("hooks", []):
+                    if " usage-row " in h.get("command", ""):
+                        found[(profile.name, event)] = h["command"]
+    return found
+
+
+def test_every_profiles_hooks_outlive_the_build_that_wrote_them(tmp_path):
+    """#987's acceptance, as the harness doctor measures it: hook-live passes
+    for every profile after the worktree is removed. A worktree-shaped build —
+    its own lib and libexec — launches each profile; the build is deleted like
+    a removed worktree; every profile's SessionStart, Stop and SessionEnd
+    usage hook must still name a file that exists. Before the fix each hook
+    named the deleted build, exactly the doctor's report."""
+    box = Box(tmp_path / "home")
+    build = tmp_path / "worktree" / "libexec"
+    build.mkdir(parents=True)
+    (build.parent / "lib").symlink_to(ROOT / "lib")
+    built = build / "ccmorph-core"
+    shutil.copy2(ROOT / "libexec/ccmorph-core", built)
+    built.chmod(0o755)
+    for profile, conf in (
+        ("sub", "type=sub\nemail=me@example.invalid\n"),
+        ("token", "type=token\ntoken=oauth-token-xyz\n"),
+    ):
+        box.conf(profile, conf)
+        out = box.run(profile, {"CCMORPH_LIB_DIR": str(build.parent / "lib")})
+        assert out.returncode == 0, out.stderr
+    assert set(usage_hooks(box.state)) == {(p, e) for p in ("sub", "token") for e in HOOK_EVENTS}
+    shutil.rmtree(tmp_path / "worktree")
+
+    hooks = usage_hooks(box.state)
+    for (profile, event), command in hooks.items():
+        core = command.split()[0]
+        assert os.path.isfile(core), (profile, event, command)
+        assert str(tmp_path / "worktree") not in command, (profile, event, command)

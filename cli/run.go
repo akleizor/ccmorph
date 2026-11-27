@@ -1529,17 +1529,42 @@ func (l *launcher) route(penv []string, port, key string, adapter bool) ([]strin
 // one installed. It only builds the command: the price refresh is the launch's
 // (usagePricing plus refreshOwnedPrices), never a caller's side effect. The
 // command is frozen into the profile's settings for the sessions that outlive
-// this launch, so under Homebrew it names brew's stable opt path, not the
-// versioned Cellar dir this process runs from (stableCore, #287); the next
-// launch's materialize replaces whatever hook it finds with this one. The
-// command is built by settingscompose's one builder, which also matches it, so
-// the spelling and the recognition cannot drift (#638).
+// this launch, so it names a core whose path outlives this build (stableCore,
+// #287, #987). Where the machine holds no install to name, a profile that
+// already carries a hook keeps that command verbatim — the fold re-lays the
+// same line — and a profile that carries none gets no hook: a build outside
+// the install never freezes its own location into a live profile. The next
+// launch from an installed build writes the hook. The command is built by
+// settingscompose's one builder, which also matches it, so the spelling and
+// the recognition cannot drift (#638).
 func (l *launcher) usageHookFor(name, typ, usageRoute string) string {
 	pricing := usagePricing(typ, usageRoute)
 	if pricing == "" {
 		return ""
 	}
-	return settingscompose.UsageHookCommand(stableCore(l.libexec), name, pricing)
+	core := stableCore(l.libexec)
+	if core == "" {
+		// No install on the machine and no core of its own to name: a build
+		// outside the install never freezes its location into a live profile
+		// (#987). A profile that already carries a hook keeps that command —
+		// the fold re-lays the same line — and one that carries none gets
+		// none. The next launch from an installed build writes the hook.
+		return l.currentUsageHook(name)
+	}
+	return settingscompose.UsageHookCommand(core, name, pricing)
+}
+
+// currentUsageHook is the usage hook a profile's live settings already carry,
+// verbatim, or "" when they carry none. Passing it back as this launch's hook
+// leaves it exactly where it is: settingscompose drops the old entry and re-
+// adds this command unchanged. A settings file that cannot be read or parsed
+// carries no hook to keep.
+func (l *launcher) currentUsageHook(name string) string {
+	b, err := os.ReadFile(filepath.Join(l.profileDirs, name, "settings.json"))
+	if err != nil {
+		return ""
+	}
+	return settingscompose.LiveUsageHook(b)
 }
 
 // brewCellarRE is Homebrew's versioned install prefix, <prefix>/Cellar/ccmorph/
@@ -1548,24 +1573,54 @@ func (l *launcher) usageHookFor(name, typ, usageRoute string) string {
 // against the sessions that still run.
 var brewCellarRE = regexp.MustCompile(`^(.+)/Cellar/ccmorph/[^/]+(/.*)?$`)
 
-// stableCore is the ccmorph-core a usage hook names. Under Homebrew that is the
-// stable <prefix>/opt/ccmorph path, the symlink brew re-points at every
-// upgrade, so the hook survives `brew upgrade` and `brew cleanup`; anywhere
-// else — a clone, install.sh's config-dir layout — it is the core beside the
-// ccmorph that is running, as before. The opt path is taken only when a core
-// sits behind it: a Cellar-shaped path without brew's link is not a brew
-// install.
+// installedCore is the ccmorph-core of this machine's install — the tree whose
+// path outlives any one build. Candidates, first core found wins: brew's
+// stable <prefix>/opt/ccmorph keg (its formula layout, libexec/libexec) found
+// through $HOMEBREW_PREFIX, which brew's own shellenv exports in every shell
+// of a brew machine — the prefix is deliberately never hardcoded, so an
+// isolated test home answers for itself and not for some install elsewhere on
+// the host, exactly as the suite isolates HOME and XDG_CONFIG_HOME. Then
+// install.sh's config-dir libexec, under paths.InstallerSpelling — not
+// ProfileRoot, because CCMORPH_STATE_DIR moves profiles but never an install.
+// "" when this machine holds no install at all.
+func installedCore() string {
+	if hp := os.Getenv("HOMEBREW_PREFIX"); hp != "" {
+		core := filepath.Join(hp, "opt", "ccmorph", "libexec", "libexec", "ccmorph-core")
+		if paths.IsFile(core) {
+			return core
+		}
+	}
+	if core := paths.InstallerSpelling("libexec/ccmorph-core"); core != "" && paths.IsFile(core) {
+		return core
+	}
+	return ""
+}
+
+// stableCore is the ccmorph-core a usage hook names, under Homebrew the stable
+// <prefix>/opt/ccmorph path brew re-points at every upgrade, so the hook
+// survives `brew upgrade` and `brew cleanup` (#287); the opt path is taken
+// only when a core sits behind it, since a Cellar-shaped path without brew's
+// link is not a brew install. Anywhere else the launch's own path counts only
+// when it is the install's: a build outside it — a worktree, a scratch
+// `go build` — must never freeze its own location into a live profile,
+// because removing that build leaves every hook in the profile running a
+// missing file (#987). Such a launch names the installed core instead. ""
+// means this machine holds no install for the hook to name, and the caller
+// decides what that leaves (#987, usageHookFor).
 func stableCore(libexec string) string {
 	core := filepath.Join(libexec, "ccmorph-core")
-	m := brewCellarRE.FindStringSubmatch(libexec)
-	if m == nil {
-		return core
+	if m := brewCellarRE.FindStringSubmatch(libexec); m != nil {
+		stable := filepath.Clean(m[1] + "/opt/ccmorph" + m[2])
+		if !paths.IsFile(filepath.Join(stable, "ccmorph-core")) {
+			return core
+		}
+		return filepath.Join(stable, "ccmorph-core")
 	}
-	stable := filepath.Clean(m[1] + "/opt/ccmorph" + m[2])
-	if !paths.IsFile(filepath.Join(stable, "ccmorph-core")) {
-		return core
+	installed := installedCore()
+	if installed != "" && paths.SameFile(installed, core) {
+		return core // this launch runs from the install: its own path is the stable one
 	}
-	return filepath.Join(stable, "ccmorph-core")
+	return installed
 }
 
 // usagePricing is the models.dev provider slice a launch's usage rows are priced
