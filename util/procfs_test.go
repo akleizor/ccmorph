@@ -4,9 +4,11 @@ package util
 
 import (
 	"context"
+	"io/fs"
 	"os"
 	"os/exec"
 	"strconv"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -179,5 +181,82 @@ func TestProcfsTableGivesUpOnALostArgvRead(t *testing.T) {
 	}
 	if tab := procfsProcessTable(); tab != nil {
 		t.Fatalf("a lost argv read answered %d rows; it must void the table", len(tab))
+	}
+}
+
+// procfsReadFails makes the walk's read of one file answer err. The kernel
+// says ESRCH only for an already-open /proc/<pid> file whose pid was reaped,
+// which no fixture file can imitate, so the answer is injected at the seam.
+func procfsReadFails(t *testing.T, pid int, leaf string, err error) {
+	t.Helper()
+	original := procfsReadFile
+	target := procfsRoot + "/" + strconv.Itoa(pid) + "/" + leaf
+	procfsReadFile = func(path string) ([]byte, error) {
+		if path == target {
+			return nil, &fs.PathError{Op: "read", Path: path, Err: err}
+		}
+		return original(path)
+	}
+	t.Cleanup(func() { procfsReadFile = original })
+}
+
+func TestProcfsTableSkipsOnlyAPidTheKernelSaysIsGone(t *testing.T) {
+	// #991: ENOENT and ESRCH are the kernel's whole list of "this pid is
+	// gone" -- at either read. That pid alone leaves the table; the other row
+	// stays whole, so a live session child beside a vanished process is still
+	// found instead of the whole table being given up to ps.
+	for _, leaf := range []string{"stat", "cmdline"} {
+		for _, err := range []error{syscall.ENOENT, syscall.ESRCH} {
+			t.Run(leaf+"/"+err.Error(), func(t *testing.T) {
+				dir := procfsFixtureRoot(t)
+				procfsFixturePid(t, dir, 42, []byte("/bin/sleep\x0030\x00"))
+				procfsFixturePid(t, dir, 43, []byte("/bin/sleep\x0030\x00"))
+				procfsReadFails(t, 42, leaf, err)
+				tab := procfsProcessTable()
+				if tab == nil {
+					t.Fatalf("a proven-gone pid (%s: %v) voided the whole table", leaf, err)
+				}
+				if _, ok := tab[42]; ok {
+					t.Fatalf("a pid the kernel said is gone (%s: %v) still holds a row", leaf, err)
+				}
+				if r, ok := tab[43]; !ok || r.args != "/bin/sleep 30" {
+					t.Fatalf("the other pid lost its row or its argv: %+v ok=%v", r, ok)
+				}
+			})
+		}
+	}
+}
+
+func TestProcfsTableGivesUpOnAReadThatProvesNothing(t *testing.T) {
+	// A denied read (EACCES/EPERM) or an I/O failure proves nothing about the
+	// pid: it may be the live session child, and one silently missing row
+	// would read as "no session". The whole table is given up so ps answers.
+	for _, leaf := range []string{"stat", "cmdline"} {
+		for _, err := range []error{syscall.EIO, syscall.EACCES, syscall.EPERM} {
+			t.Run(leaf+"/"+err.Error(), func(t *testing.T) {
+				dir := procfsFixtureRoot(t)
+				procfsFixturePid(t, dir, 42, []byte("/bin/sleep\x0030\x00"))
+				procfsFixturePid(t, dir, 43, []byte("/bin/sleep\x0030\x00"))
+				procfsReadFails(t, 42, leaf, err)
+				if tab := procfsProcessTable(); tab != nil {
+					t.Fatalf("a %s read answering %v answered %d rows; it must void the table",
+						leaf, err, len(tab))
+				}
+			})
+		}
+	}
+}
+
+func TestProcfsTableGivesUpOnAStatItCannotParse(t *testing.T) {
+	// A stat line that is not one proves nothing about the pid: same class,
+	// so the table is given up rather than the row silently dropped.
+	dir := procfsFixtureRoot(t)
+	procfsFixturePid(t, dir, 43, []byte("/bin/sleep\x0030\x00"))
+	procfsFixturePid(t, dir, 42, []byte("/bin/sleep\x0030\x00"))
+	if err := os.WriteFile(dir+"/42/stat", []byte("garbage\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if tab := procfsProcessTable(); tab != nil {
+		t.Fatalf("an unparseable stat answered %d rows; it must void the table", len(tab))
 	}
 }

@@ -12,6 +12,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 )
 
@@ -64,13 +65,22 @@ const procfsClkTck = 100
 // — while every other reader walks "/proc" itself.
 var procfsRoot = "/proc"
 
-// procfsGone is the kernel's word for a pid that is no longer there: its
-// directory was listed and is gone by the read. That absence is proven, so
-// the row simply is not there. Any other read error is not a proof of
-// anything — it voids the whole table (nil), and the caller's next reader
-// answers, because a row lost mid-walk would otherwise read as the process
+// procfsReadFile is the kernel's own read, a seam a test injects answers
+// through: ESRCH for an already-open /proc/<pid> file whose pid was reaped
+// exists in no fixture file, and the walk must be proven to keep the rest of
+// the table on that answer.
+var procfsReadFile = os.ReadFile
+
+// procfsGone is the kernel's whole list of words that prove a pid is gone:
+// ENOENT (the directory was listed, then vanished) and ESRCH (the pid was
+// reaped while its file was open). Those absences are proven, so the row
+// simply is not there. Any other read error is not a proof of anything — a
+// denial included — and voids the whole table (nil), so the caller's next
+// reader answers: a row lost mid-walk would otherwise read as the process
 // never was, which is the silence #991 is about.
-func procfsGone(err error) bool { return errors.Is(err, fs.ErrNotExist) }
+func procfsGone(err error) bool {
+	return errors.Is(err, fs.ErrNotExist) || errors.Is(err, syscall.ESRCH)
+}
 
 // procfsProcessTable is the process table read from /proc directly, with no
 // exec: ps reads the very same files and adds a process to pay for it, so a
@@ -78,12 +88,13 @@ func procfsGone(err error) bool { return errors.Is(err, fs.ErrNotExist) }
 // session_pid() alike while the kernel waits unasked (#991). Rows carry what
 // every other read carries: parent, comm, the joined command line — ps joins
 // argv with spaces and so does this, from the NULs the kernel keeps — and the
-// start time. A pid proven gone between the listing and its read is simply
-// absent; a read that merely failed gives up the whole table rather than one
-// row (procfsGone). A start that reads after now means the ticks or the boot
-// time do not describe this machine, and the row keeps the cannot-tell zero
-// the sweep holds on. nil where /proc is absent or cannot be trusted, so the
-// caller falls back to ps.
+// start time. A pid leaves the table only on the kernel's own proof that it
+// is gone — ENOENT or ESRCH at either read (procfsGone) — or an empty argv (a
+// kernel thread or zombie); every other failed read, and a stat line that
+// cannot be parsed, gives up the whole table rather than one row. A start that
+// reads after now means the ticks or the boot time do not describe this
+// machine, and the row keeps the cannot-tell zero the sweep holds on. nil
+// where /proc is absent or cannot be trusted, so the caller falls back to ps.
 func procfsProcessTable() map[int]psRow {
 	dir, err := os.Open(procfsRoot)
 	if err != nil {
@@ -102,7 +113,7 @@ func procfsProcessTable() map[int]psRow {
 		if e != nil || pid <= 0 {
 			continue
 		}
-		st, err := os.ReadFile(procfsRoot + "/" + name + "/stat")
+		st, err := procfsReadFile(procfsRoot + "/" + name + "/stat")
 		if err != nil {
 			if procfsGone(err) {
 				continue
@@ -111,7 +122,7 @@ func procfsProcessTable() map[int]psRow {
 		}
 		ppid, comm, ticks, ok := parseProcStat(st)
 		if !ok {
-			continue
+			return nil // an unparseable stat proves nothing: no silently missing row
 		}
 		args, err := procfsCmdline(pid)
 		if err != nil {
@@ -175,7 +186,7 @@ func procfsStart(boot time.Time, ticks int64, now time.Time) (time.Time, bool) {
 // line here at all. An error is the kernel's too, and the caller tells a
 // vanished pid from a lost read with procfsGone.
 func procfsCmdline(pid int) (string, error) {
-	b, err := os.ReadFile(procfsRoot + "/" + strconv.Itoa(pid) + "/cmdline")
+	b, err := procfsReadFile(procfsRoot + "/" + strconv.Itoa(pid) + "/cmdline")
 	if err != nil {
 		return "", err
 	}
