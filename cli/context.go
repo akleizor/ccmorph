@@ -393,7 +393,14 @@ func (l *launcher) projectSettings(name, saved string, acwArg, penv []string) in
 	return 0
 }
 
-// probeNudge sizes the profile's unsized models in the background, logged.
+// waitProbe joins one process the pass started; a variable so a test can watch
+// the join without racing the child (#983).
+var waitProbe = func(cmd *exec.Cmd) { _ = cmd.Wait() }
+
+// probeNudge sizes the profile's unsized models beside the session, logged,
+// never before it: the pass keeps the probe off its critical path and joins it
+// before returning (awaitProbes). Callers outside a pass — add and the
+// --probe-nudge stage — return without waiting, as they always have.
 func (l *launcher) probeNudge(name string) {
 	bin := filepath.Join(l.libexec, "ccmorph-core")
 	if fi, err := os.Stat(bin); err != nil || fi.Mode().Perm()&0o111 == 0 {
@@ -407,9 +414,24 @@ func (l *launcher) probeNudge(name string) {
 	cmd := exec.Command(bin, "context-probe", "--declared-only", "--profile", name, "--deadline", "30")
 	cmd.Stdout, cmd.Stderr = f, f
 	if cmd.Start() == nil {
-		go cmd.Wait()
+		l.mu.Lock()
+		l.probes = append(l.probes, cmd)
+		l.mu.Unlock()
 	}
 	f.Close()
+}
+
+// awaitProbes joins every sizing probe the pass started, so nothing it spawned
+// outlives it: a launch pass leaves no process of its own behind. The probe's
+// own --deadline bounds the wait.
+func (l *launcher) awaitProbes() {
+	l.mu.Lock()
+	probes := l.probes
+	l.probes = nil
+	l.mu.Unlock()
+	for _, cmd := range probes {
+		waitProbe(cmd)
+	}
 }
 
 // diagnostics answers every read-only question a launch asks of the merged

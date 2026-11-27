@@ -59,6 +59,7 @@ type launcher struct {
 
 	mu        sync.Mutex
 	child     *os.Process
+	probes    []*exec.Cmd // sizing probes this pass started, joined before it returns
 	forwarded int
 	notice    string
 	chosen    map[string]bool
