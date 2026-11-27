@@ -81,8 +81,15 @@ func TestDoctorProviderAsksTheLaunchRefusal(t *testing.T) {
 		},
 		{
 			// No bridge on PATH, and the profile is not failed for it: its
-			// verdict is the sign-in's own question, not the bridge's.
+			// verdict is the sign-in's own question, not the bridge's. No
+			// stored sign-in here, so that question answers may-not-start,
+			// which since #970 exits non-zero with its verdict's words — and
+			// the verdict must stay the warning: a hard `FAIL not ready` (a
+			// home blocker misread, a refused sign-in) is a different answer
+			// and must not pass under the same exit code.
 			name: "account profile", conf: "type=sub\nemail=a@example.test\n",
+			lastStart: "WARN may not start",
+			wantRC:    1,
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

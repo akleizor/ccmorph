@@ -158,7 +158,10 @@ Claude-account sign-in is checked the same way where Claude Code keeps it in
 the profile home; where it does not (macOS keeps it in the login keychain),
 the report says the sign-in was not checked rather than vouching for it. Its
 last line says whether the profile is ready to run or which lines to fix;
-`--verbose` adds a running adapter's processes and ports.
+`--verbose` adds a running adapter's processes and ports. The exit code agrees
+with that last line (#970): it is 0 only when the line says the profile is
+ready, and non-zero when it names fixes or says the profile may not start, so
+`ccmorph doctor <profile> && ccmorph run <profile>` gates a launch on the report.
 
 Then set up your first profile:
 
