@@ -131,6 +131,19 @@ typeset -gi _ccm_test_homes_mark=0
 typeset -gi _ccm_test_homes_exiting=0
 typeset -ga _ccm_test_leaked=()
 typeset -ga _ccm_test_kids=()
+# How long, in tenths of a second, the sweep lets a test's leftovers leave on
+# their own before calling them leaks. A launch's background sizing pass is a
+# cold zsh plus the core, and a scheduler under gate load can hold it far past
+# the few tenths a quiet machine needed; a fixed 0.6 s window convicted it and
+# failed whichever test happened to be sweeping (#949). The suite's hang
+# detector is the only budget a healthy run may use -- a backstop far above
+# any healthy duration, never a deadline -- and a test proving the verdict
+# path shortens this rather than spending it.
+typeset -gi _ccm_test_sweep_patience=$(( CCMORPH_TEST_HANG_TIMEOUT * 10 ))
+# The exit and signal sweeps only reap, never judge a test, so they keep a
+# short grace: a landing batch's KILL must not land mid-sweep before the
+# sweep has TERMed what the killed test left (the stranded copies of #434).
+typeset -gi _ccm_test_sweep_exit_grace=6
 
 _ccm_test_descendants_of() {
   local p c depth
@@ -172,19 +185,24 @@ _ccm_test_collect_leaks() {
 }
 
 _ccm_test_sweep_homes() {
-  local from=$1 pid pass rc=0
+  local from=$1 patience=${2:-$_ccm_test_sweep_patience}
+  local pid pass rc=0
   local -a tree volley_tree
   _ccm_test_collect_leaks $from
-  # A child can be a few tenths from its own exit when the test returns --
-  # the fake adapter polls its parent every 0.2 s -- so give the set that
-  # long to leave on its own before calling anything a leak. command sleep:
-  # tests shadow sleep with a clock-counting function, and a failed one
-  # never unfunctions it. Spelled while: the retry cap sits in the condition
-  # next to the event it caps, the shape the hang-bound guard reads as a
-  # wait (#457).
+  # A child can be seconds from its own exit when the test returns: the fake
+  # adapter polls its parent every 0.2 s, and a launch's background sizing
+  # pass is a cold zsh plus the core, which a scheduler under gate load can
+  # hold far past a quiet machine's few tenths (#949). So the per-test verdict
+  # is the children's own exit, never a fixed window: poll until the set is
+  # gone, bounded by the suite's hang detector -- a backstop far above any
+  # healthy duration, never a deadline. The exit and signal sweeps only reap,
+  # so they pass their own short grace. command sleep: tests shadow sleep
+  # with a clock-counting function, and a failed one never unfunctions it.
+  # Spelled while: the retry cap sits in the condition next to the event it
+  # caps, the shape the hang-bound guard reads as a wait (#457).
   pass=0
-  while (( ++pass <= 3 && ( $#_ccm_test_leaked || $#_ccm_test_kids ) )); do
-    command sleep 0.2
+  while (( ++pass <= patience && ( $#_ccm_test_leaked || $#_ccm_test_kids ) )); do
+    command sleep 0.1
     _ccm_test_collect_leaks $from
   done
   (( $#_ccm_test_leaked || $#_ccm_test_kids )) || return 0
@@ -240,7 +258,7 @@ _ccm_test_wait_readable() {
 _ccm_test_sweep_on_exit() {
   local rc=$?
   (( _ccm_test_homes_exiting )) && return $rc
-  _ccm_test_sweep_homes $(( _ccm_test_homes_mark + 1 ))
+  _ccm_test_sweep_homes $(( _ccm_test_homes_mark + 1 )) $_ccm_test_sweep_exit_grace
   _ccm_test_remove_homes
   return $rc
 }
@@ -252,7 +270,7 @@ _ccm_test_sweep_on_exit() {
 _ccm_test_sweep_on_signal() {
   (( _ccm_test_homes_exiting )) && return 0
   typeset -gi _ccm_test_homes_exiting=1
-  _ccm_test_sweep_homes $(( _ccm_test_homes_mark + 1 ))
+  _ccm_test_sweep_homes $(( _ccm_test_homes_mark + 1 )) $_ccm_test_sweep_exit_grace
   _ccm_test_remove_homes
   exit $(( 128 + $1 ))
 }
@@ -14772,10 +14790,61 @@ test_leak_canary() {
   return 0
 }
 
+# GH-949: the old sweep convicted a leftover that was still on its way out --
+# 3 x 0.2 s of fixed grace lost to a saturated scheduler, and whichever test
+# happened to be sweeping went red with no assertion of its own. This canary
+# leaves a child that walks away only after that window; the wrapper asserts
+# the suite kept the test green and said nothing about a leak. Without
+# CCMORPH_TEST_SLOW_CANARY it is an ordinary passing test, so the suite's own
+# run costs nothing.
+test_slow_leak_canary() {
+  # CCMORPH_TEST_SLOW_CANARY names the pidfile the canary's child writes. The
+  # wrapper checks it: a fork that never happened would leave both the old and
+  # the new sweep quiet, and this regression would pass vacuously.
+  [[ -n "${CCMORPH_TEST_SLOW_CANARY:-}" ]] || return 0
+  command sleep 0.8 >/dev/null 2>&1 &!
+  local pid=$!
+  kill -0 $pid 2>/dev/null || {
+    print -u2 -- "the slow canary's child $pid did not start; the canary is broken, not the sweep"
+    return 1
+  }
+  print -r -- $pid > "${CCMORPH_TEST_SLOW_CANARY:?}"
+}
+
+test_a_leftover_that_leaves_after_the_old_grace_does_not_fail_its_test() {
+  local out st rc=0
+  local marker; marker=$(mktemp -d)
+  out=$(CCMORPH_TEST_SLOW_CANARY="$marker/child.pid" \
+    CCMORPH_TEST_FILTER=test_slow_leak_canary \
+    CCMORPH_TEST_SHARD=0/1 CCMORPH_TEST_JOBS=1 \
+    zsh "$REPO_ROOT/tests/ccmorph_test.zsh" 2>&1)
+  st=$?
+  [[ -s "$marker/child.pid" ]] || {
+    print -u2 -- 'the slow canary never proved its child started'
+    rc=1
+  }
+  (( st == 0 )) || {
+    print -u2 -- "a leftover that left on its own failed its test (status $st)"
+    rc=1
+  }
+  assert_contains "$out" 'PASS: test_slow_leak_canary' \
+    'the slow canary must run and pass' || rc=1
+  assert_not_contains "$out" 'outlived its test' \
+    'a child that leaves on its own must not be called a leak' || rc=1
+  rm -rf "$marker"
+  return $rc
+}
+
 test_a_test_that_leaks_a_child_is_failed_and_reaped() {
   local out st rc=0 pid
   local marker; marker=$(mktemp -d)
-  out=$(CCMORPH_TEST_LEAK_CANARY="$marker/leaker.pid" \
+  # The leaker never leaves, so the sweep's patience is spent in full before
+  # its verdict: hand this nested suite a short hang bound (the only budget
+  # the patience reads) instead of the 120 s a healthy process gets (#949).
+  # env, not a VAR=value prefix: the suite makes this variable readonly, and
+  # zsh refuses a prefix assignment to a readonly parameter.
+  out=$(env CCMORPH_TEST_LEAK_CANARY="$marker/leaker.pid" \
+    CCMORPH_TEST_HANG_TIMEOUT=2 \
     CCMORPH_TEST_FILTER=test_leak_canary \
     CCMORPH_TEST_SHARD=0/1 CCMORPH_TEST_JOBS=1 \
     zsh "$REPO_ROOT/tests/ccmorph_test.zsh" 2>&1)
@@ -14794,6 +14863,82 @@ test_a_test_that_leaks_a_child_is_failed_and_reaped() {
   rm -rf "$marker"
   return $rc
 }
+# GH-949: the sweep's verdict must be the children's own exit, not a count of
+# fixed sleeps. The collector is the seam between "is it still alive?" and
+# "convict?": the canaries above exercise real process listing, while these
+# two drift the event itself deterministically, so the old window and the new
+# patience are judged without waiting on a busy host's clock.
+test_the_sweep_waits_for_a_leftover_past_the_old_grace() {
+  # The leftover is alive on every collect through the sixth poll -- past the
+  # old 3 x 0.2 s window, whose fourth look still saw it and convicted -- and
+  # gone on the seventh. The sweep must let it leave and print no leak line.
+  # The reported pid is this test's own child, so a regression that convicts
+  # can only ever signal a process the test started.
+  local out rc=0 victim
+  command sleep 30 & victim=$!
+  out=$(
+    typeset -i calls=0
+    _ccm_test_collect_leaks() {
+      (( ++calls ))
+      if (( calls <= 6 )); then
+        _ccm_test_leaked=($victim)
+        _ccm_test_kids=()
+      else
+        _ccm_test_leaked=()
+        _ccm_test_kids=()
+      fi
+    }
+    _ccm_test_sweep_homes 1 2>&1
+  )
+  (( $? == 0 )) || {
+    print -u2 -- "the sweep convicted a leftover that left on its own: ${(qqq)out}"
+    rc=1
+  }
+  assert_not_contains "$out" 'outlived its test' \
+    'a leftover still on its way out must not be called a leak' || rc=1
+  kill -KILL $victim 2>/dev/null
+  wait $victim 2>/dev/null
+  return $rc
+}
+
+test_the_sweep_convicts_a_leftover_past_its_patience() {
+  # A child that genuinely ignores cleanup is still caught: the leftover is
+  # alive past a shortened patience -- the verdict path is the one a loaded
+  # host runs, only the bound is smaller -- and dies on the sweep's TERM.
+  # `victim`, not `pid`: the sweep locates its own `pid` and zsh's dynamic
+  # scope would hand that empty local to the fake collector.
+  local out rc=0 victim
+  command sleep 30 & victim=$!
+  out=$(
+    typeset -i calls=0
+    _ccm_test_sweep_patience=2
+    _ccm_test_collect_leaks() {
+      (( ++calls ))
+      if (( calls <= 3 )); then
+        _ccm_test_leaked=($victim)
+        _ccm_test_kids=()
+      else
+        _ccm_test_leaked=()
+        _ccm_test_kids=()
+      fi
+    }
+    _ccm_test_sweep_homes 1 2>&1
+  )
+  (( $? != 0 )) || {
+    print -u2 -- 'a leftover that outlived the patience was not convicted'
+    rc=1
+  }
+  assert_contains "$out" 'outlived its test' \
+    'a leftover that survives the patience must still be called a leak' || rc=1
+  kill -KILL $victim 2>/dev/null
+  wait $victim 2>/dev/null
+  return $rc
+}
+
+run_test test_slow_leak_canary
+run_test test_the_sweep_waits_for_a_leftover_past_the_old_grace
+run_test test_the_sweep_convicts_a_leftover_past_its_patience
+run_test test_a_leftover_that_leaves_after_the_old_grace_does_not_fail_its_test
 run_test test_leak_canary
 run_test test_a_test_that_leaks_a_child_is_failed_and_reaped
 
