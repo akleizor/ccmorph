@@ -496,3 +496,191 @@ func TestDoctorCompletionStaysSilentWhenZshAlreadyFindsIt(t *testing.T) {
 		t.Errorf("fish login shell: want no row, got %q", got)
 	}
 }
+
+// GH-971: doctor printed the install's resolved path while install.sh printed
+// the configured one, so a person comparing the installer's fpath line with
+// doctor's read two different folders — on macOS, /tmp against /private/tmp.
+// When the configured path is the very directory the install reaches
+// (os.SameFile), doctor now prints the line the installer prints: plain
+// string joining, XDG_CONFIG_HOME read as zsh's :- reads it, and every
+// fpath-printing branch using it.
+func TestDoctorCompletionNamesTheDirectoryAsTheInstallerDoes(t *testing.T) {
+	probe := completionProbeAnswer
+	completionProbeAnswer = func(string) (bool, bool) { return false, false }
+	t.Cleanup(func() { completionProbeAnswer = probe })
+
+	// installAt makes the install root and returns its site-functions path.
+	installAt := func(t *testing.T, root string) string {
+		t.Helper()
+		completionInstall(t, root)
+		return filepath.Join(root, "share", "zsh", "site-functions")
+	}
+	// rowHome is a case's HOME with .config/ccmorph as a link to the install.
+	rowHome := func(t *testing.T, root string) string {
+		t.Helper()
+		home := t.TempDir()
+		if err := os.MkdirAll(filepath.Join(home, ".config"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(root, filepath.Join(home, ".config", "ccmorph")); err != nil {
+			t.Fatal(err)
+		}
+		return home
+	}
+	fpath := func(dir string) string { return "fpath=(" + dir + " $fpath)" }
+
+	t.Run("the configured path is a link to the install", func(t *testing.T) {
+		root := filepath.Join(t.TempDir(), "install")
+		dir := installAt(t, root)
+		home := rowHome(t, root)
+		t.Setenv("HOME", home)
+		t.Setenv("XDG_CONFIG_HOME", "")
+		t.Setenv("ZDOTDIR", "")
+		t.Setenv("SHELL", "/bin/zsh")
+		l := &launcher{libDir: filepath.Join(root, "lib")}
+		row := completionRow(t, l)
+		spelled := home + "/.config/ccmorph/share/zsh/site-functions"
+		if !strings.Contains(row, fpath(spelled)) {
+			t.Fatalf("row %q does not print the configured path %q", row, spelled)
+		}
+		if strings.Contains(row, dir) {
+			t.Fatalf("row %q still prints the resolved path %q", row, dir)
+		}
+	})
+
+	t.Run("HOME itself is a link to the real home", func(t *testing.T) {
+		realHome := t.TempDir()
+		root := filepath.Join(realHome, ".config", "ccmorph")
+		dir := installAt(t, root)
+		home := filepath.Join(t.TempDir(), "home")
+		if err := os.Symlink(realHome, home); err != nil {
+			t.Fatal(err)
+		}
+		t.Setenv("HOME", home)
+		t.Setenv("XDG_CONFIG_HOME", "")
+		t.Setenv("ZDOTDIR", "")
+		t.Setenv("SHELL", "/bin/zsh")
+		l := &launcher{libDir: filepath.Join(root, "lib")} // the resolved path, as the walk finds it
+		row := completionRow(t, l)
+		spelled := home + "/.config/ccmorph/share/zsh/site-functions"
+		if !strings.Contains(row, fpath(spelled)) {
+			t.Fatalf("row %q does not print the $HOME spelling %q", row, spelled)
+		}
+		if strings.Contains(row, dir) {
+			t.Fatalf("row %q still prints the resolved path %q", row, dir)
+		}
+	})
+
+	t.Run("XDG_CONFIG_HOME names the install through a link", func(t *testing.T) {
+		root := filepath.Join(t.TempDir(), "install")
+		dir := installAt(t, root)
+		xdg := t.TempDir()
+		if err := os.Symlink(root, filepath.Join(xdg, "ccmorph")); err != nil {
+			t.Fatal(err)
+		}
+		t.Setenv("HOME", t.TempDir())
+		t.Setenv("XDG_CONFIG_HOME", xdg)
+		t.Setenv("ZDOTDIR", "")
+		t.Setenv("SHELL", "/bin/zsh")
+		l := &launcher{libDir: filepath.Join(root, "lib")}
+		row := completionRow(t, l)
+		spelled := xdg + "/ccmorph/share/zsh/site-functions"
+		if !strings.Contains(row, fpath(spelled)) {
+			t.Fatalf("row %q does not print the XDG spelling %q", row, spelled)
+		}
+		if strings.Contains(row, dir) {
+			t.Fatalf("row %q still prints the resolved path", row)
+		}
+	})
+
+	t.Run("a different configured directory keeps the install path", func(t *testing.T) {
+		root := filepath.Join(t.TempDir(), "install")
+		dir := installAt(t, root)
+		home := t.TempDir()
+		if err := os.MkdirAll(filepath.Join(home, ".config", "ccmorph"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		t.Setenv("HOME", home)
+		t.Setenv("XDG_CONFIG_HOME", "")
+		t.Setenv("ZDOTDIR", "")
+		t.Setenv("SHELL", "/bin/zsh")
+		l := &launcher{libDir: filepath.Join(root, "lib")}
+		row := completionRow(t, l)
+		if !strings.Contains(row, fpath(dir)) {
+			t.Fatalf("row %q does not keep the install's own path %q", row, dir)
+		}
+	})
+
+	t.Run("no HOME and no XDG keeps the install path", func(t *testing.T) {
+		root := filepath.Join(t.TempDir(), "install")
+		dir := installAt(t, root)
+		t.Setenv("HOME", "")
+		t.Setenv("XDG_CONFIG_HOME", "")
+		t.Setenv("ZDOTDIR", "")
+		t.Setenv("SHELL", "/bin/zsh")
+		l := &launcher{libDir: filepath.Join(root, "lib")}
+		row := completionRow(t, l)
+		if !strings.Contains(row, fpath(dir)) {
+			t.Fatalf("row %q does not keep the install's own path %q", row, dir)
+		}
+	})
+
+	t.Run("the spelling is joined, never cleaned", func(t *testing.T) {
+		base := t.TempDir()
+		root := filepath.Join(base, ".config", "ccmorph")
+		installAt(t, root)
+		// A HOME with a subdirectory and a `..` in it: filepath.Join would
+		// collapse it, install.sh's own string would not.
+		if err := os.MkdirAll(filepath.Join(base, "sub"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		home := base + "/sub/.."
+		t.Setenv("HOME", home)
+		t.Setenv("XDG_CONFIG_HOME", "")
+		t.Setenv("ZDOTDIR", "")
+		t.Setenv("SHELL", "/bin/zsh")
+		l := &launcher{libDir: filepath.Join(root, "lib")}
+		row := completionRow(t, l)
+		spelled := home + "/.config/ccmorph/share/zsh/site-functions"
+		if !strings.Contains(row, fpath(spelled)) {
+			t.Fatalf("row %q does not print the joined spelling %q", row, spelled)
+		}
+	})
+
+	t.Run("every fpath branch uses the spelling", func(t *testing.T) {
+		root := filepath.Join(t.TempDir(), "install")
+		installAt(t, root)
+		home := rowHome(t, root)
+		spelled := home + "/.config/ccmorph/share/zsh/site-functions"
+		line := fpath(spelled)
+		for _, tc := range []struct {
+			id   string
+			rc   string
+			want bool // the fpath line prints at all
+		}{
+			// The probe answers "no completion bound" in every case, so the
+			// row names what the startup files miss: the fpath line when the
+			// file does not hold it (or holds it under compinit), nothing
+			// when it already has it and only compinit is missing.
+			{"neither half", "", true},
+			{"compinit only", "autoload -Uz compinit && compinit\n", true},
+			{"fpath below compinit", "autoload -Uz compinit && compinit\n" + line + "\n", true},
+			{"fpath only", line + "\n", false},
+		} {
+			t.Run(tc.id, func(t *testing.T) {
+				t.Setenv("HOME", home)
+				t.Setenv("XDG_CONFIG_HOME", "")
+				t.Setenv("ZDOTDIR", "")
+				t.Setenv("SHELL", "/bin/zsh")
+				if err := os.WriteFile(filepath.Join(home, ".zshrc"), []byte(tc.rc), 0o644); err != nil {
+					t.Fatal(err)
+				}
+				l := &launcher{libDir: filepath.Join(root, "lib")}
+				row := completionHint(t, l)
+				if got := strings.Contains(row, line); got != tc.want {
+					t.Fatalf("row %q: fpath line printed = %v, want %v", row, got, tc.want)
+				}
+			})
+		}
+	})
+}

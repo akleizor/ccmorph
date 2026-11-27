@@ -752,8 +752,6 @@ func (l *launcher) claudeHelp() string {
 func (l *launcher) claudeArity() map[string]string { return util.ClaudeOptArities(l.claudeHelp()) }
 
 // isTTY is whether fd is a terminal; a package var so a test can run the
-// terminal launch's branch without one.
-var isTTY = func(fd int) bool {
-	_, err := ioctlTermios(fd)
-	return err == nil
-}
+// terminal launch's branch without one. The probe is util's, the one the
+// router asks too, so the two answers cannot drift apart.
+var isTTY = util.IsTerminal

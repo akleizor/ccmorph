@@ -172,7 +172,14 @@ func (l *launcher) rm(args []string) int {
 		}
 	}
 	fmt.Println(l.accent + "Removed" + l.reset + " " + name)
-	if clearedDefault {
+	if len(l.confNames()) == 0 {
+		// Nothing is left to be the default, so "set one: ccmorph use" would
+		// name a command with no profile to name — and the listing's own "No
+		// profiles yet" would answer it one line later. A home with no conf is
+		// repairable one way, and the removal summary names that way alone
+		// (GH-971). A skipped conf still marks a home that is not empty.
+		fmt.Println(noProfilesMsg)
+	} else if clearedDefault {
 		// The default left with the profile; the removal summary is where that
 		// belongs, not two steps downstream at the next failed run (#652).
 		l.err("default profile removed — set one: ccmorph use <profile>")

@@ -589,6 +589,13 @@ def report(stats, output, source):
         head = [f"Exported {count(stats['rows'], 'turn')} over {count(stats['days'], 'day')} "
                 f"from {read} to {root}",
                 "one folder per profile under projects/, ccusage.json beside it"]
+        if stats["days"]:
+            # The one place a person reconciles the two stores: a receipt sits
+            # under its UTC day and the day file under the local one, so the
+            # same turn's numbers can read as two different dates (GH-971).
+            # Said only when a day was written, and nothing is renamed.
+            head.append("day files are named by local date, the receipt folders by UTC date: "
+                        "a turn near midnight can sit under a different date in each")
     if shutil.which("ccusage") is None:
         tail = ["ccusage is not installed: no ccmorph install provides it; see the "
                 "README's cost-reporting note, and --help prints the command to run"]

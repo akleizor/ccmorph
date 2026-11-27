@@ -5,8 +5,12 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/akleizor/ccmorph/quota"
 )
 
 // oneProfile: an isolated state home with one subscription profile and no
@@ -181,4 +185,179 @@ func TestDispatchRefusesAnUnknownFlagBeforeRouting(t *testing.T) {
 			}
 		})
 	}
+}
+
+// GH-971: `dispatch` with no task read stdin silently — a terminal waited for
+// keys nobody was asked to type, and an EOF routed an empty prompt and printed
+// a real pick as if it had been asked. A missing task now names itself with the
+// usage line before anything is read, reserved or routed.
+func TestDispatchWithoutATaskIsRefusedBeforeRouting(t *testing.T) {
+	for _, c := range []struct {
+		name  string
+		args  []string
+		stdin string
+	}{
+		{"no words, empty stdin", nil, ""},
+		{"whitespace-only stdin", nil, " \n\t\n"},
+		{"an empty word", []string{""}, ""},
+		{"a whitespace-only word", []string{"   "}, ""},
+		{"--dry-run", []string{"--dry-run"}, ""},
+		{"--dry-run --json", []string{"--dry-run", "--json"}, ""},
+		{"workers flags after the delimiter", []string{"--", "--tools", "Read"}, ""},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			dispatchEnv(t)
+			var out, errOut bytes.Buffer
+			code := Main(append([]string{"dispatch"}, c.args...), strings.NewReader(c.stdin), &out, &errOut)
+			if code != 2 {
+				t.Fatalf("exit %d, want 2; stdout=%q stderr=%q", code, out.String(), errOut.String())
+			}
+			if out.Len() != 0 {
+				t.Fatalf("printed a pick for a task nobody gave: %q", out.String())
+			}
+			if !strings.Contains(errOut.String(), "ccmorph: router: dispatch needs a task: give it as words or on stdin") ||
+				!strings.Contains(errOut.String(), "usage: "+Usage) {
+				t.Fatalf("stderr %q does not name the missing task with the usage line", errOut.String())
+			}
+			if rows := readRows(ledgerPath()); len(rows) != 0 {
+				t.Fatalf("an empty task reserved a route: %+v", rows)
+			}
+		})
+	}
+
+	// The terminal is never read: a reader that would block forever is left
+	// alone, and the refusal is immediate.
+	t.Run("a terminal is never read", func(t *testing.T) {
+		dispatchEnv(t)
+		saved := stdinIsTerminal
+		stdinIsTerminal = func(io.Reader) bool { return true }
+		t.Cleanup(func() { stdinIsTerminal = saved })
+		pr, pw, err := os.Pipe()
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer pr.Close()
+		defer pw.Close()
+		var out, errOut bytes.Buffer
+		done := make(chan int, 1)
+		go func() { done <- Main([]string{"dispatch"}, pr, &out, &errOut) }()
+		select {
+		case code := <-done:
+			if code != 2 {
+				t.Fatalf("exit %d, want 2; stderr=%q", code, errOut.String())
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatal("dispatch blocked reading a terminal")
+		}
+	})
+
+	// A brief that is on stdin still routes: the refusal is the empty task's.
+	t.Run("a piped brief still routes", func(t *testing.T) {
+		dispatchEnv(t)
+		var out, errOut bytes.Buffer
+		code := Main([]string{"dispatch", "--dry-run", "--kind", "code", "--tier", "mid"},
+			strings.NewReader("fix the parser"), &out, &errOut)
+		if code != 0 || !strings.HasPrefix(out.String(), "→ ") {
+			t.Fatalf("a piped brief did not route: exit %d out %q err %q", code, out.String(), errOut.String())
+		}
+	})
+}
+
+// GH-971: status printed "no reading" for every profile without a pace, with
+// no gloss. A person new to the router could not tell that "no quota reading
+// yet" — nothing has been fetched — was meant, and a profile the router never
+// paces at all (an API key, a free or disabled class) got the same words. The
+// line now says which of the two it is.
+func TestStatusNamesWhyAProfileHasNoPace(t *testing.T) {
+	statusOf := func(t *testing.T) string {
+		t.Helper()
+		var out, errOut bytes.Buffer
+		if code := status(&out, &errOut); code != 0 {
+			t.Fatalf("status exit %d: %s", code, errOut.String())
+		}
+		return out.String()
+	}
+	writeConfs := func(t *testing.T, confs map[string]string) {
+		t.Helper()
+		root := t.TempDir()
+		t.Setenv("CCMORPH_STATE_DIR", root)
+		t.Setenv("XDG_STATE_HOME", t.TempDir())
+		for name, conf := range confs {
+			if err := os.WriteFile(filepath.Join(root, name+".conf"), []byte(conf), 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+
+	t.Run("a subscription with no reading yet", func(t *testing.T) {
+		writeConfs(t, map[string]string{"sub": "type=sub\n"})
+		out := statusOf(t)
+		if !strings.Contains(out, "no quota reading yet") || strings.Contains(out, "no reading") {
+			t.Fatalf("status %q does not gloss the missing reading", out)
+		}
+	})
+
+	t.Run("a budget with no priced spend yet", func(t *testing.T) {
+		writeConfs(t, map[string]string{"b": "type=apikey\nbase_url=https://example.test\nmonthly_budget_usd=20\n"})
+		out := statusOf(t)
+		if !strings.Contains(out, "no quota reading yet") {
+			t.Fatalf("status %q does not gloss the budget's missing reading", out)
+		}
+	})
+
+	t.Run("an API key is not paced", func(t *testing.T) {
+		writeConfs(t, map[string]string{"gw": "type=apikey\nbase_url=https://example.test\nmodel=m\n"})
+		out := statusOf(t)
+		if !strings.Contains(out, "not quota-paced") {
+			t.Fatalf("status %q does not say the API key is not paced", out)
+		}
+	})
+
+	t.Run("a free class is not paced", func(t *testing.T) {
+		writeConfs(t, map[string]string{"sub": "type=sub\n"})
+		if err := writeJSON(ConfigPath(), Config{Profiles: map[string]ProfileConfig{"sub": {Class: "free"}}}); err != nil {
+			t.Fatal(err)
+		}
+		out := statusOf(t)
+		if !strings.Contains(out, "not quota-paced") || strings.Contains(out, "no quota reading yet") {
+			t.Fatalf("status %q does not say a free profile is not paced", out)
+		}
+	})
+
+	t.Run("a subscription with a reading keeps its slack", func(t *testing.T) {
+		writeConfs(t, map[string]string{"sub": "type=sub\n"})
+		now := int64(nowSec())
+		used, reset := 0.5, now+3600
+		if err := writeJSON(filepath.Join(routerDir(), "quota.json"), snapshot{ReadAt: nowSec(),
+			Entries: []quota.Entry{{Profile: "sub", Windows: []quota.Window{{ID: "5h", Used: &used, ResetsAt: &reset}}}}}); err != nil {
+			t.Fatal(err)
+		}
+		out := statusOf(t)
+		if !regexp.MustCompile(`slack [+-][0-9.]+ points`).MatchString(out) {
+			t.Fatalf("status %q lost the slack reading", out)
+		}
+		if strings.Contains(out, "no quota reading yet") {
+			t.Fatalf("status %q glosses a profile that has a reading", out)
+		}
+	})
+
+	t.Run("a mark follows the pace words", func(t *testing.T) {
+		writeConfs(t, map[string]string{"sub": "type=sub\n"})
+		if err := writeJSON(ConfigPath(), Config{Profiles: map[string]ProfileConfig{"sub": {Reserved: true}}}); err != nil {
+			t.Fatal(err)
+		}
+		out := statusOf(t)
+		if !strings.Contains(out, "no quota reading yet reserved") {
+			t.Fatalf("status %q does not keep the reserved mark after the pace", out)
+		}
+	})
+
+	t.Run("no line ends on the bare words", func(t *testing.T) {
+		writeConfs(t, map[string]string{"sub": "type=sub\n", "gw": "type=apikey\nbase_url=https://example.test\nmodel=m\n"})
+		for _, line := range strings.Split(statusOf(t), "\n") {
+			if strings.HasSuffix(line, " no reading") {
+				t.Fatalf("status still prints the bare 'no reading': %q", line)
+			}
+		}
+	})
 }

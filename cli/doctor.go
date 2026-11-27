@@ -239,11 +239,43 @@ func (l *launcher) completionBound(zdot string) (bound, answered bool) {
 // bash or fish login shell.
 type zshCompletion struct {
 	ask      bool
-	dir      string // the install's share/zsh/site-functions
+	dir      string // the install's share/zsh/site-functions, resolved
+	shown    string // dir as install.sh spells it, for the fpath line
 	rcName   string // the .zshrc as a person writes it: ~/.zshrc under HOME
 	onFpath  bool   // the startup files or FPATH already reach a _ccmorph
 	compinit bool   // the .zshrc runs compinit or the Oh My Zsh loader
 	bound    bool   // a new zsh answered with a completion bound to ccmorph
+}
+
+// completionSpelling is dir as install.sh prints it: the configured
+// ~/.config/ccmorph/share/zsh/site-functions when that path is this very
+// directory, so the line doctor asks a person to add is byte-identical to the
+// installer's own. The install is usually reached through a symlink — macOS
+// resolves /tmp to /private/tmp, and a package manager links the library into
+// place — so doctor's own path is not the one the startup file names, and a
+// reader comparing the two lines saw two folders (GH-971). XDG_CONFIG_HOME's
+// empty value means unset, as zsh's :- reads it, and the spelling is joined by
+// plain string concatenation, as install.sh joins it, never cleaned by
+// filepath.Join — the comparison is os.SameFile's, the bytes are the config
+// path's.
+func completionSpelling(dir string) string {
+	root := os.Getenv("XDG_CONFIG_HOME")
+	if root == "" {
+		home := os.Getenv("HOME")
+		if home == "" {
+			return dir
+		}
+		root = home + "/.config"
+	}
+	spelled := root + "/ccmorph/share/zsh/site-functions"
+	want, err := os.Stat(dir)
+	if err != nil {
+		return dir
+	}
+	if same, err := os.Stat(spelled); err == nil && os.SameFile(same, want) {
+		return spelled
+	}
+	return dir
 }
 
 // doctorCompletion reads what a new zsh would have and prints the fpath half
@@ -259,7 +291,8 @@ type zshCompletion struct {
 // share/zsh/site-functions, which `brew shellenv` puts on fpath; there the
 // missing half, if any, is only the line that starts completions.
 func (l *launcher) doctorCompletion() zshCompletion {
-	c := zshCompletion{dir: filepath.Join(filepath.Dir(l.libDir), "share", "zsh", "site-functions")}
+	dir := filepath.Join(filepath.Dir(l.libDir), "share", "zsh", "site-functions")
+	c := zshCompletion{dir: dir, shown: completionSpelling(dir)}
 	if !paths.IsFile(filepath.Join(c.dir, "_ccmorph")) {
 		return c
 	}
@@ -280,7 +313,10 @@ func (l *launcher) doctorCompletion() zshCompletion {
 		}
 	}
 	rc, _ := os.ReadFile(rcFile)
-	c.onFpath = util.FpathBound(rc, c.dir, os.Getenv("FPATH"))
+	// The startup file may name either spelling; the probe above already
+	// reaches the file, so a line either way is the fpath half done.
+	c.onFpath = util.FpathBound(rc, c.shown, os.Getenv("FPATH")) ||
+		util.FpathBound(rc, c.dir, os.Getenv("FPATH"))
 	c.compinit = util.CompinitRuns(rc)
 	bound, answered := l.completionBound(zdot)
 	c.bound = answered && bound
@@ -291,14 +327,14 @@ func (l *launcher) doctorCompletion() zshCompletion {
 	switch {
 	case c.onFpath && c.compinit:
 		l.status("INFO", "completion: put the fpath line above compinit in "+c.rcName+":")
-		l.status("INFO", "  fpath=("+shellWord(c.dir)+" $fpath)")
+		l.status("INFO", "  fpath=("+shellWord(c.shown)+" $fpath)")
 	case c.onFpath:
 		// zsh reaches the file; doctorCompinit names the line it still misses.
 	case c.compinit:
 		l.status("INFO", "completion: add to "+c.rcName+", above compinit (or Oh My Zsh):")
-		l.status("INFO", "  fpath=("+shellWord(c.dir)+" $fpath)")
+		l.status("INFO", "  fpath=("+shellWord(c.shown)+" $fpath)")
 	default:
-		l.status("INFO", "  fpath=("+shellWord(c.dir)+" $fpath)")
+		l.status("INFO", "  fpath=("+shellWord(c.shown)+" $fpath)")
 	}
 	return c
 }

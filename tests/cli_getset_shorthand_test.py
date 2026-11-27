@@ -127,10 +127,11 @@ class GetSetShorthandTest(unittest.TestCase):
         fields = json.loads(result.stdout)
         self.assertEqual(fields['profile'], 'model')
         self.assertEqual(fields['base_url'], 'https://example.test')
-        # api_key keeps cred's pipe rule: the key alone, no trailing newline.
+        # api_key is cred's own output (GH-971): the value and one newline,
+        # whatever stdout is, so a prompt cannot weld onto it.
         result = self.run_cli('get', 'model', 'api_key')
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        self.assertEqual(result.stdout, self.fields(named)['api_key'])
+        self.assertEqual(result.stdout, self.fields(named)['api_key'] + '\n')
 
     def test_gate_repro_a_lone_profile_named_model_reads_base_url(self):
         # The merge gate's repro, verbatim in shape (finding on #788): a state

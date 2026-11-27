@@ -1374,9 +1374,9 @@ func (t uiTheme) native(prompt string, rows []string, display string) (string, i
 		return "", 1
 	}
 	if !isTTY(0) || !isTTY(2) {
-		// Real values first, and only real values — the menus' @-records are
-		// not values the direct command takes — so the refusal ends at its
-		// help line (#840).
+		// Real values first, and only real values: one bare ID a line, never
+		// the menu's row format and never its @-records, so the refusal ends
+		// at its help line over a list a person can pass back (#840, GH-971).
 		if rows := publicRows(rows); len(rows) > 0 {
 			fmt.Fprintln(os.Stderr, strings.Join(rows, "\n"))
 		}
@@ -1770,16 +1770,17 @@ func (t uiTheme) search(prompt string, rows []string) (string, int) {
 	return "", 2
 }
 
-// publicRows drops the menus' internal records — @keep, @custom and any other
-// @-prefixed sentinel — from a list being printed for someone who cannot
-// pick. Those IDs are the commands' own bookkeeping, never values a direct
-// command takes, and after a named refusal they read as a dump of internals
-// (#840).
+// publicRows is what a list becomes when it is printed for someone who cannot
+// pick: the bare ID of each row, one per line. The rows' other columns — the
+// label, the kind, the endpoint — are the menu's own rendering, and a listing
+// that carried them read as a dump of internal format above the line saying
+// what to pass (#840, GH-971). The @-prefixed records (@keep, @custom) go
+// entirely: they are bookkeeping, never values a direct command takes (#840).
 func publicRows(rows []string) []string {
 	var out []string
 	for _, r := range rows {
-		if !strings.HasPrefix(rowID(r), "@") {
-			out = append(out, r)
+		if id := rowID(r); !strings.HasPrefix(id, "@") {
+			out = append(out, id)
 		}
 	}
 	return out
@@ -1814,6 +1815,12 @@ func uiInput(prompt string, secret bool) (string, int) {
 			fmt.Fprintln(w)
 		}
 		if !ok && line == "" {
+			// A stdin that ended leaves the prompt one whole line, never a
+			// half line welded to whatever prints next (GH-971). A secret
+			// prompt already closed itself above.
+			if !secret {
+				fmt.Fprintln(w)
+			}
 			return "", 1
 		}
 		return line, 0
