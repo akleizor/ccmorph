@@ -17,6 +17,19 @@
 
 ### Fixed
 
+- **A launch from a worktree build no longer writes its own path into a live
+  profile's hooks.** A session launched from anything outside the install — a
+  git worktree, a scratch build — froze that build's `ccmorph-core` path into
+  the profile's SessionStart, Stop and SessionEnd hooks; once the build was
+  removed, every hook in the profile ran a missing file until an installed
+  launch rewrote them. Such a launch now names the machine's installed core —
+  brew's stable opt keg, found through `$HOMEBREW_PREFIX`, or the install's
+  config-dir libexec — which repairs a profile whose hook already points at a
+  removed build. A machine with no install at all has no durable core to name:
+  the profile keeps whatever hook it already carries and a profile with none
+  gets none, so no live profile ever names a build that can be removed
+  (#987).
+
 - **A launch beside a live session no longer rewrites the profile's auth
   files.** Provisioning read and replaced `config.json` and `.claude.json`
   whole-file without the profile's live lock, so a save the running session
