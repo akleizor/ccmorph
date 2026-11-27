@@ -773,6 +773,69 @@ func TestRouteHoldChild(t *testing.T) {
 	time.Sleep(24 * time.Hour)
 }
 
+// holdSession starts this test binary as a session's route holder (TestRouteHoldChild)
+// on users and returns once the hold has landed. The wait carries no literal: a start
+// the scheduler starved and a lock delayed behind a stalled disk are the machine's, not
+// evidence that the hold failed (#935), and a start sample predicts nothing about the
+// delay after it. Its only bound is the test binary's own -timeout, half of what is left
+// — the same rule as util's holdProc — so a delayed holder still lands and one that never
+// answers ends the test with a verdict before the suite's panic (#998).
+func holdSession(t *testing.T, users string) *exec.Cmd {
+	t.Helper()
+	pr, pw, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	session := exec.Command(os.Args[0], "-test.run=^TestRouteHoldChild$")
+	session.Env = append(os.Environ(), "CCMORPH_TEST_HOLD_USERS="+users)
+	session.Stdout = pw
+	if err := session.Start(); err != nil {
+		t.Fatal(err)
+	}
+	pw.Close()
+	go session.Wait()
+	t.Cleanup(func() { session.Process.Kill() })
+	defer pr.Close()
+	end, ok := t.Deadline()
+	now := time.Now()
+	if !ok {
+		end = now.Add(10 * time.Minute)
+	}
+	pr.SetReadDeadline(now.Add(end.Sub(now) / 2))
+	one := make([]byte, 1)
+	if _, err := io.ReadFull(pr, one); err != nil || one[0] != '1' {
+		t.Fatalf("the session never took its hold on the bridge: %v %q", err, one)
+	}
+	return session
+}
+
+// TestHoldSessionWaitsOutALateLock is the reviewer's pause-before-flock case for
+// the session holder: the users file is held exclusively for a second, so its
+// shared lock cannot land before the release. The assertion is causal — the hold
+// was taken only after the release — never a wall-clock bound (#998).
+func TestHoldSessionWaitsOutALateLock(t *testing.T) {
+	users := filepath.Join(t.TempDir(), "users")
+	f, err := os.OpenFile(users, os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX); err != nil {
+		t.Fatal(err)
+	}
+	released := make(chan struct{})
+	go func() {
+		time.Sleep(time.Second)
+		close(released)
+		f.Close()
+	}()
+	holdSession(t, users)
+	select {
+	case <-released:
+	default:
+		t.Fatal("the hold landed while the exclusive lock was held")
+	}
+}
+
 // newRouteFixtureWithHold builds the fixture with route-hold running hold: the
 // working holder takes the shared lock the real one takes and answers one byte.
 func newRouteFixtureWithHold(t *testing.T, hold string) *routeFixture {
@@ -1254,25 +1317,7 @@ func TestRetiringARouteWhoseHolderPidWasReusedLeavesTheSessionsBridge(t *testing
 	pid, handle, release := fx.sessionBridge(t)
 	release() // only the session below holds the bridge now
 	users := filepath.Join(fx.state, "auth", ".codex.bridge.users")
-	pr, pw, err := os.Pipe()
-	if err != nil {
-		t.Fatal(err)
-	}
-	session := exec.Command(os.Args[0], "-test.run=^TestRouteHoldChild$")
-	session.Env = append(os.Environ(), "CCMORPH_TEST_HOLD_USERS="+users)
-	session.Stdout = pw
-	if err := session.Start(); err != nil {
-		t.Fatal(err)
-	}
-	pw.Close()
-	go session.Wait()
-	t.Cleanup(func() { session.Process.Kill() })
-	pr.SetReadDeadline(time.Now().Add(10 * time.Second))
-	one := make([]byte, 1)
-	if _, err := io.ReadFull(pr, one); err != nil || one[0] != '1' {
-		t.Fatalf("the session never took its hold on the bridge: %v %q", err, one)
-	}
-	pr.Close()
+	session := holdSession(t, users)
 	record := filepath.Join(fx.state, "auth", ".codex.bridge")
 	before, err := os.ReadFile(record)
 	if err != nil {

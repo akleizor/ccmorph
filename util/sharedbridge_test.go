@@ -1,6 +1,8 @@
 package util
 
 import (
+	"errors"
+	"fmt"
 	"io"
 	"os"
 	"os/exec"
@@ -486,8 +488,46 @@ func coreCopy(t *testing.T) string {
 	return core
 }
 
+// defaultTestTimeout is go test's own default -timeout: the bound a run that set none still has.
+const defaultTestTimeout = 10 * time.Minute
+
+// holdWaitDeadline is when a holder that has not answered is called stuck: half of what the test
+// binary's own -timeout has left (end; defaultTestTimeout from now when it has none). The only bound
+// a holder cannot outgrow and the helper does not invent: a starved start or a delayed lock gets the
+// whole budget, a stuck holder fails with a verdict before the suite's panic (#998).
+func holdWaitDeadline(now, end time.Time, hasEnd bool) time.Time {
+	if !hasEnd {
+		end = now.Add(defaultTestTimeout)
+	}
+	return now.Add(end.Sub(now) / 2)
+}
+
+// awaitHold reads the holder's one byte from pr until deadline: nil only for "1".
+func awaitHold(pr *os.File, deadline time.Time) error {
+	if err := pr.SetReadDeadline(deadline); err != nil {
+		return err
+	}
+	one := make([]byte, 1)
+	if _, err := io.ReadFull(pr, one); err != nil {
+		return err
+	}
+	if one[0] != '1' {
+		return fmt.Errorf("the holder answered %q, want \"1\"", one)
+	}
+	return nil
+}
+
 // holdProc runs this test binary from the file exe with argv as its whole argv,
 // holding users (TestMain), and returns once the hold has landed.
+//
+// The wait carries no literal: a start the scheduler starved and a lock delayed
+// behind a stalled disk are the machine's, never evidence that the hold failed
+// (#935), and a start sample predicts nothing about the delay after it. The
+// only bound is one the helper does not invent — the test binary's own
+// -timeout, half of what it has left (holdWaitDeadline) — so a holder that
+// gets the whole budget still lands, while one that never answers ends the
+// test with a verdict before the suite's own panic (#998, #874's rule: bounds
+// from conditions, not literals).
 func holdProc(t *testing.T, exe, users string, argv ...string) *exec.Cmd {
 	t.Helper()
 	cmd := exec.Command(exe)
@@ -505,12 +545,117 @@ func holdProc(t *testing.T, exe, users string, argv ...string) *exec.Cmd {
 	go cmd.Wait()
 	t.Cleanup(func() { cmd.Process.Kill() })
 	defer pr.Close()
-	pr.SetReadDeadline(time.Now().Add(10 * time.Second))
-	one := make([]byte, 1)
-	if _, err := io.ReadFull(pr, one); err != nil || one[0] != '1' {
-		t.Fatalf("the hold never landed: %v %q", err, one)
+	end, hasEnd := t.Deadline()
+	if err := awaitHold(pr, holdWaitDeadline(time.Now(), end, hasEnd)); err != nil {
+		t.Fatalf("the hold never landed: %v", err)
 	}
 	return cmd
+}
+
+// TestHoldWaitDeadline pins the wait's only bound: half of what the test
+// binary's own -timeout has left, Go's default when the run set none, and a
+// verdict at once for an end already passed (#998).
+func TestHoldWaitDeadline(t *testing.T) {
+	now := time.Date(2026, 11, 27, 12, 0, 0, 0, time.UTC)
+	for _, c := range []struct {
+		name    string
+		end     time.Time
+		hasEnd  bool
+		want    time.Time
+		notLate bool // an end already passed must never push the wait past now
+	}{
+		{"half of what the run has left", now.Add(600 * time.Second), true, now.Add(300 * time.Second), false},
+		{"Go's own default when the run set none", time.Time{}, false, now.Add(5 * time.Minute), false},
+		{"an end already passed ends the wait at once", now.Add(-2 * time.Second), true, now.Add(-time.Second), true},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			got := holdWaitDeadline(now, c.end, c.hasEnd)
+			if !got.Equal(c.want) {
+				t.Fatalf("deadline %v, want %v", got, c.want)
+			}
+			if c.notLate && got.After(now) {
+				t.Fatalf("deadline %v is after now; a passed end must end the wait at once", got)
+			}
+		})
+	}
+}
+
+// TestAwaitHold pins the read the holder's answer comes through: a deadline
+// that ends a silent holder with ErrDeadlineExceeded (never an unbounded
+// wait), a late "1" that is still accepted, EOF when the writer is gone, and
+// a wrong byte that is not an answer (#998).
+func TestAwaitHold(t *testing.T) {
+	t.Run("a silent holder is ended by the deadline", func(t *testing.T) {
+		pr, pw, err := os.Pipe()
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { pr.Close(); pw.Close() })
+		if err := awaitHold(pr, time.Now().Add(100*time.Millisecond)); !errors.Is(err, os.ErrDeadlineExceeded) {
+			t.Fatalf("got %v, want the deadline to end a holder that never answers", err)
+		}
+	})
+	t.Run("a late answer is not a failure", func(t *testing.T) {
+		pr, pw, err := os.Pipe()
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { pr.Close(); pw.Close() })
+		go func() {
+			time.Sleep(300 * time.Millisecond)
+			pw.WriteString("1")
+		}()
+		if err := awaitHold(pr, time.Now().Add(time.Hour)); err != nil {
+			t.Fatalf("a holder that answers late must land: %v", err)
+		}
+	})
+	t.Run("a closed writer is EOF", func(t *testing.T) {
+		pr, pw, err := os.Pipe()
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { pr.Close() })
+		pw.Close()
+		if err := awaitHold(pr, time.Now().Add(time.Hour)); !errors.Is(err, io.EOF) {
+			t.Fatalf("got %v, want EOF from a writer that closed without an answer", err)
+		}
+	})
+	t.Run("a wrong byte is not an answer", func(t *testing.T) {
+		pr, pw, err := os.Pipe()
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { pr.Close(); pw.Close() })
+		pw.WriteString("0")
+		if err := awaitHold(pr, time.Now().Add(time.Hour)); err == nil {
+			t.Fatal("a holder that answered \"0\" must not read as a landed hold")
+		}
+	})
+}
+
+// TestHoldProcWaitsOutAHolderThatLocksLate is the reviewer's pause-before-flock
+// case: a healthy holder delayed after it started must still land. The users
+// file is held exclusively for a second, so the child's shared lock cannot be
+// taken before the release; the assertion is causal — holdProc returned only
+// once the release had happened — never a wall-clock bound (#998).
+func TestHoldProcWaitsOutAHolderThatLocksLate(t *testing.T) {
+	users := BridgeFiles(t.TempDir(), "p")[2]
+	f, err := lockFile(users, syscall.LOCK_EX)
+	if err != nil {
+		t.Fatal(err)
+	}
+	released := make(chan struct{})
+	go func() {
+		time.Sleep(time.Second)
+		close(released)
+		f.Close()
+	}()
+	holdProc(t, os.Args[0], users, "argv0")
+	select {
+	case <-released:
+	default:
+		t.Fatal("the hold landed while the exclusive lock was held")
+	}
 }
 
 // argvOf keeps the argument boundaries the joined command line loses: one
