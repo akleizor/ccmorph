@@ -12849,12 +12849,25 @@ _ccm_run_test_under_a_terminal() {
 }
 
 run_test() {
-  local name="$1" rc=0
+  local name="$1" rc=0 launch_log=""
   [[ -z "${CCMORPH_TEST_FILTER:-}" || "$name" == *"$CCMORPH_TEST_FILTER"* ]] || return 0
   (( ++_ccm_test_filter_hits ))
   [[ -z "${CCMORPH_TEST_SHARD:-}" ]] ||
     (( tests_seen++ % ${CCMORPH_TEST_SHARD#*/} == ${CCMORPH_TEST_SHARD%/*} )) || return 0
   (( ++tests_run ))
+  # #1026: name the file this test's launches copy their own stdout and stderr
+  # to (tests/core_lib.zsh), so the verdict below can print the launch's own
+  # words when the test fails. It is outside every scratch home -- a test
+  # removes its home before it returns -- and outside any bound: a test that
+  # discarded a launch's output on failure now still shows why the launch
+  # ended before the behaviour it asserts.
+  launch_log=$(command mktemp "${ORIGINAL_TMPDIR}/ccmorph-launch.XXXXXX" 2>/dev/null)
+  [[ -n "$launch_log" ]] && : > "$launch_log" 2>/dev/null || launch_log=""
+  if [[ -n "$launch_log" ]]; then
+    typeset -g CCMORPH_TEST_LAUNCH_LOG="$launch_log"
+  else
+    unset CCMORPH_TEST_LAUNCH_LOG
+  fi
   if (( ${_ccm_terminal_tests[(I)$name]} )) && [[ ! -t 0 ]]; then
     _ccm_run_test_under_a_terminal "$name" || rc=1
   else
@@ -12868,8 +12881,14 @@ run_test() {
     print -- "PASS: $name"
   else
     print -u2 -- "FAIL: $name"
+    if [[ -n "$launch_log" && -s "$launch_log" ]]; then
+      print -u2 -- "the launch's own words ($name):"
+      print -u2 -- "$(<"$launch_log")"
+    fi
     (( ++tests_failed ))
   fi
+  [[ -z "$launch_log" ]] || command rm -f -- "$launch_log"
+  unset CCMORPH_TEST_LAUNCH_LOG
 }
 
 test_a_conf_env_budget_pin_reaches_the_launch() {
@@ -15522,6 +15541,41 @@ test_a_sub_profile_never_announces_a_gateway_on_a_terminal() {
 }
 run_test test_a_sub_profile_launch_for_the_terminal_check
 run_test test_a_sub_profile_never_announces_a_gateway_on_a_terminal
+
+# #1026: a launch test silences the launch whose side effect is all it needs,
+# and when the launch itself is what failed, the sentence saying why used to go
+# to /dev/null with it -- the caps red of #1026 cost a scout investigation and
+# still could not be named. run_test names CCMORPH_TEST_LAUNCH_LOG for the test
+# and prints it on failure; this checks the capture half with the silenced
+# shape: a route whose probe hears curl's own timeout and ends the launch
+# before Claude Code opens. The stub exits at once, so nothing here waits on a
+# clock (GH-260's five seconds stay the launch's promise).
+test_a_silenced_launch_keeps_its_own_words_for_the_verdict() {
+  local test_home
+  test_home=$(mktemp -d)
+  setup_home "$test_home"
+  write_curl_mock 'exit 28'
+  write_apikey_conf gw 'api_key=sk_prod_test' 'base_url=https://gateway.invalid' 'adapter=true'
+  source "$CCMORPH_SOURCE"
+
+  local rc=0 log="${CCMORPH_TEST_LAUNCH_LOG:-}"
+  [[ -n "$log" ]] || {
+    print -u2 -- 'run_test must name CCMORPH_TEST_LAUNCH_LOG for every test'
+    rm -rf "$test_home"
+    return 1
+  }
+  : > "$log"
+
+  _ccm_launch -a gw prompt >/dev/null 2>&1 || :
+  local words="$(<"$log")"
+  assert_contains "$words" 'could not reach' \
+    "a silenced launch's own words must survive for the verdict (got: ${(qqq)words})" || rc=1
+  assert_contains "$words" 'no answer from gateway.invalid port 443' \
+    'the capture must hold the probe sentence, not only the progress line' || rc=1
+  rm -rf "$test_home"
+  return $rc
+}
+run_test test_a_silenced_launch_keeps_its_own_words_for_the_verdict
 
 # libexec/ccmorph-core is build output, so a fresh worktree or checkout has
 # none, and the suite entered there used to fail through every launch test's
