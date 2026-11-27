@@ -1021,6 +1021,80 @@ def test_a_failed_start_stops_the_proxy_it_spawned(tmp_path, monkeypatch, capsys
                 proc.wait(timeout=HANG_TIMEOUT)
 
 
+# The proxy as the launcher sees it at startup: it consumed the key and the CA is
+# there, then it either says it serves the port or (the port being an old proxy's)
+# fails to bind it and exits a moment later.
+_READY_PROXY = r"""import os, socket, sys, time
+port, say = int(sys.argv[1]), sys.argv[2]
+s = socket.socket()
+try:
+    s.bind(("127.0.0.1", port))
+    s.listen()
+except OSError:
+    time.sleep(0.5)                 # a launcher probing the port meanwhile finds the old proxy
+    sys.exit(1)
+if say == "ready":
+    print(f"READY pid={os.getpid()} port={port}", flush=True)
+elif say == "other":
+    print(f"READY pid={os.getpid() + 1} port={port}", flush=True)
+time.sleep(600)
+"""
+
+
+@pytest.mark.parametrize("shape,message", [
+    pytest.param("port-taken", "proxy exited during startup", id="an-old-proxy-holds-the-fixed-port"),
+    pytest.param("other", "not that it serves port", id="ready-names-another-process"),
+    pytest.param("ready", None, id="ready-on-its-own-port"),
+])
+def test_a_start_counts_only_its_own_proxy_as_ready(tmp_path, monkeypatch, capsys, shape, message):
+    """Review of #962: the launcher took a port that answered, a consumed key and a
+    CA file as readiness, and on a fixed port an old proxy still answers while the
+    new one failed to bind it. Ready is the new proxy's own line, naming its pid and
+    port, written once it has bound the port; a proxy that exits is a failed start."""
+    import argparse
+
+    rc = _edge_spawn_state(tmp_path, monkeypatch)
+    stub = tmp_path / "bin" / "ccmorph-core"
+    stub.parent.mkdir()
+    stub.write_text("#!/bin/sh\nexit 0\n")
+    stub.chmod(0o755)
+    monkeypatch.setattr(rc, "ADAPTER", stub)
+    old = socket.socket()                                            # the old proxy on the fixed port
+    old.bind(("127.0.0.1", 0))
+    old.listen()
+    port = old.getsockname()[1]
+    if shape != "port-taken":
+        old.close()                                                  # the port is free for the new one
+    real = rc.subprocess.Popen
+    spawned = []
+
+    def spawn(cmd, env=None, **kw):
+        if cmd[0] == "zsh":
+            return real(cmd, env=env, **kw)
+        os.unlink(env["RC_KEY_FILE"])                                # it read the key
+        ca = rc.STATE / "edge-ca" / "ca.pem"
+        ca.write_text("stub ca")
+        spawned.append(real([sys.executable, "-c", _READY_PROXY, str(port), shape], **kw))
+        return spawned[-1]
+    monkeypatch.setattr(rc.subprocess, "Popen", spawn)
+    try:
+        if message is None:
+            got_port, *_ = rc.own_edge("gw", 4242, argparse.Namespace(debug=False), port)
+            assert got_port == port and spawned[0].poll() is None
+        else:
+            with pytest.raises(SystemExit):
+                rc.own_edge("gw", 4242, argparse.Namespace(debug=False), port)
+            assert message in capsys.readouterr().err
+            assert spawned[0].poll() is not None, "the failed start left its proxy running"
+        assert list(rc.STATE.glob("proxy-ready.*")) == []
+    finally:
+        old.close()
+        for proc in spawned:
+            if proc.poll() is None:
+                proc.kill()
+                proc.wait(timeout=HANG_TIMEOUT)
+
+
 _SWITCH_SIGNAL_CHILD = r"""import importlib.machinery, importlib.util, os, resource, signal, sys
 path, sig, point, lands = sys.argv[1], int(sys.argv[2]), sys.argv[3], sys.argv[4] == "1"
 resource.setrlimit(resource.RLIMIT_CORE, (0, 0))      # SIGQUIT's default action dumps core

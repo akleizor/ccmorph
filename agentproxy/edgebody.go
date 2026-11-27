@@ -1,6 +1,7 @@
 package agentproxy
 
 import (
+	"context"
 	"encoding/base64"
 	"os"
 	"os/exec"
@@ -8,6 +9,7 @@ import (
 	"regexp"
 	"runtime"
 	"strings"
+	"time"
 	"unicode/utf8"
 
 	"github.com/akleizor/ccmorph/ordjson"
@@ -275,10 +277,24 @@ func slimEvents(body any, shrink shrinker) bool {
 	return changed
 }
 
+// imageSlots is how many images the edge shrinks at once, across every upload:
+// each is a sips process, and a phone opening a long session uploads many.
+var imageSlots = make(chan struct{}, 2)
+
+// sips is the command that shrinks an image (a test points it elsewhere).
+var sips = "sips"
+
 // sipsShrink is a 1000 px JPEG of a base64 image, through macOS sips; ok false
-// where sips is not there or fails.
-func sipsShrink(data, _ string) (string, string, bool) {
+// where sips is not there, fails, or ctx ends first (waiting for a slot or
+// while it runs).
+func sipsShrink(ctx context.Context, data, _ string) (string, string, bool) {
 	if runtime.GOOS != "darwin" {
+		return "", "", false
+	}
+	select {
+	case imageSlots <- struct{}{}:
+		defer func() { <-imageSlots }()
+	case <-ctx.Done():
 		return "", "", false
 	}
 	raw, err := base64.StdEncoding.DecodeString(data)
@@ -294,7 +310,9 @@ func sipsShrink(data, _ string) (string, string, bool) {
 	if os.WriteFile(src, raw, 0o600) != nil {
 		return "", "", false
 	}
-	if exec.Command("sips", "-s", "format", "jpeg", "-s", "formatOptions", "70", "-Z", "1000", src, "--out", dst).Run() != nil {
+	cmd := exec.CommandContext(ctx, sips, "-s", "format", "jpeg", "-s", "formatOptions", "70", "-Z", "1000", src, "--out", dst)
+	cmd.WaitDelay = time.Second // a killed sips's pipes never hold the upload
+	if cmd.Run() != nil || ctx.Err() != nil {
 		return "", "", false
 	}
 	out, err := os.ReadFile(dst)

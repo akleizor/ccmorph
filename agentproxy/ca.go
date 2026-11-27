@@ -20,7 +20,9 @@ import (
 	"crypto/x509/pkix"
 	"encoding/pem"
 	"errors"
+	"fmt"
 	"github.com/akleizor/ccmorph/util/paths"
+	"io/fs"
 	"math/big"
 	"os"
 	"path/filepath"
@@ -45,25 +47,52 @@ const (
 // moved into place by one rename, so launchers starting together never keep
 // a key from one and a certificate from another: the first rename wins and
 // the others read what it left.
-func LoadCA(dir string) (*CA, error) { return loadCA(dir, makeCA) }
+func LoadCA(dir string) (*CA, error) { return loadCA(dir, renewBefore, makeCA) }
+
+// renewBefore is how long before its end a session's CA is replaced. A
+// session's CA is trusted only by the sessions launched with it, so a new one
+// costs nothing; the edge's is trusted by running sessions and is kept.
+const renewBefore = 30 * 24 * time.Hour
 
 // LoadEdgeCA is LoadCA for the Remote Control edge, whose first CA is the one
 // its proxy already had: legacy is that proxy's combined PEM (key and
 // certificate). Importing it keeps every session that trusts that certificate
-// trusting the edge across the change of proxy; without one the edge makes its own.
-func LoadEdgeCA(dir, legacy string) (*CA, error) {
-	return loadCA(dir, func(tmp string) error {
-		if legacy != "" {
-			if err := importCA(tmp, legacy); err == nil {
-				return nil
-			}
+// trusting the edge across the change of proxy. Only when no legacy file
+// exists does the edge make its own: a legacy CA that cannot be adopted is an
+// error, never a silent new root that running sessions would reject. A CA
+// still valid but near its end is kept, and logf says so.
+func LoadEdgeCA(dir, legacy string, logf func(string, ...any)) (*CA, error) {
+	ca, err := loadCA(dir, 0, func(tmp string) error {
+		if legacy == "" {
+			return makeCA(tmp)
 		}
-		return makeCA(tmp)
+		if _, err := os.Lstat(legacy); errors.Is(err, fs.ErrNotExist) {
+			return makeCA(tmp)
+		}
+		if err := importCA(tmp, legacy); err != nil {
+			return fmt.Errorf("the CA of the proxy this one replaces (%s) cannot be adopted: %w; "+
+				"running Remote Control sessions trust only that CA, so no new one is made in its place. "+
+				"To start on a new CA, remove %s and restart every Remote Control session", legacy, err, legacy)
+		}
+		return nil
 	})
+	if err != nil {
+		return nil, err
+	}
+	if left := time.Until(ca.cert.NotAfter); left < renewBefore && logf != nil {
+		remove := dir
+		if _, err := os.Lstat(legacy); legacy != "" && err == nil {
+			remove += " and " + legacy
+		}
+		logf("the CA in %s expires %s (in %d days); it is kept, since running sessions trust it. "+
+			"Before then, remove %s and restart every Remote Control session",
+			dir, ca.cert.NotAfter.Format(time.DateOnly), int(left.Hours()/24), remove)
+	}
+	return ca, nil
 }
 
-func loadCA(dir string, seed func(tmp string) error) (*CA, error) {
-	if ca, err := readCA(dir); err == nil {
+func loadCA(dir string, minLife time.Duration, seed func(tmp string) error) (*CA, error) {
+	if ca, err := readCA(dir, minLife); err == nil {
 		return ca, nil
 	}
 	parent := filepath.Dir(dir)
@@ -81,7 +110,7 @@ func loadCA(dir string, seed func(tmp string) error) (*CA, error) {
 	if os.Rename(tmp, dir) != nil {
 		// Something is there: another launcher's pair, or one this one could
 		// not use (expiring, mismatched). Keep a good one; move a bad one aside.
-		if ca, err := readCA(dir); err == nil {
+		if ca, err := readCA(dir, minLife); err == nil {
 			return ca, nil
 		}
 		old, err := os.MkdirTemp(parent, ".agent-proxy-ca.old.*")
@@ -93,10 +122,10 @@ func loadCA(dir string, seed func(tmp string) error) (*CA, error) {
 			return nil, err
 		}
 		if err := os.Rename(tmp, dir); err != nil {
-			return readCA(dir) // another launcher replaced it first
+			return readCA(dir, minLife) // another launcher replaced it first
 		}
 	}
-	return readCA(dir)
+	return readCA(dir, minLife)
 }
 
 func makeCA(dir string) error {
@@ -129,7 +158,7 @@ func makeCA(dir string) error {
 	return writeFile(filepath.Join(dir, caCertFile), pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}))
 }
 
-func readCA(dir string) (*CA, error) {
+func readCA(dir string, minLife time.Duration) (*CA, error) {
 	certPEM, err := os.ReadFile(filepath.Join(dir, caCertFile))
 	if err != nil {
 		return nil, err
@@ -138,10 +167,10 @@ func readCA(dir string) (*CA, error) {
 	if err != nil {
 		return nil, err
 	}
-	return parseCA(certPEM, keyPEM)
+	return parseCA(certPEM, keyPEM, minLife)
 }
 
-func parseCA(certPEM, keyPEM []byte) (*CA, error) {
+func parseCA(certPEM, keyPEM []byte, minLife time.Duration) (*CA, error) {
 	cb, _ := pem.Decode(certPEM)
 	kb, _ := pem.Decode(keyPEM)
 	if cb == nil || kb == nil {
@@ -158,8 +187,8 @@ func parseCA(certPEM, keyPEM []byte) (*CA, error) {
 	if pub, ok := cert.PublicKey.(interface{ Equal(crypto.PublicKey) bool }); !ok || !pub.Equal(key.Public()) {
 		return nil, errors.New("agent proxy CA: key does not match certificate")
 	}
-	if time.Until(cert.NotAfter) < 30*24*time.Hour {
-		return nil, errors.New("agent proxy CA: expiring")
+	if time.Until(cert.NotAfter) < minLife || !time.Now().Before(cert.NotAfter) {
+		return nil, errors.New("agent proxy CA: expired or expiring")
 	}
 	return &CA{cert: cert, key: key, PEM: certPEM}, nil
 }
@@ -198,7 +227,7 @@ func importCA(dir, legacy string) error {
 			keyPEM = pem.EncodeToMemory(blk)
 		}
 	}
-	if _, err := parseCA(certPEM, keyPEM); err != nil {
+	if _, err := parseCA(certPEM, keyPEM, 0); err != nil {
 		return err
 	}
 	if err := writeFile(filepath.Join(dir, caKeyFile), keyPEM); err != nil {

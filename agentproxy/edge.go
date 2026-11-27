@@ -1,8 +1,7 @@
 package agentproxy
 
 import (
-	"bytes"
-	"compress/gzip"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -64,9 +63,16 @@ type Edge struct {
 	logMu    sync.Mutex
 	mu       sync.Mutex // switched and held
 	takeMu   sync.Mutex // one take at a time, so held.<pid>.json never loses one
-	ownTag   string
-	handoff  map[string]endpoint
-	held     map[string]any
+	// heldMu makes each publication of held.<pid>.json one step, its snapshot
+	// and its write together, so an older snapshot never lands over a newer.
+	// stopped (set under takeMu and heldMu both) ends takes and publications
+	// for good: what Stop leaves is final.
+	heldMu  sync.Mutex
+	stopped bool
+	pollers sync.WaitGroup
+	ownTag  string
+	handoff map[string]endpoint
+	held    map[string]any
 }
 
 // endpoint is a profile `ccmorph-rc <profile> --switch` brought up beside the edge.
@@ -148,9 +154,15 @@ func (e *Edge) heldPath() string {
 
 // PublishHeld says which handoffs this proxy holds (no key): held.<parent
 // pid>.json, replaced whole. --switch waits for its handoff's id here, and
-// rc-hosts reads it to see a proxy that restarted and holds nothing.
+// rc-hosts reads it to see a proxy that restarted and holds nothing. The
+// proxy publishes once before it listens (EdgeMain), and after every take.
 func (e *Edge) PublishHeld() error {
 	if e.Inference == "" || e.Parent == 0 {
+		return nil
+	}
+	e.heldMu.Lock()
+	defer e.heldMu.Unlock()
+	if e.stopped {
 		return nil
 	}
 	e.mu.Lock()
@@ -159,14 +171,14 @@ func (e *Edge) PublishHeld() error {
 		profiles[k] = v
 	}
 	e.mu.Unlock()
+	e.hook("held-snapshot")
 	var started any
 	if e.ParentStarted != "" {
 		started = e.ParentStarted
 	}
 	b, _ := json.Marshal(map[string]any{"edge": e.Parent, "edge_started": started, "profiles": profiles})
 	path := e.heldPath()
-	err := paths.AtomicWrite(paths.WriteIn{Path: path, Temp: filepath.Base(path) + ".*.tmp", Data: b, Mode: 0o600})
-	return err
+	return paths.AtomicWrite(paths.WriteIn{Path: path, Temp: filepath.Base(path) + ".*.tmp", Data: b, Mode: 0o600})
 }
 
 // mine is whether handoff h is for this proxy's own edge: that pid and that start.
@@ -248,6 +260,9 @@ func (e *Edge) Take(profile string) {
 	taken := filepath.Join(e.bridge(), fmt.Sprintf("taken.%d.%s.%s.json", os.Getpid(), e.ownTag, profile))
 	e.takeMu.Lock()
 	defer e.takeMu.Unlock()
+	if e.stopped {
+		return // the proxy is going: a handoff left waiting is --switch's to remove
+	}
 	b, err := os.ReadFile(hand)
 	if err != nil {
 		return
@@ -336,13 +351,28 @@ func (e *Edge) ForgetHeld() {
 	os.Remove(aside)
 }
 
-// Run publishes what this proxy holds (nothing yet, whatever one before it
-// held), then takes handoffs every half second and follows its edge: when
-// Parent no longer runs it calls stop. It returns when done is closed.
+// Stop ends this proxy's handoff work for good, before its last cleanup: it
+// waits for a take in progress to finish (its taken.* file, which holds a key,
+// is gone when it does) and for the pollers Run started (close Run's done
+// first), and from then on nothing takes a handoff or writes held.<pid>.json,
+// so ForgetHeld after it is the last word.
+func (e *Edge) Stop() {
+	e.takeMu.Lock()
+	e.heldMu.Lock()
+	e.stopped = true
+	e.heldMu.Unlock()
+	e.takeMu.Unlock()
+	e.pollers.Wait()
+}
+
+// Run takes handoffs every half second and follows its edge: when Parent no
+// longer runs it calls stop. Its pollers end when done is closed (Stop waits
+// for them). What the proxy holds is published before it listens (EdgeMain).
 func (e *Edge) Run(done <-chan struct{}, stop func()) {
-	e.PublishHeld()
 	if e.Inference != "" {
+		e.pollers.Add(1)
 		go func() {
+			defer e.pollers.Done()
 			t := time.NewTicker(500 * time.Millisecond)
 			defer t.Stop()
 			for {
@@ -356,7 +386,9 @@ func (e *Edge) Run(done <-chan struct{}, stop func()) {
 		}()
 	}
 	if e.Parent > 0 {
+		e.pollers.Add(1)
 		go func() {
+			defer e.pollers.Done()
 			t := time.NewTicker(2 * time.Second)
 			defer t.Stop()
 			for {
@@ -380,8 +412,22 @@ func (e *Edge) Run(done <-chan struct{}, stop func()) {
 type edgeState struct {
 	asked, via string // the word the pick set; what routed it (the route after a fallback)
 	account    bool   // the account word: a first-party call left on the session's login
-	gzipped    bool   // the body was sent compressed and goes on uncompressed
+	inference  bool   // the request as it came was a first-party inference turn
+	// The body as its sender meant it, decoded once (coding.go), and the coding
+	// it came in, so a changed body goes on encoded the same way.
+	plain     []byte
+	coding    coding
+	decoded   bool
+	undecoded error // why the body could not be decoded, once that is known
 }
+
+// The most of a body the edge reads, on the wire and decoded. The inference
+// cap is far above Anthropic's own request limit; an events upload past its
+// cap is forwarded untouched, unslimmed. Variables so a test can lower them.
+var (
+	inferenceMax int64 = 256 << 20
+	eventsMax    int64 = 64 << 20
+)
 
 // decide is the edge's whole decision about one request, made before any
 // connection is: where it goes, whose credential it carries, and what its body
@@ -400,19 +446,23 @@ func (e *Edge) decide(r *http.Request, u *url.URL, d *decision) error {
 		}
 		return nil
 	}
+	// Whatever is decided below, this is an inference turn: the transport's last
+	// check refuses it Anthropic unless the account word was chosen, wherever
+	// the path it is sent on leads.
+	es.inference = true
 	agents := e.AgentsDir()
 	if agent := r.Header.Get(AgentHeader); agent != "" && agents != "" {
 		if pick, ok := Bound(agents, agent); ok {
 			return e.route(r, u, d, pick.Word, " (agent)", pick.Model)
 		}
 		if session := r.Header.Get(SessionHeader); HasPending(agents, session) {
-			// Its prompt, in the body, may name a pick.
-			body, err := readAll(r)
+			// Its prompt, in the body, may name a pick. A body the edge cannot
+			// read may hold one, so it goes nowhere.
+			plain, err := e.plainBody(r, d, inferenceMax)
 			if err != nil {
-				return err
+				return fmt.Errorf("a pick waits for this session and the request body cannot be read: %w", err)
 			}
-			d.body = body
-			if pick, ok := Claim(agents, session, agent, body, time.Now()); ok {
+			if pick, ok := Claim(agents, session, agent, plain, time.Now()); ok {
 				return e.route(r, u, d, pick.Word, " (agent)", pick.Model)
 			}
 		}
@@ -420,26 +470,36 @@ func (e *Edge) decide(r *http.Request, u *url.URL, d *decision) error {
 	return e.route(r, u, d, "", "", "")
 }
 
-func readAll(r *http.Request) ([]byte, error) {
-	if r.Body == nil {
-		return []byte{}, nil
-	}
-	b, err := io.ReadAll(r.Body)
-	r.Body.Close()
-	if b == nil {
-		b = []byte{}
-	}
-	return b, err
-}
+// errUnread is a body that could not be read off the wire: the request ends.
+type errUnread struct{ error }
 
-// body is the request's body, read once.
-func body(r *http.Request, d *decision) ([]byte, error) {
-	if d.body != nil {
-		return d.body, nil
+// plainBody is the body decoded, once, read only up to limit on the wire and
+// decoded alike. A longer body is left to go on as it came; an error from the
+// wire is an errUnread.
+func (e *Edge) plainBody(r *http.Request, d *decision, limit int64) ([]byte, error) {
+	es := d.edge
+	if es.decoded || es.undecoded != nil {
+		return es.plain, es.undecoded
 	}
-	b, err := readAll(r)
-	d.body = b
-	return b, err
+	wire := d.body
+	if wire == nil {
+		var whole bool
+		var err error
+		if wire, whole, err = readUpTo(r, limit); err != nil {
+			return nil, errUnread{err}
+		} else if !whole {
+			es.undecoded = errTooLarge
+			return nil, errTooLarge
+		}
+		d.body = wire
+	}
+	plain, c, err := decodeBody(wire, r.Header, limit)
+	if err != nil {
+		es.undecoded = err
+		return nil, err
+	}
+	es.plain, es.coding, es.decoded = plain, c, true
+	return plain, nil
 }
 
 // route sends an inference request where its word says: the agent's pick when
@@ -521,66 +581,97 @@ func setPick(p *ordjson.Obj, model string) bool {
 }
 
 // rewrite reads the body, lets change edit it in place, and keeps the result
-// as the body to send. A body that is not a JSON object goes on as it was.
+// as the body to send, encoded as the body came. A body that is not a JSON
+// object, or that the edge cannot decode, goes on as it was.
 func (e *Edge) rewrite(r *http.Request, d *decision, change func(*ordjson.Obj) bool) error {
-	content, err := body(r, d)
-	if err != nil || len(content) == 0 {
-		return err
+	content, err := e.plainBody(r, d, inferenceMax)
+	if err != nil {
+		var unread errUnread
+		if errors.As(err, &unread) {
+			return unread.error
+		}
+		e.logf("body      %s %s sent as it came: %v", r.Method, r.URL.Path, err)
+		return nil
+	}
+	if len(content) == 0 {
+		return nil
 	}
 	v, perr := ordjson.Parse(content)
-	if p, ok := v.(*ordjson.Obj); perr == nil && ok {
-		d.body = reencode(content, p, change(p))
+	if p, ok := v.(*ordjson.Obj); perr == nil && ok && change(p) {
+		d.body = encodeBody(ordjson.Marshal(p, false), d.edge.coding)
 	}
 	return nil
 }
 
-// slimUpload lightens an events upload for the phone.
+// imageBudget is how long one upload's image work may take, the wait for a
+// slot included; an image it has not reached by then goes on as it was.
+var imageBudget = 20 * time.Second
+
+// slimUpload lightens an events upload for the phone. Its body is read only up
+// to eventsMax, on the wire and decoded alike: a longer one goes on untouched.
+// A slimmed body goes on in the coding it came in.
 func (e *Edge) slimUpload(r *http.Request, d *decision) error {
-	content, err := body(r, d)
-	if err != nil || len(content) == 0 {
+	wire, whole, err := readUpTo(r, eventsMax)
+	if err != nil {
 		return err
 	}
-	raw, compressed := content, false
-	if r.Header.Get("Content-Encoding") == "gzip" {
-		zr, err := gzip.NewReader(bytes.NewReader(content))
-		if err != nil {
-			return nil
+	if !whole {
+		e.logf("events    over %d bytes: sent as it came", eventsMax)
+		return nil
+	}
+	d.body = wire
+	if len(wire) == 0 {
+		return nil
+	}
+	raw, c, err := decodeBody(wire, r.Header, eventsMax)
+	if err != nil {
+		if errors.Is(err, errTooLarge) {
+			e.logf("events    over %d bytes decoded: sent as it came", eventsMax)
 		}
-		if raw, err = io.ReadAll(zr); err != nil {
-			return nil
-		}
-		compressed = true
+		return nil
 	}
 	v, err := ordjson.Parse(raw)
-	if err != nil || !slimEvents(v, sipsShrink) {
+	if err != nil {
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), imageBudget)
+	defer cancel()
+	shrink := func(data, mediaType string) (string, string, bool) { return sipsShrink(ctx, data, mediaType) }
+	if !slimEvents(v, shrink) {
 		return nil
 	}
 	slim := ordjson.Marshal(v, false)
+	d.body = encodeBody(slim, c)
 	e.logf("events    %d -> %d bytes", len(raw), len(slim))
-	d.body = slim
-	d.edge.gzipped = compressed
 	return nil
 }
 
 // --- the reply -----------------------------------------------------------------
 
 // reached is whether the connection that answered is the endpoint the request
-// was sent to: the same host and the same port. A literal (a loopback adapter,
-// an IP upstream) is compared by its address; a name is compared by port, the
-// resolved address being all a connection knows of it. An unreadable connection
-// cannot prove a mismatch and leaves the destination as the evidence.
-func reached(host string, port int, answered net.Addr) bool {
-	a, ok := answered.(*net.TCPAddr)
-	if !ok || a == nil {
-		return true
-	}
-	if a.Port != port {
+// was sent to: the same host and the same port. dialed is the address that
+// connection was dialled for (host:port as the transport was asked for it), so
+// a named upstream is compared by its name, never by the IP it resolved to,
+// and a literal (a loopback adapter, an IP upstream) by its address.
+func reached(host string, port int, dialed string) bool {
+	h, p, err := net.SplitHostPort(dialed)
+	if err != nil {
 		return false
 	}
-	if ip := net.ParseIP(host); ip != nil {
-		return ip.Equal(a.IP)
+	if n, err := strconv.Atoi(p); err != nil || n != port {
+		return false
 	}
-	return true
+	return sameHost(host, h)
+}
+
+// sameHost compares two hosts: an IP literal by its address (::1 in any
+// spelling), a name as written, case and a final dot aside.
+func sameHost(a, b string) bool {
+	ia, ib := net.ParseIP(a), net.ParseIP(b)
+	if ia != nil || ib != nil {
+		return ia != nil && ib != nil && ia.Equal(ib)
+	}
+	return strings.EqualFold(strings.TrimSuffix(a, "."), strings.TrimSuffix(b, "."))
 }
 
 // verdict is the log line for one turn's reply: requested-vs-served, so the
@@ -590,22 +681,21 @@ func reached(host string, port int, answered net.Addr) bool {
 // answered. A routed call must not carry it; an account call must. A profile
 // the proxy holds no endpoint for falls back to the edge's route, and the reply
 // is then the route's, not the pick's: a miss, with the fallback's own warning
-// above it.
-func verdict(es *edgeState, status int, path string, firstParty bool, host string, port int, answered net.Addr) string {
-	served := net.JoinHostPort(host, strconv.Itoa(port))
-	if a, ok := answered.(*net.TCPAddr); ok && a != nil && net.ParseIP(host) != nil {
-		served = a.String()
+// above it. dialed is the address the answering connection was dialled for,
+// "" when there is none to read (the turn left through the session's own
+// proxy): a routed turn is then "unverified", never a match.
+func verdict(es *edgeState, status int, path string, firstParty bool, host string, port int, dialed string) string {
+	served := dialed
+	if served == "" {
+		served = net.JoinHostPort(host, strconv.Itoa(port))
 	}
-	var ok bool
-	var extra, where string
+	var kind, extra, where string
 	if es.account {
-		ok = firstParty
-		where = "ANTHROPIC"
+		kind, where = "account   ", "ANTHROPIC"
 		if !firstParty {
-			where = served + " (no Anthropic signature)"
+			kind, where = "miss      ", served+" (no Anthropic signature)"
 		}
 	} else {
-		ok = es.via == es.asked && !firstParty && reached(host, port, answered)
 		if es.via != es.asked {
 			extra = " via=" + es.via
 		}
@@ -613,12 +703,16 @@ func verdict(es *edgeState, status int, path string, firstParty bool, host strin
 		if firstParty {
 			where = "ANTHROPIC (not routed!)"
 		}
-	}
-	kind := "route     "
-	if !ok {
-		kind = "miss      "
-	} else if es.account {
-		kind = "account   "
+		switch {
+		case es.via != es.asked || firstParty:
+			kind = "miss      "
+		case dialed == "":
+			kind = "unverified "
+		case !reached(host, port, dialed):
+			kind = "miss      "
+		default:
+			kind = "route     "
+		}
 	}
 	return fmt.Sprintf("%s<- %d %s asked=%s%s served-by=%s", kind, status, path, es.asked, extra, where)
 }
@@ -646,9 +740,12 @@ func isFirst(u *url.URL) bool {
 }
 
 // refuseFirstParty is the fail-closed rule: an inference request reaches
-// Anthropic itself only when the account word says so.
+// Anthropic itself only when the account word says so. Whether it is one is
+// what the request was as it came (decide), never only the path it is sent
+// on: a base with a path in front (https://api.anthropic.com/gateway) is
+// still Anthropic.
 func refuseFirstParty(u *url.URL, d *decision) error {
-	if d.edge == nil || d.edge.account || !isInference(u.Path) {
+	if d.edge == nil || d.edge.account || !(d.edge.inference || isInference(u.Path)) {
 		return nil
 	}
 	if isFirst(u) {

@@ -2,12 +2,12 @@ package agentproxy
 
 import (
 	"bytes"
-	"compress/gzip"
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"encoding/base64"
 	"encoding/json"
 	"encoding/pem"
 	"io"
@@ -388,7 +388,9 @@ func TestEverythingElseReachesAnthropicUntouched(t *testing.T) {
 // The phone's event uploads are lightened; the model's own transcript never is.
 func TestEventUploadsAreSlimmedOnTheWay(t *testing.T) {
 	r := newEdgeRig(t, nil)
-	long := strings.Repeat("x", textMax*3)
+	noise := make([]byte, textMax*3)
+	rand.Read(noise)
+	long := base64.StdEncoding.EncodeToString(noise) // tool output that compresses as little as real output
 	body := `{"events":[{"payload":{"type":"assistant","message":{"content":[{"type":"thinking","signature":"` + strings.Repeat("S", 900) + `"}]}}},` +
 		`{"payload":{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"u","content":"` + long + `"}]}}}]}`
 	path := "/v1/code/sessions/cse_01Ab/worker/events"
@@ -400,15 +402,17 @@ func TestEventUploadsAreSlimmedOnTheWay(t *testing.T) {
 	if !strings.Contains(r.log.String(), "events    ") {
 		t.Fatal(r.log)
 	}
-	// compressed: the slim body goes on uncompressed, and says so
-	var z bytes.Buffer
-	zw := gzip.NewWriter(&z)
-	zw.Write([]byte(body))
-	zw.Close()
-	r.send(t, path, "s1", "", z.Bytes(), map[string]string{"Content-Encoding": "gzip"})
+	plainSlim := g.raw
+	// compressed: the slim body goes on compressed the same way, its header
+	// and length describing the bytes sent
+	z := gz(t, []byte(body))
+	r.send(t, path, "s1", "", z, map[string]string{"Content-Encoding": "gzip"})
 	g = r.expect(t, r.first, "Anthropic")
-	if g.encoding != "" || len(g.raw) >= len(body)/2 {
-		t.Fatalf("gzip upload: encoding %q, %d bytes", g.encoding, len(g.raw))
+	if g.encoding != "gzip" || len(g.raw) >= len(z) {
+		t.Fatalf("gzip upload: encoding %q, %d bytes on the wire, %d sent", g.encoding, len(g.raw), len(z))
+	}
+	if inflated := gunzip(t, g.raw); !bytes.Equal(inflated, plainSlim) {
+		t.Fatalf("the compressed upload was slimmed otherwise:\n%s\n%s", inflated, plainSlim)
 	}
 	// already slim: the body is sent as it came
 	r.send(t, path, "s1", "", []byte(`{"events":[]}`), nil)
@@ -452,7 +456,7 @@ func TestTheEdgeAdoptsTheCAOfTheProxyItReplaces(t *testing.T) {
 	legacy := filepath.Join(t.TempDir(), "mitmproxy-ca.pem")
 	write(t, legacy, append(append([]byte{}, keyPEM...), certPEM...))
 	dir := filepath.Join(t.TempDir(), "edge-ca")
-	ca, err := LoadEdgeCA(dir, legacy)
+	ca, err := LoadEdgeCA(dir, legacy, t.Logf)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -469,10 +473,10 @@ func TestTheEdgeAdoptsTheCAOfTheProxyItReplaces(t *testing.T) {
 	if _, err := c.Verify(x509.VerifyOptions{DNSName: "api.anthropic.com", Roots: pool}); err != nil {
 		t.Fatalf("a session trusting the old certificate rejects the new proxy: %v", err)
 	}
-	if again, err := LoadEdgeCA(dir, ""); err != nil || !bytes.Equal(again.PEM, certPEM) {
+	if again, err := LoadEdgeCA(dir, "", t.Logf); err != nil || !bytes.Equal(again.PEM, certPEM) {
 		t.Fatalf("the adopted CA was not kept: %v", err)
 	}
-	if ca2, err := LoadEdgeCA(filepath.Join(t.TempDir(), "fresh"), filepath.Join(t.TempDir(), "none")); err != nil || ca2 == nil {
+	if ca2, err := LoadEdgeCA(filepath.Join(t.TempDir(), "fresh"), filepath.Join(t.TempDir(), "none"), t.Logf); err != nil || ca2 == nil {
 		t.Fatalf("no legacy CA: %v", err) // makes its own
 	}
 }
@@ -481,7 +485,7 @@ func TestTheEdgeAdoptsTheCAOfTheProxyItReplaces(t *testing.T) {
 // its edge, says what it holds and takes it back when it ends.
 func TestEdgeProxyAsAProcess(t *testing.T) {
 	if os.Getenv("EDGE_PROXY_HELPER") == "1" {
-		os.Exit(EdgeMain(strings.Split(os.Getenv("EDGE_PROXY_ARGS"), " "), os.Stderr))
+		os.Exit(EdgeMain(strings.Split(os.Getenv("EDGE_PROXY_ARGS"), " "), os.Stdout, os.Stderr))
 	}
 	state := t.TempDir()
 	keyFile := filepath.Join(state, "route-key.1.abc")
@@ -500,29 +504,35 @@ func TestEdgeProxyAsAProcess(t *testing.T) {
 		"EDGE_PROXY_ARGS=--listen 127.0.0.1:"+itoa(port)+" --ca-dir "+filepath.Join(state, "ca"),
 		"RC_UPSTREAM=http://127.0.0.1:9", "RC_KEY_FILE="+keyFile, "RC_PARENT_PID="+itoa(edge.Process.Pid),
 		"RC_PARENT_STARTED="+started, "RC_INFERENCE="+filepath.Join(state, "inference"), "RC_TIERS={}")
-	var errs syncBuf
+	var errs, out syncBuf
 	cmd.Stderr = &errs
+	cmd.Stdout = &out
 	if err := cmd.Start(); err != nil {
 		t.Fatal(err)
 	}
 	exited := make(chan error, 1)
 	go func() { exited <- cmd.Wait() }()
 	defer cmd.Process.Kill()
-	waitFor(t, "the proxy listening", func() bool {
-		c, err := net.Dial("tcp4", "127.0.0.1:"+itoa(port))
-		if err == nil {
-			c.Close()
-		}
-		return err == nil
+	// Ready is the line naming this process and its port, not a port that
+	// answers; by then what it holds is published.
+	waitFor(t, "the proxy ready", func() bool {
+		return strings.Contains(out.String(), "READY pid="+itoa(cmd.Process.Pid)+" port="+itoa(port)+"\n")
 	})
+	held := filepath.Join(state, "held."+itoa(edge.Process.Pid)+".json")
+	if _, err := os.Stat(held); err != nil {
+		t.Fatal("ready before held.<edge>.json was published")
+	}
+	if c, err := net.Dial("tcp4", "127.0.0.1:"+itoa(port)); err != nil {
+		t.Fatal("ready but not listening")
+	} else {
+		c.Close()
+	}
 	if _, err := os.Stat(keyFile); err == nil {
 		t.Fatal("the proxy did not consume the route key")
 	}
 	if _, err := os.Stat(filepath.Join(state, "ca", "ca.pem")); err != nil {
 		t.Fatal("no CA")
 	}
-	held := filepath.Join(state, "held."+itoa(edge.Process.Pid)+".json")
-	waitFor(t, "held.<edge>.json", func() bool { _, err := os.Stat(held); return err == nil })
 	// a handoff naming the edge is taken within a second and acknowledged
 	write(t, filepath.Join(state, "switch-gw.json"), handoff("http://127.0.0.1:1", "k", "h1", edge.Process.Pid, started))
 	waitFor(t, "the handoff taken", func() bool {
@@ -562,7 +572,7 @@ func TestEdgeProxyConsumesTheKeyEvenWhenItCannotStart(t *testing.T) {
 	t.Setenv("RC_UPSTREAM", "http://127.0.0.1:9")
 	t.Setenv("RC_KEY_FILE", keyFile)
 	t.Setenv("RC_INFERENCE", filepath.Join(state, "inference"))
-	if code := EdgeMain([]string{"--listen", "127.0.0.1:0"}, io.Discard); code == 0 { // no --ca-dir
+	if code := EdgeMain([]string{"--listen", "127.0.0.1:0"}, io.Discard, io.Discard); code == 0 { // no --ca-dir
 		t.Fatal("started without a CA directory")
 	}
 	if _, err := os.Stat(keyFile); err == nil {

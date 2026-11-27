@@ -26,7 +26,7 @@ func main() {
 	case "adapter":
 		adapter.Exit(adapter.Main(os.Args[2:]))
 	case "edge-proxy": // the Remote Control edge's proxy (addons/remote-control/ccmorph-rc starts it)
-		os.Exit(agentproxy.EdgeMain(os.Args[2:], os.Stderr))
+		os.Exit(agentproxy.EdgeMain(os.Args[2:], os.Stdout, os.Stderr))
 	case "tether": // internal: outlives a SIGKILLed adapter to stop its children
 		adapter.Tether(os.Args[2:])
 	case "settings-compose":

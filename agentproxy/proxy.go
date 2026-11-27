@@ -69,9 +69,30 @@ type decision struct {
 	target *Target
 	pick   Pick
 	body   []byte
-	// The edge's decision about the request, and the connection that answered.
-	edge     *edgeState
-	answered net.Addr
+	// The edge's decision about the request, and the address the connection
+	// that answered was dialled for ("" when none can be read).
+	edge   *edgeState
+	dialed string
+}
+
+// dialedConn is a connection that remembers the address it was dialled for:
+// the evidence of which endpoint answered (verdict).
+type dialedConn struct {
+	net.Conn
+	addr string
+}
+
+// dialedAddr is the address conn was dialled for, through the TLS layer a
+// connection to an https endpoint wears; "" when it is not one this proxy
+// dialled to its destination.
+func dialedAddr(conn net.Conn) string {
+	if tc, ok := conn.(*tls.Conn); ok {
+		conn = tc.NetConn()
+	}
+	if dc, ok := conn.(*dialedConn); ok {
+		return dc.addr
+	}
+	return ""
 }
 
 // Start listens on a loopback port and serves until Close.
@@ -107,6 +128,14 @@ func Start(ca *CA, o Options) (*Proxy, error) {
 	}
 	tr.TLSClientConfig = o.TLS
 	tr.ForceAttemptHTTP2 = true
+	dial := tr.DialContext
+	tr.DialContext = func(ctx context.Context, network, addr string) (net.Conn, error) {
+		c, err := dial(ctx, network, addr)
+		if err != nil {
+			return nil, err
+		}
+		return &dialedConn{Conn: c, addr: addr}, nil
+	}
 	p.rp = &httputil.ReverseProxy{
 		Transport:     failClosed{tr},
 		FlushInterval: -1, // SSE passes through live
@@ -116,9 +145,6 @@ func Start(ca *CA, o Options) (*Proxy, error) {
 			pr.Out.Host = d.url.Host
 			if d.target != nil {
 				d.target.setAuth(pr.Out.Header)
-			}
-			if d.edge != nil && d.edge.gzipped {
-				pr.Out.Header.Del("Content-Encoding")
 			}
 			if d.body != nil {
 				pr.Out.Body = io.NopCloser(bytes.NewReader(d.body))
@@ -132,7 +158,7 @@ func Start(ca *CA, o Options) (*Proxy, error) {
 				if d.edge.asked != "" {
 					host, port := hostPort(r.Request.URL)
 					p.Edge.logf("%s", verdict(d.edge, r.StatusCode, r.Request.URL.Path,
-						r.Header.Get("anthropic-organization-id") != "", host, port, d.answered))
+						r.Header.Get("anthropic-organization-id") != "", host, port, d.dialed))
 				}
 				return nil
 			}
@@ -222,8 +248,15 @@ func (p *Proxy) forward(w http.ResponseWriter, r *http.Request, u *url.URL) {
 	}
 	ctx := context.WithValue(r.Context(), ctxKey{}, d)
 	if d.edge != nil {
+		// Through the session's own proxy the connection is the proxy's, which
+		// proves nothing about the endpoint: no evidence is recorded then.
+		direct := p.Upstream == nil || isLoopbackHost(d.url.Hostname())
 		ctx = httptrace.WithClientTrace(ctx, &httptrace.ClientTrace{
-			GotConn: func(i httptrace.GotConnInfo) { d.answered = i.Conn.RemoteAddr() }})
+			GotConn: func(i httptrace.GotConnInfo) {
+				if direct {
+					d.dialed = dialedAddr(i.Conn)
+				}
+			}})
 	}
 	p.rp.ServeHTTP(w, r.WithContext(ctx))
 }

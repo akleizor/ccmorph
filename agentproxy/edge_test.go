@@ -569,35 +569,3 @@ func TestEdgeNameKeepsAProfileNameAndCleansEveryOtherRoute(t *testing.T) {
 		seen[n] = route
 	}
 }
-
-// test_every_session_turn_answers_which_upstream_served_it (GH-920), the verdict
-// each turn's reply line carries.
-func TestEveryTurnAnswersWhichUpstreamServedIt(t *testing.T) {
-	addr := func(ip string, port int) net.Addr { return &net.TCPAddr{IP: net.ParseIP(ip), Port: port} }
-	gw := &edgeState{asked: "gw", via: "gw"}
-	for _, c := range []struct {
-		name       string
-		es         *edgeState
-		firstParty bool
-		host       string
-		port       int
-		answered   net.Addr
-		want       string
-	}{
-		{"its pick's endpoint answered", gw, false, "127.0.0.1", 54505, addr("127.0.0.1", 54505), "route     <- 200 /v1/messages asked=gw served-by=127.0.0.1:54505"},
-		{"subscription answered a routed turn", gw, true, "127.0.0.1", 54505, addr("127.0.0.1", 54505), "miss      <- 200 /v1/messages asked=gw served-by=ANTHROPIC (not routed!)"},
-		{"another endpoint replied", gw, false, "127.0.0.1", 54505, addr("127.0.0.1", 60111), "miss      <- 200 /v1/messages asked=gw served-by=127.0.0.1:60111"},
-		{"the pick fell back to the route", &edgeState{asked: "ds", via: "route"}, false, "127.0.0.1", 60111, addr("127.0.0.1", 60111), "miss      <- 200 /v1/messages asked=ds via=route served-by=127.0.0.1:60111"},
-		{"account answered with its signature", &edgeState{asked: "account", via: "account", account: true}, true, "api.anthropic.com", 443, addr("160.79.104.10", 443), "account   <- 200 /v1/messages asked=account served-by=ANTHROPIC"},
-		{"account answered without it", &edgeState{asked: "account", via: "account", account: true}, false, "api.anthropic.com", 443, addr("160.79.104.10", 443), "miss      <- 200 /v1/messages asked=account served-by=api.anthropic.com:443 (no Anthropic signature)"},
-		{"the shared route, no false miss", &edgeState{asked: "route", via: "route"}, false, "127.0.0.1", 60111, addr("127.0.0.1", 60111), "route     <- 200 /v1/messages asked=route served-by=127.0.0.1:60111"},
-		{"another IP on the pick's port", gw, false, "127.0.0.1", 54505, addr("127.0.0.2", 54505), "miss      <- 200 /v1/messages asked=gw served-by=127.0.0.2:54505"},
-		// a named upstream is served by the name it left for; the IP it resolved to is no mismatch
-		{"a named upstream by its address", &edgeState{asked: "named", via: "named"}, false, "gw.example", 443, addr("192.0.2.1", 443), "route     <- 200 /v1/messages asked=named served-by=gw.example:443"},
-		{"a named upstream on another port", &edgeState{asked: "named", via: "named"}, false, "gw.example", 8443, addr("192.0.2.1", 443), "miss      <- 200 /v1/messages asked=named served-by=gw.example:8443"},
-	} {
-		if got := verdict(c.es, 200, "/v1/messages", c.firstParty, c.host, c.port, c.answered); got != c.want {
-			t.Errorf("%s:\n got %q\nwant %q", c.name, got, c.want)
-		}
-	}
-}

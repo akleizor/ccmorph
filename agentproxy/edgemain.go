@@ -29,8 +29,12 @@ import (
 //
 // The flags: --listen <host:port> and --ca-dir <dir> (the CA kept there, made
 // on first use), and --legacy-ca <pem> (the combined key and certificate of the
-// proxy this one replaces, imported once so sessions that trust it keep trusting).
-func EdgeMain(args []string, stderr io.Writer) int {
+// proxy this one replaces, imported once so sessions that trust it keep
+// trusting; one that exists and cannot be imported fails the start).
+//
+// Once it listens, with what it holds published, it prints one line on stdout,
+// `READY pid=<its pid> port=<port>`, which is what the launcher waits for.
+func EdgeMain(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("edge-proxy", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	listen := fs.String("listen", "127.0.0.1:0", "address to serve on")
@@ -79,9 +83,17 @@ func EdgeMain(args []string, stderr io.Writer) int {
 	if err := os.MkdirAll(*caDir, 0o700); err != nil {
 		return fail("%v", err)
 	}
-	ca, err := LoadEdgeCA(filepath.Clean(*caDir), *legacy)
+	ca, err := LoadEdgeCA(filepath.Clean(*caDir), *legacy, func(f string, a ...any) {
+		fmt.Fprintf(stderr, "edge-proxy: "+f+"\n", a...)
+	})
 	if err != nil {
 		return fail("CA: %v", err)
+	}
+	// What this proxy holds (nothing yet, whatever one before it held) is
+	// published before it listens, so it can never land over a take that a
+	// request makes.
+	if err := e.PublishHeld(); err != nil {
+		return fail("held record: %v", err)
 	}
 	p, err := Start(ca, Options{Listen: *listen, Edge: e, Dir: e.AgentsDir(), Logf: func(f string, a ...any) {
 		e.logf(f, a...)
@@ -94,9 +106,13 @@ func EdgeMain(args []string, stderr io.Writer) int {
 	sig := make(chan os.Signal, 2)
 	signal.Notify(sig, syscall.SIGTERM, syscall.SIGINT, syscall.SIGHUP)
 	e.Run(done, func() { sig <- syscall.SIGTERM })
+	// The launcher waits for this line, not for the port: an old proxy still
+	// on a fixed port answers there while this one could not bind it.
+	fmt.Fprintf(stdout, "READY pid=%d port=%d\n", os.Getpid(), p.Port())
 	<-sig
 	close(done)
 	p.Close()
+	e.Stop()
 	e.ForgetHeld()
 	return 0
 }

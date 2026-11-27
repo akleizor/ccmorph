@@ -381,7 +381,7 @@ func TestLaunchersStartingTogetherKeepOneMatchingCA(t *testing.T) {
 			t.Fatalf("launchers kept different CAs: %.40q vs %.40q", first, p)
 		}
 	}
-	if _, err := readCA(dir); err != nil {
+	if _, err := readCA(dir, renewBefore); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -396,7 +396,7 @@ func TestAMismatchedCAIsReplaced(t *testing.T) {
 	}
 	key, _ := os.ReadFile(filepath.Join(b, caKeyFile))
 	os.WriteFile(filepath.Join(a, caKeyFile), key, 0o600)
-	if _, err := readCA(a); err == nil {
+	if _, err := readCA(a, renewBefore); err == nil {
 		t.Fatal("a key from another CA is accepted")
 	}
 	if _, err := LoadCA(a); err != nil {

@@ -286,14 +286,23 @@ def free_port() -> int:
         return s.getsockname()[1]
 
 
-def wait_listening(port: int, proc: subprocess.Popen, what: str, limit: float = 20) -> None:
+def wait_listening(port: int, proc: subprocess.Popen, what: str, ready: Path, limit: float = 20) -> None:
+    """Wait for `proc` itself to say it serves `port`: the line `READY pid=<its pid>
+    port=<port>` in `ready`, its stdout. A port that answers is no proof: on a fixed
+    port an old proxy still answers while the new one could not bind it and exits."""
     deadline = time.monotonic() + limit
     while time.monotonic() < deadline:
         if proc.poll() is not None:
             die(f"{what} exited during startup (rc={proc.returncode})")
-        with socket.socket() as s:
-            if s.connect_ex(("127.0.0.1", port)) == 0:
-                return
+        try:
+            text = ready.read_text()
+        except OSError:
+            text = ""
+        lines = text[:text.rfind("\n") + 1].splitlines()     # whole lines only
+        if f"READY pid={proc.pid} port={port}" in lines:
+            return
+        if lines:
+            die(f"{what} said {lines[0]!r}, not that it serves port {port}")
         time.sleep(0.1)
     die(f"{what} did not start listening within {limit:.0f}s")
 
@@ -571,7 +580,7 @@ def sweep_orphans(parent: Path) -> None:
     outlive its edge either."""
     sweep_handoffs(parent)
     for path in [*parent.glob("route-key.*"), *parent.glob("addon.*"), *parent.glob("held.*"),
-                 *parent.glob("taken.*")]:
+                 *parent.glob("taken.*"), *parent.glob("proxy-ready.*")]:
         pid = path.name.split(".")[1]
         if not pid.isdigit():
             continue
@@ -644,6 +653,7 @@ def own_edge(route: str, me: int, args, fixed_port: int | None):
     taken = [sig for sig in startup_signals if old_handlers[sig] == signal.SIG_DFL]
     key_file = None
     fd = None
+    ready = None
     proxy = None
     started = False
 
@@ -670,10 +680,15 @@ def own_edge(route: str, me: int, args, fixed_port: int | None):
                          RC_TIERS=json.dumps(pinned_tiers(os.environ)), RC_INFERENCE=str(INFERENCE))
         if args.debug:
             proxy_env["RC_LOG"] = str(STATE / "debug.log")
-        proxy = subprocess.Popen(
-            proxy_command(port, caddir),
-            env=proxy_env, stdin=subprocess.DEVNULL, start_new_session=True)
-        wait_listening(port, proxy, "proxy")
+        # The proxy's stdout is where it says it is ready, once it has bound the port.
+        ready_fd, ready = tempfile.mkstemp(prefix=owned_prefix("proxy-ready"), dir=STATE)
+        try:
+            proxy = subprocess.Popen(
+                proxy_command(port, caddir),
+                env=proxy_env, stdin=subprocess.DEVNULL, stdout=ready_fd, start_new_session=True)
+        finally:
+            os.close(ready_fd)
+        wait_listening(port, proxy, "proxy", Path(ready))
         ca = caddir / "ca.pem"
         if not ca.exists():
             die(f"proxy CA not generated at {ca}")
@@ -692,6 +707,9 @@ def own_edge(route: str, me: int, args, fixed_port: int | None):
             if key_file is not None:
                 with suppress(OSError):
                     os.unlink(key_file)      # already gone when the proxy consumed the key
+            if ready is not None:
+                with suppress(OSError):
+                    os.unlink(ready)         # the proxy keeps its stdout open; the name goes
             if proxy is not None and not started:
                 # Best effort: nothing raised while stopping it may replace the error
                 # (or the 128+signal exit) that ended this start.

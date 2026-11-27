@@ -9,7 +9,7 @@
 
 ### Changed
 
-- **The Remote Control edge runs on ccmorph's own proxy, and mitmproxy is no longer needed (#962).** `ccmorph-rc` starts `ccmorph-core edge-proxy`, the agent proxy in edge mode: switch words (whole session and per session), event slimming for the phone, fail-closed parking and the requested-vs-served check are ported to Go with tests, the Python add-on (`rc_addon.py`, `rc_flow.py`) is deleted,. The file contracts (`edges/`, `held.<pid>.json`, `sessions/`, `ccmorph-rc <profile> --switch`) are unchanged. The proxy adopts the CA mitmproxy kept, so a running session keeps trusting it; restart the edge to move to the new proxy.
+- **The Remote Control edge runs on ccmorph's own proxy, and mitmproxy is no longer needed (#962).** `ccmorph-rc` starts `ccmorph-core edge-proxy`, the agent proxy in edge mode: switch words (whole session and per session), event slimming for the phone, fail-closed parking and the requested-vs-served check are ported to Go with tests, the Python add-on (`rc_addon.py`, `rc_flow.py`) is deleted,. The file contracts (`edges/`, `held.<pid>.json`, `sessions/`, `ccmorph-rc <profile> --switch`) are unchanged. The proxy adopts the CA mitmproxy kept, so a running session keeps trusting it; a kept CA it cannot adopt stops the edge with the reason and the fix, never a new root those sessions would reject. Restart the edge to move to the new proxy.
 
 ### Added
 
