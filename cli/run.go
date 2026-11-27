@@ -1345,6 +1345,9 @@ const (
 )
 
 // setupDir is _ccm_setup_dir: provision the profile's config dir unless it is.
+// "Is" means both layers are done: ProfileOK answers for the shared layer and
+// ProvisionOK for the auth files, so a provisioning skipped as busy is tried
+// again by the next launch from the files' state, never a marker (#938).
 func (l *launcher) setupDir(name, typ string, policy livePolicy) bool {
 	// #205: a hop runs the next profile in this same process. The hopped-away
 	// profile's live lock is released here, or another launch of it reads a
@@ -1358,13 +1361,22 @@ func (l *launcher) setupDir(name, typ string, policy livePolicy) bool {
 	// launch that cannot take it must not start claude through the window the
 	// lock covers. #217: a verb that starts no session takes it best effort
 	// instead — the merge defers to the next launch, as it did before.
-	if !l.holdLive(name, policy) {
+	held, why := l.takeLive(name, policy)
+	if !held {
 		return false
 	}
-	if util.ProfileOK(l.profileDirs, name) {
+	if util.ProfileOK(l.profileDirs, name) && util.ProvisionOK(l.profileDirs, name, typ) {
 		return true
 	}
-	if !util.SetupProfile(l.profileDirs, name, typ, l.log, l.err) {
+	setup := util.SetupProfile
+	if why != nil && !errors.Is(why, util.ErrLiveHeld) {
+		// #217: `add` and `use` go on when the live lock cannot be made. The
+		// auth files' rewrite needs that lock (GH-938), so their setup skips it
+		// and logs why; a launch refuses until the lock can be made, and then
+		// ProvisionOK sends it through SetupProfile before claude starts.
+		setup = util.SetupProfileWithoutLive
+	}
+	if !setup(l.profileDirs, name, typ, l.log, l.err) {
 		return false
 	}
 	// The merge releases the lock it could not take back when its upgrade
@@ -1398,12 +1410,20 @@ func (l *launcher) setupDir(name, typ string, policy livePolicy) bool {
 // proceeds silently; `add` proceeds and names the real cause, so the profile it
 // just wrote is not rolled back over a lock that gates only its shared history.
 func (l *launcher) holdLive(name string, policy livePolicy) bool {
+	ok, _ := l.takeLive(name, policy)
+	return ok
+}
+
+// takeLive is holdLive that also returns why this process holds no live lock:
+// nil when it holds it, util.ErrLiveHeld for another holder, any other error
+// for a lock file that could not be made (#217). setupDir reads it (GH-938).
+func (l *launcher) takeLive(name string, policy livePolicy) (bool, error) {
 	f, why := util.HoldLive(l.profileDirs, name, l.log)
 	if f != nil {
-		return true
+		return true, nil
 	}
 	if policy == liveSilent {
-		return true
+		return true, why
 	}
 	path := util.LiveLockPath(l.profileDirs, name)
 	if policy == liveNote {
@@ -1412,14 +1432,14 @@ func (l *launcher) holdLive(name string, policy livePolicy) bool {
 		} else {
 			l.err("the live lock for '" + name + "' could not be created at " + path + " (" + why.Error() + "); remove what blocks the path — the shared history links on a later launch that can make it")
 		}
-		return true
+		return true, why
 	}
 	if errors.Is(why, util.ErrLiveHeld) {
 		l.err("another launch of '" + name + "' is holding its live lock (" + path + ") while it links shared history and has not let go; nothing started. Try again in a moment; if it stays stuck, `lsof " + path + "` names the holder.")
 	} else {
 		l.err("the live lock for '" + name + "' could not be created at " + path + " (" + why.Error() + "); nothing started. Remove what blocks the path and try again.")
 	}
-	return false
+	return false, why
 }
 
 // prelaunch runs CCMORPH_PRELAUNCH as `<exe> prelaunch <cwd>`: silent, 10s, best effort.

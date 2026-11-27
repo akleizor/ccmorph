@@ -21,6 +21,15 @@
   stopping, a gateway whose list names no chat model fails `doctor` in run's
   words, and `inspect` lists `excluded_models` (#862).
 
+- **A launch beside a live session no longer rewrites the profile's auth
+  files.** Provisioning read and replaced `config.json` and `.claude.json`
+  whole-file without the profile's live lock, so a save the running session
+  made between that read and the rename was silently dropped. Each file's
+  read-to-rename window now holds the lock exclusively, as every whole-file
+  writer does; a launch that cannot take it leaves both files untouched, says
+  which file it skipped and why, and still starts. Nothing records the skip:
+  the next launch provisions them (GH-938).
+
 ## v0.5.38 — 2026-11-26
 
 ### Added
