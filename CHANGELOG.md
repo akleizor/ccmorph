@@ -12,9 +12,16 @@
 - **A subagent can run on a provider profile or on another Claude account in a plain `ccmorph run` session.** The launcher's agent proxy now serves a pick on a provider profile (Codex, Antigravity): it joins or starts that profile's bridge as its own launch does and lets go of it when the session ends. It also serves a pick on another Claude subscription account, with that account's own sign-in (renewed by Claude Code when it has expired). Before, such a pick fell back to the session's own models.
 - **In any ccmorph session, a subagent runs on another profile and stays native.** With the router on, an Agent call the router picks for a gateway, an API key or a Claude token profile is still Claude Code's own subagent, in a plain `ccmorph run` session as well as in Remote Control. The launcher runs a local proxy for the session: only that agent's requests go to the picked profile and model, and the rest of the session is unchanged. A Claude account session keeps talking to api.anthropic.com, through ccmorph's own local certificate that only that Claude Code trusts (no keychain change); other hosts pass through unread. A profile the proxy cannot carry falls back to the session's own models.
 - **In a Remote Control session, a subagent runs on any profile and stays native.** With the router on, an Agent call the router picks for another profile (a gateway, an API key, another account) is still Claude Code's own subagent: it streams in the session, shows its tools, and returns to its caller. The edge's proxy serves that one agent from the picked profile and model; the rest of the session keeps its own. A profile the edge cannot serve falls back to the session's own models.
+- **`ccmorph doctor` answers whether a hosted edge served what its sessions picked.** The edge's proxy now keeps the asked-vs-served outcome of its session turns (counted since that edge run, with the last miss) beside its held record, and doctor reads the live edge's answer — a pick set in the phone and answered elsewhere now warns on the check, without anyone starting the edge with `--debug` or reading a log.
 
 ### Fixed
 
+- **A profile chosen for a phone session in Stark now survives an edge restart.**
+  A proxy holds a picked profile's endpoint only in memory, and the supervisor
+  re-handed only the shared switch, so after an edge or proxy restart every
+  session silently followed the edge's route again while the phone still showed
+  the profile it had chosen. The supervisor now re-hands every session's profile
+  word the same way, writing no word itself.
 - **A model alias from ~/.claude/settings.json no longer leaves a gateway profile
   unstartable behind a ready doctor.** `list` and `inspect` say where the shown
   model came from, `doctor` fails with run's own sentence and the command that

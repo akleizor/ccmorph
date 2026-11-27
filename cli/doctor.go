@@ -816,10 +816,14 @@ func (l *launcher) doctorRemoteControl(name string, f map[string]string) {
 	// under either name must not hold doctor's verdict (the #654 rule).
 	published := false
 	served := map[string]string{}
+	edgePID := 0
 	if b, err := paths.ReadRegularFile(filepath.Join(l.dir, "profiles", ".rc-bridge", "edges", name+".json")); err == nil {
 		var rec map[string]any
 		if json.Unmarshal(b, &rec) == nil {
 			if r, named := rec["route"].(string); !named || r == name {
+				if p, ok := rec["pid"].(float64); ok {
+					edgePID = int(p)
+				}
 				if tiers, ok := rec["tiers"].(map[string]any); ok {
 					published = true
 					for alias, model := range tiers {
@@ -862,6 +866,42 @@ func (l *launcher) doctorRemoteControl(name string, f map[string]string) {
 		// on the current map — nothing is stale yet.
 		l.status("INFO", "remote control: hosted; no edge record to compare (a running edge publishes one)")
 		return
+	}
+	// GH-977: every session turn's reply answers asked-vs-served (the #920 audit),
+	// and the proxy keeps this edge run's outcome in served.<edge pid>.json beside
+	// its held record, so the profile picked in Stark either served or said so
+	// before the phone called it a miss — no --debug, no human reading logs. The
+	// record is believed only as what held.<pid>.json says this proxy is: served by
+	// an earlier process at this pid answers for a different edge run (#595, #206).
+	// The row warns without weighing on the verdict, the masking rule of #293.
+	edgeRun := ""
+	if b, err := paths.ReadRegularFile(filepath.Join(l.dir, "profiles", ".rc-bridge", "held."+strconv.Itoa(edgePID)+".json")); err == nil {
+		var h struct {
+			EdgeStarted string `json:"edge_started"`
+		}
+		if json.Unmarshal(b, &h) == nil {
+			edgeRun = h.EdgeStarted
+		}
+	}
+	if edgeRun != "" {
+		if b, err := paths.ReadRegularFile(filepath.Join(l.dir, "profiles", ".rc-bridge", "served."+strconv.Itoa(edgePID)+".json")); err == nil {
+			var out struct {
+				EdgeStarted string `json:"edge_started"`
+				Turns       int    `json:"turns"`
+				Misses      int    `json:"misses"`
+				LastMiss    struct {
+					Line string `json:"line"`
+				} `json:"last_miss"`
+			}
+			if json.Unmarshal(b, &out) == nil && out.EdgeStarted == edgeRun && out.Turns > 0 {
+				if out.Misses > 0 {
+					l.status("WARN", fmt.Sprintf("remote control: %d of %d session turns since this edge started were served by another endpoint than the pick chose; last: %s",
+						out.Misses, out.Turns, out.LastMiss.Line))
+				} else {
+					l.status("INFO", fmt.Sprintf("remote control: all %d session turns since this edge started were served by the endpoint their pick chose", out.Turns))
+				}
+			}
+		}
 	}
 	drifted := 0
 	for _, alias := range aliases {
