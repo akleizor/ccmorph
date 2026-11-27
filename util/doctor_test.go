@@ -184,12 +184,48 @@ func TestRunningAdapterMatchesArgvAcrossSpaces(t *testing.T) {
 // so the ps that goroutine is in must end with the answer. The fake ps records
 // its pid and sleeps the bound out; __UNKNOWN__ comes at the bound, and the pid
 // must be gone shortly after.
-func TestRunningAdapterEndsAPsStalledPastItsBound(t *testing.T) {
-	// On darwin the table is the kernel's sysctl, which no PATH double reaches;
-	// the ps fallback is the reader this bound exists for, so force it.
+// forceKernelTablesAway forces both kernel table reads off — on darwin the
+// table is the kernel's sysctl, off darwin its /proc, and no PATH double
+// reaches either (#991) — so a test reaches the ps fallback the bound exists
+// for, and can force the table's loss itself.
+func forceKernelTablesAway(t *testing.T) {
+	t.Helper()
 	orig := sysctlTable
 	sysctlTable = func() (map[int]psRow, bool) { return nil, false }
 	t.Cleanup(func() { sysctlTable = orig })
+	origProcfs := procfsTable
+	procfsTable = func() map[int]psRow { return nil }
+	t.Cleanup(func() { procfsTable = origProcfs })
+}
+
+func TestLostTableReadAnswersInTheUsersWords(t *testing.T) {
+	// GH-467's fallback promise, in the words a person reads: a lost table is
+	// told as the SKIP line, not left at the internal sentinel — #991 moved
+	// the loss away from PATH ps, so the loss must be forced at its source
+	// (both kernel reads away, a ps stalled past the bound) and checked where
+	// doctor renders it.
+	forceKernelTablesAway(t)
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "ps"), []byte("#!/bin/sh\nsleep 2\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	running := runningAdapter("words-" + strconv.Itoa(os.Getpid()))
+	if running != "__UNKNOWN__" {
+		t.Fatalf("the forced loss did not reach the sentinel: %q", running)
+	}
+	details := adapterDetails(running)
+	want := "SKIP adapter: could not tell whether a translator is running"
+	if len(details) != 1 || details[0][0]+" "+details[0][1] != want {
+		t.Fatalf("a lost table answers %v, want the user's own words for it", details)
+	}
+}
+
+func TestRunningAdapterEndsAPsStalledPastItsBound(t *testing.T) {
+	// On darwin the table is the kernel's sysctl, off darwin its /proc, and no
+	// PATH double reaches either (#991); the ps fallback is the reader this
+	// bound exists for, so force the kernel reads away to reach it.
+	forceKernelTablesAway(t)
 
 	dir := t.TempDir()
 	pidFile := filepath.Join(dir, "ps.pid")

@@ -3145,7 +3145,11 @@ def _ps_table(monkeypatch, m, table, code=0, argv=None):
     `pid=,command=` read gives each line a pid, as ps does: its own leading one,
     else 1000 plus the line's index; a `-o command=` read gets the lines as
     written. proc_argv() answers from `argv` ({pid: [arguments]}) and None for
-    any other pid, so no test reads a real process's argv by a made-up pid."""
+    any other pid, so no test reads a real process's argv by a made-up pid.
+    The kernel's own table (procfs_table(), #991) reads as absent here: a
+    ps-backed fixture is tested against `table` alone — the host's live pids
+    are numbered from 1 too, and one the fixture named 1000 would become the
+    whole table before ps was ever asked."""
     import subprocess
     numbered = "".join(
         (line if not line.strip() or line.split()[0].isdigit() else f"{1000 + i} {line}") + "\n"
@@ -3158,6 +3162,7 @@ def _ps_table(monkeypatch, m, table, code=0, argv=None):
     monkeypatch.setattr(m.subprocess, "run", run)
     monkeypatch.setattr(m, "proc_argv", lambda pid: list((argv or {}).get(pid, [])) or None,
                         raising=False)
+    monkeypatch.setattr(m, "procfs_table", lambda: None, raising=False)
 
 
 def _procs(monkeypatch, m, *argvs):
@@ -3865,6 +3870,85 @@ def test_two_real_processes_with_one_ps_row_are_told_apart_by_their_argv(tmp_pat
             p.stdout.close()
 
 
+def test_a_live_session_child_is_still_found_when_no_ps_can_run(tmp_path, monkeypatch):
+    """#991: session_pid() ran its own ps and answered None when that read gave
+    up, and under a fork-bound `make gate` the read that gives up is the exec
+    of ps queueing behind every fork -- while the kernel's own copy of the
+    same argv sat readable the whole time. The table now comes from /proc
+    where the kernel keeps one, and no exec is on its way: a real child is
+    named by process_table() and by session_pid() even when every
+    subprocess.run in the module raises. The child is the shape of a session
+    child: node running claude's cli.js with --session-id beside --sdk-url."""
+    import subprocess
+    m = load()
+    if not os.path.isdir("/proc"):
+        pytest.skip("the direct read is the table only where the kernel keeps one in /proc")
+    cli = tmp_path / "a b" / "cli.js"               # claude's script under a spaced path
+    cli.parent.mkdir()
+    cli.write_text("echo ready; read x\n")          # /bin/sh runs it, argv[0] set to node's path
+    link = tmp_path / "claude"
+    link.symlink_to(cli)
+    monkeypatch.setattr(m.shutil, "which", lambda name, *a, **kw: str(link) if name == "claude" else None)
+    p = subprocess.Popen(["/usr/bin/node", str(cli), "--print", "--session-id", "cse_01NOPS",
+                          "--sdk-url", "wss://x"],
+                         executable="/bin/sh", stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
+    try:
+        assert p.stdout.readline() == "ready\n"
+
+        def exec_refused(cmd, **kw):
+            raise OSError("the fork storm owns the run queue: ps never starts")
+        monkeypatch.setattr(m.subprocess, "run", exec_refused)
+        rows = m.process_table()
+        assert rows is not None                     # the kernel answers without an exec
+        row = [r for r in rows if r.pid == p.pid]
+        assert len(row) == 1
+        assert f"{cli} --print" in row[0]           # the spaced argument joined whole, as ps prints it
+        assert m.session_pid("cse_01NOPS") == p.pid
+    finally:
+        p.stdin.close()
+        p.wait(timeout=HANG_TIMEOUT)
+        p.stdout.close()
+
+
+def test_a_lost_table_read_says_cannot_tell_and_removes_and_signals_nothing(monkeypatch, tmp_path):
+    """#991, #297's rule for the whole table: silence is not an exit. With no
+    /proc to read and a ps that cannot answer, session_pid() says it cannot
+    tell rather than "no such session": park_idle() signals nothing on the
+    cannot-tell, and list_sessions() leaves every word in place -- a loaded
+    machine may not delete a live session's word or park its child because
+    the table's read was lost."""
+    import subprocess
+    m = load()
+    monkeypatch.setattr(m, "procfs_table", lambda: None)
+    monkeypatch.setattr(m.subprocess, "run", lambda *a, **kw: (_ for _ in ()).throw(
+        subprocess.TimeoutExpired(["ps", "-ww", "-Ao", "pid=,command="], 10)))
+    assert m.process_table() is None
+    assert m.session_pid("cse_01X") == m.CANNOT_TELL
+
+    repo = tmp_path / "repo"
+    (repo / ".claude").mkdir(parents=True)
+    (repo / ".claude" / "rc-host.json").write_text('{"environmentId": "env_01R"}')
+    now = 100_000.0
+    active = [{"id": "cse_01OLD", "environment_id": "env_01R", "connection_status": "connected",
+               "worker_status": "idle", "last_event_at": "1970-01-01T00:00:00Z",
+               "user_message_count": 4}]
+    killed = []
+    monkeypatch.setattr(m, "api", lambda method, path, token, body=None: {"data": active})
+    monkeypatch.setattr(m, "account_token", lambda: "tok")
+    monkeypatch.setattr(m.time, "time", lambda: now)
+    monkeypatch.setattr(m.os, "kill", lambda pid, sig: killed.append(pid))
+    monkeypatch.setattr(m, "gone_within", lambda pid, s: True)
+    assert m.park_idle([str(repo)], now, {}, m.park_hours("") * 3600) == []
+    assert killed == []                             # the cannot-tell is never a SIGTERM
+
+    m.SESSION_WORDS.mkdir(parents=True)
+    (m.SESSION_WORDS / "cse_live").write_text("gpro\n")
+    monkeypatch.setattr(m, "account_name", lambda: "me")
+    monkeypatch.setattr(m, "host_sessions", lambda folders, status: ("tok", []))
+    m.list_sessions(["repo"])                       # the sweep's question is about cse_live
+    assert [p.name for p in m.SESSION_WORDS.iterdir()] == ["cse_live"]
+
+
 def test_proc_argv_reads_each_argument_whole_from_the_kernel():
     """#758: ps joins argv with spaces; proc_argv() reads the kernel's own copy,
     each argument whole -- spaces inside one, a run of them, an empty one -- so
@@ -4010,15 +4094,15 @@ def test_a_bare_session_id_in_an_unrelated_command_does_not_keep_a_dead_record(t
 
 def test_a_failed_ps_leaves_the_records_for_the_next_check(tmp_path, monkeypatch):
     """#758: a nonzero ps exit is an unread table even when it printed rows, so
-    that idle check unlinks nothing; the next check sweeps."""
-    import subprocess
+    that idle check unlinks nothing; the next check sweeps. Through the module's
+    table seam (#991): the faked ps exits 1 having printed rows, and no kernel
+    table answers beneath it, so the ps answer -- unreadable -- is the table."""
     m = load()
     logs = tmp_path / "logs"
     logs.mkdir()
     monkeypatch.setattr(m, "LOGS", logs)
     table = "/x/claude --session-id cse_01LIVE --sdk-url wss://x\n"
-    monkeypatch.setattr(m.subprocess, "run", lambda cmd, **kw: subprocess.CompletedProcess(
-        cmd, 1, stdout=table, stderr="ps: partial"))
+    _ps_table(monkeypatch, m, table, code=1)
     hosts = _running_host(m, tmp_path / "repo", [time.time()])
     old = logs / "bridge-transcript-cse_01OLD.jsonl"
     old.write_text("x")
