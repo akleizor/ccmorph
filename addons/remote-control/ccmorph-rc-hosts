@@ -1654,14 +1654,20 @@ PROC_ROOT = "/proc"             # the kernel's process table; a test points it a
 
 
 def procfs_table() -> "list[PsRow] | None":
-    """The process table read from /proc directly (Linux): each pid's argv as
-    the kernel keeps it, joined with one space exactly as ps prints a row -- or
-    None where the kernel keeps no /proc or it cannot be read whole. This is
-    the table without an exec: ps reads the very same files, but ps is itself a
-    process, and under a fork storm the exec is the part that queues -- which
-    is how session_pid() read a live child as no session while the kernel's
-    own argv sat there readable (#991). A reader that must know where an
-    argument ends still reads that pid's argv (proc_argv()).
+    """The process table read from /proc directly where the kernel keeps one:
+    each pid's argv as the kernel holds it, joined with one space exactly as
+    ps prints a row -- or None where there is no table to read (the listing
+    itself fails: a Mac, a container without /proc) or it cannot be read
+    whole. The listing is tried directly rather than gated on a prior
+    existence check, so the kernel's answer is the only word: the check
+    and the read can disagree (a hidden or lazily mounted /proc), and a
+    reader that answers "none" from the check would lose the table the
+    kernel was ready to give. This is the table without an exec: ps reads
+    the very same files, but ps is itself a process, and under a fork storm
+    the exec is the part that queues -- which is how session_pid() read a
+    live child as no session while the kernel's own argv sat there readable
+    (#991). A reader that must know where an argument ends still reads that
+    pid's argv (proc_argv()).
 
     A pid leaves the table only on the kernel's own proof that it is gone:
     its read answered ENOENT (the directory was listed, then vanished) or
@@ -1670,8 +1676,6 @@ def procfs_table() -> "list[PsRow] | None":
     included -- proves nothing and voids the whole table, so ps answers
     instead: one silently missing row would read as "no such session" and
     let that silence delete a live session's word (#991)."""
-    if not os.path.isdir(PROC_ROOT):
-        return None
     try:
         entries = os.listdir(PROC_ROOT)
     except OSError:
