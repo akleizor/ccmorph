@@ -129,7 +129,7 @@ jobs:
 
   python-floor:
     timeout-minutes: 20
-    # The floor is 3.8, and only the Remote Control add-on (a mitmproxy add-on) and
+    # The floor is 3.8, and only the Remote Control launcher (addons/remote-control) and
     # the pytest suite still run on Python. Prove both on 3.8, 3.12 and 3.13 — the
     # failure this guards against surfaced days after install, inside a child
     # process, as a bare SyntaxError.

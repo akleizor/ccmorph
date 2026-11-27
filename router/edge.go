@@ -19,7 +19,7 @@ import (
 // which can serve any profile it holds. So a subagent picked on another profile
 // still runs as Claude Code's own subagent: the hook leaves the pick for the
 // proxy, and the proxy sends that one agent's requests to the picked profile
-// (rc_route.claim_agent holds the other half of this protocol).
+// (agentproxy.Claim holds the other half of this protocol).
 
 func rcBridge() string { return filepath.Join(paths.ProfileRoot(), "profiles", ".rc-bridge") }
 
@@ -78,7 +78,7 @@ func edgeWord(profile string, deadline time.Time) (string, bool) {
 	return profile, true
 }
 
-// promptKey names a pending pick: rc_route.prompt_key.
+// promptKey names a pending pick: agentproxy.PromptKey.
 func promptKey(prompt string) string { return agentproxy.PromptKey(prompt) }
 
 func edgeAgents() string { return filepath.Join(rcBridge(), "agents") }
@@ -89,7 +89,7 @@ func leavePick(session, prompt, word, model string) error {
 	return agentproxy.LeavePick(edgeAgents(), session, prompt, agentproxy.Pick{Word: word, Model: model})
 }
 
-// dropAgent removes a stopped agent's binding (rc_route.agent_target).
+// dropAgent removes a stopped agent's binding (agentproxy.Bound).
 func dropAgent(agent string) { agentproxy.DropAgent(edgeAgents(), agent) }
 
 // proxyServes is whether the launcher's agent proxy can carry profile's sign-in:

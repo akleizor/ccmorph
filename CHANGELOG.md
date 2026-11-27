@@ -7,6 +7,10 @@
 
 ## Unreleased
 
+### Changed
+
+- **The Remote Control edge runs on ccmorph's own proxy, and mitmproxy is no longer needed (#962).** `ccmorph-rc` starts `ccmorph-core edge-proxy`, the agent proxy in edge mode: switch words (whole session and per session), event slimming for the phone, fail-closed parking and the requested-vs-served check are ported to Go with tests, the Python add-on (`rc_addon.py`, `rc_flow.py`) is deleted,. The file contracts (`edges/`, `held.<pid>.json`, `sessions/`, `ccmorph-rc <profile> --switch`) are unchanged. The proxy adopts the CA mitmproxy kept, so a running session keeps trusting it; restart the edge to move to the new proxy.
+
 ### Added
 
 - **A subagent can run on a provider profile or on another Claude account in a plain `ccmorph run` session.** The launcher's agent proxy now serves a pick on a provider profile (Codex, Antigravity): it joins or starts that profile's bridge as its own launch does and lets go of it when the session ends. It also serves a pick on another Claude subscription account, with that account's own sign-in (renewed by Claude Code when it has expired). Before, such a pick fell back to the session's own models.

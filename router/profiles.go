@@ -289,7 +289,7 @@ func SessionProfile() string {
 // route no record names answers "".
 //
 // A word naming a profile is believed on its name alone, and that is a known
-// divergence from the word's owner: rc_addon gates the same word on _switched,
+// divergence from the word's owner: the edge proxy gates the same word on _switched,
 // which reads and unlinks the --switch handoff on the first request, so after
 // boot, a config reload or an edge restart — states #595 is open for — it logs
 // "was never brought up" and serves the edge's own route, while this reader

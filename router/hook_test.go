@@ -338,7 +338,7 @@ func TestSessionProfileInAnEdgeSessionIsWhereInferenceRuns(t *testing.T) {
 		{"account", map[string]int{"llmgate": 47670}, "here"},
 		{"there", map[string]int{"llmgate": 47670}, "there"},
 		{"route", map[string]int{"other": 47100}, ""},
-		// #595: the stale-word answer, pinned. rc_addon trusts this word only
+		// #595: the stale-word answer, pinned. the edge proxy trusts this word only
 		// while the --switch handoff exists and falls back to the route once it
 		// is gone (unlinked after the first request) — a state no on-disk
 		// reader can see, so this port still names switched_in though the edge
@@ -574,7 +574,7 @@ func TestPreToolUseHandsAnotherProfilesPickToTheAgentProxy(t *testing.T) {
 	}
 }
 
-// The pending key is rc_route.prompt_key: sha256 of the stripped prompt, the
+// The pending key is agentproxy.PromptKey: sha256 of the stripped prompt, the
 // value Python's hashlib gives for "say hi".
 func TestPromptKeyMatchesTheProxys(t *testing.T) {
 	if got := promptKey("  say hi\n"); got != "53eae7058490affdf5ca03d9cc9f08b34b7f408f21f6f8a5e397068709243ede" {

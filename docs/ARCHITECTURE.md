@@ -77,7 +77,7 @@ The repository and the installed copy under `~/.config/ccmorph` share one layout
 is the one binary every launch, install and zsh caller runs;
 `model-window` and `context-probe` are one Go package, `ctxwindow/`;
 `ccmorph-core shim` is the standalone stock shim, for a script that runs it directly.
-No Python runs in the core: `python3` is needed only by the Remote Control add-on in `addons/remote-control/`) and `share/` (data:
+No Python runs in the core: `python3` is needed only by the Remote Control launcher in `addons/remote-control/`) and `share/` (data:
 `model-catalogue.json`, `window-sources.json`). `lib/` finds `libexec/` and `share/`
 beside itself. `CCMORPH_LIB_DIR` names the `lib/` directory.
 
@@ -2084,6 +2084,22 @@ accepts made portable as the edge does. Main-thread requests pass through
 untouched. An expired account sign-in is renewed by Claude Code itself (`claude auth status`), never by a token call of ccmorph's. The hook leaves a pick only for a profile the proxy can carry
 (`token`, `apikey`, `proxy`, `provider`, `sub`); any other falls back to the session's aliases.
 
+**The Remote Control edge is the same proxy in edge mode** (`agentproxy/edge*.go`,
+started as `ccmorph-core edge-proxy` by `ccmorph-rc`). One option set, not a second
+proxy: the same CONNECT handler, CA and `Rewrite`, plus a decision made before any
+dial, from the files `ccmorph-rc` writes under `profiles/.rc-bridge/`. The word file
+`inference` and `sessions/<cse id>` (read by the UUIDv5 Claude Code sends in
+`X-Claude-Code-Session-Id`) name where a turn goes: `account` (untouched, on the
+claude.ai login), `route` (the edge's own endpoint) or a profile handed over by
+`ccmorph-rc <profile> --switch` (`switch-<profile>.json`, taken within 500 ms by
+the proxy of the edge it names, which records it in `held.<edge pid>.json`). A
+subagent's pick is the per-session pick above, so a pick reaches an RC agent through
+its own session's folder (#959). Each inference turn logs `asked=` and `served-by=`
+(`miss` when another endpoint answered). Unrouted first-party inference never dials:
+a decision error is a 502, and the transport refuses `api.anthropic.com/v1/messages`
+unless the account word applies. Event uploads (`/v1/code/sessions/<cse>/worker/events`)
+are slimmed for the phone, and rerouted bodies are made portable. On first start the
+edge adopts the CA the mitmproxy it replaced kept, so running sessions keep trusting it.
 One route, in order:
 
 1. Kind and tier: the caller's, else the optional decider endpoint's typed
