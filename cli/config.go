@@ -376,8 +376,8 @@ func (l *launcher) config(args []string) int {
 	}
 	if section != "defaults" && typ == "apikey" {
 		shown, _ := nativeBase(endpoint)
-		answer, rc := uiInput("Endpoint ["+shown+"]: ", false)
-		if rc != 0 {
+		answer, ok := l.configAsk("Endpoint ["+shown+"]: ", false)
+		if !ok {
 			return 1
 		}
 		if answer != "" {
@@ -394,16 +394,15 @@ func (l *launcher) config(args []string) int {
 	if section != "defaults" && (typ == "apikey" || typ == "token") {
 		replace := section == "connection"
 		if !replace {
-			switch uiConfirm("Replace stored credential?") {
-			case 0:
-				replace = true
-			case 2:
+			yes, ok := l.configConfirm("Replace stored credential?")
+			if !ok {
 				return 1
 			}
+			replace = yes
 		}
 		if replace {
-			answer, rc := uiInput("Credential (hidden; Enter keeps current): ", true)
-			if rc != 0 {
+			answer, ok := l.configAsk("Credential (hidden; Enter keeps current): ", true)
+			if !ok {
 				return 1
 			}
 			if answer != "" {
@@ -431,9 +430,11 @@ func (l *launcher) config(args []string) int {
 	if section != "connection" {
 		preview := []string{endpoint, credential}
 		if model, modelKept, ok = l.promptDefault("model", name, model, typ, endpoint, preview); !ok {
+			l.configInputEnded()
 			return 1
 		}
 		if effort, _, ok = l.promptDefault("effort", name, effort, typ, endpoint, preview); !ok {
+			l.configInputEnded()
 			return 1
 		}
 	}
@@ -479,4 +480,45 @@ func (l *launcher) promptDefault(slot, name, current, typ, base string, preview 
 		return answer, false, true
 	}
 	return l.valueMenu(slot, name, current, typ, base, l.defaultRows(slot, name, typ, preview...), true)
+}
+
+// configNeedsTerminal is the one sentence a config run ends with when its
+// stdin closes before every prompt is answered (GH-971). The prompts are a
+// sequence — an endpoint, a credential, a model, an effort — so a person who
+// pipes fewer answers than there are questions gets the rest of the questions
+// unanswered; the run then used to stop on a bare prompt with no word about
+// why, leaving a shell that looked like it had hung and then exited.
+const configNeedsTerminal = "config needs a terminal, or one answer per prompt on stdin; input ended, nothing saved"
+
+// configInputEnded names the cause when no terminal will answer and stdin ran
+// out. A terminal's own Esc is a cancel with its picker's line, never this.
+func (l *launcher) configInputEnded() {
+	if !isTTY(0) {
+		l.err(configNeedsTerminal)
+	}
+}
+
+// configAsk is one config prompt whose answer a stdin that ended cannot give.
+// A hidden answer's prompt closes its own line; a visible one is closed by
+// uiInput's EOF, so the message always stands alone under the question.
+func (l *launcher) configAsk(prompt string, secret bool) (string, bool) {
+	answer, rc := uiInput(prompt, secret)
+	if rc != 0 {
+		l.configInputEnded()
+		return "", false
+	}
+	return answer, true
+}
+
+// configConfirm asks a yes/no question the same way: an unanswered stdin is
+// named, a terminal's cancel is not.
+func (l *launcher) configConfirm(prompt string) (bool, bool) {
+	switch uiConfirm(prompt) {
+	case 0:
+		return true, true
+	case 1:
+		return false, true
+	}
+	l.configInputEnded()
+	return false, false
 }

@@ -93,6 +93,23 @@ func ProfileRoot() string {
 	return filepath.Join(Home(), ".config", "ccmorph")
 }
 
+// InstallerSpelling is the install's directory as install.sh spells it:
+// "${XDG_CONFIG_HOME:-$HOME/.config}/ccmorph/<rel>", joined as a string the way
+// the installer joins it (never cleaned), and deliberately not ProfileRoot —
+// CCMORPH_STATE_DIR redirects the profiles, not where the installer put the
+// code (GH-971). "" when neither XDG_CONFIG_HOME nor HOME names a root.
+func InstallerSpelling(rel string) string {
+	root := os.Getenv("XDG_CONFIG_HOME")
+	if root == "" {
+		home := os.Getenv("HOME")
+		if home == "" {
+			return ""
+		}
+		root = home + "/.config"
+	}
+	return root + "/ccmorph/" + rel
+}
+
 // LibDir is the installation's lib/ directory: $CCMORPH_LIB_DIR, else the
 // lib/ beside the running binary (lib/ finds libexec/ and share/ beside
 // itself).
