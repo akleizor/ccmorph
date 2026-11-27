@@ -162,23 +162,49 @@ func owns(pid int, tmp string) (yours, known bool) {
 	return false, false
 }
 
-// holdsRoute is whether pid still runs the core's route hold on users, read
+// routeHoldExitStdin is the operand that ends a route hold when its stdin
+// reaches EOF: a session's shared-adapter hold is spawned with the write end of
+// a pipe only its launcher keeps, so a launcher that dies without releasing
+// closes it and the marker goes with its session (#1022).
+const routeHoldExitStdin = "--exit-on-stdin-eof"
+
+// routeHoldUsers is the users file a core route-hold process is holding, read
 // from one record of that pid, never a reused PID: the kernel names its
 // executable ccmorph-core and its argv, argument by argument, is
-// <dir>/ccmorph-core util route-hold <users>, as the launch spawned it. The
-// executable is the proof — not argv[0], which the program chooses — and the
-// argument boundaries are kept: the joined command line ps prints can not tell
-// one operand reading "/x/ccmorph-core util route-hold <users>" from the three
-// words it spells, so a hold on some other file would pass for this route's.
-// No users file, no readable record, no proof (#408).
+// <dir>/ccmorph-core util route-hold <users>[, --exit-on-stdin-eof], as the
+// launch spawned it. The executable is the proof — not argv[0], which the
+// program chooses — and the argument boundaries are kept: the joined command
+// line ps prints can not tell one operand reading "/x/ccmorph-core util
+// route-hold <users>" from the three words it spells, so a hold on some other
+// file would pass for this route's. Flagged is true for the shape a session's
+// shared-adapter marker takes. No readable record, no proof (#408).
+func routeHoldUsers(pid int) (users string, flagged, ok bool) {
+	if pid <= 0 {
+		return "", false, false
+	}
+	exe, argv, ok := imageOf(pid)
+	if !ok || len(argv) == 0 || filepath.Base(exe) != launcherComm ||
+		filepath.Base(argv[0]) != launcherComm {
+		return "", false, false
+	}
+	switch {
+	case len(argv) == 4 && argv[1] == "util" && argv[2] == "route-hold":
+		return argv[3], false, true
+	case len(argv) == 5 && argv[1] == "util" && argv[2] == "route-hold" && argv[4] == routeHoldExitStdin:
+		return argv[3], true, true
+	}
+	return "", false, false
+}
+
+// holdsRoute is whether pid still runs the core's route hold on users: the
+// proof is routeHoldUsers', and the users file must be this one. No users file,
+// no proof (#408).
 func holdsRoute(pid int, users string) bool {
 	if pid <= 0 || users == "" {
 		return false
 	}
-	exe, argv, ok := imageOf(pid)
-	return ok && len(argv) == 4 && filepath.Base(exe) == launcherComm &&
-		filepath.Base(argv[0]) == launcherComm &&
-		argv[1] == "util" && argv[2] == "route-hold" && argv[3] == users
+	got, _, ok := routeHoldUsers(pid)
+	return ok && got == users
 }
 
 // retirable is the PID a retirement may signal for the bridge its handle
@@ -343,15 +369,25 @@ func RetireRoute(authDir, pid, tmp, holder string) {
 	os.Remove(files[0])
 }
 
-// routeHold is `util route-hold <users-file>`: the holder behind a route's
-// ownership of the shared bridge it runs on. It takes the same shared lock a
-// session of the profile holds and keeps it until it is signaled, so the
-// bridge's stop owners — the last session out, a sibling route's retirement —
-// see the route's use and leave the bridge running. The hold dies with the
-// process: the kernel closes the lock.
+// routeHold is `util route-hold <users-file> [--exit-on-stdin-eof]`: the holder
+// behind a route's ownership of the shared bridge it runs on. It takes the same
+// shared lock a session of the profile holds and keeps it until it is signaled,
+// so the bridge's stop owners — the last session out, a sibling route's
+// retirement — see the route's use and leave the bridge running. The hold dies
+// with the process: the kernel closes the lock.
+//
+// With --exit-on-stdin-eof it also ends when its stdin reaches EOF. A shared
+// adapter's session marker is spawned that way, with the write end of a pipe
+// only its launcher keeps, so a launcher that dies without releasing closes it
+// and the marker goes with its session (#1022).
 func routeHold(args []string, in io.Reader, out, errw io.Writer) int {
-	if len(args) != 1 {
-		fmt.Fprintln(errw, "usage: ccmorph-core util route-hold <users-file>")
+	watch := false
+	switch {
+	case len(args) == 2 && args[1] == routeHoldExitStdin:
+		watch = true
+	case len(args) == 1:
+	default:
+		fmt.Fprintln(errw, "usage: ccmorph-core util route-hold <users-file> ["+routeHoldExitStdin+"]")
 		return 2
 	}
 	f, err := lockFile(args[0], syscall.LOCK_SH)
@@ -362,7 +398,23 @@ func routeHold(args []string, in io.Reader, out, errw io.Writer) int {
 	fmt.Fprint(out, "1") // the hold has landed
 	c := make(chan os.Signal, 1)
 	signal.Notify(c, syscall.SIGTERM, syscall.SIGINT)
-	<-c
+	if !watch {
+		<-c
+		return 0
+	}
+	eof := make(chan struct{})
+	if in == nil {
+		<-c
+		return 0
+	}
+	go func() {
+		_, _ = io.Copy(io.Discard, in)
+		close(eof)
+	}()
+	select {
+	case <-c:
+	case <-eof:
+	}
 	return 0
 }
 

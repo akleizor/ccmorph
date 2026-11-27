@@ -183,22 +183,47 @@ func underClaude(t map[int]psRow, pid int) bool {
 
 var adapterArgv = regexp.MustCompile(`ccmorph-(?:core )?adapter\s+(\S+)`)
 
+// sessionHoldProfile is the profile of the shared adapter whose session hold
+// pid is: a core route-hold spawned with --exit-on-stdin-eof on that adapter's
+// users file, proved from the kernel's own record the way EndRouteHold proves a
+// hold before it signals one. "" for every other process, including a route
+// hold a provider route owns: it holds the bridge's users file, which is not an
+// adapter's.
+func sessionHoldProfile(pid int) string {
+	users, flagged, ok := routeHoldUsers(pid)
+	if !ok || !flagged {
+		return ""
+	}
+	return adapterProfileFromUsers(users)
+}
+
 // findSessionAdapter is the profile of the adapter <launcher> started. A session
 // keeps one adapter alive across passes, but `util adapter-start` exits once it is
 // ready, so the adapter is reparented and its --parent-pid argument names the
 // launcher where its ppid no longer can. The pid must match whole, so 10 is never
 // taken for 100.
+//
+// A shared adapter is joined rather than started, and a joining launcher is
+// parent of no adapter at all: the mark it does have is the route-hold child
+// AcquireAdapter spawns on the adapter's users file, which dies with it (#1022).
+// Both are read in one pass over the pids ascending, the order ps prints, so the
+// answer does not depend on map iteration; an adapter in argv wins over a hold,
+// as it did before shared adapters existed.
 func findSessionAdapter(t map[int]psRow, launcher int) string {
 	parent := regexp.MustCompile(`(?:^|\s)--parent-pid[= ]` + strconv.Itoa(launcher) + `(?:\s|$)`)
-	for _, r := range t {
-		if r.ppid != launcher && !parent.MatchString(r.args) {
-			continue
+	hold := ""
+	for _, pid := range sortedPids(t) {
+		r := t[pid]
+		if r.ppid == launcher || parent.MatchString(r.args) {
+			if m := adapterArgv.FindStringSubmatch(r.args); m != nil {
+				return m[1]
+			}
 		}
-		if m := adapterArgv.FindStringSubmatch(r.args); m != nil {
-			return m[1]
+		if hold == "" && r.ppid == launcher {
+			hold = sessionHoldProfile(pid)
 		}
 	}
-	return ""
+	return hold
 }
 
 // SessionAdapter is the profile of the adapter the launcher pid started, read

@@ -572,9 +572,14 @@ its users file, and reads its record: an adapter that is running with the key's
 is started (own session, so no terminal's Ctrl-C reaches it) and recorded. The
 same mechanism shares the provider bridge. The last session out (`Release`)
 stops it; a launcher never signals an adapter other sessions hold, and a hop
-releases its use of the profile it leaves. An adapter whose last session was
-SIGKILLed notices on its own poll, under the mutex, that no one holds the users
-lock any more, removes its record and exits. `--parent-pid` stays for callers
+releases its use of the profile it leaves. Each session also keeps one child,
+`ccmorph-core util route-hold <users> --exit-on-stdin-eof`, on the key's users
+file; it carries the session's shared lock, ends when its launcher dies (its
+stdin is a pipe only the launcher keeps), and is how `ccmorph hop` names the
+profile of a session that joined an adapter it did not start
+(`util.SessionAdapter`); `Release` ends it first, under the mutex. An adapter
+whose last session was SIGKILLed notices on its own poll, under the mutex, that
+no one holds the users lock any more, removes its record and exits. `--parent-pid` stays for callers
 without sessions (the Remote Control edge, tests); `--port` runs until signalled.
 
 ### The long-lived endpoint form

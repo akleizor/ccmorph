@@ -2,6 +2,8 @@ package util
 
 import (
 	"context"
+	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -76,6 +78,10 @@ func TestHopTargetSkipsTheCoreLauncher(t *testing.T) {
 	}
 }
 
+// TestSessionAdapterFindsA covers the three shapes a session's adapter takes:
+// spawned (the adapter is still the launcher's child), reparented away (its
+// --parent-pid is the only witness left), and a joined shared adapter, which is
+// found through the session hold the joiner spawned (#1022).
 func TestSessionAdapterFindsAReparentedAdapter(t *testing.T) {
 	// util adapter-start exits once the adapter is ready, so the running adapter
 	// is reparented to launchd: its --parent-pid argument is the only witness left.
@@ -92,7 +98,7 @@ func TestSessionAdapterFindsAReparentedAdapter(t *testing.T) {
 	}{
 		{100, "gw"},
 		{200, "eq"},
-		{300, "sub"},
+		{300, "sub"}, // spawned: still the launcher's child
 		{10, ""},
 		{400, ""},
 	} {
@@ -123,6 +129,283 @@ func TestSessionAdapterFindsAReparentedProcessInTheRealTable(t *testing.T) {
 	if got := findSessionAdapter(tab, launcher); got != "gw" {
 		t.Fatalf("a reparented adapter must be found by its --parent-pid, got %q (row %+v)", got, r)
 	}
+}
+
+// TestSessionAdapterFindsAJoinedAdaptersHold is the joined shape through the
+// real process table: the session holds no adapter of its own, only the
+// route-hold child that names the adapter's users file (#1022).
+func TestSessionAdapterFindsAJoinedAdaptersHold(t *testing.T) {
+	users := AdapterBase(t.TempDir(), "gw", "0123456789abcdef") + ".users"
+	core := coreCopy(t)
+	hold := holdProc(t, core, users, core, "util", "route-hold", users, routeHoldExitStdin)
+
+	tab := processTable()
+	if r := tab[hold.Process.Pid]; r.ppid != os.Getpid() {
+		t.Fatalf("the fixture hold must be this launcher's child, got %+v", r)
+	}
+	if got := findSessionAdapter(tab, os.Getpid()); got != "gw" {
+		t.Fatalf("a joined adapter must be named by its session hold, got %q", got)
+	}
+}
+
+// TestAnAdapterInArgvWinsOverAHold pins the precedence: this session has both a
+// real hold and an adapter's argv, and the adapter answers whichever side of the
+// hold the walk meets first — the pids ascend, so map iteration cannot decide.
+func TestAnAdapterInArgvWinsOverAHold(t *testing.T) {
+	users := AdapterBase(t.TempDir(), "gw", "0123456789abcdef") + ".users"
+	core := coreCopy(t)
+	holdProc(t, core, users, core, "util", "route-hold", users, routeHoldExitStdin)
+	for _, pid := range []int{2, 1 << 30} {
+		tab := processTable()
+		tab[pid] = psRow{ppid: os.Getpid(), args: "/x/libexec/ccmorph-core adapter eq --auto"}
+		if got := findSessionAdapter(tab, os.Getpid()); got != "eq" {
+			t.Fatalf("adapter at pid %d: got %q, want the adapter's profile", pid, got)
+		}
+	}
+}
+
+// TestARouteHoldIsNotASessionMarker pins the shape: a provider route's hold
+// names the bridge's users file with the four-word argv, and a flagged hold on
+// a path that is not an adapter's names nothing either.
+func TestARouteHoldIsNotASessionMarker(t *testing.T) {
+	dir := t.TempDir()
+	core := coreCopy(t)
+	users := AdapterBase(dir, "gw", "0123456789abcdef") + ".users"
+	holdProc(t, core, users, core, "util", "route-hold", users)
+	if got := findSessionAdapter(processTable(), os.Getpid()); got != "" {
+		t.Fatalf("a route hold is not a session's adapter, got %q", got)
+	}
+	other := filepath.Join(dir, "route.users")
+	holdProc(t, core, other, core, "util", "route-hold", other, routeHoldExitStdin)
+	if got := findSessionAdapter(processTable(), os.Getpid()); got != "" {
+		t.Fatalf("a hold on a file no adapter owns names no profile, got %q", got)
+	}
+}
+
+// TestSharedAdapterLauncherChild is one launcher process for the two-process
+// tests below: it takes this session's use of the shared adapter for gw,
+// reports the adapter it got, and waits until the parent closes its stdin. A
+// launcher is a real process there because the hop reads the process table —
+// the joiner's own children are the whole evidence. Run on its own it does
+// nothing.
+func TestSharedAdapterLauncherChild(t *testing.T) {
+	core := os.Getenv("CCMORPH_TEST_ADAPTER_CORE")
+	if core == "" {
+		return
+	}
+	name := os.Getenv("CCMORPH_TEST_ADAPTER_NAME")
+	if name == "" {
+		name = "gw"
+	}
+	a, ok := AcquireAdapter(core, os.Getenv("CCMORPH_TEST_ADAPTER_ROOT"), name, "m",
+		os.Getenv("CCMORPH_TEST_ADAPTER_CONF"), io.Discard)
+	if !ok {
+		fmt.Println("FAILED")
+		os.Exit(1)
+	}
+	fmt.Printf("ACQUIRED %d\n", a.PID)
+	io.Copy(io.Discard, os.Stdin)
+	a.Release()
+}
+
+// adapterLauncher is one launcher process of the tests below.
+type adapterLauncher struct {
+	cmd     *exec.Cmd
+	in      *os.File // its stdin: closing it ends the launcher, which releases
+	adapter int      // the shared adapter it reported
+	waited  bool
+}
+
+// end lets the launcher release and exit, as a session ending normally does.
+func (l *adapterLauncher) end() {
+	l.in.Close()
+	if !l.waited {
+		l.waited = true
+		l.cmd.Wait()
+	}
+}
+
+// kill drops the launcher with no chance to release, as a crash or SIGKILL does.
+func (l *adapterLauncher) kill() {
+	l.in.Close()
+	l.cmd.Process.Kill()
+	if !l.waited {
+		l.waited = true
+		l.cmd.Wait()
+	}
+}
+
+// launcherLine reads the launcher's one report, bounded by half of what this
+// run has left: a start the scheduler starved still lands, and one that never
+// reports ends the test with a verdict (#998).
+func launcherLine(t *testing.T, r *os.File) string {
+	t.Helper()
+	end, ok := t.Deadline()
+	if !ok {
+		end = time.Now().Add(defaultTestTimeout)
+	}
+	r.SetReadDeadline(time.Now().Add(end.Sub(time.Now()) / 2))
+	var line []byte
+	one := make([]byte, 1)
+	for {
+		if _, err := r.Read(one); err != nil {
+			t.Fatalf("the launcher never reported its adapter: %v (%q)", err, line)
+		}
+		if one[0] == '\n' {
+			return string(line)
+		}
+		line = append(line, one[0])
+	}
+}
+
+// startAdapterLauncher runs this test binary as one more launcher for root's
+// name adapter and returns once it has acquired its use.
+func startAdapterLauncher(t *testing.T, core, root, name, conf string) *adapterLauncher {
+	t.Helper()
+	inR, inW, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	outR, outW, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command(os.Args[0], "-test.run=^TestSharedAdapterLauncherChild$")
+	cmd.Env = append(os.Environ(),
+		"CCMORPH_TEST_ADAPTER_CORE="+core,
+		"CCMORPH_TEST_ADAPTER_ROOT="+root,
+		"CCMORPH_TEST_ADAPTER_NAME="+name,
+		"CCMORPH_TEST_ADAPTER_CONF="+conf)
+	cmd.Stdin, cmd.Stdout = inR, outW
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	inR.Close()
+	outW.Close()
+	line := launcherLine(t, outR)
+	outR.Close()
+	l := &adapterLauncher{cmd: cmd, in: inW}
+	if !strings.HasPrefix(line, "ACQUIRED ") {
+		l.kill()
+		t.Fatalf("the launcher did not acquire the adapter: %q", line)
+	}
+	if l.adapter, err = strconv.Atoi(strings.TrimPrefix(line, "ACQUIRED ")); err != nil {
+		l.kill()
+		t.Fatalf("the launcher reported no adapter pid: %q", line)
+	}
+	t.Cleanup(l.kill)
+	return l
+}
+
+// TestAJoiningLauncherCanNameItsSharedAdapter is #1022's regression: two
+// launchers acquire the same key, one starts the adapter and one joins it, and
+// the joining launcher's SessionAdapter names the profile. Before the session
+// hold, the joiner started no process of its own and answered "" — which is how
+// `ccmorph hop` lost the `now on` mark and the #257 no-change guard.
+func TestAJoiningLauncherCanNameItsSharedAdapter(t *testing.T) {
+	core, root := sharedCore(t), t.TempDir()
+	conf := filepath.Join(t.TempDir(), "gw.conf")
+	if err := os.WriteFile(conf, []byte("base_url=x\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	first := startAdapterLauncher(t, core, root, "gw", conf)
+	second := startAdapterLauncher(t, core, root, "gw", conf)
+	if first.adapter != second.adapter {
+		t.Fatalf("the second launcher must join the first's adapter: pids %d and %d", first.adapter, second.adapter)
+	}
+	// Each launcher keeps exactly one hold, on the one adapter's users file.
+	users := AdapterBase(root, "gw", AdapterKey("gw", "m", conf, core)) + ".users"
+	sessionHoldOf(t, first.cmd.Process.Pid, users)
+	sessionHoldOf(t, second.cmd.Process.Pid, users)
+	tab := ProcessTable()
+	if got := SessionAdapter(tab, second.cmd.Process.Pid); got != "gw" {
+		t.Fatalf("the joining launcher's session must name its profile, got %q", got)
+	}
+	if got := SessionAdapter(tab, first.cmd.Process.Pid); got != "gw" {
+		t.Fatalf("the starting launcher's session must name its profile, got %q", got)
+	}
+	if got := SessionAdapter(tab, os.Getpid()); got != "" {
+		t.Fatalf("this test process holds no session use of the adapter, got %q", got)
+	}
+	second.end()
+	// A session that ends takes its own hold and nothing else: the starter still
+	// names its profile, and the adapter it started is still up.
+	firstTab := ProcessTable()
+	if got := SessionAdapter(firstTab, first.cmd.Process.Pid); got != "gw" {
+		t.Fatalf("the starter must still name its profile after the joiner ends, got %q", got)
+	}
+	if !alive(first.adapter) {
+		t.Fatal("the joiner's normal end must not stop the adapter the starter holds")
+	}
+	first.end()
+}
+
+// TestTwoSessionsNameTheirOwnProfiles pins that a hold is read for its own
+// launcher alone: two launchers on two profiles each names only their own.
+func TestTwoSessionsNameTheirOwnProfiles(t *testing.T) {
+	core, root := sharedCore(t), t.TempDir()
+	conf := filepath.Join(t.TempDir(), "gw.conf")
+	if err := os.WriteFile(conf, []byte("base_url=x\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	gw := startAdapterLauncher(t, core, root, "gw", conf)
+	eq := startAdapterLauncher(t, core, root, "eq", conf)
+	if gw.adapter == eq.adapter {
+		t.Fatalf("two profiles are two adapters, got pid %d for both", gw.adapter)
+	}
+	tab := ProcessTable()
+	if got := SessionAdapter(tab, gw.cmd.Process.Pid); got != "gw" {
+		t.Fatalf("launcher A must name gw, got %q", got)
+	}
+	if got := SessionAdapter(tab, eq.cmd.Process.Pid); got != "eq" {
+		t.Fatalf("launcher B must name eq, got %q", got)
+	}
+	gw.end()
+	eq.end()
+}
+
+// TestASessionHoldDiesWithItsLauncher is #1022's lifetime half: the hold that
+// names a joined adapter belongs to its launcher alone, so a launcher killed
+// without releasing leaves no hold behind to keep the adapter (and its users
+// file) alive; the last session out still stops it.
+func TestASessionHoldDiesWithItsLauncher(t *testing.T) {
+	core, root := sharedCore(t), t.TempDir()
+	conf := filepath.Join(t.TempDir(), "gw.conf")
+	if err := os.WriteFile(conf, []byte("base_url=x\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	first := startAdapterLauncher(t, core, root, "gw", conf)
+	second := startAdapterLauncher(t, core, root, "gw", conf)
+	users := AdapterBase(root, "gw", AdapterKey("gw", "m", conf, core)) + ".users"
+	hold := sessionHoldOf(t, second.cmd.Process.Pid, users)
+
+	second.kill() // no release runs: the pipe is the only thing that can end the hold
+	waitExit(t, hold)
+	if !alive(first.adapter) {
+		t.Fatal("the starter's adapter must keep running while its session lives")
+	}
+	first.end()
+	waitExit(t, first.adapter)
+}
+
+// sessionHoldOf is the launcher's child that holds users as its session marker,
+// and proves it is the only one: a second marker would outlive nothing useful
+// and the hop must have exactly one child to read.
+func sessionHoldOf(t *testing.T, launcher int, users string) int {
+	t.Helper()
+	found, hold := 0, 0
+	for pid, r := range processTable() {
+		if r.ppid != launcher {
+			continue
+		}
+		if got, flagged, ok := routeHoldUsers(pid); ok && flagged && got == users {
+			found, hold = found+1, pid
+		}
+	}
+	if found != 1 {
+		t.Fatalf("launcher %d has %d session holds on %s, want exactly one", launcher, found, users)
+	}
+	return hold
 }
 
 func TestAdapterProfileReadsTheArgvItIsGiven(t *testing.T) {
