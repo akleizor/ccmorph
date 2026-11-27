@@ -1,5 +1,6 @@
 """The suite's shared helpers: one hang-detection bound, one poll loop, one script
 loader; imported by the tests that wait on a real process."""
+import ast
 import atexit
 import contextlib
 import datetime as dt
@@ -35,13 +36,35 @@ def stdin_a_terminal():
 
 
 # A hang detector, not a performance bound: the longest any test waits on a
-# spawned process, sized so only a real hang reaches it. It sits above pytest.ini's
-# 60 s per-test cap so that no site is stricter than the literal it replaced: the
-# cap reports a single hung wait first, with a thread dump, while this bound holds
-# the waits the cap cannot see — a test that polls a spawned process several times
-# over, where the cap would fire in the middle of the polling.
-# Override with CCMORPH_TEST_HANG_TIMEOUT.
-HANG_TIMEOUT = float(os.environ.get("CCMORPH_TEST_HANG_TIMEOUT", "120"))
+# spawned process, sized so (in principle) only a real hang reaches it. It sits
+# above pytest.ini's 60 s per-test cap so that no site is stricter than the
+# literal it replaced: the cap reports a single hung wait first, with a thread
+# dump, while this bound holds the waits the cap cannot see — a test that polls a
+# spawned process several times over, where the cap would fire in the middle of
+# the polling.
+#
+# GH-976: 120 s was a quiet-host number. On the night gate's own load a single
+# `bin/ccmorph run gw` child crossed it (#932's three marked adapter tests died
+# of `TimeoutExpired` while the test still had budget), and the #932 fix was only
+# as good as this bound: a marked test whose child is killed first can never
+# spend its marker. The child's bound is therefore raised to 240 s — twice the
+# observed death point — and every test that may wait on a child gets
+# HANG_TIMEOUT + SPAWN_SLACK from conftest.py, so #932's 300 s budget stays the
+# budget while the child can now spend four fifths of it.
+#
+# One knob governs the chain: override CCMORPH_TEST_HANG_TIMEOUT and both the
+# child's bound and every derived per-test budget move with it.
+HANG_TIMEOUT = float(os.environ.get("CCMORPH_TEST_HANG_TIMEOUT", "240"))
+
+# The named slack between the child's own bound and the test's: room for the
+# fixture lifecycle, further sequential children and report construction after a
+# child hits its bound. 60 s is pytest.ini's old per-test ceiling, so the raised
+# budget is HANG_TIMEOUT + the minute a whole test used to get.
+SPAWN_SLACK = 60.0
+# The pytest per-test budget every test that can wait on a real process carries.
+# conftest.py applies it to the population found by spawn_bound_tests() below;
+# hang_bound_test.py checks the effective value on every collected item.
+SPAWN_TEST_BUDGET = HANG_TIMEOUT + SPAWN_SLACK
 
 
 def wait_until(pred, timeout, interval=0.05):
@@ -58,6 +81,286 @@ def wait_until(pred, timeout, interval=0.05):
         if time.monotonic() >= deadline:
             return False
         time.sleep(interval)
+
+
+# --- The spawn-bound population ---------------------------------------------
+#
+# GH-976: #932 marked eighteen cases by hand, but the population a per-test
+# budget exists for is "every test that can wait on a real process", and the
+# night gate killed the cases the hand list missed in the same four files. The
+# walk below derives the population from the same spawn forms hang_bound_test.py
+# already polices; conftest.py gives every member SPAWN_TEST_BUDGET and the
+# meta-check holds the line, so a new spawn-bound test is covered without an
+# enumeration that can fall behind.
+
+# Every call that starts a real process: the synchronous spawners that take
+# `timeout=`, `Popen` (whose bound belongs on the wait that follows), the
+# `os.*` spawners, `pty.spawn`, and the two bare names the suite uses for a
+# process it starts itself. A local helper named `run` is not one of these.
+RUN_CALLS = {"run", "check_output", "check_call", "call"}
+SPAWN_CALLS = RUN_CALLS | {"Popen", "system", "spawnv", "spawnvp", "spawnl",
+                           "spawnle", "posix_spawn", "run_pty"}
+SPAWN_MODULES = ("subprocess", "os", "pty")
+BARE_SPAWNS = {"Popen", "run_pty"}
+
+
+def call_names(func):
+    """('subprocess', 'run') for `subprocess.run`; ('run_pty',) for a bare name."""
+    parts = []
+    while isinstance(func, ast.Attribute):
+        parts.append(func.attr)
+        func = func.value
+    if isinstance(func, ast.Name):
+        parts.append(func.id)
+    return tuple(reversed(parts))
+
+
+def callee(func):
+    names = call_names(func)
+    return names[-1] if names else None
+
+
+def is_spawn(func):
+    names = call_names(func)
+    if not names or names[-1] not in SPAWN_CALLS:
+        return False
+    if len(names) == 1:
+        return names[-1] in BARE_SPAWNS
+    return names[0] in SPAWN_MODULES
+
+
+# The xunit lifecycle names a class or module can spawn from; a test in that
+# scope waits on the child too, so it gets the budget.
+SETUP_NAMES = {"setup_module", "teardown_module", "setup_class", "teardown_class",
+               "setup_method", "teardown_method", "setup", "teardown",
+               "setUp", "setUpClass", "tearDown", "tearDownClass"}
+
+
+def _is_fixture(func):
+    for deco in func.decorator_list:
+        if callee(deco.func if isinstance(deco, ast.Call) else deco) == "fixture":
+            return True
+    return False
+
+
+def _fixture_autouse(func):
+    for deco in func.decorator_list:
+        if isinstance(deco, ast.Call) and callee(deco.func) == "fixture":
+            return any(k.arg == "autouse" and isinstance(k.value, ast.Constant)
+                       and k.value.value for k in deco.keywords)
+    return False
+
+
+def _params(func):
+    args = list(func.args.posonlyargs) + list(func.args.args) + list(func.args.kwonlyargs)
+    return {a.arg for a in args} - {"self", "cls"}
+
+
+def _uses(func):
+    """Names a test asks for through `pytest.mark.usefixtures` (none today, but a
+    fixture spawn must still reach a test that names it this way)."""
+    names = set()
+    for deco in func.decorator_list:
+        if not isinstance(deco, ast.Call) or call_names(deco.func)[:2] != ("pytest", "mark"):
+            continue
+        if callee(deco.func) != "usefixtures":
+            continue
+        names.update(a.value for a in deco.args
+                     if isinstance(a, ast.Constant) and isinstance(a.value, str))
+    return names
+
+
+def _reaches_spawn(func, defs, spawned, cls, extra):
+    """Whether `func` calls a definition in `spawned`, resolving the suite's two
+    call shapes: a bare name is a module helper (or the class's own method), and
+    an attribute is a method of the class for `self`/`cls` and any method of that
+    name otherwise — the object's type is not visible to a static walk, so the
+    walk stays conservative and may over-connect two unrelated `run` methods.
+
+    `extra` holds the names of helpers that reach a spawn in another test file
+    (the suite imports `Box` from behaviour_coverage_test and a fixture helper
+    from usage_export_test); a call this file's AST cannot resolve by name is
+    the same wait, so it resolves through that suite-wide set instead."""
+    for node in ast.walk(func):
+        if not isinstance(node, ast.Call):
+            continue
+        names = call_names(node.func)
+        if not names:
+            continue
+        attr = names[-1]
+        if len(names) == 1:
+            targets = [("", attr)] + ([(cls, attr)] if cls else [])
+            targets += [key for key in defs if key[0] and key[1] == attr]
+        elif names[0] in ("self", "cls") and cls:
+            targets = [(cls, attr)]
+        else:
+            targets = [key for key in defs if key[0] and key[1] == attr]
+        if any(key in spawned for key in targets) or attr in extra:
+            return True
+    return False
+
+
+def _defs_and_spawned(tree, extra):
+    """Every function/method defined in `tree`, and the subset whose body reaches
+    a spawn form directly or through the calls it makes."""
+    module_funcs, class_methods = {}, {}
+    owner = {}             # id(def) -> (class, name)
+    for node in tree.body:
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            module_funcs[node.name] = node
+            owner[id(node)] = ("", node.name)
+        elif isinstance(node, ast.ClassDef):
+            methods = {}
+            for item in node.body:
+                if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    methods[item.name] = item
+                    owner[id(item)] = (node.name, item.name)
+            class_methods[node.name] = methods
+
+    defs = {owner[id(func)]: func for func in module_funcs.values()}
+    for methods in class_methods.values():
+        defs.update({owner[id(func)]: func for func in methods.values()})
+
+    spawned = {key for key, func in defs.items()
+               if any(isinstance(n, ast.Call) and is_spawn(n.func) for n in ast.walk(func))}
+    changed = True
+    while changed:
+        changed = False
+        for key, func in defs.items():
+            if key not in spawned and _reaches_spawn(func, defs, spawned, key[0], extra):
+                spawned.add(key)
+                changed = True
+    return module_funcs, class_methods, defs, spawned
+
+
+def spawn_bound_helpers(tree, extra=()):
+    """The helper names (module functions and class methods) in `tree` whose body
+    reaches a spawn. The suite-wide pass unions these so a test that calls a
+    helper defined in another test file is still bound to its child."""
+    _, _, _, spawned = _defs_and_spawned(tree, extra)
+    return {key[1] for key in spawned if not key[1].startswith("test_")}
+
+
+def spawn_bound_tests(tree, extra=()):
+    """The qualnames (`test_x`, `Class.test_x`) of every test in `tree` that can
+    wait on a process the suite starts.
+
+    A test is bound when its own body reaches a spawn form through the calls it
+    makes, when it requests a spawn-bound fixture (directly or transitively), or
+    when its class's setup/teardown reaches one. The walk is deliberately
+    transitive through everything defined in the same file: the spawn inside
+    `launch.run()` and inside the `start_shim` helper a test calls are the same
+    wait as a `subprocess.run` in the test's own body; `extra` carries the same
+    relation across the imports between test files. Merely defining a
+    spawn-bound helper or fixture does not bind a test; only reaching it does."""
+    module_funcs, class_methods, _, spawned = _defs_and_spawned(tree, extra)
+    fixtures = {name: func for name, func in module_funcs.items() if _is_fixture(func)}
+
+    # Fixtures that reach a spawn, including through other fixtures they request.
+    fixture_defs = {("", name): func for name, func in fixtures.items()}
+    for cls, methods in class_methods.items():
+        for name, func in methods.items():
+            if _is_fixture(func):
+                fixture_defs[(cls, name)] = func
+    spawn_fixtures = {key for key in fixture_defs if key in spawned}
+    changed = True
+    while changed:
+        changed = False
+        for key, func in fixture_defs.items():
+            if key in spawn_fixtures:
+                continue
+            wanted = _params(func)
+            if any((key[0], name) in spawn_fixtures or ("", name) in spawn_fixtures
+                   for name in wanted):
+                spawn_fixtures.add(key)
+                changed = True
+
+    def fixture_for(cls, name):
+        if cls and (cls, name) in fixture_defs:
+            return (cls, name)
+        if ("", name) in fixture_defs:
+            return ("", name)
+        return None
+
+    def requested(cls, func):
+        names = _params(func) | _uses(func)
+        return any(fixture_for(cls, name) in spawn_fixtures for name in names)
+
+    autouse_keys = {key for key, func in fixture_defs.items() if _fixture_autouse(func)}
+
+    def autouse(cls):
+        return any(key in spawn_fixtures and key[0] in ("", cls) for key in autouse_keys)
+
+    def module_setup():
+        return any(("", name) in spawned for name in SETUP_NAMES)
+
+    def class_setup(cls):
+        return any((cls, name) in spawned for name in SETUP_NAMES)
+
+    found = set()
+    for name, func in module_funcs.items():
+        if name.startswith("test_") and (
+                ("", name) in spawned or module_setup()
+                or requested("", func) or autouse("")):
+            found.add(name)
+    for cls, methods in class_methods.items():
+        for name, func in methods.items():
+            if name.startswith("test_") and (
+                    (cls, name) in spawned or class_setup(cls)
+                    or requested(cls, func) or autouse(cls)):
+                found.add(f"{cls}.{name}")
+    return found
+
+
+_SPAWN_BOUND_CACHE = {}
+_SUITE_SPAWN_CACHE = {}
+_PARSE_CACHE = {}
+
+
+def _parsed(path):
+    """The file's AST, parsed once per process (None when it does not parse)."""
+    key = str(Path(path).resolve())
+    if key not in _PARSE_CACHE:
+        try:
+            _PARSE_CACHE[key] = ast.parse(Path(key).read_text())
+        except (OSError, SyntaxError):
+            _PARSE_CACHE[key] = None
+    return _PARSE_CACHE[key]
+
+
+def _suite_extra(tests_dir):
+    """The helper names that reach a spawn anywhere in this tests directory.
+
+    Test files import helpers from each other (`Box` from behaviour_coverage_test,
+    `is_python_helper` from rc_hosts_test), so a call this file cannot resolve by
+    name may still wait on a child. The set is a fixed point: a helper that calls
+    another file's spawn-reaching helper joins it on the next pass."""
+    key = str(Path(tests_dir).resolve())
+    if key not in _SUITE_SPAWN_CACHE:
+        extra = set()
+        changed = True
+        while changed:
+            changed = False
+            for path in sorted(Path(key).glob("*_test.py")):
+                tree = _parsed(path)
+                if tree is None:
+                    continue
+                names = spawn_bound_helpers(tree, extra)
+                if not names <= extra:
+                    extra |= names
+                    changed = True
+        _SUITE_SPAWN_CACHE[key] = frozenset(extra)
+    return _SUITE_SPAWN_CACHE[key]
+
+
+def spawn_bound_names(path):
+    """`spawn_bound_tests` for the file at `path`, parsed once per process."""
+    key = str(Path(path).resolve())
+    if key not in _SPAWN_BOUND_CACHE:
+        tree = _parsed(key)
+        _SPAWN_BOUND_CACHE[key] = (set() if tree is None else
+                                   spawn_bound_tests(tree, _suite_extra(Path(key).parent)))
+    return _SPAWN_BOUND_CACHE[key]
 
 
 def load_script(path, name):

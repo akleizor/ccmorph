@@ -3,8 +3,11 @@ import http.server
 import os
 import socketserver
 import sys
+from pathlib import Path
 
 import pytest
+
+from support import SPAWN_TEST_BUDGET, spawn_bound_names
 
 if sys.version_info < (3, 11):  # pytest's own dependency below 3.11, as its runner uses it
     from exceptiongroup import BaseExceptionGroup
@@ -76,6 +79,28 @@ def pytest_configure(config):
     # reads (pytest-timeout exposes no public per-run method hook).
     if hasattr(config, "workerinput"):
         config._env_timeout_method = "thread"
+
+
+def pytest_collection_modifyitems(config, items):
+    """Give every test that can wait on a real process the spawn budget (#976).
+
+    The population is the AST walk in support.py — the same one hang_bound_test
+    checks — so a test that starts spawning is covered without being added to a
+    hand list, which is where #932's fix fell behind. An explicit marker is left
+    alone: a budget below the chain is the meta-check's failure to report, not
+    something this hook silently raises over the author's deliberate value.
+    """
+    for item in items:
+        if item.get_closest_marker("timeout") is not None:
+            continue
+        path = Path(getattr(item, "path", None) or item.fspath)
+        if path.suffix != ".py" or not path.name.endswith("_test.py"):
+            continue
+        cls = getattr(item, "cls", None)
+        name = getattr(item, "originalname", item.name)
+        qualname = f"{cls.__name__}.{name}" if cls else name
+        if qualname in spawn_bound_names(path):
+            item.add_marker(pytest.mark.timeout(SPAWN_TEST_BUDGET))
 
 
 # GH-919: every worker's OWN descendant tree is read while each test runs, by a

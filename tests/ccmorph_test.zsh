@@ -32,8 +32,8 @@ readonly REPO_ROOT="${SCRIPT_DIR:h}"
 readonly CCMORPH_SOURCE="$REPO_ROOT/tests/core_lib.zsh"
 # The launch and cli paths run in the compiled core, so a checkout has no
 # libexec/ccmorph-core until `make shim` builds it. Entered without it, every
-# launch test fails through its 120 s backstop instead: a healthy 40 s suite
-# becomes six minutes of failing waits. Refuse at the door, before the shard
+# launch test fails through its backstop instead: a healthy 40 s suite becomes
+# a run of failing waits. Refuse at the door, before the shard
 # fan-out multiplies the confusion, with the one command that fixes it. It
 # stands before the env-key read below, which would otherwise misreport a
 # missing core as an empty list.
@@ -84,7 +84,7 @@ typeset -gi _ccm_test_filter_hits=0
 # - the one a broken signal forwarding leaves hanging - so this is its backstop,
 # a hang detector sized far above any healthy duration, never a deadline. Seconds;
 # zselect counts hundredths.
-readonly CCMORPH_TEST_HANG_TIMEOUT="${CCMORPH_TEST_HANG_TIMEOUT:-120}"
+readonly CCMORPH_TEST_HANG_TIMEOUT="${CCMORPH_TEST_HANG_TIMEOUT:-240}"
 
 # Every test builds its own scratch home, so the suite runs as N shards at once;
 # CCMORPH_TEST_JOBS=1 runs it serially. Default: every core. The shards mostly wait
@@ -15028,7 +15028,7 @@ run_test test_a_sub_profile_never_announces_a_gateway_on_a_terminal
 
 # libexec/ccmorph-core is build output, so a fresh worktree or checkout has
 # none, and the suite entered there used to fail through every launch test's
-# 120 s backstop: a healthy 40 s suite became six minutes of failing waits with
+# backstop: a healthy 40 s suite became a run of failing waits with
 # nothing naming the missing piece. The door check must refuse the run instead.
 # The fixture is a copy of the tree with the core removed -- a bare checkout --
 # so sibling shards keep theirs. The filter matches no test: with the door check

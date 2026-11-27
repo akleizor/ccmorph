@@ -8,6 +8,12 @@ zsh suite, and sleeps each pass holds a fixed wall-clock budget a loaded host
 can exceed. Every such wait reads `support.HANG_TIMEOUT` instead, and so does
 every test file that spawns a process; the zsh suites' embedded python obeys
 the same rule through PYTHONPATH, and these checks hold that line.
+
+GH-976 adds the other half: a test that can wait on a process needs a pytest
+budget at least its child's own bound plus a named slack, or the child dies
+first and the budget can never be spent. The spawn forms and the transitive walk
+live in support.py, so the population conftest.py budgets and the population
+checked here are one rule.
 """
 import ast
 import datetime as dt
@@ -22,9 +28,17 @@ from pathlib import Path
 
 import pytest
 
-from support import CORE, HANG_TIMEOUT, store_month_first
+from support import (BARE_SPAWNS, CORE, HANG_TIMEOUT, RUN_CALLS, SPAWN_CALLS,
+                     SPAWN_MODULES, SPAWN_SLACK, SPAWN_TEST_BUDGET, callee,
+                     is_spawn, spawn_bound_names, spawn_bound_tests, store_month_first)
 
 TESTS = Path(__file__).resolve().parent
+
+# GH-976: this file parses every test file on each check, and the night gate
+# starved even `test_no_literal_process_bound_in_the_suite`, the guard that
+# enforces the bound rule, past the 60 s ceiling. The meta-guard gets the same
+# budget it enforces on every other test.
+pytestmark = pytest.mark.timeout(SPAWN_TEST_BUDGET)
 
 # Calls whose `timeout=` waits on a real process, or on a socket served by one.
 # Thread waits (Barrier, join) and values handed to production code are
@@ -34,49 +48,12 @@ SOCKET_WAITS = {"urlopen", "open", "HTTPConnection", "HTTPSConnection",
                 "open_connection", "create_connection", "keepalive_post", "read_stream"}
 WAITS = PROCESS_WAITS | SOCKET_WAITS
 
-# The synchronous spawners: they take `timeout=` and finish on their own. `Popen`
-# does not (its bound belongs on the wait that follows it) and `os.system` cannot.
-RUN_CALLS = {"run", "check_output", "check_call", "call"}
-
-# Every call that starts a real process: those, the `os.*` spawners and
-# `pty.spawn`, plus the two bare names the suite uses for a process it starts
-# itself. A local helper named `run` is not one of these.
-SPAWN_CALLS = RUN_CALLS | {"Popen", "system", "spawnv", "spawnvp", "spawnl",
-                           "spawnle", "posix_spawn", "run_pty"}
-SPAWN_MODULES = ("subprocess", "os", "pty")
-BARE_SPAWNS = {"Popen", "run_pty"}
-
 # Every clock in the time module: a deadline written as `<clock>() + N` holds
 # the same literal budget whichever one it reads, so they are named together.
 # Bare names match module functions (`time.time`) and `from time import ...`
-# alike — `_callee` reads the last part.
+# alike — `callee` reads the last part.
 CLOCK_CALLS = {"monotonic", "monotonic_ns", "time", "time_ns",
                "perf_counter", "perf_counter_ns"}
-
-
-def _names(func):
-    """('subprocess', 'run') for `subprocess.run`; ('run_pty',) for a bare name."""
-    parts = []
-    while isinstance(func, ast.Attribute):
-        parts.append(func.attr)
-        func = func.value
-    if isinstance(func, ast.Name):
-        parts.append(func.id)
-    return tuple(reversed(parts))
-
-
-def _callee(func):
-    names = _names(func)
-    return names[-1] if names else None
-
-
-def _is_spawn(func):
-    names = _names(func)
-    if not names or names[-1] not in SPAWN_CALLS:
-        return False
-    if len(names) == 1:
-        return names[-1] in BARE_SPAWNS
-    return names[0] in SPAWN_MODULES
 
 
 def _is_number(node):
@@ -86,7 +63,7 @@ def _is_number(node):
 
 def _sleeps(node):
     """True when a `sleep` call runs somewhere inside `node`."""
-    return any(isinstance(n, ast.Call) and _callee(n.func) == "sleep"
+    return any(isinstance(n, ast.Call) and callee(n.func) == "sleep"
                for n in ast.walk(node))
 
 
@@ -99,16 +76,16 @@ def literal_process_bounds(tree):
     offenders = []
     for node in ast.walk(tree):
         if isinstance(node, ast.Call):
-            if _callee(node.func) in WAITS:
+            if callee(node.func) in WAITS:
                 if any(k.arg in ("timeout", "connect_timeout") and _is_number(k.value)
                        for k in node.keywords):
                     offenders.append(node.lineno)
         elif (isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add)
-              and isinstance(node.left, ast.Call) and _callee(node.left.func) in CLOCK_CALLS
+              and isinstance(node.left, ast.Call) and callee(node.left.func) in CLOCK_CALLS
               and _is_number(node.right)):
             offenders.append(node.lineno)
         elif (isinstance(node, (ast.For, ast.AsyncFor))
-              and isinstance(node.iter, ast.Call) and _callee(node.iter.func) == "range"
+              and isinstance(node.iter, ast.Call) and callee(node.iter.func) == "range"
               and any(_sleeps(stmt) for stmt in node.body)):
             offenders.append(node.lineno)
         elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
@@ -123,14 +100,14 @@ def literal_process_bounds(tree):
 
 def spawns_a_process(tree):
     """True when this module starts a real process somewhere in the file."""
-    return any(isinstance(node, ast.Call) and _is_spawn(node.func) for node in ast.walk(tree))
+    return any(isinstance(node, ast.Call) and is_spawn(node.func) for node in ast.walk(tree))
 
 
 def unbounded_spawns(tree):
     """`subprocess.run/check_output/check_call/call` calls with no `timeout=`."""
     offenders = []
     for node in ast.walk(tree):
-        if (isinstance(node, ast.Call) and _is_spawn(node.func) and _callee(node.func) in RUN_CALLS
+        if (isinstance(node, ast.Call) and is_spawn(node.func) and callee(node.func) in RUN_CALLS
                 and not any(k.arg == "timeout" for k in node.keywords)):
             offenders.append(node.lineno)
     return offenders
@@ -175,6 +152,140 @@ def test_every_spawned_process_is_bounded_by_the_shared_bound():
     assert not unbounded, (
         "a test spawns a process with no timeout at all; pass timeout=HANG_TIMEOUT:\n"
         + "\n".join(unbounded))
+
+
+def test_every_spawn_bound_test_budget_covers_its_child_bound(request):
+    """GH-976: a per-test budget below the child's own bound can never be spent.
+
+    #932 marked eighteen cases by hand, and the night gate then killed cases it
+    had not named — in the same four files, with the same shape — while the
+    marked adapter tests died of a `TimeoutExpired` at HANG_TIMEOUT with their
+    300 s budget still waiting. The population is the walk in support.py and the
+    budget is derived from HANG_TIMEOUT, so neither can be left behind:
+    conftest.py applies SPAWN_TEST_BUDGET to every member, and this check reads
+    the effective value on the collected item — the number pytest-timeout will
+    enforce — including an explicit marker that undercuts it.
+    """
+    try:
+        floor = float(request.config.getini("timeout"))
+    except (ValueError, KeyError):  # a session without pytest-timeout
+        floor = 60.0
+    budget = HANG_TIMEOUT + SPAWN_SLACK
+    offenders = []
+    for item in request.session.items:
+        path = Path(str(getattr(item, "path", None) or item.fspath))
+        if path.suffix != ".py" or not path.name.endswith("_test.py"):
+            continue
+        cls = getattr(item, "cls", None)
+        name = getattr(item, "originalname", item.name)
+        qualname = f"{cls.__name__}.{name}" if cls else name
+        if qualname not in spawn_bound_names(path):
+            continue
+        marker = item.get_closest_marker("timeout")
+        effective = float(marker.args[0]) if marker and marker.args else floor
+        if effective < budget:
+            offenders.append(
+                f"{item.nodeid}: {effective:g}s < HANG_TIMEOUT + SPAWN_SLACK ({budget:g}s)")
+    assert not offenders, (
+        "a test that can wait on a real process has less pytest budget than its "
+        "child's own hang bound plus the named slack, so the child dies first and "
+        "the budget is never spent; leave the marker to conftest.py's derived "
+        "SPAWN_TEST_BUDGET or set @pytest.mark.timeout(SPAWN_TEST_BUDGET):\n"
+        + "\n".join(offenders))
+
+
+def test_the_spawn_bound_walk_sees_the_shapes_the_suite_uses():
+    """Pin the population rule on the shapes the four victim files use (#976):
+    a direct spawn, a helper, a method, a fixture and its fixture, class setup,
+    an autouse fixture, and a plain test that must stay out."""
+    def bound(source):
+        return spawn_bound_tests(ast.parse(textwrap.dedent(source).lstrip("\n")))
+
+    assert bound("""
+        import subprocess
+        def test_direct():
+            subprocess.run(["true"], timeout=HANG_TIMEOUT)
+        """) == {"test_direct"}
+
+    assert bound("""
+        import subprocess
+        def spawn():
+            subprocess.run(["true"], timeout=HANG_TIMEOUT)
+        def quiet():
+            return 1
+        def test_via_helper():
+            spawn()
+        def test_plain():
+            quiet()
+        """) == {"test_via_helper"}
+
+    assert bound("""
+        import subprocess
+        class Box:
+            def run(self):
+                subprocess.run(["true"], timeout=HANG_TIMEOUT)
+        def test_via_method():
+            Box().run()
+        """) == {"test_via_method"}
+
+    assert bound("""
+        import pytest, subprocess
+        @pytest.fixture
+        def box():
+            subprocess.run(["true"], timeout=HANG_TIMEOUT)
+        def test_requests(box):
+            pass
+        def test_does_not(request):
+            pass
+        """) == {"test_requests"}
+
+    assert bound("""
+        import pytest, subprocess
+        @pytest.fixture
+        def inner():
+            subprocess.run(["true"], timeout=HANG_TIMEOUT)
+        @pytest.fixture
+        def outer(inner):
+            return inner
+        def test_transitive(outer):
+            pass
+        """) == {"test_transitive"}
+
+    assert bound("""
+        import subprocess, unittest
+        class Case(unittest.TestCase):
+            @classmethod
+            def setUpClass(cls):
+                subprocess.run(["true"], timeout=HANG_TIMEOUT)
+            def test_method(self):
+                pass
+        def test_beside():
+            pass
+        """) == {"Case.test_method"}
+
+    assert bound("""
+        import pytest, subprocess
+        @pytest.fixture(autouse=True)
+        def watcher():
+            subprocess.run(["true"], timeout=HANG_TIMEOUT)
+        def test_any():
+            pass
+        """) == {"test_any"}
+
+    assert bound("""
+        import time
+        def test_sleeps():
+            time.sleep(1)
+        """) == set()
+
+    # A helper the file imports from a sibling test module (`Box` from
+    # behaviour_coverage_test) is resolved by name through the suite-wide set.
+    module = ast.parse(textwrap.dedent("""
+        def test_via_imported_box(box):
+            box.run("x")
+        """).lstrip("\n"))
+    assert spawn_bound_tests(module) == set()
+    assert spawn_bound_tests(module, extra={"run"}) == {"test_via_imported_box"}
 
 
 # The zsh suites carry python inline, so the same rule is matched per line: a
@@ -446,18 +557,22 @@ def test_the_ast_deadline_check_names_every_clock():
 
 
 def test_hang_bound_reads_its_environment_override():
+    """One knob: the child's bound and the derived per-test budget move together
+    (#976). Raising the override for a slower host raises both; nothing holds a
+    stale literal the child can die under."""
     def read_bound(override):
         env = {k: v for k, v in os.environ.items() if k != "CCMORPH_TEST_HANG_TIMEOUT"}
         if override is not None:
             env["CCMORPH_TEST_HANG_TIMEOUT"] = override
-        result = subprocess.run([sys.executable, "-c", "import support; print(support.HANG_TIMEOUT)"],
-                                cwd=TESTS, env=env, capture_output=True, text=True,
-                                timeout=HANG_TIMEOUT)
+        result = subprocess.run(
+            [sys.executable, "-c",
+             "import support; print(support.HANG_TIMEOUT, support.SPAWN_TEST_BUDGET)"],
+            cwd=TESTS, env=env, capture_output=True, text=True, timeout=HANG_TIMEOUT)
         assert result.returncode == 0, result.stderr
-        return result.stdout.strip()
+        return tuple(float(v) for v in result.stdout.split())
 
-    assert read_bound("7") == "7.0"
-    assert read_bound(None) == "120.0"
+    assert read_bound("7") == (7.0, 7.0 + SPAWN_SLACK)
+    assert read_bound(None) == (240.0, 240.0 + SPAWN_SLACK)
 
 EXPORTER = Path(__file__).resolve().parent.parent / "share/usage-export"
 

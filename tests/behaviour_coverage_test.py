@@ -15,7 +15,7 @@ from pathlib import Path
 
 import pytest
 
-from support import HANG_TIMEOUT, path_without
+from support import HANG_TIMEOUT, SPAWN_TEST_BUDGET, path_without
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -1011,10 +1011,10 @@ def test_the_launches_as_line_names_the_saved_model_on_every_kind_gh_389(box, co
 
 
 # GH-932: the case runs eight `box.run()` children, each a HANG_TIMEOUT
-# (120 s) CLI spawn; on the night gate's saturated host a single spawn took
+# CLI spawn; on the night gate's saturated host a single spawn took
 # most of the 60 s ceiling by itself. Per-test headroom; the ceiling stays
 # 60 s everywhere else (#892's rule).
-@pytest.mark.timeout(300)
+@pytest.mark.timeout(SPAWN_TEST_BUDGET)
 def test_context_answers_the_window_the_session_will_use_gh_372(box):
     # GH-372: `ccmorph context <profile> <model>` answered the pin alone --
     # `auto`, or a bare number once one was set -- while inspect showed the
@@ -1157,11 +1157,11 @@ BAD_NAME_ARGV = [
 ]
 
 
-# GH-932: every row spawns two HANG_TIMEOUT (120 s) CLI children and walks the
+# GH-932: every row spawns two HANG_TIMEOUT CLI children and walks the
 # state twice; the night gate struck the [probe {n}-hyphen] row, whose two
 # spawns were the whole test. The marker covers every row; the global 60 s
 # ceiling stays.
-@pytest.mark.timeout(300)
+@pytest.mark.timeout(SPAWN_TEST_BUDGET)
 @pytest.mark.parametrize('name,reply', BAD_NAME_REPLIES,
                          ids=['slash', 'space', 'dot', 'hyphen', 'cjk', 'too long', 'reserved'])
 @pytest.mark.parametrize('argv', BAD_NAME_ARGV, ids=lambda a: ' '.join(a))
