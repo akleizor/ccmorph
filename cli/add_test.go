@@ -128,8 +128,9 @@ func TestHandSignInSignalsReachTheChildNotTheParent(t *testing.T) {
 				_ = cmd.Process.Kill()
 				<-reaped
 			})
-			release := handSignInSignals(cmd.Process)
+			attach, release := armSignInSignals()
 			defer release()
+			attach(cmd.Process)
 			if err := syscall.Kill(os.Getpid(), sig); err != nil {
 				t.Fatal(err)
 			}
@@ -151,6 +152,49 @@ func TestHandSignInSignalsReachTheChildNotTheParent(t *testing.T) {
 				t.Fatalf("the child did not die of the forwarded %v: %v", sig, err)
 			}
 		})
+	}
+}
+
+// #1026: the sign-in child can write its parent's pid as its first act, so a
+// caller (the zsh suite's signal test) has the pid and can signal it before
+// Start has even returned to the launcher. The handlers are armed before
+// Start now, and a signal that lands before attach is held and forwarded then;
+// before, the arm stood after Start and the default disposition killed add in
+// that gap — no "login failed", no rollback. Reaching the assertion at all is
+// half of it: a default disposition would end this test binary.
+func TestSignInSignalThatLandsBeforeTheChildIsAttachedReachesIt(t *testing.T) {
+	attach, release := armSignInSignals()
+	defer release()
+	if err := syscall.Kill(os.Getpid(), syscall.SIGTERM); err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command("sleep", "300")
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	gone := make(chan error, 1)
+	reaped := make(chan struct{})
+	go func() {
+		defer close(reaped)
+		gone <- cmd.Wait()
+	}()
+	t.Cleanup(func() {
+		_ = cmd.Process.Kill()
+		<-reaped
+	})
+	attach(cmd.Process)
+	var err error
+	select {
+	case err = <-gone:
+	case <-time.After(handoffForwardDeadline):
+		t.Fatalf("the held SIGTERM never reached the child attached after it: no forward within %v", handoffForwardDeadline)
+	}
+	var ee *exec.ExitError
+	if !errors.As(err, &ee) {
+		t.Fatalf("the held SIGTERM never reached the child: %v", err)
+	}
+	if ws, ok := ee.ProcessState.Sys().(syscall.WaitStatus); !ok || !ws.Signaled() || ws.Signal() != syscall.SIGTERM {
+		t.Fatalf("the child did not die of the held SIGTERM: %v", err)
 	}
 }
 

@@ -257,7 +257,7 @@ var emailRE = regexp.MustCompile(`"email": "([^"]*)"`)
 // a sign-in for the config dir it was pointed at.
 var claudeStatusRE = regexp.MustCompile(`"loggedIn":\s*(true|false)`)
 
-// handSignInSignals keeps SIGHUP, SIGTERM and SIGINT from killing this process
+// armSignInSignals keeps SIGHUP, SIGTERM and SIGINT from killing this process
 // while a browser sign-in waits (GH-649, GH-837). Closing a terminal or
 // dropping SSH sends HUP and TERM to the whole foreground process group, and
 // Ctrl-C sends INT; a parent that dies mid-wait never reaches the rollback that
@@ -266,20 +266,56 @@ var claudeStatusRE = regexp.MustCompile(`"loggedIn":\s*(true|false)`)
 // child owns the wait and a terminal sends it the signals too — so the child
 // exits, the caller's failure path runs, and Ctrl-C cancels setup as the help
 // promises instead of leaving a half-made profile and its lock behind (GH-837).
-func handSignInSignals(child *os.Process) (release func()) {
-	sigs := make(chan os.Signal, 1)
+//
+// The handlers are armed before Start, and attach names the child the moment
+// Start returns. A signal that lands in between is held and forwarded then:
+// the sign-in child's own first act can be to write its parent's pid (the zsh
+// suite's fixture does exactly that), so a caller waits on that pid and a
+// loaded host could deliver the signal while the old arm-after-Start was still
+// unarmed — the whole process died with the default disposition, "login
+// failed" never printed and the rollback never ran (#1026).
+func armSignInSignals() (attach func(*os.Process), release func()) {
+	sigs := make(chan os.Signal, 4)
 	signal.Notify(sigs, syscall.SIGHUP, syscall.SIGTERM, syscall.SIGINT)
+	attached := make(chan *os.Process, 1)
+	stop := make(chan struct{})
 	go func() {
-		for s := range sigs {
-			if sig, ok := s.(syscall.Signal); ok {
-				_ = child.Signal(sig) // the child may already be gone
+		var child *os.Process
+		var held []syscall.Signal
+		forward := func(sig syscall.Signal) {
+			if child == nil {
+				held = append(held, sig)
+				return
+			}
+			_ = child.Signal(sig) // the child may already be gone
+		}
+		for {
+			select {
+			case p := <-attached:
+				child = p
+				for _, sig := range held {
+					_ = child.Signal(sig)
+				}
+				held = nil
+			case s := <-sigs:
+				if sig, ok := s.(syscall.Signal); ok {
+					forward(sig)
+				}
+			case <-stop:
+				return
 			}
 		}
 	}()
-	return func() {
-		signal.Stop(sigs) // returns once no more signals can arrive
-		close(sigs)
+	attach = func(p *os.Process) {
+		if p != nil {
+			attached <- p
+		}
 	}
+	release = func() {
+		signal.Stop(sigs) // returns once no more signals can arrive
+		close(stop)
+	}
+	return attach, release
 }
 
 // subBrowserLogin runs Claude Code's browser sign-in against the profile's
@@ -288,13 +324,15 @@ func handSignInSignals(child *os.Process) (release func()) {
 func (l *launcher) subBrowserLogin(name string) (string, bool) {
 	dir := filepath.Join(l.profileDirs, name)
 	fmt.Println(l.dim + "Opening your browser to sign in — Ctrl-C to cancel." + l.reset)
+	attach, release := armSignInSignals()
 	login := l.claudeAuth(dir, "login")
 	login.Stdin, login.Stdout, login.Stderr = os.Stdin, os.Stdout, os.Stderr
 	if login.Start() != nil {
+		release()
 		l.err("login failed")
 		return "", false
 	}
-	release := handSignInSignals(login.Process)
+	attach(login.Process)
 	err := login.Wait()
 	release()
 	if err != nil {
