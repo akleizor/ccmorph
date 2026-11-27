@@ -2808,7 +2808,9 @@ test_only_the_current_vocabulary_is_taught() {
   # No retired verb may appear in the help text a user reads. `list` is NOT retired:
   # it is the discoverable spelling of the bare form, kept deliberately because a word
   # that appears in help and tab completion is findable where a bare invocation is not.
-  if command env -i HOME="$HOME" PATH="$PATH" NO_COLOR=1 zsh "$REPO_ROOT/bin/ccmorph" help all 2>&1 | grep -qE '^  ccmorph (menu|pick|model|effort|key|token|rename|creds|start) '; then
+  local help_all
+  help_all=$(command env -i HOME="$HOME" PATH="$PATH" NO_COLOR=1 zsh "$REPO_ROOT/bin/ccmorph" help all 2>&1)
+  if grep -qE '^  ccmorph (menu|pick|model|effort|key|token|rename|creds|start) ' <<< "$help_all"; then
     print -u2 -- 'help must not teach a retired verb'
     rc=1
   fi
@@ -9668,11 +9670,11 @@ test_the_launch_sweep_clears_every_allowlisted_env_key() {
     # Client tuning keys are the one deliberate exception (#53): the shell's value
     # passes through when the profile does not declare the key.
     if (( ${_CCMORPH_TUNING_ENV[(Ie)$k]} )); then
-      print -r -- "$survived" | grep -qx -- "$k" || {
+      grep -qx -- "$k" <<< "$survived" || {
         print -u2 -- "FAIL: tuning key $k did not pass through from the shell"
         rc=1
       }
-    elif print -r -- "$survived" | grep -qx -- "$k"; then
+    elif grep -qx -- "$k" <<< "$survived"; then
       print -u2 -- "FAIL: $k survived the launch sweep; an ambient export reaches the engine"
       rc=1
     fi
@@ -12497,7 +12499,7 @@ test_one_interactive_flag_is_the_only_way_to_ask() {
     print -u2 -- 'FAIL: help must teach configure for interactive editing'
     rc=1
   }
-  print -r -- "$help_text" | grep -qE '\|\?\]' && {
+  grep -qE '\|\?\]' <<< "$help_text" && {
     print -u2 -- 'FAIL: help advertises a bare ? the caller shell would glob; teach -i'
     rc=1
   }
@@ -12526,7 +12528,7 @@ test_every_credential_type_states_how_it_authenticates() {
   }
   assert_contains "$sub_env" "CLAUDE_CONFIG_DIR=" \
     'a sub profile must still be pointed at its own config dir' || rc=1
-  if print -r -- "$sub_env" | grep -qE 'ANTHROPIC_API_KEY=|CLAUDE_CODE_OAUTH_TOKEN='; then
+  if grep -qE 'ANTHROPIC_API_KEY=|CLAUDE_CODE_OAUTH_TOKEN=' <<< "$sub_env"; then
     print -u2 -- 'a sub profile must inject no credential of its own'
     rc=1
   fi
