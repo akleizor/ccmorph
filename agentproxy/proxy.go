@@ -8,6 +8,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/http/httptrace"
 	"net/http/httputil"
 	"net/url"
 	"os"
@@ -38,6 +39,12 @@ type Options struct {
 	// TLS is the trust outbound calls use: the system's plus the session's
 	// own extra CA. nil is Go's default.
 	TLS *tls.Config
+	// Listen is the address to serve on; "" is a free loopback port.
+	Listen string
+	// Edge makes this the Remote Control edge's proxy: every inference request
+	// is decided by its switch words (edge.go) and Dir is the edge's own agents
+	// folder, which Close leaves where it is.
+	Edge *Edge
 }
 
 // Proxy is one session's agent proxy.
@@ -62,6 +69,9 @@ type decision struct {
 	target *Target
 	pick   Pick
 	body   []byte
+	// The edge's decision about the request, and the connection that answered.
+	edge     *edgeState
+	answered net.Addr
 }
 
 // Start listens on a loopback port and serves until Close.
@@ -74,10 +84,16 @@ func Start(ca *CA, o Options) (*Proxy, error) {
 	if err != nil {
 		return nil, err
 	}
-	if err := os.MkdirAll(filepath.Join(dir, "pending"), 0o700); err != nil {
-		return nil, err
+	if dir != "" {
+		if err := os.MkdirAll(filepath.Join(dir, "pending"), 0o700); err != nil {
+			return nil, err
+		}
 	}
-	ln, err := net.Listen("tcp4", "127.0.0.1:0")
+	listen := o.Listen
+	if listen == "" {
+		listen = "127.0.0.1:0"
+	}
+	ln, err := net.Listen("tcp4", listen)
 	if err != nil {
 		return nil, err
 	}
@@ -92,7 +108,7 @@ func Start(ca *CA, o Options) (*Proxy, error) {
 	tr.TLSClientConfig = o.TLS
 	tr.ForceAttemptHTTP2 = true
 	p.rp = &httputil.ReverseProxy{
-		Transport:     tr,
+		Transport:     failClosed{tr},
 		FlushInterval: -1, // SSE passes through live
 		Rewrite: func(pr *httputil.ProxyRequest) {
 			d := pr.In.Context().Value(ctxKey{}).(*decision)
@@ -100,6 +116,9 @@ func Start(ca *CA, o Options) (*Proxy, error) {
 			pr.Out.Host = d.url.Host
 			if d.target != nil {
 				d.target.setAuth(pr.Out.Header)
+			}
+			if d.edge != nil && d.edge.gzipped {
+				pr.Out.Header.Del("Content-Encoding")
 			}
 			if d.body != nil {
 				pr.Out.Body = io.NopCloser(bytes.NewReader(d.body))
@@ -109,6 +128,14 @@ func Start(ca *CA, o Options) (*Proxy, error) {
 		},
 		ModifyResponse: func(r *http.Response) error {
 			d := r.Request.Context().Value(ctxKey{}).(*decision)
+			if d.edge != nil {
+				if d.edge.asked != "" {
+					host, port := hostPort(r.Request.URL)
+					p.Edge.logf("%s", verdict(d.edge, r.StatusCode, r.Request.URL.Path,
+						r.Header.Get("anthropic-organization-id") != "", host, port, d.answered))
+				}
+				return nil
+			}
 			if d.target != nil {
 				served := r.Request.URL.Host
 				if r.Header.Get("anthropic-organization-id") != "" && !d.target.FirstParty() {
@@ -137,7 +164,9 @@ func (p *Proxy) Close() {
 	defer cancel()
 	p.srv.Shutdown(ctx)
 	p.srv.Close()
-	os.RemoveAll(p.Dir)
+	if p.Edge == nil { // an edge's agents folder is the router's, and outlives the proxy
+		os.RemoveAll(p.Dir)
+	}
 }
 
 func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -158,10 +187,23 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 // forward sends one request on: to the agent's pick when its agent has one,
-// else where it was going.
+// else where it was going. At the edge every inference request is decided by
+// its switch words instead (edge.go).
 func (p *Proxy) forward(w http.ResponseWriter, r *http.Request, u *url.URL) {
 	d := &decision{url: u}
-	if agent := r.Header.Get(AgentHeader); agent != "" && isInference(strings.TrimPrefix(u.Path, originPath(p.Origin))) {
+	if p.Edge != nil {
+		defer func() {
+			if v := recover(); v != nil { // a decision that fails closes the request
+				p.Logf("agent proxy: %s %s: %v", r.Method, r.URL.Path, v)
+				w.WriteHeader(http.StatusBadGateway)
+			}
+		}()
+		if err := p.Edge.decide(r, u, d); err != nil {
+			p.Logf("agent proxy: %s %s: %v", r.Method, u.Path, err)
+			w.WriteHeader(http.StatusBadGateway)
+			return
+		}
+	} else if agent := r.Header.Get(AgentHeader); agent != "" && isInference(strings.TrimPrefix(u.Path, originPath(p.Origin))) {
 		session := r.Header.Get(SessionHeader)
 		pick, ok := Bound(p.Dir, agent)
 		if !ok && HasPending(p.Dir, session) {
@@ -178,7 +220,25 @@ func (p *Proxy) forward(w http.ResponseWriter, r *http.Request, u *url.URL) {
 			p.route(r, d, pick)
 		}
 	}
-	p.rp.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), ctxKey{}, d)))
+	ctx := context.WithValue(r.Context(), ctxKey{}, d)
+	if d.edge != nil {
+		ctx = httptrace.WithClientTrace(ctx, &httptrace.ClientTrace{
+			GotConn: func(i httptrace.GotConnInfo) { d.answered = i.Conn.RemoteAddr() }})
+	}
+	p.rp.ServeHTTP(w, r.WithContext(ctx))
+}
+
+// failClosed is the transport's last word on the edge's decision: an inference
+// request addressed to Anthropic itself goes only under the account word.
+type failClosed struct{ next http.RoundTripper }
+
+func (f failClosed) RoundTrip(r *http.Request) (*http.Response, error) {
+	if d, ok := r.Context().Value(ctxKey{}).(*decision); ok {
+		if err := refuseFirstParty(r.URL, d); err != nil {
+			return nil, err
+		}
+	}
+	return f.next.RoundTrip(r)
 }
 
 func (p *Proxy) route(r *http.Request, d *decision, pick Pick) {

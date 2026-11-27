@@ -11,6 +11,7 @@
 package agentproxy
 
 import (
+	"crypto"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
@@ -23,13 +24,14 @@ import (
 	"math/big"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 )
 
 // CA is ccmorph's local certificate authority for the proxy.
 type CA struct {
 	cert *x509.Certificate
-	key  *ecdsa.PrivateKey
+	key  crypto.Signer
 	PEM  []byte // the CA certificate, for the session's trust bundle
 }
 
@@ -43,7 +45,24 @@ const (
 // moved into place by one rename, so launchers starting together never keep
 // a key from one and a certificate from another: the first rename wins and
 // the others read what it left.
-func LoadCA(dir string) (*CA, error) {
+func LoadCA(dir string) (*CA, error) { return loadCA(dir, makeCA) }
+
+// LoadEdgeCA is LoadCA for the Remote Control edge, whose first CA is the one
+// its proxy already had: legacy is that proxy's combined PEM (key and
+// certificate). Importing it keeps every session that trusts that certificate
+// trusting the edge across the change of proxy; without one the edge makes its own.
+func LoadEdgeCA(dir, legacy string) (*CA, error) {
+	return loadCA(dir, func(tmp string) error {
+		if legacy != "" {
+			if err := importCA(tmp, legacy); err == nil {
+				return nil
+			}
+		}
+		return makeCA(tmp)
+	})
+}
+
+func loadCA(dir string, seed func(tmp string) error) (*CA, error) {
 	if ca, err := readCA(dir); err == nil {
 		return ca, nil
 	}
@@ -56,7 +75,7 @@ func LoadCA(dir string) (*CA, error) {
 		return nil, err
 	}
 	defer os.RemoveAll(tmp)
-	if err := makeCA(tmp); err != nil {
+	if err := seed(tmp); err != nil {
 		return nil, err
 	}
 	if os.Rename(tmp, dir) != nil {
@@ -119,6 +138,10 @@ func readCA(dir string) (*CA, error) {
 	if err != nil {
 		return nil, err
 	}
+	return parseCA(certPEM, keyPEM)
+}
+
+func parseCA(certPEM, keyPEM []byte) (*CA, error) {
 	cb, _ := pem.Decode(certPEM)
 	kb, _ := pem.Decode(keyPEM)
 	if cb == nil || kb == nil {
@@ -128,17 +151,60 @@ func readCA(dir string) (*CA, error) {
 	if err != nil {
 		return nil, err
 	}
-	key, err := x509.ParseECPrivateKey(kb.Bytes)
+	key, err := parseKey(kb.Bytes)
 	if err != nil {
 		return nil, err
 	}
-	if pub, ok := cert.PublicKey.(*ecdsa.PublicKey); !ok || !pub.Equal(&key.PublicKey) {
+	if pub, ok := cert.PublicKey.(interface{ Equal(crypto.PublicKey) bool }); !ok || !pub.Equal(key.Public()) {
 		return nil, errors.New("agent proxy CA: key does not match certificate")
 	}
 	if time.Until(cert.NotAfter) < 30*24*time.Hour {
 		return nil, errors.New("agent proxy CA: expiring")
 	}
 	return &CA{cert: cert, key: key, PEM: certPEM}, nil
+}
+
+// parseKey is a private key in any of the forms a CA is kept in.
+func parseKey(der []byte) (crypto.Signer, error) {
+	if k, err := x509.ParsePKCS8PrivateKey(der); err == nil {
+		if s, ok := k.(crypto.Signer); ok {
+			return s, nil
+		}
+	}
+	if k, err := x509.ParsePKCS1PrivateKey(der); err == nil {
+		return k, nil
+	}
+	return x509.ParseECPrivateKey(der)
+}
+
+// importCA writes the CA kept in legacy (one PEM holding a private key and its
+// certificate) into dir as this package keeps one.
+func importCA(dir, legacy string) error {
+	b, err := os.ReadFile(legacy)
+	if err != nil {
+		return err
+	}
+	var certPEM, keyPEM []byte
+	for rest := b; ; {
+		var blk *pem.Block
+		blk, rest = pem.Decode(rest)
+		if blk == nil {
+			break
+		}
+		switch {
+		case blk.Type == "CERTIFICATE" && certPEM == nil:
+			certPEM = pem.EncodeToMemory(blk)
+		case strings.HasSuffix(blk.Type, "PRIVATE KEY") && keyPEM == nil:
+			keyPEM = pem.EncodeToMemory(blk)
+		}
+	}
+	if _, err := parseCA(certPEM, keyPEM); err != nil {
+		return err
+	}
+	if err := writeFile(filepath.Join(dir, caKeyFile), keyPEM); err != nil {
+		return err
+	}
+	return writeFile(filepath.Join(dir, caCertFile), certPEM)
 }
 
 // Leaf is a server certificate for host, signed by the CA, held in memory only.

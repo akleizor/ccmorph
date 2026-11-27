@@ -1,13 +1,12 @@
 package agentproxy
 
 import (
-	"bytes"
-	"encoding/json"
-	"github.com/akleizor/ccmorph/util"
 	"net/http"
 	"net/url"
 	"regexp"
 	"strings"
+
+	"github.com/akleizor/ccmorph/util"
 )
 
 // Target is the endpoint and credential a picked profile serves on.
@@ -79,7 +78,7 @@ func servedModel(pick string, asked string, tiers map[string]string) string {
 
 // The session believes it talks to api.anthropic.com, so it sends request
 // fields only first party accepts; another endpoint gets their portable form
-// (rc_route.normalize_body holds the reasons, case by case).
+// (makePortable holds the reasons, case by case).
 var turnFields = regexp.MustCompile(`\s*\b(?:cch|cc_prev_req|cc_prompt_id|cc_turn_origin|cc_prompt_index|cc_turn_index)=[^;\s]*;?`)
 
 const billingHeader = "x-anthropic-billing-header:"
@@ -88,66 +87,77 @@ const billingHeader = "x-anthropic-billing-header:"
 // is not first party, drops what only first party accepts. It returns the body
 // unchanged when nothing changed or it is not a JSON object.
 func rewriteBody(body []byte, pick string, t Target) []byte {
-	dec := json.NewDecoder(bytes.NewReader(body))
-	dec.UseNumber()
-	var p map[string]any
-	if dec.Decode(&p) != nil || p == nil {
+	v, err := parseJSON(body)
+	p, ok := v.(*obj)
+	if err != nil || !ok {
 		return body
 	}
 	changed := false
-	asked, _ := p["model"].(string)
+	asked, _ := p.str("model")
 	if m := servedModel(pick, asked, t.Tiers); m != "" && m != asked {
-		p["model"] = m
+		p.set("model", m)
 		changed = true
 	}
 	if !t.FirstParty() {
-		if th, ok := p["thinking"].(map[string]any); ok && th["display"] == "updates" {
-			th["display"] = "omitted"
-			changed = true
-		}
-		// A first-party session also offers Anthropic's server tools (web
-		// search, the advisor): typed, with no input_schema. Another endpoint
-		// refuses the whole request for one of them, and no gateway session
-		// ever sends them, so they stay behind.
-		if tools, ok := p["tools"].([]any); ok {
-			kept := tools[:0:0]
-			for _, t := range tools {
-				if m, ok := t.(map[string]any); ok && m["input_schema"] == nil && m["type"] != nil && m["type"] != "custom" {
-					continue
-				}
-				kept = append(kept, t)
-			}
-			if len(kept) != len(tools) {
-				p["tools"] = kept
-				changed = true
-			}
-		}
-		for _, f := range []string{"system", "messages", "tools"} {
-			changed = dropCacheScope(p[f]) || changed
-		}
-		if sys, ok := p["system"].([]any); ok {
-			for _, b := range sys {
-				if m, ok := b.(map[string]any); ok {
-					if s, ok := m["text"].(string); ok && strings.HasPrefix(s, billingHeader) {
-						if stable := turnFields.ReplaceAllString(s, ""); stable != s {
-							m["text"] = stable
-							changed = true
-						}
-					}
-				}
-			}
-		}
+		changed = makePortable(p, true) || changed
 	}
+	return reencode(body, p, changed)
+}
+
+// reencode is p as bytes when it changed, else the original body.
+func reencode(body []byte, p *obj, changed bool) []byte {
 	if !changed {
 		return body
 	}
-	var out bytes.Buffer
-	enc := json.NewEncoder(&out)
-	enc.SetEscapeHTML(false)
-	if enc.Encode(p) != nil {
+	out, err := encodeJSON(p)
+	if err != nil {
 		return body
 	}
-	return bytes.TrimSuffix(out.Bytes(), []byte("\n"))
+	return out
+}
+
+// makePortable drops from p what only first party accepts and reports whether
+// it changed anything: the display mode streamed thinking asks for, the cache
+// breakpoints' scope, and the per-turn fields of the billing header (they
+// rewrite the whole prompt each turn, so no endpoint's cache survives them).
+// serverTools also drops Anthropic's server tools (web search, the advisor):
+// typed, with no input_schema, which another endpoint refuses the whole request
+// for, and no gateway session ever sends them.
+func makePortable(p *obj, serverTools bool) bool {
+	changed := false
+	if th := p.obj("thinking"); th != nil && th.m["display"] == "updates" {
+		th.set("display", "omitted")
+		changed = true
+	}
+	if l := p.list("tools"); serverTools && l != nil {
+		kept := l[:0:0]
+		for _, t := range l {
+			if m, ok := t.(*obj); ok && m.m["input_schema"] == nil && m.m["type"] != nil && m.m["type"] != "custom" {
+				continue
+			}
+			kept = append(kept, t)
+		}
+		if len(kept) != len(l) {
+			p.set("tools", kept)
+			changed = true
+		}
+	}
+	for _, f := range []string{"system", "messages", "tools"} {
+		if v, ok := p.get(f); ok {
+			changed = dropCacheScope(v) || changed
+		}
+	}
+	for _, b := range p.list("system") {
+		if m, ok := b.(*obj); ok {
+			if s, ok := m.str("text"); ok && strings.HasPrefix(s, billingHeader) {
+				if stable := turnFields.ReplaceAllString(s, ""); stable != s {
+					m.set("text", stable)
+					changed = true
+				}
+			}
+		}
+	}
+	return changed
 }
 
 func dropCacheScope(node any) bool {
@@ -157,14 +167,11 @@ func dropCacheScope(node any) bool {
 		for _, item := range n {
 			changed = dropCacheScope(item) || changed
 		}
-	case map[string]any:
-		if cc, ok := n["cache_control"].(map[string]any); ok {
-			if _, has := cc["scope"]; has {
-				delete(cc, "scope")
-				changed = true
-			}
+	case *obj:
+		if cc := n.obj("cache_control"); cc != nil && cc.del("scope") {
+			changed = true
 		}
-		if c, ok := n["content"].([]any); ok {
+		if c, ok := n.m["content"].([]any); ok {
 			changed = dropCacheScope(c) || changed
 		}
 	}
