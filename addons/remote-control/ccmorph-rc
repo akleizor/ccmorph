@@ -572,7 +572,8 @@ def _taker_replaced(path: Path, pid: int) -> bool:
 
 def sweep_orphans(parent: Path) -> None:
     """Remove the route keys and addon copies of launchers that are gone, the
-    held.<edge pid>.json a proxy wrote for an edge that is gone, a handoff a proxy
+    held.<edge pid>.json and served.<pid>.json a proxy wrote for an edge that is
+    gone, a handoff a proxy
     that is gone was taking (taken.<proxy pid>.<start tag>.*: gone by its pid, or by
     its start once the pid is another process's) and the handoffs of edges that are
     gone (issue #595). Every exit removes its own, but a SIGKILL or a power cut
@@ -580,7 +581,7 @@ def sweep_orphans(parent: Path) -> None:
     outlive its edge either."""
     sweep_handoffs(parent)
     for path in [*parent.glob("route-key.*"), *parent.glob("addon.*"), *parent.glob("held.*"),
-                 *parent.glob("taken.*"), *parent.glob("proxy-ready.*")]:
+                 *parent.glob("served.*"), *parent.glob("taken.*"), *parent.glob("proxy-ready.*")]:
         pid = path.name.split(".")[1]
         if not pid.isdigit():
             continue

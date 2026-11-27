@@ -5,6 +5,16 @@
 > predecessor — so a reader following an old entry types the command that exists
 > today. The former spelling still dispatches, undocumented.
 
+## Unreleased
+
+### Added
+
+- **`ccmorph doctor` answers whether a hosted edge served what its sessions picked.** The edge's proxy now keeps the asked-vs-served outcome of its session turns (counted since that edge run, with the last miss) beside its held record, and doctor reads the live edge's answer — a pick set in the phone and answered elsewhere now warns on the check, without anyone starting the edge with `--debug` or reading a log.
+
+### Fixed
+
+- **A profile chosen for a phone session in Stark now survives an edge restart.** A proxy holds a picked profile's endpoint only in memory, and the supervisor re-handed only the shared switch, so after an edge or proxy restart every session silently followed the edge's route again while the phone still showed the profile it had chosen. The supervisor now re-hands every session's profile word the same way, writing no word itself, and a word whose re-hand keeps failing is tried behind the others instead of holding them back (GH-977).
+
 ## v0.5.41 — 2026-11-27
 
 ### Changed
