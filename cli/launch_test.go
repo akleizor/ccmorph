@@ -1323,6 +1323,18 @@ func TestUsageHookCoversSubTokenAndProvider(t *testing.T) {
 	prev := refreshOwnedPrices
 	refreshOwnedPrices = func(string) { refreshed++ }
 	t.Cleanup(func() { refreshOwnedPrices = prev })
+	// The machine's shape is pinned, never guessed: the install lives in this
+	// test's config root, with no brew prefix in the env (#987).
+	cfg := filepath.Join(t.TempDir(), "xdg")
+	t.Setenv("XDG_CONFIG_HOME", cfg)
+	t.Setenv("HOMEBREW_PREFIX", "")
+	core := filepath.Join(cfg, "ccmorph", "libexec", "ccmorph-core")
+	if err := os.MkdirAll(filepath.Dir(core), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(core, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
 	l := &launcher{libexec: "/opt/cc/libexec", profileDirs: "/p"}
 	cases := []struct{ name, typ, route, wantPricing string }{
 		{"sub", "sub", "", "anthropic"},
@@ -1340,7 +1352,7 @@ func TestUsageHookCoversSubTokenAndProvider(t *testing.T) {
 			}
 			continue
 		}
-		want := "/opt/cc/libexec/ccmorph-core usage-row --profile " + c.name + " --pricing " + c.wantPricing
+		want := core + " usage-row --profile " + c.name + " --pricing " + c.wantPricing
 		if hook != want {
 			t.Fatalf("%s/%s: hook = %q, want %q", c.name, c.typ, hook, want)
 		}
@@ -1387,6 +1399,93 @@ func TestUsageHookUnderACellarPathNamesTheStableOptPath(t *testing.T) {
 	if hook := l.usageHookFor("sub", "sub", ""); hook != want {
 		t.Fatalf("without the opt link, hook = %q, want %q", hook, want)
 	}
+}
+
+// #987: a worktree-built launch froze its own libexec into the profile's live
+// hooks, and once the worktree was gone every hook in that profile ran a
+// missing file. The hook names the install's core instead — the path that
+// outlives any one build — and with no install on the machine at all the
+// launch leaves the profile's own hook where it found it. #287's cellar
+// answers above are unchanged.
+func TestUsageHookFromABuildOutsideTheInstall(t *testing.T) {
+	worktree := filepath.Join(t.TempDir(), ".claude", "worktrees", "agent-a037", "libexec")
+	if err := os.MkdirAll(worktree, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	installCore := func(dir string) {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, "ccmorph-core"), []byte("#!/bin/sh\n"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Run("a config-dir install is named, not the build", func(t *testing.T) {
+		cfg := filepath.Join(t.TempDir(), "xdg")
+		t.Setenv("XDG_CONFIG_HOME", cfg)
+		t.Setenv("HOMEBREW_PREFIX", "")
+		installed := filepath.Join(cfg, "ccmorph", "libexec")
+		installCore(installed)
+		l := &launcher{libexec: worktree, profileDirs: "/p"}
+		want := filepath.Join(installed, "ccmorph-core") + " usage-row --profile sub --pricing anthropic"
+		if hook := l.usageHookFor("sub", "sub", ""); hook != want {
+			t.Fatalf("hook = %q, want the installed core %q", hook, want)
+		}
+	})
+
+	t.Run("a brew install names its stable opt keg", func(t *testing.T) {
+		t.Setenv("XDG_CONFIG_HOME", filepath.Join(t.TempDir(), "empty"))
+		// The keg is found through $HOMEBREW_PREFIX, the way brew's own
+		// shellenv names it; no prefix is ever hardcoded.
+		prefix := t.TempDir()
+		t.Setenv("HOMEBREW_PREFIX", prefix)
+		installed := filepath.Join(prefix, "opt", "ccmorph", "libexec", "libexec")
+		installCore(installed)
+		l := &launcher{libexec: worktree, profileDirs: "/p"}
+		want := filepath.Join(installed, "ccmorph-core") + " usage-row --profile sub --pricing anthropic"
+		if hook := l.usageHookFor("sub", "sub", ""); hook != want {
+			t.Fatalf("hook = %q, want brew's stable core %q", hook, want)
+		}
+	})
+
+	t.Run("no install on the machine keeps the profile's own hook", func(t *testing.T) {
+		dirs := t.TempDir()
+		if err := os.MkdirAll(filepath.Join(dirs, "sub"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		keep := "/gone/build/libexec/ccmorph-core usage-row --profile sub --pricing anthropic"
+		settings := `{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"` + keep + `"}]}]}}`
+		if err := os.WriteFile(filepath.Join(dirs, "sub", "settings.json"), []byte(settings), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		t.Setenv("XDG_CONFIG_HOME", filepath.Join(t.TempDir(), "empty"))
+		t.Setenv("HOMEBREW_PREFIX", "")
+		l := &launcher{libexec: worktree, profileDirs: dirs}
+		if hook := l.usageHookFor("sub", "sub", ""); hook != keep {
+			t.Fatalf("hook = %q, want the profile's own hook %q untouched", hook, keep)
+		}
+		// A profile getting its first hook with no install anywhere names
+		// this build: the clone case #287 left alone — without an install
+		// this build is the machine's ccmorph.
+		l.profileDirs = t.TempDir()
+		want := filepath.Join(worktree, "ccmorph-core") + " usage-row --profile sub --pricing anthropic"
+		if hook := l.usageHookFor("sub", "sub", ""); hook != want {
+			t.Fatalf("hook = %q, want this build's core %q", hook, want)
+		}
+	})
+
+	t.Run("a launch from the install names its own path", func(t *testing.T) {
+		cfg := filepath.Join(t.TempDir(), "xdg")
+		t.Setenv("XDG_CONFIG_HOME", cfg)
+		t.Setenv("HOMEBREW_PREFIX", "")
+		installed := filepath.Join(cfg, "ccmorph", "libexec")
+		installCore(installed)
+		l := &launcher{libexec: installed, profileDirs: "/p"}
+		want := filepath.Join(installed, "ccmorph-core") + " usage-row --profile sub --pricing anthropic"
+		if hook := l.usageHookFor("sub", "sub", ""); hook != want {
+			t.Fatalf("hook = %q, want the launch's own path %q", hook, want)
+		}
+	})
 }
 
 func TestSettingsArgvCarriesTheHookOnlyWhenOneIsSet(t *testing.T) {

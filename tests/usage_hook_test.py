@@ -16,6 +16,7 @@ write its row — no adapter holds one for it.
 """
 import json
 import os
+import shutil
 import stat
 import subprocess
 import time
@@ -155,9 +156,12 @@ class Box:
         (self.state / ("%s.conf" % name)).write_text(text)
 
     def env(self):
+        # HOMEBREW_ too: a launch looks up brew's install through
+        # $HOMEBREW_PREFIX, and an inherited prefix would let a brew keg on
+        # the host machine answer for this isolated home (#987).
         env = {k: v for k, v in os.environ.items()
                if k != "CLAUDECODE"
-               and not k.startswith(("CCMORPH", "_CCMORPH", "CLAUDE_", "ANTHROPIC_", "XDG_"))}
+               and not k.startswith(("CCMORPH", "_CCMORPH", "CLAUDE_", "ANTHROPIC_", "XDG_", "HOMEBREW_"))}
         for k in ("HTTPS_PROXY", "https_proxy", "NO_PROXY", "no_proxy", "NODE_EXTRA_CA_CERTS"):
             env.pop(k, None)
         env.update(HOME=str(self.home), ZDOTDIR=str(self.home),
@@ -369,3 +373,26 @@ def test_a_launch_repoints_a_stale_cellar_hook_onto_the_stable_path(tmp_path):
         " usage-row --profile sub --pricing anthropic"
     assert box.hooks() == [stable], (box.hooks(), box.log())
     assert len(box.wait_rows(1)) == 1, "the re-pointed hook must run and write the turn's row"
+
+
+def test_a_launch_from_a_build_outside_the_install_names_the_installed_core(tmp_path):
+    """#987: a launch ran the core of whichever build started it, and froze that
+    path into the profile's live hooks — so a session launched from a worktree
+    left the real profile running a missing file once the worktree was removed.
+    Here the home holds install.sh's layout (the core under
+    $XDG_CONFIG_HOME/ccmorph/libexec) while the launcher runs from the
+    checkout, a build outside it: the hook names the install's core, and the
+    turn's row proves that core is the one that runs."""
+    box = Box(tmp_path / "home")
+    box.conf("sub", "type=sub\nemail=me@example.invalid\n")
+    installed = box.state / "libexec/ccmorph-core"
+    installed.parent.mkdir(parents=True)
+    # A copy, never a link: the launcher must name the install's own file, and
+    # a link back to the checkout would make the two one file.
+    shutil.copy2(ROOT / "libexec/ccmorph-core", installed)
+    installed.chmod(0o755)
+    out = box.run("sub")
+    assert out.returncode == 0, out.stderr
+    want = str(installed) + " usage-row --profile sub --pricing anthropic"
+    assert box.hooks() == [want], (box.hooks(), box.log())
+    assert len(box.wait_rows(1)) == 1, "the installed core the hook names must write the row"

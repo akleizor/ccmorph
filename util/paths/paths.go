@@ -93,6 +93,20 @@ func ProfileRoot() string {
 	return filepath.Join(Home(), ".config", "ccmorph")
 }
 
+// InstallConfigDir is the config directory install.sh installs into:
+// $XDG_CONFIG_HOME/ccmorph, else ~/.config/ccmorph over Home — the one Go
+// spelling of install.sh's CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/ccmorph".
+// It reads like ProfileRoot's later rungs on purpose, but it is not that
+// ladder: $CCMORPH_STATE_DIR moves where profiles and the registry live,
+// never where a build was installed, so a reader asking "where is the install
+// on this machine" must not consult it. The launcher asks (#987).
+func InstallConfigDir() string {
+	if cfg := os.Getenv("XDG_CONFIG_HOME"); cfg != "" {
+		return filepath.Join(cfg, "ccmorph")
+	}
+	return filepath.Join(Home(), ".config", "ccmorph")
+}
+
 // LibDir is the installation's lib/ directory: $CCMORPH_LIB_DIR, else the
 // lib/ beside the running binary (lib/ finds libexec/ and share/ beside
 // itself).

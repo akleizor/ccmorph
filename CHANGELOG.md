@@ -15,6 +15,18 @@
 
 ### Fixed
 
+- **A launch from a worktree build no longer writes its own path into a live
+  profile's hooks.** A session launched from anything outside the install — a
+  git worktree, a scratch build — froze that build's `ccmorph-core` path into
+  the profile's SessionStart, Stop and SessionEnd hooks; once the build was
+  removed, every hook in the profile ran a missing file until an installed
+  launch rewrote them. Such a launch now names the machine's installed core —
+  brew's stable opt keg, found through `$HOMEBREW_PREFIX`, or the install's
+  config-dir libexec — which repairs a profile whose hook already points at a
+  removed build. A machine with no install keeps the old behavior: the hook
+  the profile carries stays, and a first hook names the build that writes it
+  (#987).
+
 - **A model alias from ~/.claude/settings.json no longer leaves a gateway profile
   unstartable behind a ready doctor.** `list` and `inspect` say where the shown
   model came from, `doctor` fails with run's own sentence and the command that

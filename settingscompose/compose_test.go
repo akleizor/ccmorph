@@ -414,6 +414,31 @@ func TestUsageHookCommandRoundTripsThroughTheMatcher(t *testing.T) {
 	}
 }
 
+// #987: a launch built outside the install, with no installed core to name,
+// hands the profile's own usage hook back unchanged so the fold leaves it
+// where it found it. LiveUsageHook is the reader for that hand-back: the
+// command ccmorph wrote, verbatim, or "" — a user's own hook, an empty or
+// unparseable document included, is never handed back as ccmorph's.
+func TestLiveUsageHookReadsBackWhatTheBuilderWrote(t *testing.T) {
+	command := UsageHookCommand("/opt/ccmorph/libexec/ccmorph-core", "sub", "anthropic")
+	settings := `{"model":"x","hooks":{"Stop":[{"hooks":[{"type":"command",` +
+		`"command":"echo mine"}]},{"hooks":[{"type":"command","command":"` + command + `"}]}]}}`
+	if got := LiveUsageHook([]byte(settings)); got != command {
+		t.Errorf("LiveUsageHook = %q, want %q", got, command)
+	}
+	for _, settings := range []string{
+		`{}`,
+		`{"hooks":{}}`,
+		`{"hooks":{"SessionStart":[{"hooks":[{"type":"command","command":"echo mine"}]}]}}`,
+		`{"hooks":{"Stop":"not a list"}}`,
+		`not json`,
+	} {
+		if got := LiveUsageHook([]byte(settings)); got != "" {
+			t.Errorf("LiveUsageHook(%s) = %q, want none", settings, got)
+		}
+	}
+}
+
 // A user's hook that wraps the usage verb is theirs: a launch must keep running
 // it, and a fold must not save it away.
 func TestAUsersHookEmbeddingTheUsageVerbSurvives(t *testing.T) {

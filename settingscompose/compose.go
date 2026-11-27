@@ -484,24 +484,60 @@ func isUsageCommand(command string) bool {
 	return filepath.Base(core) == "ccmorph-core"
 }
 
-// isUsageHook is an entry whose command is this profile's usage writer.
-func isUsageHook(entry value) bool {
+// usageHookCommandOf is an entry's usage-writer command, or "" when the entry
+// carries none: the one reading of "this entry is ccmorph's usage hook".
+func usageHookCommandOf(entry value) string {
 	e, ok := entry.(*obj)
 	if !ok {
-		return false
+		return ""
 	}
 	hooks, ok := getObj(e, "hooks").([]any)
 	if !ok {
-		return false
+		return ""
 	}
 	for _, h := range hooks {
 		if ho, ok := h.(*obj); ok {
 			if c, ok := getObj(ho, "command").(string); ok && isUsageCommand(c) {
-				return true
+				return c
 			}
 		}
 	}
-	return false
+	return ""
+}
+
+// isUsageHook is an entry whose command is this profile's usage writer.
+func isUsageHook(entry value) bool { return usageHookCommandOf(entry) != "" }
+
+// LiveUsageHook is the usage-writer command a profile's live settings already
+// carry, verbatim, or "" when they carry none. A launch built outside the
+// install, with no installed core to name, passes it back as its own hook so
+// the fold leaves that line exactly where it found it (#987). Unreadable or
+// unparseable bytes carry no hook to keep.
+func LiveUsageHook(settings []byte) string {
+	v, err := ordjson.Parse(settings)
+	if err != nil {
+		return ""
+	}
+	doc, ok := v.(*obj)
+	if !ok {
+		return ""
+	}
+	hooks, ok := getObj(doc, "hooks").(*obj)
+	if !ok {
+		return ""
+	}
+	for _, event := range usageEvents {
+		entries, ok := getObj(hooks, event).([]any)
+		if !ok {
+			continue
+		}
+		for _, e := range entries {
+			if c := usageHookCommandOf(e); c != "" {
+				return c
+			}
+		}
+	}
+	return ""
 }
 
 // usageEvents are the hook events that carry the usage writer. SessionStart
