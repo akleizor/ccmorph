@@ -185,11 +185,15 @@ func TestRunningAdapterMatchesArgvAcrossSpaces(t *testing.T) {
 // its pid and sleeps the bound out; __UNKNOWN__ comes at the bound, and the pid
 // must be gone shortly after.
 func TestRunningAdapterEndsAPsStalledPastItsBound(t *testing.T) {
-	// On darwin the table is the kernel's sysctl, which no PATH double reaches;
-	// the ps fallback is the reader this bound exists for, so force it.
+	// On darwin the table is the kernel's sysctl, off darwin its /proc, and no
+	// PATH double reaches either (#991); the ps fallback is the reader this
+	// bound exists for, so force the kernel reads away to reach it.
 	orig := sysctlTable
 	sysctlTable = func() (map[int]psRow, bool) { return nil, false }
 	t.Cleanup(func() { sysctlTable = orig })
+	origProcfs := procfsTable
+	procfsTable = func() map[int]psRow { return nil }
+	t.Cleanup(func() { procfsTable = origProcfs })
 
 	dir := t.TempDir()
 	pidFile := filepath.Join(dir, "ps.pid")

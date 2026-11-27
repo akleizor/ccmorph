@@ -533,11 +533,12 @@ def _adapter_tree(tmp_path, profile, shape):
 
 def _adapter_stubs(bindir, slow, ports):
     """Install the PATH doubles doctor's read-only inspections consult: an lsof
-    that answers for the holders the session started, and — only where the
-    table's read is a ps, off darwin — a ps that outlives doctor's one-second
-    bound (GH-467): the deadline kills it, and doctor's designed answer is
-    SKIP. darwin's table is the kernel's own sysctl, which no PATH double
-    reaches, so there the session is always the real one."""
+    that answers for the holders the session started, and a ps that outlives
+    doctor's one-second bound (GH-467). Since #991 the table's read is the
+    kernel's own on every platform — /proc off darwin, sysctl on it — so the
+    ps double cannot delay it anywhere: the slow-ps case now pins exactly
+    that, that a stalled PATH ps is inert to the table and the session is
+    always the real one."""
     bindir.mkdir(parents=True, exist_ok=True)
     if slow == "ps":
         (bindir / "ps").write_text("#!/bin/sh\nsleep 2\n")
@@ -645,11 +646,11 @@ printf '%s\n' '__CCMORPH_STATUS__200'
         assert result.returncode == 0, result.stderr
         assert len([l for l in result.stdout.splitlines() if "adapter:" in l]) == 1, \
             result.stdout
-        if slow == "ps" and sys.platform != "darwin":
-            # Off darwin the table's read is a ps, so this run can lose it to
-            # the bound.
-            assert _until_a_model(profile).fullmatch(adapters[0]), verbose.stdout
-        elif lost and _until_a_model(profile).fullmatch(adapters[0]):
+        # #991: the table's read is the kernel's own on every platform (/proc
+        # off darwin, sysctl on it), so the slow-`ps` stub no longer makes any
+        # run lose the table: it answers with the session like an unstubbed
+        # one. The lsof case keeps GH-467's bound on a read that still execs.
+        if lost and _until_a_model(profile).fullmatch(adapters[0]):
             # Every try lost the table's one-second bound under load (GH-467,
             # #902): the designed answer then is the until-a-model line.
             pass
@@ -768,12 +769,14 @@ def test_doctor_lines_stay_plain_words_issue_272(tmp_path):
     settings = tmp_path / "state" / "profiles" / session
     settings.mkdir(parents=True)
     (settings / "settings.json").write_text('{"model":"glm-4.6"}')
-    # The running-adapter answer in plain words: off darwin the table's read is
-    # a ps this run loses to its one-second bound, and the whole answer is one
-    # SKIP line (GH-467's nothing-half-reported, reworded); darwin's sysctl
-    # answers first, so the wording is the session's own listener checks.
+    # The running-adapter answer in plain words: the table's read is the
+    # kernel's own on every platform (/proc off darwin, sysctl on it, #991),
+    # so the session is always the real one and the wording is its own
+    # listener checks; no PATH double can lose the table to the bound. The
+    # SKIP line a lost read writes (GH-467's nothing-half-reported, reworded)
+    # is words-checked by assert_adapter_report when one genuinely happens.
     decoy, listeners, ports, stop = _adapter_tree(tmp_path, session, "translator-route")
-    _adapter_stubs(tmp_path / "bin", "ps", ports)
+    _adapter_stubs(tmp_path / "bin", "", ports)
     try:
         result, _, _ = run_doctor(tmp_path, conf, GW_LISTING, args=("--verbose",),
                                   profile=session)
@@ -781,10 +784,7 @@ def test_doctor_lines_stay_plain_words_issue_272(tmp_path):
         for banned in ("layered JSON", "canonical settings", "process inspection"):
             assert banned not in result.stdout, (banned, result.stdout)
         assert "profile settings: valid JSON (" in result.stdout, result.stdout
-        if sys.platform != "darwin":
-            assert "SKIP adapter: could not tell whether a translator is running" in result.stdout
-        else:
-            assert_adapter_report(result.stdout, decoy, listeners)
+        assert_adapter_report(result.stdout, decoy, listeners)
         # A broken settings file is told how to be dealt with, not just that it is broken.
         (settings / "settings.json").write_text("{ invalid")
         broken, _, _ = run_doctor(tmp_path, conf, GW_LISTING, profile=session)

@@ -1,6 +1,7 @@
 package util
 
 import (
+	"bytes"
 	"context"
 	"os"
 	"os/exec"
@@ -24,19 +25,151 @@ type psRow struct {
 // reaches it.
 var sysctlTable = sysctlProcessTable
 
+// procfsTable is procfsProcessTable, a variable so a test can reach the ps
+// fallback where the kernel's /proc answers, as sysctlTable is there for the
+// read's self-check.
+var procfsTable = procfsProcessTable
+
 // processTable is one read of the process table: pid -> parent, executable,
-// argv and start time; sysctl on darwin, ps elsewhere or when that read fails
-// its self-check. Its ps fallback reads without a deadline: a caller that needs
-// one uses processTableWithin.
+// argv and start time; sysctl on darwin, /proc elsewhere where the kernel
+// keeps one, and ps where neither read answers. Its ps fallback reads without
+// a deadline: a caller that needs one uses processTableWithin.
 func processTable() map[int]psRow { return processTableWithin(context.Background()) }
 
 // processTableWithin is processTable with the ps fallback bounded by ctx: a
-// caller that has given up on the read leaves no ps of its own running.
+// caller that has given up on the read leaves no ps of its own running. The
+// kernel reads come first because ps is itself an exec, and under a fork
+// storm the exec is the part that queues — which is how a bounded reader
+// lost the table while the kernel's own copy sat readable (#991).
 func processTableWithin(ctx context.Context) map[int]psRow {
 	if t, ok := sysctlTable(); ok {
 		return t
 	}
+	if t := procfsTable(); t != nil {
+		return t
+	}
 	return psProcessTable(ctx)
+}
+
+// procfsClkTck is the clock tick /proc counts start times in (USER_HZ): 100 on
+// every Linux this repository runs on. A host that ticks differently gets its
+// start times zeroed by the sanity check below, which the stale sweep holds
+// on (#189) — never a reaping on a wrong time.
+const procfsClkTck = 100
+
+// procfsProcessTable is the process table read from /proc directly, with no
+// exec: ps reads the very same files and adds a process to pay for it, so a
+// PATH ps stalled by the run queue bounds doctor's adapter line and rc-hosts'
+// session_pid() alike while the kernel waits unasked (#991). Rows carry what
+// every other read carries: parent, comm, the joined command line — ps joins
+// argv with spaces and so does this, from the NULs the kernel keeps — and the
+// start time. A pid that leaves between the listing and its read is simply
+// absent; a start that reads after now means the ticks or the boot time do
+// not describe this machine, and the row keeps the cannot-tell zero the sweep
+// holds on. nil where /proc is absent or wholly unreadable, so the caller
+// falls back to ps.
+func procfsProcessTable() map[int]psRow {
+	dir, err := os.Open("/proc")
+	if err != nil {
+		return nil
+	}
+	names, err := dir.Readdirnames(-1)
+	dir.Close()
+	if err != nil {
+		return nil
+	}
+	boot, haveBoot := procfsBootTime()
+	now := time.Now()
+	rows := map[int]psRow{}
+	for _, name := range names {
+		pid, e := strconv.Atoi(name)
+		if e != nil || pid <= 0 {
+			continue
+		}
+		st, err := os.ReadFile("/proc/" + name + "/stat")
+		if err != nil {
+			continue
+		}
+		ppid, comm, ticks, ok := parseProcStat(st)
+		if !ok {
+			continue
+		}
+		r := psRow{ppid: ppid, comm: comm, args: procfsCmdline(pid)}
+		if haveBoot {
+			if start, ok := procfsStart(boot, ticks, now); ok {
+				r.start = start
+			}
+		}
+		rows[pid] = r
+	}
+	if len(rows) == 0 {
+		return nil
+	}
+	return rows
+}
+
+// parseProcStat is the parent pid, the comm and the start ticks of one
+// /proc/<pid>/stat line. comm is parenthesized and may itself hold spaces or
+// parens, so the fields are counted from the last ')': state is 0, the parent
+// 1, and starttime — field 22 of the line — the twentieth after it, the same
+// field procStartToken reads.
+func parseProcStat(b []byte) (ppid int, comm string, ticks int64, ok bool) {
+	open, end := bytes.IndexByte(b, '('), bytes.LastIndexByte(b, ')')
+	if open < 0 || end < open {
+		return 0, "", 0, false
+	}
+	f := strings.Fields(string(b[end+1:]))
+	if len(f) < 20 {
+		return 0, "", 0, false
+	}
+	p, e1 := strconv.Atoi(f[1])
+	t, e2 := strconv.ParseInt(f[19], 10, 64)
+	if e1 != nil || e2 != nil {
+		return 0, "", 0, false
+	}
+	return p, string(b[open+1 : end]), t, true
+}
+
+// procfsStart is the wall-clock start of a process from this boot's start and
+// the process's start ticks: false when the answer is later than now — wrong
+// ticks or a wrong anchor, which the caller leaves at the cannot-tell zero
+// the stale sweep holds on (#189).
+func procfsStart(boot time.Time, ticks int64, now time.Time) (time.Time, bool) {
+	start := boot.Add(time.Duration(ticks/procfsClkTck)*time.Second +
+		time.Duration(ticks%procfsClkTck)*10*time.Millisecond)
+	if start.After(now) {
+		return time.Time{}, false
+	}
+	return start, true
+}
+
+// procfsCmdline is pid's command line as ps prints it: the arguments the
+// kernel keeps, NUL between them, joined with one space. "" when it cannot be
+// read — a zombie or kernel thread names no command line here at all.
+func procfsCmdline(pid int) string {
+	b, err := os.ReadFile("/proc/" + strconv.Itoa(pid) + "/cmdline")
+	if err != nil || len(b) == 0 {
+		return ""
+	}
+	b = bytes.TrimSuffix(b, []byte{0})
+	return strings.Join(strings.Split(string(b), "\x00"), " ")
+}
+
+// procfsBootTime is this boot's wall-clock start, /proc/stat's btime: the
+// anchor for starttime's ticks since boot.
+func procfsBootTime() (time.Time, bool) {
+	b, err := os.ReadFile("/proc/stat")
+	if err != nil {
+		return time.Time{}, false
+	}
+	for _, line := range bytes.Split(b, []byte{'\n'}) {
+		if f := strings.Fields(string(line)); len(f) == 2 && f[0] == "btime" {
+			if unix, e := strconv.ParseInt(f[1], 10, 64); e == nil && unix > 0 {
+				return time.Unix(unix, 0), true
+			}
+		}
+	}
+	return time.Time{}, false
 }
 
 // psPipeGrace is how long a ps pass may keep its output pipe after the pass

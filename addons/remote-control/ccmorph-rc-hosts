@@ -1612,22 +1612,23 @@ def session_child_id(row: str, claude: "tuple[str, ...]", node: "tuple[str, ...]
     return words[i] if i < len(words) else None
 
 
-def session_pid(sid: str) -> int | None:
-    """The pid of the host child serving session `sid` (session_child_id())."""
-    try:
-        out = subprocess.run(["ps", "-ww", "-Ao", "pid=,command="], capture_output=True, text=True,
-                             errors="replace", timeout=10).stdout
-    except (OSError, ValueError, subprocess.SubprocessError):
-        return None
+CANNOT_TELL = "unknown"     # host_at()'s word: the read lost the table, which is no answer (#297)
+
+
+def session_pid(sid: str) -> "int | None | str":
+    """The pid of the host child serving session `sid` (session_child_id()),
+    None when the table proves no child serves it, or CANNOT_TELL when the
+    table itself could not be read (process_table()). Silence is not an exit
+    (#297): under a fork storm the exec of ps used to queue and time out, and
+    this answered None as if no session ran (#991), so a caller that signals,
+    deletes or records acts on the answer alone, never on the lost read."""
+    table = process_table()
+    if table is None:
+        return CANNOT_TELL
     claude, node = claude_paths(), node_paths()
-    for line in out.splitlines():
-        pid, _, cmd = line.strip().partition(" ")
-        try:
-            n = int(pid)
-        except ValueError:
-            continue
-        if session_child_id(cmd.strip(), claude, node, n) == sid:
-            return n
+    for row in table:
+        if session_child_id(row, claude, node, row.pid) == sid:
+            return row.pid
     return None
 
 
@@ -1644,19 +1645,50 @@ class PsRow(str):
         return row
 
 
+def procfs_table() -> "list[PsRow] | None":
+    """The process table read from /proc directly (Linux): each pid's argv as
+    the kernel keeps it, joined with one space exactly as ps prints a row -- or
+    None where the kernel keeps no /proc or it cannot be read. This is the
+    table without an exec: ps reads the very same files, but ps is itself a
+    process, and under a fork storm the exec is the part that queues -- which
+    is how session_pid() read a live child as no session while the kernel's
+    own argv sat there readable (#991). A reader that must know where an
+    argument ends still reads that pid's argv (proc_argv())."""
+    if not os.path.isdir("/proc"):
+        return None
+    try:
+        entries = os.listdir("/proc")
+    except OSError:
+        return None
+    rows = []
+    for name in entries:
+        if not name.isdigit():
+            continue
+        pid = int(name)
+        argv = proc_argv(pid)
+        if argv:
+            rows.append(PsRow(" ".join(argv), pid))
+    return rows or None
+
+
 def process_table() -> "list[PsRow] | None":
-    """ps's row for every process with its pid (PsRow), each kept whole as one
-    command line -- or None when the table cannot be read. A row is not split
-    into words here: ps joins argv with spaces, so an install path with spaces
-    splits into several words and a reader that looked for a path at a word
-    position missed the process (#758). A reader that knows the exact command
-    it looks for matches the row's start instead (served_session(),
+    """A row for every process with its pid (PsRow), each kept whole as one
+    command line -- or None when the table cannot be read. /proc is the table
+    where the kernel keeps one (procfs_table(), no exec on its way, #991); ps
+    answers elsewhere and its rows read the same way once listed. A row is not
+    split into words here: ps joins argv with spaces, so an install path with
+    spaces splits into several words and a reader that looked for a path at a
+    word position missed the process (#758). A reader that knows the exact
+    command it looks for matches the row's start instead (served_session(),
     held_logs()); one that must know where an argument ends reads the pid's
     argv (claude_rest()). `-ww` asks for every column a row needs: procps cuts a
     row off a terminal to 80 characters, past which a session id is lost (macOS's
     ps never cuts one). A nonzero exit is unread even when rows were printed,
     so is a line with no pid in front, and ps lists at least itself, so an
     empty table is an unread one."""
+    rows = procfs_table()
+    if rows is not None:
+        return rows
     try:
         done = subprocess.run(["ps", "-ww", "-Ao", "pid=,command="], capture_output=True, text=True,
                               errors="replace", timeout=10)
@@ -1753,8 +1785,8 @@ def park_idle(folders: list[str], now: float, parked: dict[str, tuple], limit: f
                 or s.get("worker_status") != "idle" or last is None or now - last < limit):
             continue
         pid = session_pid(sid)
-        if pid is None:
-            continue
+        if not isinstance(pid, int):
+            continue                    # absent or CANNOT_TELL: never signal on a guess (#991)
         try:
             os.kill(pid, signal.SIGTERM)
         except ProcessLookupError:
@@ -1848,8 +1880,10 @@ def list_sessions(folders: list[str]) -> dict | None:
     """The active phone sessions of these repo hosts, each with the word it routes by
     (its own from `ccmorph-rc <profile> --switch --session <id>`, else null: the shared
     switch), for a phone control to pick from. A word whose session is neither active
-    nor running is removed. None when the sessions could not be read: nothing is
-    removed then. Run on request (`ccmorph-rc-hosts --list-sessions`), never by the
+    nor running is removed -- only when the process table proves it: a lost
+    read (session_pid()'s CANNOT_TELL) removes nothing (#991). None when the
+    sessions could not be read: nothing is removed then. Run on request
+    (`ccmorph-rc-hosts --list-sessions`), never by the
     supervisor's loop: a change here reaches the next call with no restart."""
     token, found = host_sessions(folders, "active")
     if not token:
