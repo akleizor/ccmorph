@@ -12,6 +12,8 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"github.com/akleizor/ccmorph/util/paths"
 )
 
 // A gateway profile's adapter is shared by every session that asks for the same
@@ -44,9 +46,14 @@ func AdapterBase(root, name, key string) string {
 
 // AdapterFiles are every shared-adapter file of a profile under root, whatever
 // its key: rm deletes and mv moves them with the profile. A profile name holds
-// no dot, so ".<name>.adapter." names no other profile's files.
+// no dot, so ".<name>.adapter." names no other profile's files. The root is
+// user-settable (CCMORPH_STATE_DIR), so it is quoted before the pattern: the
+// scan takes the literal directory it was given, never whatever a `[` or a `*`
+// in the path happens to match — the writer of these files uses the literal
+// path, and a scan of a different directory than the write is how one root's
+// launch deleted another's files (#848, #1020).
 func AdapterFiles(root, name string) []string {
-	files, _ := filepath.Glob(filepath.Join(root, "."+name+".adapter.*"))
+	files, _ := filepath.Glob(paths.GlobQuote(filepath.Join(root, "."+name+".adapter.")) + "*")
 	return files
 }
 
@@ -66,25 +73,136 @@ func AdapterKey(name, model, confPath, core string) string {
 	return hex.EncodeToString(h.Sum(nil))[:16]
 }
 
-// adapterOwns is whether pid runs an adapter started with `--shared base`,
-// read from that pid's own argv argument by argument. known is false when the
-// read cannot answer for a pid that exists; doubt is read as alive.
+// sweepStaleAdapterKeys is a launch taking the dead keys of its profile with
+// it: a core rebuild or a conf edit makes a new key, and the old key's empty
+// lock and users files and its last log would otherwise pile up in the auth
+// dir until rm or mv takes the profile (#1020). A key goes only under its own
+// mutex, taken without waiting — a launch queued on it is a launch on that
+// key — and only while nobody holds its users lock. Best effort in every
+// direction: any doubt leaves the whole key for the next launch, and a
+// session queued on a swept key's mutex finds the files gone and starts its
+// own fresh adapter, the way the idle check leaves it.
+func sweepStaleAdapterKeys(root, name, keep string) {
+	prefix := "." + name + ".adapter."
+	bases := map[string]bool{}
+	for _, f := range AdapterFiles(root, name) {
+		key := strings.TrimPrefix(filepath.Base(f), prefix)
+		for _, s := range []string{".lock", ".users", ".log"} {
+			key = strings.TrimSuffix(key, s) // one key's file, or its record
+		}
+		if !isAdapterKey(key) {
+			continue // a prefix match no key ever made: not a file set to sweep
+		}
+		bases[AdapterBase(root, name, key)] = true
+	}
+	for base := range bases {
+		if base != keep {
+			sweepAdapterKey(base)
+		}
+	}
+}
+
+// adapterKeyLen is the length of the key AdapterKey makes; the shape check
+// tracks its producer rather than a hand-written number.
+var adapterKeyLen = len(AdapterKey("k", "m", "/ccmorph.no-conf", "/ccmorph.no-core"))
+
+// isAdapterKey is the shape of an adapter key: lowercase hex, as long as
+// AdapterKey truncates to. A file under the prefix whose key part is not that
+// shape was written by no key — someone else's lock-shaped name — and the
+// sweep leaves it however well its lock opens; only real keys are swept. A
+// drift in AdapterKey's output is caught by the launches in this file's
+// tests, whose real keys would stop being swept (#1020).
+func isAdapterKey(key string) bool {
+	if len(key) != adapterKeyLen {
+		return false
+	}
+	for i := 0; i < len(key); i++ {
+		if c := key[i]; c < '0' || c > '9' && c < 'a' || c > 'f' {
+			return false
+		}
+	}
+	return true
+}
+
+// sweepAdapterKey removes one dead key's file set, or leaves the key whole:
+// its mutex only if it can be taken without waiting, its users lock only if a
+// session does not hold it (one that cannot be read is held, as in othersHold),
+// and its recorded adapter stopped only while the process table proves that
+// pid runs this key's adapter — doubt is alive, as ever.
+func sweepAdapterKey(base string) {
+	mu, err := os.OpenFile(base+".lock", os.O_RDWR, 0) // no O_CREATE: a missing mutex is not one to sweep under
+	if err != nil {
+		return
+	}
+	defer mu.Close()
+	if syscall.Flock(int(mu.Fd()), syscall.LOCK_EX|syscall.LOCK_NB) != nil {
+		return // a launch or a release is on this key: it is alive
+	}
+	if users, err := os.OpenFile(base+".users", os.O_RDWR, 0); err == nil {
+		held := syscall.Flock(int(users.Fd()), syscall.LOCK_EX|syscall.LOCK_NB) != nil
+		users.Close()
+		if held {
+			return // a session still uses this key
+		}
+	} else if !os.IsNotExist(err) {
+		return // a lock that cannot be read is held: doubt never deletes
+	}
+	if raw, err := os.ReadFile(base); err == nil {
+		if pid, _, ok := parseAdapterRecord(string(raw)); ok {
+			yours, known := adapterOwns(pid, base)
+			if !known {
+				return // the table cannot answer for this pid: the next launch sweeps again
+			}
+			if yours {
+				stopProcess(pid) // the adapter its sessions left behind, under its own mutex
+			}
+		}
+	}
+	for _, f := range []string{base, base + ".lock", base + ".users", base + ".log"} {
+		os.Remove(f) // one key's file set; files already gone are swept
+	}
+}
+
+// adapterOwns is whether pid runs this key's adapter, read from that pid's own
+// argv argument by argument. known is false when the read cannot answer for a
+// pid that exists; doubt is read as alive.
 func adapterOwns(pid int, base string) (yours, known bool) {
 	if pid <= 0 {
 		return false, true
 	}
-	if argv, ok := argvOfPID(pid); ok {
-		for i := 0; i+1 < len(argv); i++ {
-			if argv[i] == "--shared" && argv[i+1] == base {
-				return true, true
+	argv, ok := argvOfPID(pid)
+	if !ok {
+		if syscall.Kill(pid, 0) == syscall.ESRCH {
+			return false, true // the pid is gone: dead, not doubt
+		}
+		return false, false
+	}
+	return adapterArgvOwns(argv, base), true
+}
+
+// adapterArgvOwns is whether an argv, its argument boundaries kept, is the
+// adapter command for base. What spawnAdapter runs is
+// `<core> adapter <profile> --auto [--model m] --shared <base>` — a core that
+// is a script gets the kernel's interpreter and script path in front of that,
+// so the proof is the command's own shape anywhere in argv: the adapter
+// subcommand followed by its profile operand and its `--auto` operand, and
+// that base as the exact operand of the `--shared` flag. The pair alone proves
+// nothing — an unrelated `sh -c script junk --shared <base>` carries those two
+// words as positionals the script never reads, and a sweep that stopped
+// whatever merely spelled them killed a stranger (#1020).
+func adapterArgvOwns(argv []string, base string) bool {
+	for i := 0; i+2 < len(argv); i++ {
+		if argv[i] != "adapter" || argv[i+2] != "--auto" {
+			continue // not this command: no subcommand, profile, --auto span
+		}
+		for j := i + 3; j+1 < len(argv); j++ {
+			if argv[j] == "--shared" && argv[j+1] == base {
+				return true
 			}
 		}
-		return false, true
+		return false
 	}
-	if syscall.Kill(pid, 0) == syscall.ESRCH {
-		return false, true
-	}
-	return false, false
+	return false
 }
 
 func parseAdapterRecord(raw string) (pid int, port string, ok bool) {
@@ -139,6 +257,7 @@ func AcquireAdapter(core, root, name, model, confPath string, errw io.Writer) (*
 		fmt.Fprintf(errw, "ccmorph: could not lock %s: %v\n", base+".users", err)
 		return a, false
 	}
+	sweepStaleAdapterKeys(root, name, base)
 	if raw, err := os.ReadFile(base); err == nil {
 		if pid, port, ok := parseAdapterRecord(string(raw)); ok {
 			if yours, known := adapterOwns(pid, base); yours || !known {
