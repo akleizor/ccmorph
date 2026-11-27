@@ -217,30 +217,44 @@ func DoctorRoute(name, typ, base, model, modelMap string, need func(listing stri
 		row(kind, msg, fix)
 	}
 	if verbose {
-		switch {
-		case running == "__UNKNOWN__":
-			row("SKIP", "adapter: could not tell whether a translator is running")
-		case running != "":
-			pid, children, _ := strings.Cut(running, "\t")
-			for _, spec := range strings.Split(children, ",") {
-				cpid, cname, _ := strings.Cut(spec, ":")
-				what := cname + " child"
-				if cpid == pid {
-					what = "in-process shim"
-				}
-				listener := listenerOf(cpid)
-				switch {
-				case listener == "__UNKNOWN__":
-					row("SKIP", fmt.Sprintf("adapter: %s listener status unknown (pid %s)", what, cpid))
-				case listener != "":
-					row("OK", fmt.Sprintf("adapter: %s listener %s (pid %s; read-only check)", what, listener, cpid))
-				default:
-					row("WARN", fmt.Sprintf("adapter: %s running without TCP listener (pid %s)", what, cpid))
-				}
-			}
+		for _, detail := range adapterDetails(running) {
+			row(detail[0], detail[1])
 		}
 	}
 	return rows, failed, keyRejected, listing
+}
+
+// adapterDetails renders the verbose adapter lines from runningAdapter's
+// answer. A lost table is told in the user's own words (#467): the reader of
+// a loaded machine sees what could not be told, not the internal sentinel —
+// and the doctor suite's forced-loss case checks these words, so the sentinel
+// alone is never the whole fallback proof (#991).
+func adapterDetails(running string) [][2]string {
+	switch running {
+	case "__UNKNOWN__":
+		return [][2]string{{"SKIP", "adapter: could not tell whether a translator is running"}}
+	case "":
+		return nil
+	}
+	var out [][2]string
+	pid, children, _ := strings.Cut(running, "\t")
+	for _, spec := range strings.Split(children, ",") {
+		cpid, cname, _ := strings.Cut(spec, ":")
+		what := cname + " child"
+		if cpid == pid {
+			what = "in-process shim"
+		}
+		listener := listenerOf(cpid)
+		switch {
+		case listener == "__UNKNOWN__":
+			out = append(out, [2]string{"SKIP", fmt.Sprintf("adapter: %s listener status unknown (pid %s)", what, cpid)})
+		case listener != "":
+			out = append(out, [2]string{"OK", fmt.Sprintf("adapter: %s listener %s (pid %s; read-only check)", what, listener, cpid)})
+		default:
+			out = append(out, [2]string{"WARN", fmt.Sprintf("adapter: %s running without TCP listener (pid %s)", what, cpid)})
+		}
+	}
+	return out
 }
 
 // adapterLine is the one adapter row, or none (kind ""). running is
