@@ -3342,14 +3342,16 @@ test_add_never_asks_how_to_reach_the_endpoint() {
   # and the probe then classifies the endpoint through it like any other.
   local rc=0
 
-  local add_block
-  add_block=$(<"$REPO_ROOT/cli/add.go")
-  if print -r -- "$add_block" | grep -qiE 'read .*(tunnel|transport|proxy)|print.*"(transport|tunnel|proxy)\?'; then
+  # grep reads the file itself, never `print $block | grep -q`: under pipefail a
+  # quiet-exiting grep SIGPIPEs the writer whenever the payload outruns the pipe
+  # buffer, which macOS shrinks under load -- a flaky red on a true match (#964).
+  local add_go="$REPO_ROOT/cli/add.go"
+  if grep -qiE 'read .*(tunnel|transport|proxy)|print.*"(transport|tunnel|proxy)\?' "$add_go"; then
     print -u2 -- 'FAIL: add must not prompt for how to reach the endpoint'
     rc=1
   fi
-  print -r -- "$add_block" | grep -q 'l.probeNudge(' || rc=1
-  if print -r -- "$add_block" | grep -q -- '-X POST'; then
+  grep -q 'l.probeNudge(' "$add_go" || rc=1
+  if grep -q -- '-X POST' "$add_go"; then
     print -u2 -- 'add must not send inference probes'
     rc=1
   fi
