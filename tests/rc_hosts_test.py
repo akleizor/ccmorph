@@ -2498,6 +2498,65 @@ def test_a_park_does_not_carry_across_a_new_unarchive(tmp_path, monkeypatch):
     assert "cse_01DEAD" not in parked
 
 
+def test_the_issue_974_loop_ends_through_cycle_at_the_real_cadence(tmp_path, monkeypatch):
+    """#974 as the supervisor ran it: every RECOVER_EVERY tick finds the session
+    processless and the server answers each hand-back with 200 and never starts
+    it. Four hours of ticks must yield exactly REWAKE_TRIES hand-backs (no closer
+    together than REWAKE_AFTER), one line naming the session and why it stopped,
+    nothing else about it -- and its owner's message wakes it at once, then the
+    ordinary spacing returns."""
+    import json
+    m = load()
+    monkeypatch.setattr(m, "BUSY", tmp_path / "busy.json")   # no turn was cut off
+    repo = tmp_path / "repo"
+    (repo / ".claude").mkdir(parents=True)
+    (repo / ".claude" / "rc-host.json").write_text(json.dumps({"environmentId": "env_01R"}))
+    sid = "cse_01UYCe7TqcH2EuG69UtpJ5fm"
+    row = {"id": sid, "environment_id": "env_01R", "connection_status": "disconnected",
+           "external_metadata": {}, "user_message_count": 4,
+           "last_event_at": "2026-11-25T04:50:00Z"}
+    posts, lines = [], []
+    clock = [1000.0]
+
+    def api(method, path, token, body=None):
+        assert method == "POST" and path == "/v1/environments/env_01R/bridge/reconnect"
+        posts.append(clock[0])
+        return {}                                    # HTTP 200, and the process never starts
+    monkeypatch.setattr(m, "api", api)
+    monkeypatch.setattr(m, "account_token", lambda: "tok")
+    monkeypatch.setattr(m, "host_sessions", lambda *_: ("tok", [(str(repo), row)]))
+    monkeypatch.setattr(m, "log", lines.append)
+    monkeypatch.setattr(m, "keep_login_fresh", lambda *a: None)
+    monkeypatch.setattr(m, "restart_logged_out", lambda *a: None)
+    monkeypatch.setattr(m, "time", _ScriptedTime(m.time, clock, m.time.sleep))
+    monkeypatch.setattr(m, "IDLE_CHECK", float("inf"))
+    state = m.Clock()
+    state.last_recover = clock[0] - m.RECOVER_EVERY
+    hosts = {str(repo): SimpleNamespace(folder=str(repo), proc=True, started=0)}
+
+    def tick():
+        m.cycle(hosts, [str(repo)], clock[0], state)
+        clock[0] += m.RECOVER_EVERY
+
+    for _ in range(int(4 * 3600 / m.RECOVER_EVERY)):   # four hours of supervisor ticks
+        tick()
+    assert len(posts) == m.REWAKE_TRIES               # a fixed number, not one every 10 min...
+    assert all(b - a >= m.REWAKE_AFTER for a, b in zip(posts, posts[1:]))
+    named = [line for line in lines if sid in line]
+    assert len(named) == m.REWAKE_TRIES + 1           # ...each hand-back, then one park line
+    assert all("handed back" in line for line in named[:-1])
+    assert "parked" in named[-1]                      # why it stopped, said once
+    row["user_message_count"] = 5                     # its owner messages it on the phone
+    woke_at = clock[0]
+    tick()
+    assert len(posts) == m.REWAKE_TRIES + 1 and posts[-1] == woke_at   # input goes out at once
+    while clock[0] < woke_at + m.REWAKE_AFTER:
+        tick()
+    assert len(posts) == m.REWAKE_TRIES + 1           # then the ordinary 10-minute spacing
+    tick()
+    assert len(posts) == m.REWAKE_TRIES + 2
+
+
 def test_an_idle_session_parks_and_wakes_only_on_input(tmp_path, monkeypatch):
     """21 idle phone sessions held 3.2 GB, some 2.5 days old (2026-11-19): an idle
     session's process ends after park_hours and comes back on its next message."""
