@@ -1,7 +1,10 @@
 package shim
 
 import (
+	"bytes"
 	"crypto/sha256"
+	"encoding"
+	"encoding/binary"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -12,6 +15,7 @@ import (
 	"slices"
 	"sort"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/akleizor/ccmorph/util/paths"
@@ -114,12 +118,148 @@ func (u usageRow) json() []byte {
 	return append(out, '}')
 }
 
+// --- prompt-cache lineage (metadata only) -------------------------------------
+//
+// A session's transcript cannot prove that two adjacent calls sent the same
+// cached prefix; the gateway can, because it holds the bytes it forwarded. A
+// row for a /v1/messages call therefore carries the digests that settle where
+// a warm cache miss came from: head_sha256 over model, tools and system (the
+// prompt's stable head), and lineage, one entry per cache breakpoint the call
+// itself marked, as "position:ttl:digest" in prompt order — tools, then system,
+// then messages, matching what the endpoint caches in. The digest covers every
+// forwarded byte of the prompt before and including that block; an entry's
+// name (position:ttl) is the call's cache scope there, so a reader of adjacent
+// rows sees whether the scope moved before comparing digests, and an unchanged
+// name with a moved digest says the bytes diverged — with head_sha256 saying
+// whether at or below the head. Same names and same digests across a zero-read
+// call, and the miss belongs to the endpoint or the upstream account behind
+// the route, not to anything in front of it (#993). Like route_id, every
+// digest here is a domain-separated one-way digest: no prompt text, header or
+// credential leaves the body into a row.
+
+// lineageOf digests the forwarded body, reusing the caller's parse d when the
+// bytes are the version it holds (one scan per body version, #477). It returns
+// "", "" unless the body is a JSON object: the digest of bytes no endpoint can
+// parse is not a cache lineage. An object with no cache_control markers gets
+// the head only — with no breakpoint, no warm read of it can be correlated.
+func lineageOf(body []byte, d *doc) (head, lineage string) {
+	var ms []Member
+	if d != nil && bytes.Equal(d.b, body) {
+		ms = d.ms
+	} else {
+		if len(body) == 0 || !validJSON(body) {
+			return "", ""
+		}
+		i := skipWS(body, 0)
+		if body[i] != '{' {
+			return "", ""
+		}
+		ms, _ = Object(body, i)
+	}
+	h := sha256.New()
+	h.Write([]byte("ccmorph-prompt-lineage-v1\x00"))
+	feed := func(tag string, sp Span, ok bool) {
+		h.Write([]byte(tag))
+		if !ok {
+			h.Write([]byte{0})
+			return
+		}
+		h.Write([]byte{1})
+		var l [8]byte
+		binary.BigEndian.PutUint64(l[:], uint64(sp.End-sp.Start))
+		h.Write(l[:])
+		h.Write(body[sp.Start:sp.End])
+	}
+	// digestAt snapshots the running hash through the state marshaler sha256's
+	// Hash carries: a few hundred bytes per breakpoint, and a call marks few.
+	digest := func() string {
+		s, err := h.(encoding.BinaryMarshaler).MarshalBinary()
+		if err != nil {
+			return ""
+		}
+		c := sha256.New()
+		if err := c.(encoding.BinaryUnmarshaler).UnmarshalBinary(s); err != nil {
+			return ""
+		}
+		return hex.EncodeToString(c.Sum(nil))
+	}
+	var entries []string
+	mark := func(pos string, blk Span) {
+		if body[blk.Start] != '{' {
+			return
+		}
+		bms, _ := Object(body, blk.Start)
+		cc, ok := lastMember(bms, "cache_control")
+		if !ok || body[cc.Start] != '{' {
+			return
+		}
+		cms, _ := Object(body, cc.Start)
+		ttl := ""
+		if tsp, ok := lastMember(cms, "ttl"); ok {
+			ttl, _ = str(body, tsp)
+		}
+		if dg := digest(); dg != "" {
+			entries = append(entries, pos+":"+ttl+":"+dg)
+		}
+	}
+	sp, ok := lastMember(ms, "model")
+	feed("model", sp, ok)
+	if tsp, ok := lastMember(ms, "tools"); ok && body[tsp.Start] == '[' {
+		es, _ := Array(body, tsp.Start)
+		for i, e := range es {
+			feed("tool", e, true)
+			mark("t"+strconv.Itoa(i), e)
+		}
+	} else {
+		feed("tools", tsp, ok)
+	}
+	if ssp, ok := lastMember(ms, "system"); ok && body[ssp.Start] == '[' {
+		es, _ := Array(body, ssp.Start)
+		for i, e := range es {
+			feed("system", e, true)
+			mark("s"+strconv.Itoa(i), e)
+		}
+	} else {
+		feed("system", ssp, ok)
+	}
+	head = digest()
+	if msp, ok := lastMember(ms, "messages"); ok && body[msp.Start] == '[' {
+		es, _ := Array(body, msp.Start)
+		for i, m := range es {
+			if body[m.Start] != '{' {
+				feed("msg", m, true)
+				continue
+			}
+			mms, _ := Object(body, m.Start)
+			rsp, ok := lastMember(mms, "role")
+			feed("role", rsp, ok)
+			csp, ok := lastMember(mms, "content")
+			if !ok {
+				feed("block", csp, false)
+				continue
+			}
+			if body[csp.Start] == '[' {
+				bs, _ := Array(body, csp.Start)
+				for j, blk := range bs {
+					feed("block", blk, true)
+					mark("m"+strconv.Itoa(i)+"."+strconv.Itoa(j), blk)
+				}
+				continue
+			}
+			feed("block", csp, true)
+		}
+	}
+	return head, strings.Join(entries, ",")
+}
+
 type record struct {
 	responseID, turnID string
 	requested          *string
 	servedModel        *string
 	retries            int
 	masked             map[string]int
+	head               string
+	lineage            string
 	task               *string
 	session            *string
 	parent             *string
@@ -141,7 +281,8 @@ type record struct {
 // taken loses its own row rather than destroy another's; the claim is atomic: a
 // hardlink where supported, an exclusive create where not. No session, prompt,
 // header or credential is written: the route is a domain-separated digest of the
-// profile and the adapter's route identity. Rows are written at message_start
+// profile and the adapter's route identity, and the lineage digests are the
+// same kind of digest (lineageOf holds the reasons). Rows are written at message_start
 // and again on every usage update (tmp + rename, 0600), so a truncated stream
 // leaves the last known partial row with complete:false. Every failure is
 // swallowed: the relay owns the result.
@@ -151,6 +292,8 @@ type UsageSidecar struct {
 	served           *string
 	retries          int
 	masked           map[string]int // distinct values masked in the request, by kind
+	lineageHead      string         // head digest of the forwarded body (lineageOf)
+	lineage          string         // its cache breakpoints and prefix digests
 	prices           *priceBook     // nil: no upstream host to price against
 }
 
@@ -169,7 +312,8 @@ func (u *UsageSidecar) tagged(t taskTags) *UsageSidecar {
 func (u *UsageSidecar) start(id string, requested *string, model *string, usage usageRow) *record {
 	return &record{
 		responseID: id, turnID: randHex(16), requested: requested, servedModel: u.served,
-		retries: u.retries, masked: u.masked, task: u.tags.task, session: u.tags.session, parent: u.tags.parent, attempt: u.tags.attempt, responseModel: model,
+		retries: u.retries, masked: u.masked, head: u.lineageHead, lineage: u.lineage,
+		task: u.tags.task, session: u.tags.session, parent: u.tags.parent, attempt: u.tags.attempt, responseModel: model,
 		timestamp: utcStamp(time.Now().UTC()), usage: usage,
 	}
 }
@@ -201,6 +345,14 @@ func (u *UsageSidecar) row(r *record) []byte {
 	out = append(out, `,"retries":`+strconv.Itoa(r.retries)...)
 	if len(r.masked) > 0 {
 		out = append(out, `,"masked":`+maskedJSON(r.masked)...)
+	}
+	if r.head != "" {
+		out = append(out, `,"head_sha256":`...)
+		out = append(out, jsonStr(r.head)...)
+	}
+	if r.lineage != "" {
+		out = append(out, `,"lineage":`...)
+		out = append(out, jsonStr(r.lineage)...)
 	}
 	out = append(out, `,"task":`...)
 	out = append(out, optStr(r.task)...)

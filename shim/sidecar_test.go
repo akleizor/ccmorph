@@ -2,6 +2,8 @@ package shim
 
 import (
 	"bufio"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"io"
 	"io/fs"
@@ -461,4 +463,174 @@ func TestAnOldSpillInAnotherDayIsRetired(t *testing.T) {
 	if _, err := os.Stat(other); err != nil {
 		t.Fatalf("another turn's old-name row was removed: %v", err)
 	}
+}
+
+// --- prompt-cache lineage rows (GH-993) ---------------------------------------
+
+// relayRows relays each body as one gateway-served /v1/messages call on a fresh
+// route and returns the written rows keyed by the response id that answers it.
+func relayRows(t *testing.T, bodies ...string) map[string]string {
+	t.Helper()
+	dir := stateHome(t)
+	s := NewServer("http://up.invalid")
+	n := 0
+	s.remote = &http.Client{Transport: roundTrip(func(*http.Request) *http.Response {
+		n++
+		body := `{"id":"msg_lin_` + strconv.Itoa(n) + `","model":"m","usage":{"input_tokens":1,"cache_read_input_tokens":100}}`
+		return &http.Response{StatusCode: 200, Status: "200 OK",
+			Header:        http.Header{"Content-Type": []string{"application/json"}},
+			Body:          io.NopCloser(strings.NewReader(body)),
+			ContentLength: int64(len(body))}
+	})}
+	sum := sha256.Sum256([]byte("k"))
+	spec := `{"profile":"p","identity":"i","upstream":"http://up.invalid","timeout":1,"key_sha256":"` + hex.EncodeToString(sum[:]) + `"}`
+	routes, err := newModelRoutes(spec, s.remote)
+	if err != nil {
+		t.Fatal(err)
+	}
+	routes.usage.prices = nil
+	s.Routes = routes
+	out := map[string]string{}
+	for _, b := range bodies {
+		rq := httptest.NewRequest("POST", "/v1/messages", strings.NewReader(b))
+		rq.Header.Set("x-api-key", "k")
+		rec := httptest.NewRecorder()
+		s.ServeHTTP(rec, rq)
+		if rec.Code != 200 {
+			t.Fatalf("relay: %d %s", rec.Code, rec.Body.String())
+		}
+	}
+	for _, row := range rows(t, dir) {
+		id, rest, ok := strings.Cut(row, `"response_id":"`)
+		if !ok {
+			continue
+		}
+		id, _, _ = strings.Cut(rest, `"`)
+		out[id] = row
+	}
+	if len(out) != len(bodies) {
+		t.Fatalf("%d rows for %d calls: %v", len(out), len(bodies), out)
+	}
+	return out
+}
+
+// rowField is the string value of a top-level row field, "" when absent.
+func rowField(t *testing.T, row, name string) string {
+	t.Helper()
+	_, rest, ok := strings.Cut(row, `,"`+name+`":"`)
+	if !ok {
+		return ""
+	}
+	v, _, _ := strings.Cut(rest, `"`)
+	return v
+}
+
+// lineageEntries maps each breakpoint's "position:ttl" to its digest, and
+// returns the names in the order the row carries them (the scope summary).
+func lineageEntries(t *testing.T, row string) (map[string]string, []string) {
+	t.Helper()
+	out := map[string]string{}
+	var names []string
+	lin := rowField(t, row, "lineage")
+	if lin == "" {
+		return out, names
+	}
+	for _, e := range strings.Split(lin, ",") {
+		parts := strings.Split(e, ":")
+		if len(parts) != 3 {
+			t.Fatalf("lineage entry %q is not position:ttl:digest", e)
+		}
+		name := parts[0] + ":" + parts[1]
+		out[name] = parts[2]
+		names = append(names, name)
+	}
+	return out, names
+}
+
+// The gateway's rows must answer what a session's transcript cannot (GH-993):
+// whether the forwarded cacheable prefix changed between adjacent calls, and
+// above which block. Three calls — one that only appends, one that rewrites
+// the system block with the markers unchanged — read from the rows as: same
+// breakpoint names throughout, digests equal up to the append, then the head
+// digest moved with every digest below it. And the rows carry digests only.
+func TestRowsCorrelateTheWarmCacheLineageFromMetadataOnly(t *testing.T) {
+	const marker = `{"type":"ephemeral","ttl":"1h"}`
+	head := `"tools":[{"name":"t1"},{"name":"t2","cache_control":{"type":"ephemeral"}}],` +
+		`"system":[{"type":"text","text":"sys-one","cache_control":` + marker + `}],`
+	msg1 := `{"role":"user","content":[{"type":"text","text":"probe-one","cache_control":` + marker + `}]}`
+	call1 := `{"model":"m",` + head + `"messages":[` + msg1 + `]}`
+	call2 := `{"model":"m",` + head + `"messages":[` + msg1 +
+		`,{"role":"assistant","content":[{"type":"text","text":"reply-one"}]},` +
+		`{"role":"user","content":[{"type":"text","text":"probe-two","cache_control":` + marker + `}]}]}`
+	call3 := strings.Replace(call2, "sys-one", "sys-two", 1)
+
+	t.Run("adjacent calls correlate by scope and prefix digest", func(t *testing.T) {
+		got := relayRows(t, call1, call2, call3)
+		r1, r2, r3 := got["msg_lin_1"], got["msg_lin_2"], got["msg_lin_3"]
+		h1, h2, h3 := rowField(t, r1, "head_sha256"), rowField(t, r2, "head_sha256"), rowField(t, r3, "head_sha256")
+		if h1 == "" || h2 != h1 {
+			t.Fatalf("an append-only history moved the head digest: %q vs %q", h1, h2)
+		}
+		e1, n1 := lineageEntries(t, r1)
+		if want := []string{"t1:", "s0:1h", "m0.0:1h"}; strings.Join(n1, ",") != strings.Join(want, ",") {
+			t.Fatalf("call 1 breakpoints %v, want %v", n1, want)
+		}
+		e2, n2 := lineageEntries(t, r2)
+		if strings.Join(n2, ",") != "t1:,s0:1h,m0.0:1h,m2.0:1h" {
+			t.Fatalf("call 2 breakpoints %v", n2)
+		}
+		for _, name := range []string{"t1:", "s0:1h", "m0.0:1h"} {
+			if e2[name] != e1[name] {
+				t.Fatalf("the warm prefix at %q was rewritten by an append-only history: %q vs %q", name, e1[name], e2[name])
+			}
+		}
+		e3, n3 := lineageEntries(t, r3)
+		if strings.Join(n3, ",") != strings.Join(n2, ",") {
+			t.Fatalf("the scope summary moved without the markers changing: %v vs %v", n3, n2)
+		}
+		if h3 == h1 {
+			t.Fatal("a rewritten system block left the head digest unchanged")
+		}
+		if e3["t1:"] != e2["t1:"] {
+			t.Fatal("the digest above the rewritten system block moved: the head digest cannot say where the divergence starts")
+		}
+		if e3["s0:1h"] == e2["s0:1h"] || e3["m2.0:1h"] == e2["m2.0:1h"] {
+			t.Fatal("a rewritten system block left a digest below it unchanged")
+		}
+	})
+
+	t.Run("rows carry no prompt text", func(t *testing.T) {
+		for id, row := range relayRows(t, call1, call2, call3) {
+			for _, needle := range []string{"probe-", "reply-", "sys-one", "sys-two", "ephemeral"} {
+				if strings.Contains(row, needle) {
+					t.Fatalf("row %s carries %q", id, needle)
+				}
+			}
+			if rowField(t, row, "head_sha256") == "" || !strings.Contains(row, `"route_id"`) {
+				t.Fatalf("row %s lost its own metadata: %s", id, row)
+			}
+		}
+	})
+
+	t.Run("string system, no markers and a body that is not an object", func(t *testing.T) {
+		stringSys := `{"model":"m","system":"plain","messages":[{"role":"user","content":[{"type":"text","text":"probe","cache_control":{"type":"ephemeral"}}]}]}`
+		got := relayRows(t, stringSys)
+		row := got["msg_lin_1"]
+		if rowField(t, row, "head_sha256") == "" {
+			t.Fatal("a valid body wrote no head digest")
+		}
+		if _, names := lineageEntries(t, row); strings.Join(names, ",") != "m0.0:" {
+			t.Fatalf("string-system breakpoints %v, want [m0.0:]", names)
+		}
+		got = relayRows(t, `{"model":"m","messages":[{"role":"user","content":"hi"}]}`)
+		row = got["msg_lin_1"]
+		if rowField(t, row, "lineage") != "" || rowField(t, row, "head_sha256") == "" {
+			t.Fatalf("an unmarked body: %s", row)
+		}
+		got = relayRows(t, `{"model":"m",`)
+		row = got["msg_lin_1"]
+		if rowField(t, row, "head_sha256") != "" || rowField(t, row, "lineage") != "" {
+			t.Fatalf("an unparseable body was digested: %s", row)
+		}
+	})
 }
