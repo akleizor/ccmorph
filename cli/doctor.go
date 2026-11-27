@@ -395,10 +395,11 @@ func (l *launcher) doctor(name string, verbose bool) int {
 		l.status("FAIL", "not ready: "+recreate)
 		return 1
 	}
-	failed := 0
 	var warns []string
 	// firstFix is the command or step that repairs the first failed check: the
-	// verdict names it instead of pointing at the rows above (#282).
+	// verdict names it instead of pointing at the rows above (#282). It is also
+	// the exit status's only other judge besides warns: the verdict below, not a
+	// parallel counter, decides the code a script reads (#970).
 	firstFix := ""
 	// warnFix is the step the first warning that names one carries: a WARN
 	// verdict names it instead of the launch that warning would fail (#841).
@@ -430,20 +431,15 @@ func (l *launcher) doctor(name string, verbose bool) int {
 	case "apikey", "sub", "token", "provider":
 	default:
 		report("FAIL", "config: unsupported profile type '"+typ+"'", recreate)
-		failed = 1
 	}
 	if typ == "apikey" && key == "" {
 		report("FAIL", "config: API key profile has no credential (value not displayed)",
 			"set the API key: ccmorph config "+name)
-		failed = 1
 	}
 	report("OK", "profile: "+name+" ("+profile.KindLabel(typ, f["provider"])+")")
 	report("OK", "ccmorph: "+l.version+" (command: ccmorph)")
-	if !l.doctorClaude() {
-		failed = 1
-		if firstFix == "" {
-			firstFix = util.ClaudeMissing
-		}
+	if !l.doctorClaude() && firstFix == "" {
+		firstFix = util.ClaudeMissing
 	}
 	if typ == "provider" {
 		// The launch's own refusal, in its words (providerStartRefusal, which
@@ -451,7 +447,6 @@ func (l *launcher) doctor(name string, verbose bool) int {
 		// ready (#787).
 		if why := l.providerStartRefusal(name); why != "" {
 			report("FAIL", "provider bridge: "+why, why)
-			failed = 1
 		} else {
 			report("OK", "provider bridge: cliproxyapi installed, auth directory present")
 		}
@@ -497,7 +492,6 @@ func (l *launcher) doctor(name string, verbose bool) int {
 		// profiles, or a path cannot be read — so this is a real failed
 		// check, and its fix names the blocker and what clears it.
 		report("FAIL", "profile home: cannot be created — "+blocker, fix)
-		failed = 1
 	default:
 		// GH-291: the home is the launch's own artefact — run makes it, and so
 		// does the login a refused key or a signed-out account needs — so a
@@ -547,7 +541,6 @@ func (l *launcher) doctor(name string, verbose bool) int {
 		} else {
 			report("FAIL", "profile settings: invalid JSON or not an object ("+broken+"); fix that file",
 				"fix the JSON in "+broken)
-			failed = 1
 		}
 	} else {
 		report("INFO", "profile settings: none yet (a launch writes them)")
@@ -595,7 +588,6 @@ func (l *launcher) doctor(name string, verbose bool) int {
 		// Launch's own refusal (adapterModel), in its words: the alias, where it
 		// came from, and the one command that picks a served model (#475, #862).
 		report("FAIL", "model: "+util.UnservedTier(name, tierMissing, l.modelOrigin(name), nil), util.UnservedTierFix(name))
-		failed = 1
 	}
 	// The route rows are computed before the api-key lines print, because the
 	// endpoint's own verdict decides whether Claude Code's locally stored answer
@@ -623,7 +615,7 @@ func (l *launcher) doctor(name string, verbose bool) int {
 		needed, known := adapter.TranslatorVerdict(base, l.profileDirs, classified, listing)
 		return util.TranslatorNeed{Known: known, Needed: needed, Installed: translatorInstalled()}
 	}
-	rows, bad, keyRejected, listing := util.DoctorRoute(name, typ, base, model, f["model_map"], need, key, home, verbose)
+	rows, _, keyRejected, listing := util.DoctorRoute(name, typ, base, model, f["model_map"], need, key, home, verbose)
 	if key != "" {
 		// The endpoint refused it (a FAIL row below): "present" would call a
 		// rejected credential fine above its FAIL (GH-272).
@@ -648,7 +640,6 @@ func (l *launcher) doctor(name string, verbose bool) int {
 			case string(m[1]) != "true":
 				report("FAIL", "credentials: not signed in — sign in again: ccmorph login "+name,
 					"sign in again: ccmorph login "+name)
-				failed = 1
 			default:
 				if e := emailRE.FindSubmatch(out); e != nil {
 					report("OK", "credentials: signed in to Claude as "+string(e[1]))
@@ -672,7 +663,6 @@ func (l *launcher) doctor(name string, verbose bool) int {
 		case util.KeyRefused:
 			report("FAIL", "api key: Claude Code was told not to use it, so a launch would open its login menu — fix: ccmorph login "+name,
 				"let Claude Code use the key again: ccmorph login "+name)
-			failed = 1
 		default:
 			report("OK", "api key: Claude Code will use it without asking")
 		}
@@ -690,16 +680,11 @@ func (l *launcher) doctor(name string, verbose bool) int {
 		switch {
 		case util.ExclusionsLeaveNone(conf, listing):
 			report("FAIL", "model: "+util.ExclusionsRefusal(name, conf), util.ExclusionsFix(name, conf))
-			failed = 1
 		case savedModel == "" && util.NoModelToPick(conf, listing):
 			report("FAIL", "model: "+util.NoUsableModel(name), util.NoUsableModelFix(name))
-			failed = 1
 		case savedModel == "" && !need(listing).Known && pickable:
 			report("INFO", "model: none saved; in a terminal, ccmorph run asks which model first, and without one it stops: "+util.NoModelReason(name))
 		}
-	}
-	if bad {
-		failed = 1
 	}
 	for _, r := range rows {
 		report(r.Kind, r.Msg, r.Fix)
@@ -716,7 +701,6 @@ func (l *launcher) doctor(name string, verbose bool) int {
 		report("FAIL", "masking: env.CCMORPH_MASK="+f["env.CCMORPH_MASK"]+
 			" is refused — a launch stops in the shim before a session starts (must be 1 or 0)",
 			"set env.CCMORPH_MASK=1 or 0: ccmorph config "+name)
-		failed = 1
 	case maskOn && !maskable:
 		l.status("WARN", "masking: env.CCMORPH_MASK="+f["env.CCMORPH_MASK"]+
 			" is set but nothing is masked — this route reaches its backend without ccmorph's shim; masking covers gateway (apikey) routes only")
@@ -724,6 +708,11 @@ func (l *launcher) doctor(name string, verbose bool) int {
 	l.doctorRemoteControl(name, f)
 	// The verdict is the report's last line and answers the only question a
 	// person has: is this profile ready to run, or what must be fixed first.
+	// Its severity is also doctor's exit status (#970): a headless reader (cron,
+	// CI, an agent dispatcher) can read nothing else, so 0 must mean the ready
+	// verdict and nothing else — while the report itself names a fix or says the
+	// profile may not start, `&&` has to see the failure. Rows the verdict
+	// deliberately does not carry (#293, #881) weigh on neither, as before.
 	switch {
 	case firstFix != "":
 		l.status("FAIL", "not ready: "+firstFix)
@@ -735,8 +724,9 @@ func (l *launcher) doctor(name string, verbose bool) int {
 		l.status("WARN", "may not start: check "+strings.Join(warns, ", ")+" (see above); "+next)
 	default:
 		l.status("OK", "ready: start it with ccmorph run "+name)
+		return 0
 	}
-	return failed
+	return 1
 }
 
 // hostedSupervisor is the identity a supervisor stamps into hosted.json since

@@ -186,9 +186,13 @@ def test_a_default_saved_with_the_wrong_case_still_marks_the_real_profile_gh_259
     out = box.run('list').stdout
     tok = next(line for line in out.splitlines() if line.strip().endswith('(Claude token)'))
     assert tok.lstrip().startswith('*'), out
-    # doctor with no name reads the same default, not the spelling TOK.
+    # doctor with no name reads the same default, not the spelling TOK. The
+    # box is offline, so the token goes unchecked and the verdict says may not
+    # start — which since GH-970 is also the exit status; the name the report
+    # resolved stays the assertion this fixture exists for.
     doctor = box.run('doctor')
-    assert doctor.returncode == 0, doctor.stdout
+    assert doctor.returncode != 0, doctor.stdout
+    assert doctor.stdout.splitlines()[-1].startswith('WARN may not start'), doctor.stdout
     assert 'profile: tok (Claude token)' in doctor.stdout, doctor.stdout
 
 
@@ -251,7 +255,10 @@ def test_doctor_names_the_kind_and_the_endpoint(box):
     seed(box)
     (box.state / 'profiles/tok').mkdir()
     out = box.run('doctor', 'tok')
-    assert out.returncode == 0, out.stderr
+    # The offline box leaves the token unchecked, so the verdict says may not
+    # start, and since GH-970 the exit status follows the verdict's words.
+    assert out.returncode != 0, out.stderr
+    assert 'may not start' in out.stdout, out.stdout
     assert 'profile: tok (Claude token)' in out.stdout
     box.conf('bad', 'type=apikey\napi_key=canary-key\nbase_url=gateway.invalid\n')
     out = box.run('doctor', 'bad')
@@ -943,9 +950,14 @@ def test_the_unsaved_state_reads_the_same_words_on_every_screen_gh_381(box, name
     assert f'— {effort_words}' in out.stdout
     assert f'({words})' in out.stdout
     screens['inspect'] = out.stdout
-    # doctor: the effective rows answer what the session runs with.
+    # doctor: the effective rows answer what the session runs with. The box is
+    # offline by design, so this profile's own verdict is the may-not-start
+    # warning — which since GH-970 is also the exit status. The warning is
+    # asserted by name: a promotion of the unchecked credential to a hard
+    # `FAIL not ready` would exit just as non-zero and must not pass.
     out = box.run('doctor', name)
-    assert out.returncode == 0, out.stderr
+    assert out.returncode != 0, out.stderr
+    assert out.stdout.splitlines()[-1].startswith('WARN may not start'), out.stdout
     assert f'effective model: {words} (no saved model)' in out.stdout
     assert f'effective effort: {effort_words} (no saved effort)' in out.stdout
     screens['doctor'] = out.stdout
