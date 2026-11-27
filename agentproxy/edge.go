@@ -36,6 +36,7 @@ import (
 //	switch-<profile>.json  a handoff: a profile's endpoint and key, taken within
 //	                     a second by the proxy of the edge it names only
 //	held.<edge pid>.json   what this proxy holds ({profile: handoff id}, no key)
+//	served.<edge pid>.json this edge run's asked-vs-served outcome (edgeserved.go)
 //	agents/              the router's picks (picks.go)
 //
 // A request is decided in this process before any connection is made, so a
@@ -73,7 +74,8 @@ type Edge struct {
 	ownTag  string
 	handoff map[string]endpoint
 	held    map[string]any
-	pins    loopPins // each conversation's route for the loop it is in (edgeloop.go)
+	pins    loopPins      // each conversation's route for the loop it is in (edgeloop.go)
+	served  servedOutcome // the asked-vs-served count of this edge run (edgeserved.go)
 }
 
 // endpoint is a profile `ccmorph-rc <profile> --switch` brought up beside the edge.
@@ -311,7 +313,7 @@ func (e *Edge) takeAll() {
 
 // ownedHeld is whether the held record at path is this proxy's: it names this edge's start.
 func (e *Edge) ownedHeld(path string) bool {
-	b, err := os.ReadFile(path)
+	b, err := paths.ReadRegularFile(path) // nonblocking: a FIFO under the name is not ours, and never waited on
 	if err != nil {
 		return false
 	}
@@ -328,7 +330,8 @@ func (e *Edge) ownedHeld(path string) bool {
 }
 
 // ForgetHeld removes what this proxy holds when it goes, but only its own
-// record. held.<pid>.json is named by the edge's pid, which the OS may have
+// record, and with it the outcome it kept (served.<pid>.json, the same rule).
+// held.<pid>.json is named by the edge's pid, which the OS may have
 // given to a replacement edge whose proxy writes its own record there at any
 // moment. So the record is moved aside first and checked where it lies: what
 // is checked is what is removed, and a record that is not ours goes back,
@@ -337,17 +340,23 @@ func (e *Edge) ForgetHeld() {
 	if e.Inference == "" || e.Parent == 0 {
 		return
 	}
-	held := e.heldPath()
-	if !e.ownedHeld(held) {
+	e.forgetOwned(e.heldPath(), "forget-checked")
+	e.forgetOwned(e.servedPath(), "")
+}
+
+func (e *Edge) forgetOwned(path, stage string) {
+	if !e.ownedHeld(path) {
 		return
 	}
-	e.hook("forget-checked")
-	aside := fmt.Sprintf("%s.%d.gone", held, os.Getpid())
-	if os.Rename(held, aside) != nil {
+	if stage != "" {
+		e.hook(stage)
+	}
+	aside := fmt.Sprintf("%s.%d.gone", path, os.Getpid())
+	if os.Rename(path, aside) != nil {
 		return
 	}
 	if !e.ownedHeld(aside) {
-		os.Link(aside, held)
+		os.Link(aside, path)
 	}
 	os.Remove(aside)
 }
@@ -716,6 +725,14 @@ func sameHost(a, b string) bool {
 // "" when there is none to read (the turn left through the session's own
 // proxy): a routed turn is then "unverified", never a match.
 func verdict(es *edgeState, status int, path string, firstParty bool, host string, port int, dialed string) string {
+	_, line := judge(es, status, path, firstParty, host, port, dialed)
+	return line
+}
+
+// judge is verdict with its decision: whether the turn was a miss (served by
+// anything but the endpoint its pick chose) and the line that says so. The
+// outcome record counts the decision, never the line's words (GH-977).
+func judge(es *edgeState, status int, path string, firstParty bool, host string, port int, dialed string) (bool, string) {
 	served := dialed
 	if served == "" {
 		served = net.JoinHostPort(host, strconv.Itoa(port))
@@ -745,7 +762,7 @@ func verdict(es *edgeState, status int, path string, firstParty bool, host strin
 			kind = "route     "
 		}
 	}
-	return fmt.Sprintf("%s<- %d %s asked=%s%s served-by=%s", kind, status, path, es.asked, extra, where)
+	return kind == "miss      ", fmt.Sprintf("%s<- %d %s asked=%s%s served-by=%s", kind, status, path, es.asked, extra, where)
 }
 
 func hostPort(u *url.URL) (string, int) {

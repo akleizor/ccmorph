@@ -160,8 +160,10 @@ func Start(ca *CA, o Options) (*Proxy, error) {
 			if d.edge != nil {
 				if d.edge.asked != "" {
 					host, port := hostPort(r.Request.URL)
-					p.Edge.logf("%s", verdict(d.edge, r.StatusCode, r.Request.URL.Path,
-						r.Header.Get("anthropic-organization-id") != "", host, port, d.dialed))
+					miss, line := judge(d.edge, r.StatusCode, r.Request.URL.Path,
+						r.Header.Get("anthropic-organization-id") != "", host, port, d.dialed)
+					p.Edge.logf("%s", line)
+					p.Edge.CountServed(miss, line) // kept without a debug log (GH-977)
 				}
 				return nil
 			}
