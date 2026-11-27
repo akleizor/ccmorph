@@ -14,8 +14,17 @@ func TestBashChildrenGetTheSessionsOwnEnvBack(t *testing.T) {
 	dir := t.TempDir()
 	theirs := filepath.Join(dir, "theirs.sh")
 	os.WriteFile(theirs, []byte("export THEIRS=kept\n"), 0o600)
+	// Pin every key bashEnv may read from this process's env, so the test
+	// runs the branches it means to on any machine, including one inside a
+	// live ccmorph session (#973).
 	t.Setenv("HTTPS_PROXY", "http://corp:3128")
 	t.Setenv("CCMORPH_AGENT_PROXY", "/outer/agents")
+	t.Setenv("ANTHROPIC_BASE_URL", "https://api.person.example")
+	// The person never set https_proxy: t.Setenv first so cleanup puts back
+	// whatever the machine had, then unset it so the absent branch is the
+	// one under test rather than whatever the operator exported.
+	t.Setenv("https_proxy", "http://corp:3128")
+	os.Unsetenv("https_proxy")
 	h := &agentHop{run: dir}
 	path, err := h.bashEnv([]string{"NODE_EXTRA_CA_CERTS=/corp/ca's.pem"}, theirs)
 	if err != nil {
@@ -27,7 +36,14 @@ export HTTPS_PROXY=http://127.0.0.1:1 https_proxy=http://127.0.0.1:1 NODE_EXTRA_
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := strings.TrimSpace(string(out)); got != "kept|http://corp:3128|unset|/corp/ca's.pem|unset|unset" {
+	// One field per line bashEnv writes, naming the branch it pins: THEIRS
+	// comes from sourcing the person's own env file; HTTPS_PROXY and
+	// ANTHROPIC_BASE_URL come from os.LookupEnv (restore-when-present);
+	// https_proxy is dropped because neither the session env nor the
+	// process env has it (unset-when-absent); NODE_EXTRA_CA_CERTS comes
+	// from the passed session env list; CCMORPH_AGENT_PROXY is the dir key,
+	// which bashEnv never restores even though the process env has it.
+	if got := strings.TrimSpace(string(out)); got != "kept|http://corp:3128|unset|/corp/ca's.pem|https://api.person.example|unset" {
 		t.Fatalf("Bash env: %s", got)
 	}
 }
