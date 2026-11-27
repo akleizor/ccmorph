@@ -177,6 +177,7 @@ DATA_FILES=(share/model-catalogue.json share/window-sources.json share/provider-
   share/claude-plugin/.claude-plugin/plugin.json
   share/claude-plugin/commands/hop.md share/claude-plugin/commands/profile.md
   share/claude-plugin/hooks/hooks.json
+  share/claude-plugin/hooks/session-end.sh
   share/claude-plugin-router/.claude-plugin/plugin.json share/claude-plugin-router/.mcp.json
   share/claude-plugin-router/hooks/hooks.json share/claude-plugin-router/skills/router/SKILL.md
   share/zsh/site-functions/_ccmorph)

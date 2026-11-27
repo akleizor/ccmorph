@@ -54,6 +54,31 @@ func launchAs(t *testing.T, terminal bool, state, profiles, libexec, name string
 	return rc, string(out)
 }
 
+func noTTY(int) bool { return false }
+
+// runAs is launchAs for the pass `ccmorph run` execs (cli/main.go runVerb):
+// argv arrives native, it is the run verb's own first pass, separated says
+// whether its command line carried run's own `--`, and tty answers isTTY
+// per fd (#969).
+func runAs(t *testing.T, tty func(fd int) bool, state, profiles, libexec, name string, argv []string, separated bool) (int, string) {
+	t.Helper()
+	saved := isTTY
+	isTTY = tty
+	defer func() { isTTY = saved }()
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	savedErr := os.Stderr
+	os.Stderr = w
+	l := &launcher{dir: state, profileDirs: profiles, libexec: libexec, launchEnv: profile.LaunchEnv, memo: map[string]string{}, runPass: true, runSeparated: separated}
+	_, rc := l.launch(name, false, true, argv)
+	w.Close()
+	os.Stderr = savedErr
+	out, _ := io.ReadAll(r)
+	return rc, string(out)
+}
+
 // GH-260: `ccmorph run` on a gateway that never answers sat silent for about
 // 21 s in a terminal and 30 s without one. It now says it is checking within
 // the progress bound, gives up at doctor's bound, and ends on the same words

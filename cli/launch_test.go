@@ -1932,6 +1932,61 @@ func TestLaunchPassWaitsForEveryProcessItStarts(t *testing.T) {
 	}
 }
 
+// GH-969: a launch whose session fails — Claude Code dying at once on its own
+// guard — must not sit behind the sizing probe it started beside it: the probe
+// is asked to leave, the pass reaps it, and the pass returns (so the adapter's
+// retirement and the exit are not held for the probe's whole deadline). The
+// probe here blocks on a FIFO nobody releases, so a pass that merely joins it
+// would hang until the test's own bound.
+func TestAFailedSessionDoesNotWaitForTheSizingProbeIssue969(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	for _, name := range []string{"HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy", "ALL_PROXY", "all_proxy", "NO_PROXY", "no_proxy"} {
+		t.Setenv(name, "")
+	}
+	launchCurl(t, "exit 0")
+	state, profiles := gatewayProfile(t, "gw969", "type=apikey\nbase_url=http://10.0.0.5:8080\napi_key=k")
+	libexec := t.TempDir()
+	release := filepath.Join(libexec, "release")
+	if err := syscall.Mkfifo(release, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	pidfile := filepath.Join(libexec, "probe.pid")
+	body := "#!/bin/sh\nif [ \"$1\" = context-probe ]; then echo $$ > '" + pidfile +
+		"'; read x < '" + release + "'; fi\n" +
+		"if [ \"$1 $2\" = \"util claude-session\" ]; then exit 1; fi\nexit 0\n"
+	if err := os.WriteFile(filepath.Join(libexec, "ccmorph-core"), []byte(body), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if b, err := os.ReadFile(pidfile); err == nil {
+			if pid, err := strconv.Atoi(strings.TrimSpace(string(b))); err == nil {
+				_ = syscall.Kill(pid, syscall.SIGKILL)
+			}
+		}
+	})
+	done := make(chan int, 1)
+	go func() {
+		rc, _ := launchAs(t, false, state, profiles, libexec, "gw969", []string{"--model", "m", "hello"})
+		done <- rc
+	}()
+	select {
+	case rc := <-done:
+		if rc == 0 {
+			t.Fatalf("the failed session returned 0")
+		}
+	case <-time.After(20 * time.Second):
+		t.Fatal("a failed session waited on the sizing probe instead of cancelling it")
+	}
+	b, err := os.ReadFile(pidfile)
+	if err != nil {
+		t.Fatalf("the sizing probe never started, so the test proves nothing: %v", err)
+	}
+	pid, _ := strconv.Atoi(strings.TrimSpace(string(b)))
+	if err := syscall.Kill(pid, 0); err == nil {
+		t.Fatalf("the sizing probe (pid %d) outlived the failed pass", pid)
+	}
+}
+
 // coreCalls is a stub ccmorph-core that appends each invocation's argument
 // vector to a log, so a test can see every call, not only the last one.
 func coreCalls(t *testing.T) (dir string, calls func() string) {
