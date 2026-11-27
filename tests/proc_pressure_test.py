@@ -890,6 +890,43 @@ def test_every_gh919_message_goes_through_diagnostic():
     assert not bare, f"messages naming the incident built outside diagnostic(): {bare}"
 
 
+def test_no_rc_hosts_test_patches_the_shared_time_sleep():
+    """GH-982: `test_a_read_only_bridge_does_not_end_the_tick_at_host_start`
+    drove main() with `monkeypatch.setattr(m.time, "sleep", sleep)` — the one
+    test in the file that bypassed run_main's `_ScriptedTime` — patching the
+    process's own `time.sleep`. Any other thread in the same pytest worker that
+    then woke from a real sleep ran the test's tick script: rc_bridge_test.py
+    leaves the addon's handoff poller (`_take_handoffs`, `while True:
+    time.sleep(0.5)`) running as a daemon for the rest of the session, two
+    files before rc_hosts_test.py in a serial run, and its next wake landed
+    inside main()'s first tick. Once inside, the poller's sleep *was* the tick
+    hook — one that returns at once — so the loop stopped sleeping and spun the
+    ticks past its tick-2 repair before `tend()` ran its writes: the read-only
+    bridge was writable at the first attempt, both refusal lines vanished, and
+    the run ended `assert 0 == 1` (CI run 45912136041; red under gate load,
+    green alone). Same mechanism as the ps timeout-wait recorded in
+    _ScriptedTime's docstring. A test that scripts one module's sleeps patches
+    that module's `time`, never the shared module."""
+    bad = []
+    tree = ast.parse(Path(__file__).with_name("rc_hosts_test.py").read_text())
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        func = node.func
+        if not (isinstance(func, ast.Attribute) and func.attr == "setattr"
+                or isinstance(func, ast.Name) and func.id == "setattr"):
+            continue
+        if len(node.args) < 2:
+            continue
+        target, name = node.args[0], node.args[1]
+        shared = (isinstance(target, ast.Name) and target.id == "time"
+                  or isinstance(target, ast.Attribute) and target.attr == "time")
+        if shared and isinstance(name, ast.Constant) and name.value == "sleep":
+            bad.append(node.lineno)
+    assert not bad, ("rc_hosts_test.py patches the shared time module's sleep "
+                     f"at line(s) {bad}; drive main() through _ScriptedTime instead")
+
+
 # The watch's own witness: a real pytest run of a few tests, each holding live
 # children that never exit on their own, with the threshold injected at 2.5
 # processes (CCMORPH_PROC_RUN_SHARE) — the evaluator's replay. Each holding

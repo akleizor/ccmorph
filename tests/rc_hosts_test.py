@@ -819,8 +819,8 @@ def test_a_config_argument_without_a_path_is_a_usage_error(argv, says, monkeypat
     the default file -- the silent half of issue #417. A missing or flag-like
     value is now a usage error on stderr, exit 2, before any watching starts."""
     m = load()
-    monkeypatch.setattr(m.time, "sleep",
-                        lambda _: pytest.fail("a usage error exits before the loop"))
+    monkeypatch.setattr(m, "time", _ScriptedTime(
+        m.time, None, lambda _: pytest.fail("a usage error exits before the loop")))
     with pytest.raises(SystemExit) as done:
         m.main(argv)
     assert done.value.code == 2
@@ -3696,7 +3696,7 @@ def test_host_at_reads_the_exact_native_claude_under_a_folder_named_like_node(tm
             state[0] = "gone"
 
     monkeypatch.setattr(m.os, "kill", kill)
-    monkeypatch.setattr(m.time, "sleep", lambda seconds: None)
+    monkeypatch.setattr(m, "time", _ScriptedTime(m.time, None, lambda seconds: None))
     _counted_argv(monkeypatch, m, None)
     assert m.stop_orphan(4242) is True
     assert sent == ["SIGINT"]
@@ -4849,7 +4849,7 @@ def _orphan_host(tmp_path, monkeypatch, dies_on, reused_by=""):
         return subprocess.CompletedProcess(cmd, 0, stdout=out, stderr="")
 
     monkeypatch.setattr(m.os, "kill", kill)
-    monkeypatch.setattr(m.time, "sleep", lambda seconds: None)
+    monkeypatch.setattr(m, "time", _ScriptedTime(m.time, None, lambda seconds: None))
     monkeypatch.setattr(m.subprocess, "run", run)
     monkeypatch.setattr(h, "live_pointer_pid", lambda: 4242 if state[0] != "gone" else None)
     monkeypatch.setattr(m, "proc_argv", lambda pid: None)   # the text decides: no real pid 4242's argv
@@ -6076,7 +6076,7 @@ def test_a_read_only_bridge_does_not_end_the_tick_at_host_start(tmp_path, monkey
             bridge.chmod(0o700)                    # the operator repairs the bridge
         if ticks[0] > 4:
             raise SystemExit
-    monkeypatch.setattr(m.time, "sleep", sleep)
+    monkeypatch.setattr(m, "time", _ScriptedTime(m.time, None, sleep))
     bridge.chmod(0o500)
     try:
         with pytest.raises(SystemExit):
