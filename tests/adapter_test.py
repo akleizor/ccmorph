@@ -27,7 +27,7 @@ from weakref import WeakKeyDictionary
 
 import pytest
 
-from support import (CORE, FAKE_SERVER_NO_DNS, HANG_TIMEOUT, adapter_cmd,
+from support import (CORE, FAKE_SERVER_NO_DNS, HANG_TIMEOUT, SPAWN_TEST_BUDGET, adapter_cmd,
                      needs_loopback, port_outside_the_ephemeral_pool, wait_until)
 
 REPO = Path(__file__).resolve().parent.parent
@@ -1031,7 +1031,7 @@ class AdapterTest(unittest.TestCase):
     # exactly this test). The marker is its per-test headroom: the ceiling
     # stays 60 s everywhere else, and a timeout here is still a verdict for
     # this test alone, never a session killer.
-    @pytest.mark.timeout(300)
+    @pytest.mark.timeout(SPAWN_TEST_BUDGET)
     def test_sigkilled_adapter_does_not_leak_its_children(self):
         # SIGKILL skips every handler and atexit in the adapter, which is how 40
         # translator+shim pairs were found reparented to launchd on 2026-10-02.
