@@ -244,6 +244,12 @@ def responseheaders(flow, s) -> None:
             str(flow.request.host), flow.request.port, answered)
         extra = f" via={via}" if via != asked else ""
         where = "ANTHROPIC (not routed!)" if first_party else served
-    s.log(("miss      " if not ok else "account   " if account else "route     ")
-          + f"<- {flow.response.status_code} {flow.request.path.split('?', 1)[0]} "
+    line = (f"<- {flow.response.status_code} {flow.request.path.split('?', 1)[0]} "
             f"asked={asked}{extra} served-by={where}")
+    s.log(("miss      " if not ok else "account   " if account else "route     ") + line)
+    # GH-977: the verdict also lands in the state dir, where health checks read it
+    # without a debug run — the miss Alex found before any check did was audited
+    # into a log nobody had open. getattr: a proxy started before it existed.
+    counter = getattr(s, "count", None)
+    if counter:
+        counter(not ok, line)

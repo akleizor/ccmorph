@@ -890,11 +890,13 @@ def _switch_state(tmp_path, monkeypatch):
 _BOOT_TIERS = {"sonnet": "boot-route-sonnet"}
 
 
-def _switch_addon(monkeypatch, state):
+def _switch_addon(monkeypatch, state, log=True, parent=None, started=None):
     """rc_addon loaded the way ccmorph-rc loads it: a private copy configured through
     the environment alone. mitmproxy only ever appears in the hook signatures, and the
     suite runs without it, so where it is not installed the name resolves to a stub;
-    neither the handoff read nor the routing decision reaches past it."""
+    neither the handoff read nor the routing decision reaches past it. `log=False` is
+    the default production start: no RC_LOG, no debug lines, and the outcome record
+    still lands (GH-977)."""
     from types import ModuleType, SimpleNamespace
     key = state / "route-key"
     key.parent.mkdir(parents=True, exist_ok=True)
@@ -902,12 +904,21 @@ def _switch_addon(monkeypatch, state):
     monkeypatch.setenv("RC_UPSTREAM", "http://127.0.0.1:60111")
     monkeypatch.setenv("RC_KEY_FILE", str(key))
     monkeypatch.setenv("RC_INFERENCE", str(state / "inference"))
-    monkeypatch.setenv("RC_LOG", str(state / "addon.log"))
+    if log:
+        monkeypatch.setenv("RC_LOG", str(state / "addon.log"))
+    else:
+        monkeypatch.delenv("RC_LOG", raising=False)
     # Every RC_* the add-on reads at import is pinned here, never inherited from the
     # suite's environment (REVIEW.md: a test that cannot fail).
     monkeypatch.setenv("RC_TIERS", json.dumps(_BOOT_TIERS))
-    monkeypatch.delenv("RC_PARENT_PID", raising=False)
-    monkeypatch.delenv("RC_PARENT_STARTED", raising=False)
+    if parent:
+        monkeypatch.setenv("RC_PARENT_PID", str(parent))
+    else:
+        monkeypatch.delenv("RC_PARENT_PID", raising=False)
+    if started:
+        monkeypatch.setenv("RC_PARENT_STARTED", started)
+    else:
+        monkeypatch.delenv("RC_PARENT_STARTED", raising=False)
     monkeypatch.delenv("RC_SOURCE", raising=False)
     try:
         import mitmproxy  # noqa: F401
@@ -1064,6 +1075,10 @@ def test_every_session_turn_answers_which_upstream_served_it(tmp_path, monkeypat
     assert "asked=account served-by=160.79.104.10:443 (no Anthropic signature)" in served[5]
     assert "asked=route served-by=127.0.0.1:60111" in served[6]  # shared word, no false miss
     assert "asked=gw served-by=127.0.0.2:54505" in served[7]     # another IP on the pick's port
+    outcome = json.loads((state / "served.0.json").read_text())   # the same verdicts, kept for the probe
+    assert outcome["turns"] == 8 and outcome["misses"] == 5       # every audited turn; misses counted
+    assert "served-by=127.0.0.2:54505" in outcome["last_miss"]["line"]   # the last miss keeps its line
+    assert not list(state.glob("served.0.json.*.tmp"))            # replaced whole, never litters
 
 
 def test_which_upstream_served_compares_a_named_upstream_by_host(tmp_path, monkeypatch):
@@ -1104,6 +1119,70 @@ def test_which_upstream_served_compares_a_named_upstream_by_host(tmp_path, monke
     assert "asked=named served-by=gw.example:443" in served[0]     # the peername IP is no mismatch
     assert "asked=named served-by=other.example:443" in served[1]
     assert "asked=named served-by=gw.example:8443" in served[2]
+
+
+def test_the_outcome_is_kept_without_a_debug_log_for_the_probe(tmp_path, monkeypatch):
+    """GH-977: #920's verdict was written only into the --debug log, so on a normal
+    start a turn served by the wrong endpoint was audited and forgotten, and the
+    next miss was again Alex's to find. The proxy keeps the asked-vs-served outcome
+    — turns, misses, the last miss with its line — in the bridge state dir whatever
+    the debug flag says. Only audited inference turns count; a replacement proxy
+    starts its counters afresh and a reload of the same one continues them."""
+    from types import SimpleNamespace
+    from rc_route import header_id
+    state = tmp_path / "state"
+    (state / "sessions").mkdir(parents=True)
+    (state / "inference").write_text("route\n")
+    (state / "sessions" / "cse_pick").write_text("gw\n")
+    (state / "switch-gw.json").write_text(json.dumps(
+        {"upstream": "http://127.0.0.1:54505", "key": "route-key", "tiers": {}}))
+
+    def turn(addon, cse, reply, path="/v1/messages"):
+        f = SimpleNamespace(metadata={}, request=SimpleNamespace(
+            pretty_host="api.anthropic.com", path=path, method="POST",
+            headers={"authorization": "Bearer ACCOUNT-SECRET",
+                     "x-claude-code-session-id": header_id(cse)},
+            scheme="https", host="api.anthropic.com", port=443))
+        addon.requestheaders(f)
+        addon.responseheaders(SimpleNamespace(
+            metadata=f.metadata, request=f.request,
+            server_conn=SimpleNamespace(address=(f.request.host, f.request.port)),
+            response=SimpleNamespace(status_code=200, headers=reply)))
+
+    first = _switch_addon(monkeypatch, state, log=False, parent=4321, started="s1")
+    turn(first, "cse_pick", {})                                      # the pick's endpoint answers: served
+    turn(first, "cse_pick", {"anthropic-organization-id": "org"})    # Anthropic answered a routed turn
+    turn(first, "cse_other", {}, path="/v1/environments/bridge")     # not inference: never counts
+    rec = json.loads((state / "served.4321.json").read_text())
+    assert rec["turns"] == 2 and rec["misses"] == 1
+    assert rec["edge"] == 4321 and rec["edge_started"] == "s1"
+    assert "asked=gw served-by=ANTHROPIC" in rec["last_miss"]["line"]
+    assert not (state / "addon.log").exists()                        # no debug log was running
+
+    second = _switch_addon(monkeypatch, state, parent=4321, started="s2")   # a later proxy of the same pid
+    turn(second, "cse_none", {})
+    rec = json.loads((state / "served.4321.json").read_text())
+    assert rec["turns"] == 1 and rec["misses"] == 0 and rec["edge_started"] == "s2"   # fresh counters, not seeded
+    third = _switch_addon(monkeypatch, state, parent=4321, started="s2")    # the same proxy reloads its modules
+    turn(third, "cse_none", {})
+    rec = json.loads((state / "served.4321.json").read_text())
+    assert rec["turns"] == 2 and rec["misses"] == 0                   # and continues, rather than restarting
+
+    real_replace, calls = os.replace, [0]
+
+    def refused_once(src, dst, **kw):                                 # a state dir that says no, once
+        calls[0] += 1
+        if calls[0] == 1:
+            raise OSError(30, "read-only file system")
+        return real_replace(src, dst, **kw)
+    monkeypatch.setattr(third.os, "replace", refused_once)
+    turn(third, "cse_none", {"anthropic-organization-id": "org"})     # the refused write must not kill the turn
+    rec = json.loads((state / "served.4321.json").read_text())
+    assert rec["turns"] == 2                                          # the record lags the one turn it lost
+    turn(third, "cse_none", {})                                       # ... and catches up on the next
+    rec = json.loads((state / "served.4321.json").read_text())
+    assert rec["turns"] == 4 and rec["misses"] == 1                   # the missed verdict was not lost
+    assert not list(state.glob("served.4321.json.*.tmp"))             # the refused write left no temp behind
 
 
 def test_the_addon_reads_a_handoff_once_and_keeps_it_thereafter(tmp_path, monkeypatch):

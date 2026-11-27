@@ -23,7 +23,9 @@ table nor any environment:
                   live profile instead of leaving the phone on the route (issue #595).
                   <dir>/sessions/<session id> holds one
                   session's own word (--switch --session), <dir>/account-tiers.json the
-                  account's {alias: model} for it
+                  account's {alias: model} for it, and <dir>/served.<parent pid>.json
+                  this proxy's asked-vs-served outcome (turns, misses, the last miss),
+                  kept whatever the debug flag says so health checks can read it (GH-977)
 """
 from __future__ import annotations
 
@@ -36,6 +38,7 @@ import sys
 import tempfile
 import threading
 import time
+from contextlib import suppress
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -281,10 +284,68 @@ def _switched(profile: str) -> tuple[str, str, dict] | None:
     return SWITCHED.get(profile)
 
 
+# The asked-vs-served outcome of this proxy's audited turns, kept in the state dir
+# for the checks that read health (GH-977: #920's verdict reached only the --debug
+# log, so a miss on a normal start was audited and forgotten and the phone found
+# the next one first). It counts what the verdict decided, never why: no key, no
+# header, only the words and endpoints the debug line already spells.
+_SERVED = {"turns": 0, "misses": 0, "last_miss": None}
+
+
+def _served_path() -> Path:
+    return Path(INFERENCE).parent / f"served.{PARENT}.json"
+
+
+def _load_served() -> None:
+    """Continue this very edge run's counters: the same proxy reloading its modules
+    keeps its record of what it served, and a record written by any other start is
+    no history of this one — the counters begin at zero for it."""
+    if not INFERENCE:
+        return
+    try:
+        rec = json.loads(_served_path().read_text())
+        if (rec.get("edge_started") == PARENT_STARTED
+                and isinstance(rec.get("turns"), int) and isinstance(rec.get("misses"), int)):
+            _SERVED.update(turns=rec["turns"], misses=rec["misses"],
+                           last_miss=rec.get("last_miss")
+                           if isinstance(rec.get("last_miss"), dict) else None)
+    except (OSError, ValueError):
+        pass
+
+
+def _count(miss: bool, line: str) -> None:
+    """One audited session turn's verdict: turns and misses counted, the last miss
+    kept with its line, the record replaced whole. The verdict never depends on
+    the record: a state dir that refuses one must not break the turn it describes
+    (the _publish_held lesson, read backwards)."""
+    if not INFERENCE:
+        return
+    _SERVED["turns"] += 1
+    if miss:
+        _SERVED["misses"] += 1
+        _SERVED["last_miss"] = {"at": int(time.time()), "line": line}
+    path = _served_path()
+    fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=path.name + ".", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w") as fh:
+            json.dump({"edge": PARENT, "edge_started": PARENT_STARTED, **_SERVED}, fh)
+        os.replace(tmp, path)
+    except OSError:
+        with suppress(OSError):
+            os.unlink(tmp)                 # the turn stands; the record missed one
+    except BaseException:
+        with suppress(OSError):
+            os.unlink(tmp)
+        raise
+
+
+_load_served()
+
+
 # What rc_flow reads; the key and endpoints never leave this module's lifetime.
 S = SimpleNamespace(upstream=UPSTREAM, key=KEY, tiers=TIERS, inference=INFERENCE,
                     switched=_switched, log=_log, logs=_LOG is not None, parent=PARENT,
-                    parent_started=PARENT_STARTED)
+                    parent_started=PARENT_STARTED, count=_count)
 
 _flow = None
 _stamp: tuple | None = None
@@ -385,7 +446,9 @@ def done() -> None:
     if HERE.name.startswith("addon."):
         shutil.rmtree(HERE, ignore_errors=True)
     if INFERENCE and PARENT:
-        _forget_held()
+        _forget(_held_path())
+    if INFERENCE:
+        _forget(_served_path())
 
 
 def _ours(path: Path) -> bool:
@@ -396,25 +459,25 @@ def _ours(path: Path) -> bool:
         return False
 
 
-def _forget_held() -> None:
-    """What this proxy holds goes with it -- but only its own record. held.<pid>.json
-    is named by the edge's pid, which the OS may have given to a replacement edge
-    whose proxy writes its own record there at any moment. So the record is moved
-    aside first and checked where it lies: what is checked is what is removed, and a
-    record that is not ours goes back, unless a newer one stands there already
-    (issue #595 review: a read, then an unlink by name, removed the replacement's)."""
-    held = _held_path()
-    if not _ours(held):
+def _forget(path: Path) -> None:
+    """What this proxy wrote under its pid goes with it -- but only its own record:
+    held.<pid>.json and the served.<pid>.json outcome. Such a name is held by a pid
+    the OS may have given to a replacement whose proxy writes its own record there
+    at any moment. So the record is moved aside first and checked where it lies:
+    what is checked is what is removed, and a record that is not ours goes back,
+    unless a newer one stands there already (issue #595 review: a read, then an
+    unlink by name, removed the replacement's)."""
+    if not _ours(path):
         return
-    aside = held.with_name(f"{held.name}.{os.getpid()}.gone")
+    aside = path.with_name(f"{path.name}.{os.getpid()}.gone")
     try:
-        os.rename(held, aside)
+        os.rename(path, aside)
     except OSError:
         return
     try:
         if not _ours(aside):
             try:
-                os.link(aside, held)
+                os.link(aside, path)
             except OSError:
                 pass
     finally:
