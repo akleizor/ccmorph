@@ -75,6 +75,13 @@ type launcher struct {
 	// config: only there can first-run questions meet a person mid-session, so
 	// only there does the launch say which answer is safe (#258).
 	relayCrossed bool
+
+	// runPass is the first pass of a `ccmorph run` (cli/main.go runVerb execs it
+	// with _CCMORPH_NATIVE_ARGS=1), and runSeparated whether that command line
+	// carried run's own `--`, which runVerb strips. Only that pass owes the
+	// no-terminal, no-model refusal; `_ccm_launch -a` and a hop's relay pass
+	// keep their launch as it was (#969).
+	runPass, runSeparated bool
 }
 
 // relayNext is what one launch hands the driver when Claude Code exited for a hop.
@@ -112,7 +119,8 @@ func (l *launcher) launchMain(args []string) int {
 	profileName := os.Getenv("_CCMORPH_LAUNCH_PROFILE")
 	interactive := os.Getenv("_CCMORPH_INTERACTIVE") == "1"
 	native := os.Getenv("_CCMORPH_NATIVE_ARGS") == "1"
-	for _, k := range []string{"_CCMORPH_LAUNCH_PROFILE", "_CCMORPH_INTERACTIVE", "_CCMORPH_NATIVE_ARGS"} {
+	l.runPass, l.runSeparated = native, os.Getenv("_CCMORPH_RUN_SEPARATOR") == "1"
+	for _, k := range []string{"_CCMORPH_LAUNCH_PROFILE", "_CCMORPH_INTERACTIVE", "_CCMORPH_NATIVE_ARGS", "_CCMORPH_RUN_SEPARATOR"} {
 		os.Unsetenv(k)
 	}
 	// The relay pass's origin: which profile the conversation came from, and the
@@ -121,6 +129,7 @@ func (l *launcher) launchMain(args []string) int {
 	for {
 		l.ranClaude = false
 		next, rc := l.launch(profileName, interactive, native, args)
+		l.runPass, l.runSeparated = false, false // a relay pass is judged on its own argv
 		l.notice = ""
 		if next == nil {
 			// A relay pass that failed before claude began leaves the person at

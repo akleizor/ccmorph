@@ -1932,6 +1932,216 @@ func TestLaunchPassWaitsForEveryProcessItStarts(t *testing.T) {
 	}
 }
 
+// GH-969: a launch whose session fails — Claude Code dying at once on its own
+// guard — must not sit behind the sizing probe it started beside it: the probe
+// is asked to leave, the pass reaps it, and the pass returns (so the adapter's
+// retirement and the exit are not held for the probe's whole deadline). The
+// probe here blocks on a FIFO nobody releases, so a pass that merely joins it
+// would hang until the test's own bound.
+func TestAFailedSessionDoesNotWaitForTheSizingProbeIssue969(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	// The pass runs the host's prelaunch script when one is configured; a
+	// fixture that reads it is red on a machine that has one (REVIEW.md rule 3).
+	t.Setenv("CCMORPH_PRELAUNCH", "")
+	for _, name := range []string{"HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy", "ALL_PROXY", "all_proxy", "NO_PROXY", "no_proxy"} {
+		t.Setenv(name, "")
+	}
+	launchCurl(t, "exit 0")
+	for _, tc := range []struct{ name, ignoreTerm string }{
+		{"a probe that stops on SIGTERM", ""},
+		// Only the kill after probeGrace ends this one: the FIFO is never
+		// released and the signal is ignored.
+		{"a probe that ignores SIGTERM", "trap '' TERM\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			state, profiles := gatewayProfile(t, "gw969", "type=apikey\nbase_url=http://10.0.0.5:8080\napi_key=k")
+			libexec := t.TempDir()
+			release := filepath.Join(libexec, "release")
+			if err := syscall.Mkfifo(release, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			pidfile := filepath.Join(libexec, "probe.pid")
+			// The session fails only once the probe has started (bounded at
+			// 10 s), so a session that wins the race still leaves a probe to
+			// cancel; the adapter answers as main's protocol wants (NATIVE=1).
+			body := "#!/bin/sh\n" + tc.ignoreTerm + "if [ \"$1\" = adapter ]; then echo NATIVE=1; fi\n" +
+				"if [ \"$1\" = context-probe ]; then echo $$ > '" + pidfile +
+				"'; read x < '" + release + "'; fi\n" +
+				"if [ \"$1 $2\" = \"util claude-session\" ]; then i=0; while [ ! -s '" + pidfile +
+				"' ] && [ $i -lt 100 ]; do sleep 0.1; i=$((i+1)); done; exit 1; fi\nexit 0\n"
+			if err := os.WriteFile(filepath.Join(libexec, "ccmorph-core"), []byte(body), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() {
+				if b, err := os.ReadFile(pidfile); err == nil {
+					if pid, err := strconv.Atoi(strings.TrimSpace(string(b))); err == nil {
+						_ = syscall.Kill(pid, syscall.SIGKILL)
+					}
+				}
+			})
+			done := make(chan int, 1)
+			go func() {
+				rc, _ := launchAs(t, false, state, profiles, libexec, "gw969", []string{"--model", "m", "hello"})
+				done <- rc
+			}()
+			select {
+			case rc := <-done:
+				if rc == 0 {
+					t.Fatalf("the failed session returned 0")
+				}
+			case <-time.After(60 * time.Second):
+				t.Fatal("a failed session waited on the sizing probe instead of cancelling it")
+			}
+			b, err := os.ReadFile(pidfile)
+			if err != nil {
+				t.Fatalf("the sizing probe never started, so the test proves nothing: %v", err)
+			}
+			pid, _ := strconv.Atoi(strings.TrimSpace(string(b)))
+			if err := syscall.Kill(pid, 0); err == nil {
+				t.Fatalf("the sizing probe (pid %d) outlived the failed pass", pid)
+			}
+		})
+	}
+}
+
+// GH-969: Claude Code failing at once, after the launch took a live shared
+// adapter (one the stub core really starts and the launch really holds, not
+// NATIVE=1), hands back that failure's status, lets go of this launch's own
+// hold promptly, and ends the adapter only when no other session holds it.
+func TestAFailedSessionReleasesItsOwnAdapterHoldIssue969(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("CCMORPH_PRELAUNCH", "")
+	for _, name := range []string{"HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy", "ALL_PROXY", "all_proxy", "NO_PROXY", "no_proxy"} {
+		t.Setenv(name, "")
+	}
+	launchCurl(t, "exit 0")
+	for _, tc := range []struct {
+		name        string
+		otherHolder bool
+	}{
+		{"the last holder", false},
+		{"a second holder", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			state, profiles := gatewayProfile(t, "gw969", "type=apikey\nbase_url=http://10.0.0.5:8080\napi_key=k")
+			libexec := t.TempDir()
+			pidfile := filepath.Join(libexec, "adapter.pid")
+			ready := filepath.Join(libexec, "holder-ready")
+			// adapter: a live process that keeps its argv (--shared base) and
+			// answers PORT; route-hold: the real holder (this test binary as the
+			// core); the session fails at once with status 7, once the test's
+			// own holder (when there is one) is in place.
+			// The sizing probe outlives the session (25 s, under its production
+			// 30 s deadline): a pass that joins it before letting go of the adapter
+			// is held that long.
+			body := "#!/bin/sh\n" +
+				"if [ \"$1\" = context-probe ]; then exec sleep 25; fi\n" +
+				"if [ \"$1\" = adapter ]; then trap 'kill $!; exit 0' TERM; echo $$ > '" + pidfile + "'; echo PORT=$$; sleep 60 & wait; fi\n" +
+				"if [ \"$1 $2\" = \"util route-hold\" ]; then CCMORPH_TEST_HOLD_USERS=\"$3\" exec '" + coreCopy(t) + "' util route-hold \"$3\"; fi\n" +
+				"if [ \"$1 $2\" = \"util claude-session\" ]; then " + map[bool]string{true: "i=0; while [ ! -e '" + ready + "' ] && [ $i -lt 100 ]; do sleep 0.1; i=$((i+1)); done; ", false: ""}[tc.otherHolder] + "exit 7; fi\nexit 0\n"
+			if err := os.WriteFile(filepath.Join(libexec, "ccmorph-core"), []byte(body), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			adapterPID := func() int {
+				b, err := os.ReadFile(pidfile)
+				if err != nil {
+					return 0
+				}
+				n, _ := strconv.Atoi(strings.TrimSpace(string(b)))
+				return n
+			}
+			t.Cleanup(func() {
+				if pid := adapterPID(); pid > 0 {
+					_ = syscall.Kill(pid, syscall.SIGKILL)
+				}
+			})
+			var other *os.File
+			if tc.otherHolder {
+				go func() {
+					for i := 0; i < 300; i++ {
+						users, _ := filepath.Glob(filepath.Join(state, "auth", "*.users"))
+						if len(users) == 1 && adapterPID() > 0 {
+							f, err := os.Open(users[0])
+							if err == nil && syscall.Flock(int(f.Fd()), syscall.LOCK_SH) == nil {
+								other = f
+								os.WriteFile(ready, nil, 0o600)
+								return
+							}
+						}
+						time.Sleep(50 * time.Millisecond)
+					}
+				}()
+			}
+			start := time.Now()
+			// Through launchMain, whose deferred stopHelpers is what lets go of
+			// the adapter on every way out of a pass.
+			t.Setenv("_CCMORPH_LAUNCH_PROFILE", "gw969")
+			t.Setenv("_CCMORPH_NATIVE_ARGS", "1")
+			saved := isTTY
+			isTTY = func(int) bool { return false }
+			r, w, err := os.Pipe()
+			if err != nil {
+				t.Fatal(err)
+			}
+			savedErr := os.Stderr
+			os.Stderr = w
+			l := &launcher{dir: state, profileDirs: profiles, libexec: libexec, launchEnv: profile.LaunchEnv, memo: map[string]string{}}
+			rc := l.launchMain([]string{"--model", "m", "hello"})
+			w.Close()
+			os.Stderr = savedErr
+			isTTY = saved
+			outb, _ := io.ReadAll(r)
+			out := string(outb)
+			if rc != 7 {
+				t.Fatalf("the failed session's status was lost: rc %d, want 7:\n%s", rc, out)
+			}
+			if took := time.Since(start); took > 12*time.Second {
+				t.Fatalf("the failed launch took %v to let go", took)
+			}
+			pid := adapterPID()
+			if pid == 0 {
+				t.Fatalf("the stub adapter never started, so the test proves nothing:\n%s", out)
+			}
+			records, _ := filepath.Glob(filepath.Join(state, "auth", "*"))
+			record := ""
+			for _, r := range records {
+				if ext := filepath.Ext(r); ext != ".lock" && ext != ".users" && ext != ".log" {
+					record = r
+				}
+			}
+			if !tc.otherHolder {
+				if err := syscall.Kill(pid, 0); err == nil {
+					t.Fatalf("the last holder's exit left adapter %d running", pid)
+				}
+				if record != "" {
+					t.Fatalf("the last holder's exit left the adapter record %s", record)
+				}
+				return
+			}
+			if other == nil {
+				t.Fatal("the second holder never took the adapter, so the test proves nothing")
+			}
+			defer other.Close()
+			if err := syscall.Kill(pid, 0); err != nil {
+				t.Fatalf("the failed launch ended an adapter another session still holds: %v", err)
+			}
+			if record == "" {
+				t.Fatal("the failed launch removed the record of an adapter another session holds")
+			}
+			// Our holder is the only one left: the launch's own hold is gone.
+			syscall.Flock(int(other.Fd()), syscall.LOCK_UN)
+			probe, err := os.Open(filepath.Join(state, "auth", filepath.Base(record)+".users"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer probe.Close()
+			if err := syscall.Flock(int(probe.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+				t.Fatalf("the launch's own hold outlived the failed session: %v", err)
+			}
+		})
+	}
+}
+
 // coreCalls is a stub ccmorph-core that appends each invocation's argument
 // vector to a log, so a test can see every call, not only the last one.
 func coreCalls(t *testing.T) (dir string, calls func() string) {

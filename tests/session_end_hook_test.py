@@ -22,6 +22,7 @@ from support import HANG_TIMEOUT
 
 ROOT = Path(__file__).resolve().parents[1]
 HOOKS = ROOT / "share" / "claude-plugin" / "hooks" / "hooks.json"
+PLUGIN = HOOKS.parent.parent
 
 
 def _session_end_command():
@@ -53,6 +54,7 @@ def test_the_hook_records_attended_profile_sessions(attended, config_dir, expect
     env = {
         "TMPDIR": str(tmp_path),
         "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
+        "CLAUDE_PLUGIN_ROOT": str(PLUGIN),
         "CLAUDE_CODE_SESSION_ATTENDED": attended,
         "CLAUDE_CODE_SESSION_ID": "sid-285",
         "CLAUDE_PID": "4194304",
@@ -75,6 +77,7 @@ def test_the_hook_never_writes_through_a_planted_link_issue_410(suffix, tmp_path
     env = {
         "TMPDIR": str(tmp_path),
         "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
+        "CLAUDE_PLUGIN_ROOT": str(PLUGIN),
         "CLAUDE_CODE_SESSION_ATTENDED": "1",
         "CLAUDE_CODE_SESSION_ID": "sid-410",
         "CLAUDE_CONFIG_DIR": "/profiles/work",
@@ -109,6 +112,7 @@ def test_the_hook_never_creates_a_file_through_a_planted_directory_issue_410(kin
     env = {
         "TMPDIR": str(tmp_path),
         "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
+        "CLAUDE_PLUGIN_ROOT": str(PLUGIN),
         "CLAUDE_CODE_SESSION_ATTENDED": "1",
         "CLAUDE_CODE_SESSION_ID": "sid-410",
         "CLAUDE_CONFIG_DIR": "/profiles/work",
@@ -135,6 +139,7 @@ def test_the_hook_does_not_wait_on_a_planted_fifo_issue_410(tmp_path):
     env = {
         "TMPDIR": str(tmp_path),
         "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
+        "CLAUDE_PLUGIN_ROOT": str(PLUGIN),
         "CLAUDE_CODE_SESSION_ATTENDED": "1",
         "CLAUDE_CODE_SESSION_ID": "sid-410",
         "CLAUDE_CONFIG_DIR": "/profiles/work",
@@ -164,6 +169,7 @@ def test_the_hook_keeps_claude_codes_input_beside_the_record(attended, tmp_path)
     env = {
         "TMPDIR": str(tmp_path),
         "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
+        "CLAUDE_PLUGIN_ROOT": str(PLUGIN),
         "CLAUDE_CODE_SESSION_ATTENDED": attended,
         "CLAUDE_CODE_SESSION_ID": "sid-359",
         "CLAUDE_CONFIG_DIR": "/profiles/work",
@@ -207,6 +213,7 @@ def test_a_directory_that_appears_after_any_check_takes_no_file_issue_410(suffix
     env = {
         "TMPDIR": str(tmp_path),
         "PATH": f"{shims}:{os.environ.get('PATH', '/usr/bin:/bin')}",
+        "CLAUDE_PLUGIN_ROOT": str(PLUGIN),
         "CLAUDE_CODE_SESSION_ATTENDED": "1",
         "CLAUDE_CODE_SESSION_ID": "sid-410",
         "CLAUDE_CONFIG_DIR": "/profiles/work",
@@ -226,3 +233,42 @@ def test_a_directory_that_appears_after_any_check_takes_no_file_issue_410(suffix
         e.name for e in tmp_path.iterdir() if e.name.startswith("ccmorph-session-end.") and e not in (planted, other)
     )
     assert leftovers == [], "the hook left a temporary file behind"
+
+def test_the_command_claude_code_prints_names_the_script_not_its_source_issue_969():
+    # The line Claude Code prints when it cancels or fails a hook carries the
+    # hook's command. One call of a file names the script; the shell source
+    # that used to sit there told the person nothing (#969).
+    command = _session_end_command()
+    assert command == 'sh "${CLAUDE_PLUGIN_ROOT}/hooks/session-end.sh"'
+    assert (PLUGIN / "hooks/session-end.sh").is_file()
+    for source in (";", "mktemp", "link ", "CLAUDE_CODE_SESSION_ATTENDED", "printf"):
+        assert source not in command, f"the hook command still carries its source: {source!r}"
+
+
+@pytest.mark.parametrize("how", ["env", "substituted"])
+def test_the_hook_runs_from_a_plugin_root_with_a_space_issue_969(how, tmp_path):
+    # Claude Code may hand the plugin root over as an environment variable or
+    # substitute it into the command text; either way a path with a space must
+    # reach the script unharmed, and the records must land as before (#969).
+    root = tmp_path / "Application Support" / "claude-plugin"
+    shutil.copytree(PLUGIN, root)
+    records = tmp_path / "tmp"
+    records.mkdir()
+    command = _session_end_command()
+    env = {
+        "TMPDIR": str(records),
+        "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
+        "CLAUDE_CODE_SESSION_ATTENDED": "1",
+        "CLAUDE_CODE_SESSION_ID": "sid-969",
+        "CLAUDE_CONFIG_DIR": "/profiles/work",
+        "CLAUDE_PID": "4194304",
+    }
+    if how == "env":
+        env["CLAUDE_PLUGIN_ROOT"] = str(root)
+    else:
+        command = command.replace("${CLAUDE_PLUGIN_ROOT}", str(root))
+    given = '{"session_id":"sid-969","transcript_path":"/p/sid-969.jsonl"}'
+    ran = subprocess.run(["/bin/sh", "-c", command], env=env, input=given, text=True, timeout=HANG_TIMEOUT)
+    assert ran.returncode == 0, "no outcome may fail the hook at session end"
+    assert _recorded(records, 4194304) == "sid-969"
+    assert (records / "ccmorph-session-end.4194304.json").read_text(encoding="utf-8") == given
