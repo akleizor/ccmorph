@@ -3949,6 +3949,102 @@ def test_a_lost_table_read_says_cannot_tell_and_removes_and_signals_nothing(monk
     assert [p.name for p in m.SESSION_WORDS.iterdir()] == ["cse_live"]
 
 
+def _proc_fixture(tmp_path, monkeypatch, m, pids):
+    """A /proc the test writes: one directory per pid, its cmdline unless None
+    (no file is the kernel's own ENOENT for a pid gone before the read), and a
+    non-pid entry. Pids sit near the top of the range, so proc_argv() never
+    reads a real process by a made-up pid."""
+    root = tmp_path / "proc"
+    root.mkdir()
+    for pid, cmdline in pids.items():
+        (root / str(pid)).mkdir()
+        if cmdline is not None:
+            (root / str(pid) / "cmdline").write_bytes(cmdline)
+    (root / "sys").mkdir()
+    monkeypatch.setattr(m, "PROC_ROOT", str(root))
+    return root
+
+
+@pytest.mark.parametrize("code", ["eio", "eacces", "eperm"])
+def test_a_cmdline_read_that_proves_nothing_voids_the_table_and_deletes_no_word(
+        monkeypatch, tmp_path, code):
+    """#991: only the kernel's own word proves a pid gone. A live child's
+    cmdline read failing with EIO, EACCES or EPERM leaves its row unknowable,
+    so the whole table is given up -- session_pid() says 'unknown', never
+    None -- and list_sessions() deletes nothing. The denied case is the gate's
+    pinned repro: a PermissionError used to skip the row, and one other
+    readable row let that silence delete the live session's word."""
+    import errno
+    import subprocess
+    m = load()
+    live, other = 2147483001, 2147483002
+    _proc_fixture(tmp_path, monkeypatch, m, {
+        live: b"/x/claude\0--session-id\0cse_01LIVE\0--sdk-url\0wss://x\0",
+        other: b"/bin/sleep\x0030\x00"})
+    monkeypatch.setattr(m, "claude_paths", lambda: ())
+    monkeypatch.setattr(m, "node_paths", lambda: ())
+    monkeypatch.setattr(m.subprocess, "run", lambda *a, **kw: (_ for _ in ()).throw(
+        subprocess.TimeoutExpired(["ps", "-ww", "-Ao", "pid=,command="], 10)))
+    assert m.session_pid("cse_01LIVE") == live
+
+    err = {"eio": errno.EIO, "eacces": errno.EACCES, "eperm": errno.EPERM}[code]
+    original = m.Path.read_bytes
+    target = f"{m.PROC_ROOT}/{live}/cmdline"
+
+    def read(self):
+        if str(self) == target:
+            raise OSError(err, os.strerror(err))
+        return original(self)
+
+    monkeypatch.setattr(m.Path, "read_bytes", read)
+    assert m.procfs_table() is None
+    assert m.session_pid("cse_01LIVE") == m.CANNOT_TELL
+
+    m.SESSION_WORDS.mkdir(parents=True)
+    word = m.SESSION_WORDS / "cse_01LIVE"
+    word.write_text("demo\n")
+    monkeypatch.setattr(m, "account_name", lambda: "me")
+    monkeypatch.setattr(m, "host_sessions", lambda folders, status: ("tok", []))
+    m.list_sessions(["repo"])
+    assert word.exists()
+
+
+@pytest.mark.parametrize("gone", ["enoent", "esrch", "zombie"])
+def test_a_pid_gone_at_its_cmdline_read_has_no_row_and_the_table_stays(
+        monkeypatch, tmp_path, gone):
+    """#991: the kernel's own word that a pid is gone -- ENOENT, ESRCH, or an
+    empty cmdline (a kernel thread or zombie) -- drops that pid and nothing
+    else. The table still answers the live child, and a session it never
+    named still reads as absent."""
+    import errno
+    import subprocess
+    m = load()
+    live, other, vanished = 2147483001, 2147483002, 2147483003
+    _proc_fixture(tmp_path, monkeypatch, m, {
+        live: b"/x/claude\0--session-id\0cse_01LIVE\0--sdk-url\0wss://x\0",
+        other: b"/bin/sleep\x0030\x00",
+        vanished: {"enoent": None, "esrch": b"/bin/true\x00", "zombie": b""}[gone]})
+    monkeypatch.setattr(m, "claude_paths", lambda: ())
+    monkeypatch.setattr(m, "node_paths", lambda: ())
+    monkeypatch.setattr(m.subprocess, "run", lambda *a, **kw: (_ for _ in ()).throw(
+        subprocess.TimeoutExpired(["ps", "-ww", "-Ao", "pid=,command="], 10)))
+    if gone == "esrch":
+        original = m.Path.read_bytes
+        target = f"{m.PROC_ROOT}/{vanished}/cmdline"
+
+        def read(self):
+            if str(self) == target:
+                raise ProcessLookupError(errno.ESRCH, os.strerror(errno.ESRCH))
+            return original(self)
+
+        monkeypatch.setattr(m.Path, "read_bytes", read)
+    rows = m.procfs_table()
+    assert rows is not None
+    assert {r.pid for r in rows} == {live, other}
+    assert m.session_pid("cse_01LIVE") == live
+    assert m.session_pid("cse_01NOPE") is None
+
+
 def test_proc_argv_reads_each_argument_whole_from_the_kernel():
     """#758: ps joins argv with spaces; proc_argv() reads the kernel's own copy,
     each argument whole -- spaces inside one, a run of them, an empty one -- so

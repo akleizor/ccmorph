@@ -1650,27 +1650,30 @@ class PsRow(str):
         return row
 
 
+PROC_ROOT = "/proc"             # the kernel's process table; a test points it at a fixture
+
+
 def procfs_table() -> "list[PsRow] | None":
     """The process table read from /proc directly (Linux): each pid's argv as
     the kernel keeps it, joined with one space exactly as ps prints a row -- or
-    None where the kernel keeps no /proc or it cannot be read. This is the
-    table without an exec: ps reads the very same files, but ps is itself a
+    None where the kernel keeps no /proc or it cannot be read whole. This is
+    the table without an exec: ps reads the very same files, but ps is itself a
     process, and under a fork storm the exec is the part that queues -- which
     is how session_pid() read a live child as no session while the kernel's
     own argv sat there readable (#991). A reader that must know where an
     argument ends still reads that pid's argv (proc_argv()).
 
-    A pid that proves itself gone -- its directory already vanished at the
-    read (ENOENT), or an argv the kernel keeps empty (a kernel thread, a
-    zombie) -- simply has no row; every other row stays readable, so the
-    table remains complete. A read that merely failed (EIO and friends)
-    voids the whole table instead: a row lost mid-walk is indistinguishable
-    from an exited child to the caller, and one other readable row would let
-    that silence authorize deleting a live session's word (#991)."""
-    if not os.path.isdir("/proc"):
+    A pid leaves the table only on the kernel's own proof that it is gone:
+    its read answered ENOENT (the directory was listed, then vanished) or
+    ESRCH (the pid was reaped while its file was open), or its argv is empty
+    (a kernel thread, a zombie). Every other failed read -- a denied one
+    included -- proves nothing and voids the whole table, so ps answers
+    instead: one silently missing row would read as "no such session" and
+    let that silence delete a live session's word (#991)."""
+    if not os.path.isdir(PROC_ROOT):
         return None
     try:
-        entries = os.listdir("/proc")
+        entries = os.listdir(PROC_ROOT)
     except OSError:
         return None
     rows = []
@@ -1678,13 +1681,11 @@ def procfs_table() -> "list[PsRow] | None":
         if not name.isdigit():
             continue
         try:
-            raw = Path(f"/proc/{name}/cmdline").read_bytes()
+            raw = Path(f"{PROC_ROOT}/{name}/cmdline").read_bytes()
         except (FileNotFoundError, ProcessLookupError):
-            continue                    # gone between the listing and the read
-        except PermissionError:
-            continue                    # not ours to read; a session child is ours
+            continue                    # the kernel's own word the pid is gone (ENOENT/ESRCH)
         except OSError:
-            return None                 # a lost read proves nothing (#991)
+            return None                 # every other failed read, denial included, proves nothing
         if not raw:
             continue                    # a kernel thread, or a zombie
         args = raw.split(b"\0")
