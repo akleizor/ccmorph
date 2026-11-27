@@ -235,11 +235,12 @@ func execIndex(args []string) int {
 // the adapter process itself as "shim": the stock shim is served in-process, so
 // its listener is the adapter's own.
 func runningAdapter(profile string) string {
-	// Bounded at a second (GH-467): the sysctl read is the kernel's own cost,
-	// but the ps it falls back to makes three passes — an answer past the bound
-	// is SKIP, never a hang and never a half report. The goroutine cannot be
-	// joined, so the same deadline bounds the work itself (GH-515): the ps it is
-	// in is killed with the context, not left running behind the answer.
+	// Bounded at a second (GH-467): the sysctl read and the /proc read are the
+	// kernel's own cost, but the ps they fall back to makes three passes of
+	// execs a fork storm can queue past this bound (#991) — an answer past the
+	// bound is SKIP, never a hang and never a half report. The goroutine cannot
+	// be joined, so the same deadline bounds the work itself (GH-515): the ps it
+	// is in is killed with the context, not left running behind the answer.
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
 	done := make(chan map[int]psRow, 1)

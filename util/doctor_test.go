@@ -184,12 +184,88 @@ func TestRunningAdapterMatchesArgvAcrossSpaces(t *testing.T) {
 // so the ps that goroutine is in must end with the answer. The fake ps records
 // its pid and sleeps the bound out; __UNKNOWN__ comes at the bound, and the pid
 // must be gone shortly after.
-func TestRunningAdapterEndsAPsStalledPastItsBound(t *testing.T) {
-	// On darwin the table is the kernel's sysctl, which no PATH double reaches;
-	// the ps fallback is the reader this bound exists for, so force it.
+// forceKernelTablesAway forces both kernel table reads off — on darwin the
+// table is the kernel's sysctl, off darwin its /proc, and no PATH double
+// reaches either (#991) — so a test reaches the ps fallback the bound exists
+// for, and can force the table's loss itself.
+func forceKernelTablesAway(t *testing.T) {
+	t.Helper()
 	orig := sysctlTable
 	sysctlTable = func() (map[int]psRow, bool) { return nil, false }
 	t.Cleanup(func() { sysctlTable = orig })
+	origProcfs := procfsTable
+	procfsTable = func() map[int]psRow { return nil }
+	t.Cleanup(func() { procfsTable = origProcfs })
+}
+
+func TestLostTableReadAnswersInTheUsersWords(t *testing.T) {
+	// GH-467's fallback promise, in the words a person reads: a lost table is
+	// told as the SKIP line, not left at the internal sentinel — #991 moved
+	// the loss away from PATH ps, so the loss must be forced at its source
+	// (both kernel reads away, a ps stalled past the bound) and checked where
+	// doctor renders it.
+	forceKernelTablesAway(t)
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "ps"), []byte("#!/bin/sh\nsleep 2\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	running := runningAdapter("words-" + strconv.Itoa(os.Getpid()))
+	if running != "__UNKNOWN__" {
+		t.Fatalf("the forced loss did not reach the sentinel: %q", running)
+	}
+	details := adapterDetails(running)
+	want := "SKIP adapter: could not tell whether a translator is running"
+	if len(details) != 1 || details[0][0]+" "+details[0][1] != want {
+		t.Fatalf("a lost table answers %v, want the user's own words for it", details)
+	}
+}
+
+func TestDoctorRouteVerboseTellsALostTableAsASkipRow(t *testing.T) {
+	// GH-467's fallback is a promise to the person reading doctor, so it is
+	// proven through the report DoctorRoute hands the CLI, not a helper's
+	// return value: suppressing the row at the report boundary must fail
+	// (the gate's S1). The loss is forced at its source -- both kernel reads
+	// away, ps stalled past the bound -- because no PATH double can lose the
+	// kernel's own table (#991).
+	forceKernelTablesAway(t)
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "ps"), []byte("#!/bin/sh\nsleep 2\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	profile := "lost-" + strconv.Itoa(os.Getpid())
+	if running := runningAdapter(profile); running != "__UNKNOWN__" {
+		t.Fatalf("the forced loss did not reach the sentinel: %q", running)
+	}
+	need := func(string) TranslatorNeed { return TranslatorNeed{} }
+	rows, _, _, _ := DoctorRoute(profile, "apikey", "https://example.test", "", "", need, "", "", true)
+	const want = "adapter: could not tell whether a translator is running"
+	var adapters []DoctorRow
+	for _, r := range rows {
+		if strings.HasPrefix(r.Msg, "adapter:") {
+			adapters = append(adapters, r)
+		}
+		if strings.Contains(r.Msg, "listener") {
+			t.Fatalf("a lost table half-reported a listener: %+v", r)
+		}
+	}
+	if len(adapters) != 1 || adapters[0].Kind != "SKIP" || adapters[0].Msg != want {
+		t.Fatalf("verbose rows on a lost table are %+v, want one SKIP %q", adapters, want)
+	}
+	quiet, _, _, _ := DoctorRoute(profile, "apikey", "https://example.test", "", "", need, "", "", false)
+	for _, r := range quiet {
+		if strings.HasPrefix(r.Msg, "adapter:") {
+			t.Fatalf("a lost table leaked into the non-verbose report: %+v", r)
+		}
+	}
+}
+
+func TestRunningAdapterEndsAPsStalledPastItsBound(t *testing.T) {
+	// On darwin the table is the kernel's sysctl, off darwin its /proc, and no
+	// PATH double reaches either (#991); the ps fallback is the reader this
+	// bound exists for, so force the kernel reads away to reach it.
+	forceKernelTablesAway(t)
 
 	dir := t.TempDir()
 	pidFile := filepath.Join(dir, "ps.pid")
