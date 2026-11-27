@@ -74,6 +74,29 @@ def load_script(path, name):
     return module
 
 
+class _ScriptedTime:
+    """`time` as a loaded script sees it: time() from the test's clock and sleep()
+    the scripted tick, while every other caller keeps the real `time`. A test
+    patches this onto that script's own name for `time`, never onto the shared
+    module's attributes: a leaked thread's wake then reads the real clock and
+    sleeps for real (#982, GH-1002). Patching the real module's sleep made a
+    subprocess.run(timeout=...) poll -- one short internal time.sleep -- advance
+    the script's ticks, so a ps call inside cycle() ran the script to its
+    SystemExit."""
+
+    def __init__(self, real, clock, sleep):
+        self._real, self._clock, self._sleep = real, clock, sleep
+
+    def time(self):
+        return self._clock[0] if self._clock is not None else self._real.time()
+
+    def sleep(self, seconds):
+        self._sleep(seconds)
+
+    def __getattr__(self, name):
+        return getattr(self._real, name)
+
+
 # The one sentence, with the one link, for a claude no PATH search can find
 # (#282). The installer, `ccmorph run` and `ccmorph doctor` print these same
 # bytes, so a missing Claude Code meets a person with one answer wherever it

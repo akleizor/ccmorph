@@ -20,6 +20,7 @@ and loopback_guard_test.py (the run reports what the machine refuses), for the
 process table instead of files and sockets.
 """
 import ast
+import inspect
 import os
 import resource
 import shutil
@@ -27,6 +28,7 @@ import signal
 import subprocess
 import sys
 import time
+import types
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
@@ -890,41 +892,118 @@ def test_every_gh919_message_goes_through_diagnostic():
     assert not bare, f"messages naming the incident built outside diagnostic(): {bare}"
 
 
-def test_no_rc_hosts_test_patches_the_shared_time_sleep():
-    """GH-982: `test_a_read_only_bridge_does_not_end_the_tick_at_host_start`
-    drove main() with `monkeypatch.setattr(m.time, "sleep", sleep)` — the one
-    test in the file that bypassed run_main's `_ScriptedTime` — patching the
-    process's own `time.sleep`. Any other thread in the same pytest worker that
-    then woke from a real sleep ran the test's tick script: rc_bridge_test.py
-    leaves the addon's handoff poller (`_take_handoffs`, `while True:
-    time.sleep(0.5)`) running as a daemon for the rest of the session, two
-    files before rc_hosts_test.py in a serial run, and its next wake landed
-    inside main()'s first tick. Once inside, the poller's sleep *was* the tick
-    hook — one that returns at once — so the loop stopped sleeping and spun the
-    ticks past its tick-2 repair before `tend()` ran its writes: the read-only
-    bridge was writable at the first attempt, both refusal lines vanished, and
-    the run ended `assert 0 == 1` (CI run 45912136041; red under gate load,
-    green alone). Same mechanism as the ps timeout-wait recorded in
-    _ScriptedTime's docstring. A test that scripts one module's sleeps patches
-    that module's `time`, never the shared module."""
+def test_no_rc_test_patches_the_shared_time_module():
+    """GH-982/GH-1002: a test scripts one module's clock only on that module's own
+    name for `time` (_ScriptedTime, tests/support.py). Patching the process's own
+    `time` module reaches every thread in the pytest worker: #982 convicted a
+    shared `time.sleep` patch (a leaked poller's wake ran main()'s tick and spun
+    it), and rc_hosts_test.py patched shared `time.time` at twelve sites, so
+    every other thread that read the clock during those tests read the fake one.
+    A test that scripts a module's clock patches that module's `time` with a
+    proxy; the proxy's __getattr__ keeps the real module for every other caller.
+
+    Either setattr spelling (bare and monkeypatch's), a target or name passed as
+    a keyword, and monkeypatch's dotted-string target ("time.sleep", value) are
+    read alike. Operands are bound the way MonkeyPatch.setattr binds them,
+    positional then keyword, so a keyword operand cannot land in the wrong slot
+    and a dotted target is any string target whose value was left unset."""
+    shared_attrs = ("sleep", "time", "monotonic")
+    params = ("target", "name", "value", "raising")   # MonkeyPatch.setattr's order; bare setattr shares the first three
     bad = []
-    tree = ast.parse(Path(__file__).with_name("rc_hosts_test.py").read_text())
-    for node in ast.walk(tree):
-        if not isinstance(node, ast.Call):
-            continue
-        func = node.func
-        if not (isinstance(func, ast.Attribute) and func.attr == "setattr"
-                or isinstance(func, ast.Name) and func.id == "setattr"):
-            continue
-        if len(node.args) < 2:
-            continue
-        target, name = node.args[0], node.args[1]
-        shared = (isinstance(target, ast.Name) and target.id == "time"
-                  or isinstance(target, ast.Attribute) and target.attr == "time")
-        if shared and isinstance(name, ast.Constant) and name.value == "sleep":
-            bad.append(node.lineno)
-    assert not bad, ("rc_hosts_test.py patches the shared time module's sleep "
-                     f"at line(s) {bad}; drive main() through _ScriptedTime instead")
+    for name in ("rc_hosts_test.py", "rc_bridge_test.py"):
+        tree = ast.parse(Path(__file__).with_name(name).read_text())
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            func = node.func
+            if not (isinstance(func, ast.Attribute) and func.attr == "setattr"
+                    or isinstance(func, ast.Name) and func.id == "setattr"):
+                continue
+            got = dict(zip(params, node.args))
+            got.update((k.arg, k.value) for k in node.keywords if k.arg)
+            target, attr = got.get("target"), got.get("name")
+            if (isinstance(target, ast.Constant) and isinstance(target.value, str)
+                    and "value" not in got):
+                # dotted overload: setattr("time.sleep", fn) -- the second operand is the value
+                bits = target.value.split(".")
+                if len(bits) > 1 and bits[-2] == "time" and bits[-1] in shared_attrs:
+                    bad.append(f"{name}:{node.lineno} ({bits[-1]})")
+                continue
+            if (isinstance(attr, ast.Constant) and attr.value in shared_attrs
+                    and (isinstance(target, ast.Name) and target.id == "time"
+                         or isinstance(target, ast.Attribute) and target.attr == "time")):
+                bad.append(f"{name}:{node.lineno} ({attr.value})")
+    assert not bad, (
+        "the suite sets attributes on the shared time module: "
+        f"{bad}. A leaked thread's wake then runs the test's sleep script, and every "
+        "other thread that reads the clock reads the test's fake, so a driven main() "
+        "can spin or stall on another test's pacing (#982, GH-1002). Patch the loaded "
+        "module's own name for `time` with _ScriptedTime (tests/support.py) instead; "
+        "its __getattr__ keeps the real module for every other caller.")
+
+
+# The guard's own witness: each red line is a setattr spelling pytest really
+# accepts, installed after the safe proxy on line 1, so the guard must name
+# line 2 (and the attr it patched). Each green line is a proxy on a module's
+# own name, or a name outside the guarded list, and must pass untouched.
+_GUARDED_FILES = ("rc_hosts_test.py", "rc_bridge_test.py")
+_GUARDED_ATTRS = ("sleep", "time", "monotonic")
+_SAFE_PROXY = 'monkeypatch.setattr(m, "time", _ScriptedTime(m.time, None, lambda _: None))\n'
+_SHARED_TIME_RED = (
+    'monkeypatch.setattr("time.{a}", fn)',
+    'monkeypatch.setattr("time.{a}", name=fn)',
+    'monkeypatch.setattr(target="time.{a}", name=fn)',
+    'monkeypatch.setattr("time.{a}", fn, raising=False)',
+    'monkeypatch.setattr(target="time.{a}", name=fn, raising=False)',
+    'monkeypatch.setattr("rc.time.{a}", fn)',
+    'monkeypatch.setattr(time, "{a}", fn)',
+    'monkeypatch.setattr(rc.time, "{a}", fn)',
+    'monkeypatch.setattr(target=rc.time, name="{a}", value=fn)',
+    'monkeypatch.setattr(rc.time, name="{a}", value=fn)',
+    'setattr(time, "{a}", fn)',
+)
+_SHARED_TIME_GREEN = (
+    'monkeypatch.setattr(rc, "time", proxy)',
+    'monkeypatch.setattr(target=m, name="time", value=proxy)',
+    'monkeypatch.setattr(m.subprocess, "run", fn)',
+    'monkeypatch.setattr("rc.helper", fn)',
+    'monkeypatch.setattr("time.strftime", fn)',
+)
+
+
+def _guard_over(tmp_path):
+    """The real guard, rerun against synthetic files in `tmp_path`."""
+    return types.FunctionType(test_no_rc_test_patches_the_shared_time_module.__code__,
+                              {**globals(), "__file__": str(tmp_path / "proc_pressure_test.py")})
+
+
+@pytest.mark.parametrize("call", _SHARED_TIME_RED)
+def test_the_shared_time_guard_rejects_every_setattr_spelling(call, tmp_path):
+    """Every spelling pytest's MonkeyPatch.setattr accepts for a shared time
+    attribute (and bare setattr's) fails the guard, naming file, line and attr."""
+    for filename in _GUARDED_FILES:
+        for attr in _GUARDED_ATTRS:
+            for name in _GUARDED_FILES:
+                (tmp_path / name).write_text(_SAFE_PROXY)
+            (tmp_path / filename).write_text(_SAFE_PROXY + call.format(a=attr) + "\n")
+            with pytest.raises(AssertionError, match=rf"{filename}:2 \({attr}\)"):
+                _guard_over(tmp_path)()
+
+
+@pytest.mark.parametrize("line", (_SAFE_PROXY,) + _SHARED_TIME_GREEN)
+def test_the_shared_time_guard_accepts_a_proxy_on_the_modules_own_name(line, tmp_path):
+    """A proxy installed on the loaded module's own `time` name -- including the
+    attr spelling "time" -- and every name outside the guarded list pass."""
+    for filename in _GUARDED_FILES:
+        (tmp_path / filename).write_text(line if line.endswith("\n") else line + "\n")
+    _guard_over(tmp_path)()
+
+
+def test_the_shared_time_guard_binds_operands_in_monkeypatchs_order():
+    """The guard's positional order is MonkeyPatch.setattr's own, so a keyword
+    operand cannot land in the wrong slot."""
+    assert list(inspect.signature(pytest.MonkeyPatch.setattr).parameters)[1:] == [
+        "target", "name", "value", "raising"]
 
 
 # The watch's own witness: a real pytest run of a few tests, each holding live

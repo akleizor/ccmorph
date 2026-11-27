@@ -1,6 +1,7 @@
 """ccmorph-rc-hosts: config parsing and the relaunch policy."""
 import json
 import os
+import threading
 import time
 import types
 from pathlib import Path
@@ -8,7 +9,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from support import HANG_TIMEOUT, load_script, needs_loopback, port_outside_the_ephemeral_pool, proxy_took
+from support import (HANG_TIMEOUT, _ScriptedTime, load_script, needs_loopback,
+                     port_outside_the_ephemeral_pool, proxy_took)
 
 SCRIPT = Path(__file__).resolve().parent.parent / "addons" / "remote-control" / "ccmorph-rc-hosts"
 
@@ -735,26 +737,6 @@ class FakeProc:
         return self.rc
 
 
-class _ScriptedTime:
-    """`time` as main() sees it: time() from the test's clock and sleep() the
-    scripted tick, while every other module keeps the real `time`. Patching the
-    real module's sleep made a subprocess.run(timeout=...) poll -- one short
-    internal time.sleep -- advance the script's ticks, so a ps call inside
-    cycle() ran the script to its SystemExit."""
-
-    def __init__(self, real, clock, sleep):
-        self._real, self._clock, self._sleep = real, clock, sleep
-
-    def time(self):
-        return self._clock[0] if self._clock is not None else self._real.time()
-
-    def sleep(self, seconds):
-        self._sleep(seconds)
-
-    def __getattr__(self, name):
-        return getattr(self._real, name)
-
-
 def run_main(m, monkeypatch, tmp_path, cfg, start, sleep=None,
              edge_ready=lambda route: True, clock=None, args=None, logs=True,
              profile_tiers=lambda route: {}, exits=True):
@@ -785,6 +767,42 @@ def run_main(m, monkeypatch, tmp_path, cfg, start, sleep=None,
         return m.main(argv)
     with pytest.raises(SystemExit):
         m.main(argv)
+
+
+def test_a_foreign_sleeper_cannot_advance_a_clock_patched_main(tmp_path, monkeypatch):
+    """GH-1002: another file's daemon thread can wake from the process's own
+    `time.sleep` while this test drives main(). Under a shared-module patch that
+    wake ran the test's sleep script -- one tick per foreign wake, a spin -- and
+    the fake clock answered every other thread. _ScriptedTime is patched onto
+    the loaded module's own `time`, so the foreign wake sleeps for real and
+    reads the real clock, and only main()'s own sleeps advance the script."""
+    m = load()
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    cfg = tmp_path / "rc-hosts"
+    cfg.write_text(f"route=profile\n{repo}\n")
+    real_sleep, seen, ticks = time.sleep, [], []
+
+    def start(self):
+        if not seen:                 # awake inside main()'s first tick, as a leak would be
+            def foreign():
+                seen.append((time.sleep, time.time()))
+                time.sleep(0)        # a real sleep, never the script's tick
+            thread = threading.Thread(target=foreign)
+            thread.start()
+            thread.join()
+            assert len(ticks) == 0   # the foreign wake did not advance main()
+        self.proc, self.started = FakeProc(), 0.0
+
+    def tick(seconds):
+        ticks.append(seconds)
+        if len(ticks) > 2:
+            raise SystemExit
+    run_main(m, monkeypatch, tmp_path, cfg, start, tick, clock=[1000.0])
+    assert seen[0][0] is real_sleep          # the shared module kept the real sleep
+    assert seen[0][1] > 1_000_000_000        # ... and the real epoch, not the script's 1000.0
+    assert len(ticks) == 3                   # only main()'s own sleeps ran the script
+    assert m.time.time() == 1000.0           # the driven module still read the fixture's clock
 
 
 def test_the_attached_config_spelling_names_the_file_watched(tmp_path, monkeypatch):
@@ -2296,7 +2314,7 @@ def test_every_processless_session_is_handed_back_and_retried_slowly(tmp_path, m
     clock = [1000.0]
     monkeypatch.setattr(m, "api", api)
     monkeypatch.setattr(m, "account_token", lambda: "tok")
-    monkeypatch.setattr(m.time, "time", lambda: clock[0])
+    monkeypatch.setattr(m, "time", _ScriptedTime(m.time, clock, m.time.sleep))
     done = {}
     m.recover_processless([str(repo)], done, set())
     assert posts == []                                  # no host is up: nothing to hand to
@@ -2338,7 +2356,7 @@ def test_a_session_the_server_never_starts_is_parked_not_rewoken_forever(tmp_pat
     clock = [1000.0]
     monkeypatch.setattr(m, "api", api)
     monkeypatch.setattr(m, "account_token", lambda: "tok")
-    monkeypatch.setattr(m.time, "time", lambda: clock[0])
+    monkeypatch.setattr(m, "time", _ScriptedTime(m.time, clock, m.time.sleep))
     done, failed, parked, tries = {}, set(), {}, {}
 
     def check():
@@ -2418,7 +2436,7 @@ def test_a_parked_session_remembered_lost_is_held_back_by_both_paths(tmp_path, m
     monkeypatch.setattr(m, "log", lines.append)
     monkeypatch.setattr(m, "keep_login_fresh", lambda *a: None)
     monkeypatch.setattr(m, "restart_logged_out", lambda *a: None)
-    monkeypatch.setattr(m.time, "time", lambda: clock[0])
+    monkeypatch.setattr(m, "time", _ScriptedTime(m.time, clock, m.time.sleep))
     monkeypatch.setattr(m, "IDLE_CHECK", float("inf"))
     state = m.Clock()
     state.last_recover = clock[0] - m.RECOVER_EVERY
@@ -2462,7 +2480,7 @@ def test_a_park_does_not_carry_across_a_new_unarchive(tmp_path, monkeypatch):
     clock = [1000.0]
     monkeypatch.setattr(m, "api", api)
     monkeypatch.setattr(m, "account_token", lambda: "tok")
-    monkeypatch.setattr(m.time, "time", lambda: clock[0])
+    monkeypatch.setattr(m, "time", _ScriptedTime(m.time, clock, m.time.sleep))
     done, failed, parked, tries = {}, set(), {}, {}
 
     def check():
@@ -2505,7 +2523,7 @@ def test_an_idle_session_parks_and_wakes_only_on_input(tmp_path, monkeypatch):
         return {"data": active}
     monkeypatch.setattr(m, "api", api)
     monkeypatch.setattr(m, "account_token", lambda: "tok")
-    monkeypatch.setattr(m.time, "time", lambda: now)
+    monkeypatch.setattr(m, "time", _ScriptedTime(m.time, [now], m.time.sleep))
     monkeypatch.setattr(m, "session_pid", lambda sid: {"cse_01OLD": 41, "cse_01BUSY": 42, "cse_01NEW": 43}[sid])
     monkeypatch.setattr(m.os, "kill", lambda pid, sig: killed.append(pid))
     monkeypatch.setattr(m, "gone_within", lambda pid, s: True)
@@ -4179,7 +4197,7 @@ def test_a_failing_hand_back_is_retried_at_most_once_per_rewake_after(tmp_path, 
     clock = [1000.0]
     monkeypatch.setattr(m, "api", api)
     monkeypatch.setattr(m, "account_token", lambda: "tok")
-    monkeypatch.setattr(m.time, "time", lambda: clock[0])
+    monkeypatch.setattr(m, "time", _ScriptedTime(m.time, clock, m.time.sleep))
     done = {}
     for _ in range(int(m.REWAKE_AFTER // m.RECOVER_EVERY)):
         m.recover_processless([str(repo)], done, {str(repo)})
@@ -4247,7 +4265,7 @@ def _failing_hand_back(tmp_path, monkeypatch, error):
     clock = [1000.0]
     monkeypatch.setattr(m, "api", api)
     monkeypatch.setattr(m, "account_token", lambda: "tok")
-    monkeypatch.setattr(m.time, "time", lambda: clock[0])
+    monkeypatch.setattr(m, "time", _ScriptedTime(m.time, clock, m.time.sleep))
     return m, repo, posts, clock
 
 
@@ -4300,7 +4318,7 @@ def test_a_new_turn_cut_off_soon_after_a_hand_back_is_requeued_once(tmp_path, mo
     clock = [1000.0]
     monkeypatch.setattr(m, "api", api)
     monkeypatch.setattr(m, "account_token", lambda: "tok")
-    monkeypatch.setattr(m.time, "time", lambda: clock[0])
+    monkeypatch.setattr(m, "time", _ScriptedTime(m.time, clock, m.time.sleep))
     done, failed = {}, set()
     assert _posts_per_cycle(m, repo, posts, clock, 1, done, failed) == [1]   # handed back
     session.update(connection_status="connected", worker_status="running")
@@ -4366,7 +4384,7 @@ def test_a_dns_outage_leaves_hosts_running_and_hands_back_once_it_ends(tmp_path,
     clock = [1000.0]
     monkeypatch.setattr(m, "api", api)
     monkeypatch.setattr(m, "account_token", lambda: "tok")
-    monkeypatch.setattr(m.time, "time", lambda: clock[0])
+    monkeypatch.setattr(m, "time", _ScriptedTime(m.time, clock, m.time.sleep))
     h = m.Host(str(repo), "profile")
     proc, starts, stopped = FakeProc(), [], []
     h.proc, h.started = proc, 0.0                      # running, up long enough to be asked
@@ -4800,7 +4818,7 @@ def _lost_login_host(tmp_path, monkeypatch):
 
     monkeypatch.setattr(m, "api", api)
     monkeypatch.setattr(m, "account_token", lambda: "tok")
-    monkeypatch.setattr(m.time, "time", lambda: clock[0])
+    monkeypatch.setattr(m, "time", _ScriptedTime(m.time, clock, m.time.sleep))
     h = m.Host(str(repo), "profile")
     h.proc, h.started = FakeProc(), clock[0] - 10 * m.RECOVER_EVERY
     monkeypatch.setattr(h, "start", start)
@@ -4961,7 +4979,7 @@ def _login_refresh(monkeypatch):
     m = load()
     left = [3600.0]
     reads = []
-    monkeypatch.setattr(m.time, "time", lambda: 1000.0)
+    monkeypatch.setattr(m, "time", _ScriptedTime(m.time, [1000.0], m.time.sleep))
 
     def login():
         reads.append(1)
@@ -5771,7 +5789,7 @@ def test_two_account_profiles_still_retry_the_login_refresh(tmp_path, monkeypatc
     m = load()
     _two_account_profiles(tmp_path / "state")
     reads = []
-    monkeypatch.setattr(m.time, "time", lambda: 1000.0)
+    monkeypatch.setattr(m, "time", _ScriptedTime(m.time, [1000.0], m.time.sleep))
 
     def login():
         reads.append(1)
