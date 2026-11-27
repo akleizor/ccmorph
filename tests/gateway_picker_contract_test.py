@@ -59,7 +59,7 @@ def copied_lib(tmp_path):
 
 # A cold `go build` is not a hang: this checkout's cold build takes about 100 s,
 # and a loaded CI host can be slower. This bound only stops a wedged make;
-# HANG_TIMEOUT alone (a per-spawn hang detector, 120 s) is too tight for a
+# HANG_TIMEOUT alone (a per-spawn hang detector) is too tight for a
 # compile.
 BUILD_TIMEOUT = HANG_TIMEOUT * 5
 
