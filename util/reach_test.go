@@ -271,24 +271,60 @@ func TestReachListingPrintsProgressAndGivesUpOnASilentGateway(t *testing.T) {
 // run measured a 136 ms start against a 142 ms window, the stop firing with
 // 38 ms of curl's own run and no answer. A request the scheduler never let run
 // is not evidence of silence: the probe returns no verdict and the launch goes
-// on. The call's deadline still holds; the probe returns within it plus the
-// reap grace.
+// on. The call's deadline still holds: the probe returns at the stop plus the
+// reap grace. GH-984: counting that promise from the call charged the probe
+// for the scheduler's held start — reach.go arms the stop only after
+// reachStart returns, so a start held past the deadline leaves the probe
+// unable to act before the deadline it is then blamed for; on the loaded
+// macOS run that reported it, the fresh stub's first-use exec scan (#875)
+// sits in exactly that held leg. Measured on Linux under package-parallel
+// load: the probe's own post-stop leg is 0-20 ms, and injecting a start
+// delay past the deadline turns the old from-call limit red while the probe
+// behaved — the macOS overrun's breakdown is that modeled shape, not a
+// measurement taken there. What the probe still owes, checked without a
+// scheduler fudge: it arms the stop to fire no later than the deadline the
+// call promised (a start that finished after it may only arm an already-due
+// timer — arming a fresh window after the start is what GH-935's gate
+// finding forbade, and a fresh 950 ms window fits inside the reap budget a
+// wall bound alone would allow), and it returns within the later of the
+// deadline and the held start's completion, plus the reap grace.
 func TestReachListingDoesNotBlameAGatewayForAStarvedStart(t *testing.T) {
 	for _, held := range []time.Duration{700 * time.Millisecond, 1200 * time.Millisecond} {
 		t.Run(held.String(), func(t *testing.T) {
 			reachCurl(t, "exec sleep 30")
 			t.Setenv("CCMORPH_REACH_PROGRESS", "0.02")
 			t.Setenv("CCMORPH_REACH_BOUND", "1")
-			saved := reachStart
-			t.Cleanup(func() { reachStart = saved })
+			stopAt := time.Second - time.Second/20 // the stop: the 1 s bound less its twentieth, from the call
+			savedStart, savedStop := reachStart, reachStop
+			t.Cleanup(func() { reachStart, reachStop = savedStart, savedStop })
+			start := time.Now()
+			var startedAt time.Duration // when the scheduler let the start complete
+			var armedFor time.Duration  // how long the probe then armed the stop for
 			reachStart = func(cmd *exec.Cmd) error {
 				time.Sleep(held) // the scheduler held the start into the bound
-				return cmd.Start()
+				err := cmd.Start()
+				startedAt = time.Since(start)
+				return err
 			}
-			start := time.Now()
+			reachStop = func(d time.Duration) (<-chan time.Time, func() bool) {
+				armedFor = d
+				return savedStop(d)
+			}
 			r := ReachListing("http://127.0.0.1:9", "k", "", nil, nil)
-			if took, limit := time.Since(start), time.Second+reachWaitDelay; took > limit {
-				t.Fatalf("returned after %v, past the call's 1 s deadline plus the %v wait delay", took, reachWaitDelay)
+			took := time.Since(start)
+			if fired := startedAt + armedFor; fired > stopAt {
+				t.Fatalf("the stop was armed at %v for %v: it fires at %v, past the deadline %v the call promised — a held start is scheduler time, not a fresh window",
+					startedAt, armedFor, fired, stopAt)
+			}
+			if held > stopAt && startedAt <= stopAt {
+				t.Fatalf("the held start completed at %v, before the %v stop: this case must run with the stop already due", startedAt, stopAt)
+			}
+			limit := stopAt + reachWaitDelay // the call's deadline and the reap grace
+			if startedAt > stopAt {
+				limit = startedAt + reachWaitDelay // the stop cannot fire before the held start completes
+			}
+			if took > limit {
+				t.Fatalf("returned after %v, past the later of the stop and the held start (%v) plus the %v wait delay", took, startedAt, reachWaitDelay)
 			}
 			if r != (Reach{}) {
 				t.Fatalf("got %+v, want nothing to say: the request never got half its window", r)
