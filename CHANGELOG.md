@@ -10,7 +10,28 @@
 ### Added
 
 - **A subagent can run on a provider profile or on another Claude account in a plain `ccmorph run` session.** The launcher's agent proxy now serves a pick on a provider profile (Codex, Antigravity): it joins or starts that profile's bridge as its own launch does and lets go of it when the session ends. It also serves a pick on another Claude subscription account, with that account's own sign-in (renewed by Claude Code when it has expired). Before, such a pick fell back to the session's own models.
+
+### Fixed
+
+- **A launch beside a live session no longer rewrites the profile's auth
+  files.** Provisioning read and replaced `config.json` and `.claude.json`
+  whole-file without the profile's live lock, so a save the running session
+  made between that read and the rename was silently dropped. Each file's
+  read-to-rename window now holds the lock exclusively, as every whole-file
+  writer does; a launch that cannot take it leaves both files untouched, says
+  which file it skipped and why, and still starts. Nothing records the skip:
+  the next launch provisions them (GH-938).
+
+## v0.5.40 — 2026-11-27
+
+### Added
+
 - **In any ccmorph session, a subagent runs on another profile and stays native.** With the router on, an Agent call the router picks for a gateway, an API key or a Claude token profile is still Claude Code's own subagent, in a plain `ccmorph run` session as well as in Remote Control. The launcher runs a local proxy for the session: only that agent's requests go to the picked profile and model, and the rest of the session is unchanged. A Claude account session keeps talking to api.anthropic.com, through ccmorph's own local certificate that only that Claude Code trusts (no keychain change); other hosts pass through unread. A profile the proxy cannot carry falls back to the session's own models.
+
+## v0.5.39 — 2026-11-26
+
+### Added
+
 - **In a Remote Control session, a subagent runs on any profile and stays native.** With the router on, an Agent call the router picks for another profile (a gateway, an API key, another account) is still Claude Code's own subagent: it streams in the session, shows its tools, and returns to its caller. The edge's proxy serves that one agent from the picked profile and model; the rest of the session keeps its own. A profile the edge cannot serve falls back to the session's own models.
 
 ### Fixed
@@ -21,15 +42,6 @@
   picks a served model, a terminal launch offers the model picker instead of
   stopping, a gateway whose list names no chat model fails `doctor` in run's
   words, and `inspect` lists `excluded_models` (#862).
-
-- **A launch beside a live session no longer rewrites the profile's auth
-  files.** Provisioning read and replaced `config.json` and `.claude.json`
-  whole-file without the profile's live lock, so a save the running session
-  made between that read and the rename was silently dropped. Each file's
-  read-to-rename window now holds the lock exclusively, as every whole-file
-  writer does; a launch that cannot take it leaves both files untouched, says
-  which file it skipped and why, and still starts. Nothing records the skip:
-  the next launch provisions them (GH-938).
 
 ## v0.5.38 — 2026-11-26
 
