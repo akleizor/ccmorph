@@ -531,10 +531,17 @@ class PickerTTYTest(unittest.TestCase):
             with self.subTest(args=args):
                 rc, out, _ = run_pty(command + ' ' + args, env)
                 self.assertIn('SELECTED=<' + expected + '>', out)
+        # GH-969 changes the bare headless case here: with no terminal to
+        # answer the launch picker it is now refused before the adapter (see
+        # test_headless_run_with_no_saved_model_refuses_before_the_adapter_issue_969),
+        # while every answer the argv itself carries — the loop above, and the
+        # saved model below — still reaches it. The child is its own session:
+        # no controlling terminal, as the no-terminal refusal is what runs.
         result = subprocess.run(['zsh', '-fc', 'source "$1"\n' + command, 'test', str(CCMORPH)],
                                 env=env, stdin=subprocess.DEVNULL, capture_output=True,
-                                text=True, timeout=HANG_TIMEOUT)
-        self.assertIn('SELECTED=<>', result.stderr)
+                                text=True, timeout=HANG_TIMEOUT, start_new_session=True)
+        self.assertNotIn('SELECTED=', result.stderr)
+        self.assertIn('demo has no saved model', result.stderr)
         with (self.state / 'demo.conf').open('a') as conf:
             conf.write('model=picker-alpha\n')
         rc, out, _ = run_pty(command, env)
@@ -674,6 +681,55 @@ class PickerTTYTest(unittest.TestCase):
         # the launching shell sources local.sh exactly once, as it always did.
         runs = self.tmp / 'home' / 'local-sh-runs'
         self.assertEqual(len(runs.read_text().splitlines()), 1, result.stdout + result.stderr)
+
+    def test_headless_run_with_no_saved_model_refuses_before_the_adapter_issue_969(self):
+        """GH-969: a launch with no terminal to answer the model picker went on
+        to exec claude with no model at all. Claude Code answered with its own
+        non-printable-stdin --print guard, the run sat tens of seconds in
+        teardown, and the SessionEnd hook's own script reached the terminal —
+        headless automation, the launcher that most needs guidance, got the one
+        path without any. Nothing can pick without a terminal, so the launch
+        now stops where the terminal launch would have asked: it starts no
+        adapter and no session, and prints the same guidance the adapter and
+        doctor give — list them, then save one. A prompt on the argv is its own
+        answer: that headless launch still reaches its adapter (#650)."""
+        env = self.env(fzf=True)
+        self.profile()
+        (self.state / 'profiles/demo/settings.json').write_text('{}')
+        command = ADAPTER_BOUNDARY + 'ccmorph run demo'
+        # The child is its own session: a cron/CI launcher — and a developer
+        # running this suite from a terminal — must both leave it no
+        # controlling terminal, or the refusal under test would be a picker.
+        result = subprocess.run(
+            ['zsh', '-fc', 'source "$1"\n' + command, 'test', str(CCMORPH)],
+            env=env, stdin=subprocess.DEVNULL, capture_output=True, text=True,
+            timeout=HANG_TIMEOUT, start_new_session=True)
+        self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertNotIn('SELECTED=', result.stderr, result.stderr)  # the adapter never started
+        self.assertNotIn('Starting adapter', result.stderr, result.stderr)
+        # The existing guidance, named in full: why, and both commands.
+        self.assertIn('demo has no saved model', result.stderr, result.stderr)
+        self.assertIn('list them: ccmorph models demo', result.stderr, result.stderr)
+        self.assertIn('save one: ccmorph set demo model <model-id>', result.stderr, result.stderr)
+        # The launches that never owed this pick are unchanged: an argv that
+        # carries what claude is to do (the stable `_ccm_launch -a` entry),
+        # and one the person made interactive on purpose — #725 words its own
+        # no-terminal refusal, not the no-saved-model one.
+        for args in ('--print hello', 'hello'):
+            with self.subTest(args=args):
+                result = subprocess.run(
+                    ['zsh', '-fc', 'source "$1"\n' + command + ' ' + args, 'test', str(CCMORPH)],
+                    env=env, stdin=subprocess.DEVNULL, capture_output=True, text=True,
+                    timeout=HANG_TIMEOUT, start_new_session=True)
+                self.assertIn('SELECTED=<>', result.stderr, result.stderr)
+                self.assertNotIn('has no saved model', result.stderr, result.stderr)
+        result = subprocess.run(
+            ['zsh', '-fc', 'source "$1"\n' + command + ' -i', 'test', str(CCMORPH)],
+            env=env, stdin=subprocess.DEVNULL, capture_output=True, text=True,
+            timeout=HANG_TIMEOUT, start_new_session=True)
+        self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertNotIn('has no saved model', result.stderr, result.stderr)
+        self.assertIn('needs a terminal', result.stderr, result.stderr)
 
     def test_models_names_a_rejected_key_and_keeps_the_network_for_silence(self):
         self.profile()

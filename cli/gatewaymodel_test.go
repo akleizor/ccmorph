@@ -452,17 +452,28 @@ func TestTheAliasRefusalSendsNoRequestOfItsOwnIssue862(t *testing.T) {
 	}
 }
 
-// GH-862: one model left after excluded_models is no refusal, with or without a
-// terminal; an empty listing with exclusions is refused in both, in one sentence.
+// GH-862: one model left after excluded_models is no exclusions refusal; an
+// empty listing with exclusions is refused with and without a terminal, in one
+// sentence. GH-969: without a terminal the one-model-left launch is refused
+// too, in the no-saved-model sentence — the picker cannot ask there.
 func TestRunWithExclusionsThatLeaveAModelOrMeetAnEmptyListingIssue862(t *testing.T) {
 	t.Run("one model left", func(t *testing.T) {
 		state, profiles, libexec, calls := gw862(t, "\nexcluded_models=model-a\n", "")
-		_, out := launchAs(t, false, state, profiles, libexec, "gw862", nil)
+		// GH-969: with no terminal the picker cannot ask, and the model left
+		// is nothing this launch can save or pick on its own. The headless
+		// launch that used to reach the adapter here only got Claude Code's
+		// own --print guard after the adapter began, tens of seconds of hook
+		// teardown behind it; it stops now in the no-saved-model sentence —
+		// never in the exclusions one, which would name the wrong cause.
+		rc, out := launchAs(t, false, state, profiles, libexec, "gw862", nil)
 		if strings.Contains(out, "no cached or served picker models remain") {
-			t.Fatalf("no terminal: one model left was refused:\n%s", out)
+			t.Fatalf("no terminal: one model left was refused in the exclusions words:\n%s", out)
 		}
-		if !strings.Contains(calls(), "adapter-start") {
-			t.Fatalf("no terminal: the launch stopped before the adapter:\n%s\n%s", out, calls())
+		if rc != 1 || !strings.Contains(out, "ccmorph: "+util.NoModelReason("gw862")) {
+			t.Fatalf("no terminal: rc %d, want 1 with %q:\n%s", rc, util.NoModelReason("gw862"), out)
+		}
+		if strings.Contains(calls(), "adapter-start") {
+			t.Fatalf("no terminal: a refused launch started an adapter:\n%s", calls())
 		}
 		t.Setenv("TERM", "xterm-256color")
 		_, sawFile := fakeFzf862(t)
@@ -648,8 +659,11 @@ func TestDoctorAndRunStopOnAListingWithNoModelToPickIssue862(t *testing.T) {
 		})
 	}
 	t.Run("a cached model", func(t *testing.T) {
-		// The cache lets a launch without a terminal start, but the terminal
-		// launch still stops at the empty picker: doctor is not ready.
+		// GH-969: what the cache once let a terminal-less launch start is the
+		// reported incident's own path — the adapter came up, Claude Code died
+		// on its --print guard, and the teardown printed hook source ~40 s
+		// later. Both states now end in the empty picker's words (doctor's
+		// too), before any adapter or session starts.
 		state, profiles, libexec, calls := gw862(t, "", "")
 		t.Setenv("LISTING", `{"data":[]}`)
 		sum := sha256.Sum256([]byte("https://gw.test"))
@@ -665,15 +679,21 @@ func TestDoctorAndRunStopOnAListingWithNoModelToPickIssue862(t *testing.T) {
 			!strings.HasSuffix(strings.TrimSpace(out), "\nFAIL not ready: "+util.NoUsableModelFix("gw862")) {
 			t.Fatalf("doctor rc %d; a terminal launch stops at the empty picker:\n%s", rc, out)
 		}
-		_, stderr := launchAs(t, false, state, profiles, libexec, "gw862", nil)
-		if strings.Contains(stderr, util.NoUsableModel("gw862")) || !strings.Contains(calls(), "adapter-start") {
-			t.Fatalf("no terminal: a cached model was refused before the adapter:\n%s\n%s", stderr, calls())
+		runRC, stderr := launchAs(t, false, state, profiles, libexec, "gw862", nil)
+		if runRC != 1 || !strings.Contains(stderr, "ccmorph: "+util.NoUsableModel("gw862")) {
+			t.Fatalf("no terminal: run rc %d, want 1 with %q:\n%s", runRC, util.NoUsableModel("gw862"), stderr)
+		}
+		if strings.Contains(calls(), "adapter-start") {
+			t.Fatalf("no terminal: a cached model started an adapter with no model to serve:\n%s", calls())
 		}
 		t.Setenv("TERM", "xterm-256color")
 		_, sawFile := fakeFzf862(t)
-		runRC, stderr := launchAs(t, true, state, profiles, libexec, "gw862", nil)
+		runRC, stderr = launchAs(t, true, state, profiles, libexec, "gw862", nil)
 		if runRC != 1 || !strings.Contains(stderr, "ccmorph: "+util.NoUsableModel("gw862")) || paths.Exists(sawFile) {
 			t.Fatalf("terminal: run rc %d, want 1 with %q and no picker:\n%s", runRC, util.NoUsableModel("gw862"), stderr)
+		}
+		if strings.Contains(calls(), "adapter-start") {
+			t.Fatalf("terminal: a cached model started an adapter with no model to serve:\n%s", calls())
 		}
 	})
 }

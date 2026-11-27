@@ -6073,7 +6073,7 @@ test_profile_advisor_disable_reaches_launch_without_leaking() {
   actual=$(ccmorph _env gw) || rc=1
   assert_contains "$actual" 'CLAUDE_CODE_DISABLE_ADVISOR_TOOL=1' \
     'a profile must be able to disable the native advisor' || rc=1
-  ccmorph run gw >/dev/null 2>&1 || rc=1
+  ccmorph run gw prompt >/dev/null 2>&1 || rc=1
   assert_contains "$(<"$CCMORPH_TEST_LOG")" 'DISABLE_ADVISOR=1' \
     'the native child must receive the declared advisor control' || rc=1
   : > "$CCMORPH_TEST_LOG"
@@ -6102,11 +6102,11 @@ test_profile_simple_mode_reaches_launch_without_leaking() {
     'a profile must be able to select minimal mode' || rc=1
   assert_contains "$actual" 'CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1' \
     'a profile must be able to stop non-essential model calls' || rc=1
-  ccmorph run local >/dev/null 2>&1 || rc=1
+  ccmorph run local prompt >/dev/null 2>&1 || rc=1
   assert_contains "$(<"$CCMORPH_TEST_LOG")" 'SIMPLE=1' \
     'the child must receive the declared minimal mode' || rc=1
   : > "$CCMORPH_TEST_LOG"
-  ccmorph run other >/dev/null 2>&1 || rc=1
+  ccmorph run other prompt >/dev/null 2>&1 || rc=1
   assert_contains "$(<"$CCMORPH_TEST_LOG")" 'SIMPLE=<unset>' \
     'minimal mode must not leak into another profile' || rc=1
   rm -rf "$test_home"
@@ -11823,7 +11823,7 @@ test_launch_says_whether_secrets_are_masked() {
   source "$CCMORPH_SOURCE"
 
   local rc=0 out st
-  out=$(_ccm_launch -a gw 2>&1); st=$?
+  out=$(_ccm_launch -a gw prompt 2>&1); st=$?
   [[ "$st" == 0 ]] || { print -u2 -- "the gateway launch must succeed, got $st: ${(qqq)out}"; rc=1 }
   [[ "$out" == *'ccmorph: masking on'* ]] || {
     print -u2 -- "a masked gateway launch must say so in one line: ${(qqq)out}"
@@ -11841,7 +11841,7 @@ test_launch_says_whether_secrets_are_masked() {
   }
   # GH-411: a value the shim refuses is not masking off; the notice must name
   # it instead of staying silent until the shim stops the session.
-  out=$(_ccm_launch -a badmask 2>&1); st=$?
+  out=$(_ccm_launch -a badmask prompt 2>&1); st=$?
   [[ "$st" == 0 ]] || { print -u2 -- "the refused-value launch must still start, got $st: ${(qqq)out}"; rc=1 }
   [[ "$out" == *'env.CCMORPH_MASK=yes is refused'* ]] || {
     print -u2 -- "a mask value the shim refuses must be named in the launch notice: ${(qqq)out}"

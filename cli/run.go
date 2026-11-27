@@ -565,11 +565,32 @@ func (l *launcher) runLaunch(p *launchPlan) (*relayNext, int) {
 				// no cached protocol: the adapter has nothing to start. Say so in
 				// the picker's and doctor's words before it is asked (#862).
 				if explicit == "" && defaultModel == "" {
+					// The wizard promises "Each launch asks which model until
+					// one is saved", and only a terminal can ask. A bare
+					// headless launch used to go on with no model once the
+					// endpoint's protocol was cached (#862 let the cache start
+					// it): the adapter began, claude met its own non-tty
+					// --print guard a moment later, and the teardown spent
+					// tens of seconds surfacing SessionEnd hook source
+					// instead of the missing model (#969). Such a launch now
+					// stops here — before any route process or session — in
+					// the same sentences the terminal launch and doctor use:
+					// NoUsableModel where the listing names no chat model to
+					// pick, NoModelReason where one waits unsaved. A refused
+					// route or key already ends the launch with its own
+					// cause; an argv carrying what claude is to do
+					// (`_ccm_launch -a <profile> <prompt>`, the stable entry
+					// other tools call) and an -i the person chose (#725
+					// words its own refusal) owed no pick of this kind.
+					bare := flags.AskMissingModel && p.reachWhy == "" && len(args) == 0 && !(isTTY(0) && isTTY(2))
 					if listed := l.listed(base, key); util.NoModelToPick(l.conf(name), listed) {
-						if _, known := adapter.TranslatorVerdict(base, l.profileDirs, "", listed); !known {
+						if _, known := adapter.TranslatorVerdict(base, l.profileDirs, "", listed); !known || bare {
 							l.err(util.NoUsableModel(name))
 							return nil, 1
 						}
+					} else if bare {
+						l.err(util.NoModelReason(name))
+						return nil, 1
 					}
 				}
 				model, ok := l.adapterModel(name, penv, explicit, defaultModel)
