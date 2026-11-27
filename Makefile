@@ -101,11 +101,15 @@ test: gate
 # hostile shell of every machine that carries proxy exemptions: a test whose
 # subject routes by env must not quietly assert what a scrubbed shell produced
 # (#774, REVIEW.md). -count=1 for the same reason as above.
+# And once more under the env a live ccmorph session itself carries, so a test
+# that reads the session's ANTHROPIC_BASE_URL or https_proxy fails on the dev
+# machine that runs it from inside a session, not only on that machine (#973).
 test-go:
 	go vet ./...
 	go test ./...
 	umask 077 && go test -count=1 ./...
 	NO_PROXY='*' no_proxy='*' go test -count=1 ./... || { echo "red under a hostile proxy env (NO_PROXY='*'): env is a tool too — a test that reads the operator's proxy env is the same failure as a test that sees the operator's bridge binary; fix it with t.Setenv in the test, not by scrubbing this line (#774, REVIEW.md)"; exit 1; }
+	ANTHROPIC_BASE_URL=http://127.0.0.1:1 https_proxy=http://127.0.0.1:1 go test -count=1 ./... || { echo "red under a hostile session env (ANTHROPIC_BASE_URL, https_proxy): env is a tool too — a test that reads the operator's session env is the same failure as a test that sees the operator's bridge binary; fix it with t.Setenv in the test, not by scrubbing this line (#973)"; exit 1; }
 
 # The Hive's gate on every landing, and what `make test` runs. Each suite works in
 # its own scratch homes and mostly waits on process spawns, so they overlap: 185 s
