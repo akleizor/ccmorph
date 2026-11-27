@@ -6443,3 +6443,32 @@ def test_session_titles_name_every_session_active_and_archived(monkeypatch, caps
     monkeypatch.setattr(m, "sessions", fail)
     assert m.main(["--session-titles"]) == 1
     assert capsys.readouterr().out == ""
+
+
+@pytest.mark.parametrize("dies", ["reply", "login"])
+def test_session_titles_degrades_when_the_login_or_reply_dies(monkeypatch, capsys, dies):
+    """The two failures this module already owns at LOGIN_ERRORS — a cut-off reply
+    (http.client.IncompleteRead) and a hung `security` lookup (subprocess.TimeoutExpired)
+    — are neither an OSError, so a narrower except in session_titles() let them escape
+    as a traceback where the contract says: exit 1, one line on stderr (#1001).
+    One case per run: a stub left from the other would answer before the patched
+    failure is reached (a live account_token stub answers before account_login)."""
+    import http.client
+    import subprocess
+    m = load()
+    if dies == "reply":
+        monkeypatch.setattr(m, "account_token", lambda: "tok")
+
+        def cut(token, status):
+            raise http.client.IncompleteRead(b"")
+        monkeypatch.setattr(m, "sessions", cut)
+    else:
+        def hung():
+            raise subprocess.TimeoutExpired("security", 10)
+        # only account_login is patched: the real account_token calls it, so the
+        # TimeoutExpired travels the same chain a real hung `security` would.
+        monkeypatch.setattr(m, "account_login", hung)
+    assert m.main(["--session-titles"]) == 1
+    out = capsys.readouterr()
+    assert out.out == ""
+    assert "ccmorph-rc-hosts: the sessions could not be read" in out.err
