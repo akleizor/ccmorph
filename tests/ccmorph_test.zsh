@@ -710,6 +710,26 @@ warm_curl_stub() {
   return 0
 }
 
+# #997: the three launches below are not about the route, but their fixture
+# profiles are gateways, and a gateway launch first asks its endpoint to answer
+# (#260, cli/run.go). That question is this suite's fake curl: its answer is a
+# child process, and a gate at its -j5 load can leave that child unscheduled
+# past the probe's five-second bound, whose verdict ends the launch before the
+# behaviour the test asserts. The probe never dials the URL — the fake curl
+# answers (or not) on its own — so a loopback base_url cannot answer it. A
+# native Anthropic endpoint starts no adapter and asks no gateway at all, so
+# the launch has nothing to wait on; setup_home's own proxy.conf keeps its
+# gateway URL for the tests that assert it.
+use_native_endpoint() {
+  local conf="$HOME/.config/ccmorph/$1.conf" line tmp="$HOME/.config/ccmorph/$1.conf.native" found=0
+  while IFS= read -r line; do
+    [[ "$line" == base_url=* ]] && { line='base_url=https://api.anthropic.com'; found=1 }
+    print -r -- "$line"
+  done < "$conf" > "$tmp"
+  (( found )) || print -r -- 'base_url=https://api.anthropic.com' >> "$tmp"
+  mv "$tmp" "$conf"
+}
+
 write_curl_mock() {
   printf '%s\n' '#!/bin/zsh' "$1" > "$HOME/bin/curl"
   chmod +x "$HOME/bin/curl"
@@ -12865,6 +12885,7 @@ test_a_conf_env_budget_pin_reaches_the_launch() {
     'model=big' \
     'env.CLAUDE_CODE_AUTO_COMPACT_WINDOW=1e5' \
     > "$HOME/.config/ccmorph/gw.conf"
+  use_native_endpoint gw
   write_profile_context gw big=400000 mid=300000
   mkdir -p "$HOME/.config/ccmorph/profiles/gw"
   printf '%s\n' '{"availableModels":["big","mid"]}' \
@@ -12961,6 +12982,7 @@ test_a_launch_with_stale_settings_and_a_new_policy() {
   local kind="$1" test_home err launch_rc=0 rc=0
   test_home=$(mktemp -d)
   setup_home "$test_home"
+  use_native_endpoint proxy
   source "$CCMORPH_SOURCE"
   local dir="$_CCMORPH_PROFILE_DIRS/proxy"
   mkdir -p "$dir"
@@ -13068,6 +13090,7 @@ test_a_nested_launch_never_inherits_an_outer_advisory() {
   local test_home
   test_home=$(mktemp -d)
   setup_home "$test_home"
+  use_native_endpoint proxy
   source "$CCMORPH_SOURCE"
   local rc=0
   CCMORPH_ADVISE='{"systemMessage": "ccmorph: stale outer advisory"}' _ccm_launch -a proxy prompt ||
