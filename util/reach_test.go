@@ -956,6 +956,92 @@ func TestReachBoundsOnlyShorten(t *testing.T) {
 	}
 }
 
+// #1026: a harness answers the probe with a child process it installs, and a
+// gate at its load can leave that child unscheduled past the five-second
+// promise; #875, #935, #947 and #997 each patched one test of that class.
+// CCMORPH_TEST_REACH_WAIT moves only the probe's own stop, and only for a
+// launch that sets it: the advertised bound, its clamp, the progress line and
+// the sentence stay doctor's five seconds, and the wait itself is a hang
+// backstop (never longer than the adapter's own 600 s, never shorter than the
+// advertised bound, so it can neither disable the probe nor outlast the promise).
+func TestReachHarnessWaitMovesOnlyTheStop(t *testing.T) {
+	for _, c := range []struct {
+		wait, bound         string
+		wantBound, wantStop time.Duration
+	}{
+		{"", "", 5 * time.Second, 5 * time.Second},
+		{"60", "", 5 * time.Second, 60 * time.Second},
+		{"60", "5.1", 5 * time.Second, 60 * time.Second},
+		{"4", "5.1", 5 * time.Second, 5 * time.Second},
+		{"0.5", "0.8", 800 * time.Millisecond, 800 * time.Millisecond},
+		{"0", "2.5", 2500 * time.Millisecond, 2500 * time.Millisecond},
+		{"-1", "", 5 * time.Second, 5 * time.Second},
+		{"soon", "", 5 * time.Second, 5 * time.Second},
+		{"10000", "", 5 * time.Second, reachHarnessWaitMax},
+	} {
+		t.Run(c.wait+"/"+c.bound, func(t *testing.T) {
+			t.Setenv("CCMORPH_TEST_REACH_WAIT", c.wait)
+			t.Setenv("CCMORPH_REACH_BOUND", c.bound)
+			if got := reachBound(); got != c.wantBound {
+				t.Fatalf("advertised bound %v, want %v; the harness wait must never move the promise", got, c.wantBound)
+			}
+			if got := reachStopBound(); got != c.wantStop {
+				t.Fatalf("stop bound %v, want %v", got, c.wantStop)
+			}
+			wantSeconds := max(int((c.wantBound+time.Second-1)/time.Second), 1)
+			if got := ReachBoundSeconds(); got != wantSeconds {
+				t.Fatalf("progress line advertises %ds, want %ds; the harness wait must not change the words", got, wantSeconds)
+			}
+		})
+	}
+}
+
+// #1026: with the harness wait, a stub that answers after the advertised bound
+// but before the stop is an answer: the launch goes on instead of the probe
+// naming a gateway silent because the scheduler had not run its child yet.
+// Without the wait the same stub loses to the shortened bound, and the verdict
+// is still the honest silence the product reports.
+func TestReachHarnessWaitTakesAnAnswerThatLandsPastTheAdvertisedBound(t *testing.T) {
+	reachCurlScript(t, "sleep 0.4\nprintf 'HTTP/1.1 200 OK\\r\\nContent-Length: 0\\r\\n\\r\\n'")
+	t.Setenv("CCMORPH_REACH_PROGRESS", "0.05")
+	t.Setenv("CCMORPH_REACH_BOUND", "0.2")
+	t.Setenv("CCMORPH_TEST_REACH_WAIT", "")
+	if r := ReachListing("https://gateway.invalid", "k", "", nil, nil); r == (Reach{}) {
+		t.Fatal("without the harness wait the probe must end at its advertised bound, before the stub's answer")
+	}
+	t.Setenv("CCMORPH_TEST_REACH_WAIT", "5")
+	start := time.Now()
+	if r := ReachListing("https://gateway.invalid", "k", "", nil, nil); r != (Reach{}) {
+		t.Fatalf("the harness wait must take the stub's own answer, got %+v", r)
+	}
+	if took := time.Since(start); took < 300*time.Millisecond || took > 5*time.Second {
+		t.Fatalf("the probe returned after %v, want the stub's own 400 ms answer", took)
+	}
+}
+
+// #1026: the harness wait is a backstop, not an answer. A stub that never
+// answers is still named silent when the backstop fires, and the sentence
+// still claims no more than the advertised bound — the harness's patience is
+// never advertised to a person.
+func TestReachHarnessWaitStillNamesASilentStubSilent(t *testing.T) {
+	reachCurl(t, "exec sleep 30")
+	t.Setenv("CCMORPH_REACH_PROGRESS", "0.05")
+	t.Setenv("CCMORPH_REACH_BOUND", "0.2")
+	t.Setenv("CCMORPH_TEST_REACH_WAIT", "0.5")
+	start := time.Now()
+	r := ReachListing("https://gateway.invalid", "k", "", nil, nil)
+	took := time.Since(start)
+	if !r.Waited || !strings.HasPrefix(r.Why, "no answer from gateway.invalid port 443 after ") {
+		t.Fatalf("got %+v, want a waited no-answer after the harness backstop", r)
+	}
+	if took < 350*time.Millisecond || took > 500*time.Millisecond+reachWaitDelay+time.Second {
+		t.Fatalf("the probe ended after %v, want the harness wait (0.5 s) plus the reap", took)
+	}
+	if !strings.Contains(r.Why, "after 1 second") {
+		t.Fatalf("the sentence must claim the advertised bound, not the harness patience: %q", r.Why)
+	}
+}
+
 // GH-260 (gate finding): with the knobs asking for more than the contract and
 // a curl that ignores its own --max-time, the progress line still comes after
 // the product's one second and within two, and the probe has returned,
@@ -965,6 +1051,7 @@ func TestReachBoundsOnlyShorten(t *testing.T) {
 // claim no more than that (#891).
 func TestReachListingReturnsWithinDoctorsBoundWhenCurlIgnoresItsOwn(t *testing.T) {
 	reachCurl(t, "exec sleep 30")
+	t.Setenv("CCMORPH_TEST_REACH_WAIT", "") // the product promise, not a harness backstop (#1026)
 	t.Setenv("CCMORPH_REACH_PROGRESS", "2.1")
 	t.Setenv("CCMORPH_REACH_BOUND", "5.1")
 	start := time.Now()
@@ -991,6 +1078,7 @@ func TestReachListingReturnsWithinDoctorsBoundWhenCurlIgnoresItsOwn(t *testing.T
 // the reap, still well inside the 5 s default it shortened (#891).
 func TestReachListingReturnsBeforeAShortenedBound(t *testing.T) {
 	reachCurl(t, "exec sleep 30")
+	t.Setenv("CCMORPH_TEST_REACH_WAIT", "") // the product promise, not a harness backstop (#1026)
 	t.Setenv("CCMORPH_REACH_PROGRESS", "0.2")
 	t.Setenv("CCMORPH_REACH_BOUND", "2.5")
 	start := time.Now()
@@ -1014,7 +1102,8 @@ func TestReachListingWithRealCurlCountsAnyResponseAsAnAnswer(t *testing.T) {
 	}
 	noProxy(t)
 	t.Setenv("NO_PROXY", "*")
-	t.Setenv("CURL_HOME", t.TempDir()) // no operator .curlrc
+	t.Setenv("CURL_HOME", t.TempDir())      // no operator .curlrc
+	t.Setenv("CCMORPH_TEST_REACH_WAIT", "") // the product promise, not a harness backstop (#1026)
 	t.Setenv("CCMORPH_REACH_PROGRESS", "0.2")
 	t.Setenv("CCMORPH_REACH_BOUND", "5")
 	for _, c := range []struct {

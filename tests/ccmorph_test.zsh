@@ -27,6 +27,18 @@ ccmorph_test_scrub_runner_env() {
 }
 ccmorph_test_scrub_runner_env
 
+# #1026: a gateway launch first asks its endpoint to answer (#260, cli/run.go),
+# and this suite's answer is a stub curl the test installs: a child process a
+# gate at its -j5 load can leave unscheduled past the probe's five seconds.
+# #875, #935, #947 and #997 each patched one test of that class; the class guard
+# is the product's harness-only CCMORPH_TEST_REACH_WAIT, which moves only the
+# probe's own stop. The promise to people is untouched -- the progress line, the
+# sentence and CCMORPH_REACH_BOUND's clamp stay five seconds, and it is this
+# suite alone that sets the wait. It is sized far above any healthy start and
+# under this suite's own 120 s hang detector, so a stub that truly never answers
+# is still named silent, never mistaken for silent because it had not run yet.
+export CCMORPH_TEST_REACH_WAIT=60
+
 readonly SCRIPT_DIR="${0:A:h}"
 readonly REPO_ROOT="${SCRIPT_DIR:h}"
 readonly CCMORPH_SOURCE="$REPO_ROOT/tests/core_lib.zsh"
@@ -736,8 +748,15 @@ write_curl_mock() {
 }
 
 fake_gateway() {
+  # fake_gateway [DELAY]: the same fixture, its answer held DELAY seconds when
+  # the launch's reach probe is the asker (-D is the shape util.ReachListing
+  # alone sends). A test that needs the #1026 race uses a shortened
+  # CCMORPH_REACH_BOUND, not a real stall, so the suite pays no clock time.
+  local delay="${1:-0}"
   printf '%s\n' \
     '#!/bin/sh' \
+    "delay=$delay" \
+    'if [ "$delay" != 0 ]; then for a do case "$a" in -D) sleep "$delay"; break ;; esac; done; fi' \
     '# record the invocation so tests can assert on url and auth' \
     'for a do printf "%s\n" "$a" >> "$HOME/curl.args"; done' \
     '[ "${1-}" = -K ] && cat >> "$HOME/curl.args"' \
@@ -7446,6 +7465,37 @@ test_declared_model_capabilities_is_never_overruled() {
   return $rc
 }
 
+# #1026: the class behind #875/#935/#947/#997 and this issue's six reds. A
+# gateway launch's asserted behaviour sat behind the reach probe's five-second
+# bound, and the answer was a child this suite installed, which a gate at its
+# load could leave unscheduled past the bound; the probe honestly named the
+# gateway silent and the launch ended before the test's behaviour ran. The
+# harness-only CCMORPH_TEST_REACH_WAIT (suite header) moves the probe's own
+# stop, so a stub the scheduler runs after the advertised bound still answers.
+# The advertised bound is shortened here -- the product knob may shorten it --
+# so the race is proved without spending a clock second on it.
+test_a_gateway_launch_waits_out_a_stub_scheduled_past_the_reach_bound() {
+  local test_home
+  test_home=$(mktemp -d)
+  setup_home "$test_home"
+  fake_gateway 0.6
+  fake_adapter
+  write_apikey_conf gw 'api_key=sk_prod_test' 'base_url=https://gateway.invalid' 'adapter=true'
+  source "$CCMORPH_SOURCE"
+
+  local rc=0 launch_rc=0 err="$test_home/launch.err"
+  CCMORPH_REACH_BOUND=0.2 _ccm_launch -a gw prompt >/dev/null 2>"$err" || launch_rc=$?
+  (( launch_rc == 0 )) || {
+    print -u2 -- "a stub scheduled past the advertised bound must not end the launch (exit $launch_rc):"
+    print -u2 -- "$(<"$err")"
+    rc=1
+  }
+  assert_contains "$(<"$CCMORPH_TEST_LOG")" 'BASE_URL=http://127.0.0.1:45999' \
+    'the launch must reach Claude Code once the harness stub answers' || rc=1
+  rm -rf "$test_home"
+  return $rc
+}
+
 # Only an adapter route hoists, so only it gets the default.
 test_native_endpoint_keeps_mid_conversation_system() {
   local test_home
@@ -13321,6 +13371,7 @@ run_test test_an_ambient_proxy_reaches_the_child_and_the_adapter
 # Custom endpoints use the automatic adapter path, even without a legacy adapter key.
 run_test test_adapter_launch_withholds_mid_conversation_system_for_claude_models
 run_test test_declared_model_capabilities_is_never_overruled
+run_test test_a_gateway_launch_waits_out_a_stub_scheduled_past_the_reach_bound
 run_test test_native_endpoint_keeps_mid_conversation_system
 run_test test_launch_aborts_when_the_adapter_cannot_serve
 run_test test_a_legacy_transport_key_is_reported_and_ignored
