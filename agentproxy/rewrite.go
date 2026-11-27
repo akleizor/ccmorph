@@ -1,6 +1,7 @@
 package agentproxy
 
 import (
+	"github.com/akleizor/ccmorph/ordjson"
 	"net/http"
 	"net/url"
 	"regexp"
@@ -87,15 +88,15 @@ const billingHeader = "x-anthropic-billing-header:"
 // is not first party, drops what only first party accepts. It returns the body
 // unchanged when nothing changed or it is not a JSON object.
 func rewriteBody(body []byte, pick string, t Target) []byte {
-	v, err := parseJSON(body)
-	p, ok := v.(*obj)
+	v, err := ordjson.Parse(body)
+	p, ok := v.(*ordjson.Obj)
 	if err != nil || !ok {
 		return body
 	}
 	changed := false
-	asked, _ := p.str("model")
+	asked, _ := str(p, "model")
 	if m := servedModel(pick, asked, t.Tiers); m != "" && m != asked {
-		p.set("model", m)
+		p.Set("model", m)
 		changed = true
 	}
 	if !t.FirstParty() {
@@ -105,15 +106,11 @@ func rewriteBody(body []byte, pick string, t Target) []byte {
 }
 
 // reencode is p as bytes when it changed, else the original body.
-func reencode(body []byte, p *obj, changed bool) []byte {
+func reencode(body []byte, p *ordjson.Obj, changed bool) []byte {
 	if !changed {
 		return body
 	}
-	out, err := encodeJSON(p)
-	if err != nil {
-		return body
-	}
-	return out
+	return ordjson.Marshal(p, false)
 }
 
 // makePortable drops from p what only first party accepts and reports whether
@@ -123,35 +120,35 @@ func reencode(body []byte, p *obj, changed bool) []byte {
 // serverTools also drops Anthropic's server tools (web search, the advisor):
 // typed, with no input_schema, which another endpoint refuses the whole request
 // for, and no gateway session ever sends them.
-func makePortable(p *obj, serverTools bool) bool {
+func makePortable(p *ordjson.Obj, serverTools bool) bool {
 	changed := false
-	if th := p.obj("thinking"); th != nil && th.m["display"] == "updates" {
-		th.set("display", "omitted")
+	if th := child(p, "thinking"); th != nil && field(th, "display") == "updates" {
+		th.Set("display", "omitted")
 		changed = true
 	}
-	if l := p.list("tools"); serverTools && l != nil {
+	if l := list(p, "tools"); serverTools && l != nil {
 		kept := l[:0:0]
 		for _, t := range l {
-			if m, ok := t.(*obj); ok && m.m["input_schema"] == nil && m.m["type"] != nil && m.m["type"] != "custom" {
+			if m, ok := t.(*ordjson.Obj); ok && field(m, "input_schema") == nil && field(m, "type") != nil && field(m, "type") != "custom" {
 				continue
 			}
 			kept = append(kept, t)
 		}
 		if len(kept) != len(l) {
-			p.set("tools", kept)
+			p.Set("tools", kept)
 			changed = true
 		}
 	}
 	for _, f := range []string{"system", "messages", "tools"} {
-		if v, ok := p.get(f); ok {
+		if v, ok := p.Get(f); ok {
 			changed = dropCacheScope(v) || changed
 		}
 	}
-	for _, b := range p.list("system") {
-		if m, ok := b.(*obj); ok {
-			if s, ok := m.str("text"); ok && strings.HasPrefix(s, billingHeader) {
+	for _, b := range list(p, "system") {
+		if m, ok := b.(*ordjson.Obj); ok {
+			if s, ok := str(m, "text"); ok && strings.HasPrefix(s, billingHeader) {
 				if stable := turnFields.ReplaceAllString(s, ""); stable != s {
-					m.set("text", stable)
+					m.Set("text", stable)
 					changed = true
 				}
 			}
@@ -167,11 +164,11 @@ func dropCacheScope(node any) bool {
 		for _, item := range n {
 			changed = dropCacheScope(item) || changed
 		}
-	case *obj:
-		if cc := n.obj("cache_control"); cc != nil && cc.del("scope") {
+	case *ordjson.Obj:
+		if cc := child(n, "cache_control"); cc != nil && del(cc, "scope") {
 			changed = true
 		}
-		if c, ok := n.m["content"].([]any); ok {
+		if c, ok := field(n, "content").([]any); ok {
 			changed = dropCacheScope(c) || changed
 		}
 	}

@@ -2,26 +2,23 @@ package agentproxy
 
 import (
 	"encoding/json"
+	"github.com/akleizor/ccmorph/ordjson"
 	"strings"
 	"testing"
 )
 
-func mustObj(t *testing.T, s string) *obj {
+func mustObj(t *testing.T, s string) *ordjson.Obj {
 	t.Helper()
-	v, err := parseJSON([]byte(s))
+	v, err := ordjson.Parse([]byte(s))
 	if err != nil {
 		t.Fatal(err)
 	}
-	return v.(*obj)
+	return v.(*ordjson.Obj)
 }
 
 func enc(t *testing.T, v any) string {
 	t.Helper()
-	b, err := encodeJSON(v)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return string(b)
+	return string(ordjson.Marshal(v, false))
 }
 
 func TestOrderedJSONKeepsKeyOrderAndNumbers(t *testing.T) {
@@ -29,7 +26,7 @@ func TestOrderedJSONKeepsKeyOrderAndNumbers(t *testing.T) {
 	if got := enc(t, mustObj(t, in)); got != in {
 		t.Fatalf("round trip changed the body:\n got %s\nwant %s", got, in)
 	}
-	if _, err := parseJSON([]byte(`{"a":1} x`)); err == nil {
+	if _, err := ordjson.Parse([]byte(`{"a":1} x`)); err == nil {
 		t.Fatal("trailing data was accepted")
 	}
 }
@@ -60,7 +57,7 @@ func TestCacheScopeIsDroppedButTheBreakpointKept(t *testing.T) {
 	}
 }
 
-func turn(t *testing.T, tail, messages string) *obj {
+func turn(t *testing.T, tail, messages string) *ordjson.Obj {
 	t.Helper()
 	return mustObj(t, `{"model":"claude-opus-5-5","tools":[{"name":"t"}],"system":[{"type":"text","text":"x-anthropic-billing-header: cc_version=2.1.302.a1b; cc_entrypoint=sdk-cli;`+tail+`"},{"type":"text","text":"You are Claude Code.","cache_control":{"type":"ephemeral","ttl":"1h","scope":"global"}}],"messages":`+messages+`}`)
 }
@@ -79,7 +76,7 @@ func TestConsecutiveTurnsShareACacheablePrefix(t *testing.T) {
 	if !strings.HasPrefix(j2, j1[:len(j1)-2]) || j2[len(j1)-2] != ',' {
 		t.Fatalf("turn 2 does not open with turn 1:\n%s\n%s", j1, j2)
 	}
-	if got, _ := t2.list("system")[0].(*obj).str("text"); got != "x-anthropic-billing-header: cc_version=2.1.302.a1b; cc_entrypoint=sdk-cli;" {
+	if got, _ := str(list(t2, "system")[0].(*ordjson.Obj), "text"); got != "x-anthropic-billing-header: cc_version=2.1.302.a1b; cc_entrypoint=sdk-cli;" {
 		t.Fatal(got)
 	}
 }
@@ -96,7 +93,7 @@ func TestATurnFieldNeverTakesItsNeighbourWithIt(t *testing.T) {
 		if !normalizeBody(p, modelRule{}) {
 			t.Fatal("unchanged")
 		}
-		if got, _ := p.list("system")[0].(*obj).str("text"); got != head+c[1] {
+		if got, _ := str(list(p, "system")[0].(*ordjson.Obj), "text"); got != head+c[1] {
 			t.Fatalf("got %q want %q", got, head+c[1])
 		}
 	}
@@ -137,7 +134,7 @@ func TestPinnedTierCoversFullIds(t *testing.T) {
 	} {
 		p := mustObj(t, `{"model":"`+c[0]+`"}`)
 		changed := normalizeBody(p, modelRule{tiers: map[string]string{"fable": "gpt-6-astra"}, isRoute: true})
-		if got, _ := p.str("model"); got != c[1] || changed != (c[0] != c[1]) {
+		if got, _ := str(p, "model"); got != c[1] || changed != (c[0] != c[1]) {
 			t.Errorf("%s: sent %s changed=%v, want %s", c[0], got, changed, c[1])
 		}
 	}
@@ -148,14 +145,14 @@ func TestAPinnedTierLosesTheContextMarker(t *testing.T) {
 	tiers := map[string]string{"opus": "claude-opus-5-5[1m]"}
 	p := mustObj(t, `{"model":"claude-opus-5-5"}`)
 	normalizeBody(p, modelRule{tiers: tiers, isRoute: true})
-	if m, _ := p.str("model"); m != "claude-opus-5-5" {
+	if m, _ := str(p, "model"); m != "claude-opus-5-5" {
 		t.Fatal(m)
 	}
 	p = mustObj(t, `{"model":"claude-opus-5-5[1m]"}`)
 	if !normalizeBody(p, modelRule{tiers: tiers, isRoute: true}) {
 		t.Fatal("the marker stayed")
 	}
-	if m, _ := p.str("model"); m != "claude-opus-5-5" {
+	if m, _ := str(p, "model"); m != "claude-opus-5-5" {
 		t.Fatal(m)
 	}
 }
@@ -168,7 +165,7 @@ func TestARoutePinnedTierIsServedAsTheTargetsOwnModel(t *testing.T) {
 	if !normalizeBody(p, modelRule{tiers: gpro, routeTiers: route}) {
 		t.Fatal("unchanged")
 	}
-	if m, _ := p.str("model"); m != "claude-opus-4-6-thinking" {
+	if m, _ := str(p, "model"); m != "claude-opus-4-6-thinking" {
 		t.Fatal(m)
 	}
 	// the account (family=false) changes nothing else the phone picked
@@ -176,7 +173,7 @@ func TestARoutePinnedTierIsServedAsTheTargetsOwnModel(t *testing.T) {
 	if !(modelRule{tiers: map[string]string{"fable": "claude-fable-5-2"}, routeTiers: route}).setModel(p) {
 		t.Fatal("unchanged")
 	}
-	if m, _ := p.str("model"); m != "claude-fable-5-2" {
+	if m, _ := str(p, "model"); m != "claude-fable-5-2" {
 		t.Fatal(m)
 	}
 	p = mustObj(t, `{"model":"claude-sonnet-5-5"}`)
@@ -203,36 +200,36 @@ func TestEventUploadsKeepOnlyWhatThePhoneShows(t *testing.T) {
 	if !slimEvents(body, small) {
 		t.Fatal("nothing slimmed")
 	}
-	ev := body.list("events")
-	payload := func(i int) *obj { return ev[i].(*obj).obj("payload") }
-	cmds := payload(0).obj("response").obj("response")
-	if enc(t, cmds.list("commands")) != `[{"name":"a","argumentHint":"<x>"}]` || enc(t, cmds.list("models")) != `[{"value":"opus"}]` {
+	ev := list(body, "events")
+	payload := func(i int) *ordjson.Obj { return child(ev[i].(*ordjson.Obj), "payload") }
+	cmds := child(child(payload(0), "response"), "response")
+	if enc(t, list(cmds, "commands")) != `[{"name":"a","argumentHint":"<x>"}]` || enc(t, list(cmds, "models")) != `[{"value":"opus"}]` {
 		t.Fatal(enc(t, cmds))
 	}
 	said := payload(1)
-	if _, has := said.get("wire_tool_inputs"); has {
+	if _, has := said.Get("wire_tool_inputs"); has {
 		t.Fatal("wire_tool_inputs kept")
 	}
-	blocks := said.obj("message").list("content")
-	if enc(t, blocks[0]) != `{"type":"thinking","thinking":"why","signature":""}` || enc(t, blocks[1].(*obj).obj("input")) != `{"command":"ls"}` {
+	blocks := list(child(said, "message"), "content")
+	if enc(t, blocks[0]) != `{"type":"thinking","thinking":"why","signature":""}` || enc(t, child(blocks[1].(*ordjson.Obj), "input")) != `{"command":"ls"}` {
 		t.Fatal(enc(t, blocks))
 	}
 	result := payload(2)
-	first := result.obj("message").list("content")[0].(*obj).list("content")
-	if enc(t, first[0].(*obj).obj("source")) != `{"type":"base64","media_type":"image/jpeg","data":"CCCCCCCCC"}` {
+	first := list(list(child(result, "message"), "content")[0].(*ordjson.Obj), "content")
+	if enc(t, child(first[0].(*ordjson.Obj), "source")) != `{"type":"base64","media_type":"image/jpeg","data":"CCCCCCCCC"}` {
 		t.Fatal("screenshot not shrunk")
 	}
 	if enc(t, first[1]) != icon {
 		t.Fatal("a small image changed")
 	}
-	if txt, _ := first[2].(*obj).str("text"); !strings.HasPrefix(txt, strings.Repeat("x", textMax)) || len(txt) > textMax+100 {
+	if txt, _ := str(first[2].(*ordjson.Obj), "text"); !strings.HasPrefix(txt, strings.Repeat("x", textMax)) || len(txt) > textMax+100 {
 		t.Fatalf("long text kept: %d", len(txt))
 	}
-	if second, _ := result.obj("message").list("content")[1].(*obj).get("content"); len(second.(string)) > textMax+100 {
+	if second, _ := list(child(result, "message"), "content")[1].(*ordjson.Obj).Get("content"); len(second.(string)) > textMax+100 {
 		t.Fatal("long result kept")
 	}
-	if enc(t, result.obj("tool_use_result")) != `{"structuredPatch":[{"lines":["-a","+b"]}]}` { // the diff stays
-		t.Fatal(enc(t, result.obj("tool_use_result")))
+	if enc(t, child(result, "tool_use_result")) != `{"structuredPatch":[{"lines":["-a","+b"]}]}` { // the diff stays
+		t.Fatal(enc(t, child(result, "tool_use_result")))
 	}
 	none := func(string, string) (string, string, bool) { return "", "", false }
 	if slimEvents(body, none) {

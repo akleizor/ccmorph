@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/akleizor/ccmorph/ordjson"
 	"io"
 	"net"
 	"net/http"
@@ -464,7 +465,7 @@ func (e *Edge) route(r *http.Request, u *url.URL, d *decision, word, via, model 
 		if len(rule.tiers) == 0 && model == "" {
 			return nil
 		}
-		return e.rewrite(r, d, func(p *obj) bool { c := rule.setModel(p); return setPick(p, model) || c })
+		return e.rewrite(r, d, func(p *ordjson.Obj) bool { c := rule.setModel(p); return setPick(p, model) || c })
 	}
 	es.asked = target
 	up, key, tiers, isRoute := e.Upstream, e.Key, e.Tiers, true
@@ -493,7 +494,7 @@ func (e *Edge) route(r *http.Request, u *url.URL, d *decision, word, via, model 
 		return fmt.Errorf("route upstream is not an http(s) URL: %v", up)
 	}
 	rule := modelRule{tiers: tiers, routeTiers: e.Tiers, isRoute: isRoute}
-	if err := e.rewrite(r, d, func(p *obj) bool { c := normalizeBody(p, rule); return setPick(p, model) || c }); err != nil {
+	if err := e.rewrite(r, d, func(p *ordjson.Obj) bool { c := normalizeBody(p, rule); return setPick(p, model) || c }); err != nil {
 		return err
 	}
 	d.url = join(up, &url.URL{Path: u.Path, RawQuery: u.RawQuery})
@@ -508,26 +509,26 @@ func (e *Edge) route(r *http.Request, u *url.URL, d *decision, word, via, model 
 }
 
 // setPick names the model outright when an agent's pick does.
-func setPick(p *obj, model string) bool {
+func setPick(p *ordjson.Obj, model string) bool {
 	if model == "" {
 		return false
 	}
-	if cur, _ := p.str("model"); cur == model {
+	if cur, _ := str(p, "model"); cur == model {
 		return false
 	}
-	p.set("model", model)
+	p.Set("model", model)
 	return true
 }
 
 // rewrite reads the body, lets change edit it in place, and keeps the result
 // as the body to send. A body that is not a JSON object goes on as it was.
-func (e *Edge) rewrite(r *http.Request, d *decision, change func(*obj) bool) error {
+func (e *Edge) rewrite(r *http.Request, d *decision, change func(*ordjson.Obj) bool) error {
 	content, err := body(r, d)
 	if err != nil || len(content) == 0 {
 		return err
 	}
-	v, perr := parseJSON(content)
-	if p, ok := v.(*obj); perr == nil && ok {
+	v, perr := ordjson.Parse(content)
+	if p, ok := v.(*ordjson.Obj); perr == nil && ok {
 		d.body = reencode(content, p, change(p))
 	}
 	return nil
@@ -550,14 +551,11 @@ func (e *Edge) slimUpload(r *http.Request, d *decision) error {
 		}
 		compressed = true
 	}
-	v, err := parseJSON(raw)
+	v, err := ordjson.Parse(raw)
 	if err != nil || !slimEvents(v, sipsShrink) {
 		return nil
 	}
-	slim, err := encodeJSON(v)
-	if err != nil {
-		return nil
-	}
+	slim := ordjson.Marshal(v, false)
 	e.logf("events    %d -> %d bytes", len(raw), len(slim))
 	d.body = slim
 	d.edge.gzipped = compressed

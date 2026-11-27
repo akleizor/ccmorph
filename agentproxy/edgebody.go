@@ -82,13 +82,13 @@ func (r modelRule) served(model string) string {
 }
 
 // setModel points the body's model at what served says; true if it changed.
-func (r modelRule) setModel(p *obj) bool {
-	model, ok := p.str("model")
+func (r modelRule) setModel(p *ordjson.Obj) bool {
+	model, ok := str(p, "model")
 	if !ok {
 		return false
 	}
 	if s := r.served(model); s != "" && s != model {
-		p.set("model", s)
+		p.Set("model", s)
 		return true
 	}
 	return false
@@ -96,7 +96,7 @@ func (r modelRule) setModel(p *obj) bool {
 
 // normalizeBody rewrites first-party-only fields of an inference body in place
 // for a routed target; true if anything changed.
-func normalizeBody(p *obj, r modelRule) bool {
+func normalizeBody(p *ordjson.Obj, r modelRule) bool {
 	r.family = true
 	changed := r.setModel(p)
 	return makePortable(p, false) || changed
@@ -151,29 +151,29 @@ func slimResult(node any, shrink shrinker) (any, bool) {
 			changed = changed || c
 		}
 		return out, changed
-	case *obj:
-		if t, _ := n.str("type"); t == "image" {
-			if src := n.obj("source"); src != nil {
-				data, _ := src.str("data")
-				if st, _ := src.str("type"); st == "base64" && len(data) > imageMin {
-					mt, _ := src.str("media_type")
+	case *ordjson.Obj:
+		if t, _ := str(n, "type"); t == "image" {
+			if src := child(n, "source"); src != nil {
+				data, _ := str(src, "data")
+				if st, _ := str(src, "type"); st == "base64" && len(data) > imageMin {
+					mt, _ := str(src, "media_type")
 					if small, kind, ok := shrink(data, mt); ok && len(small) < len(data) {
-						s := src.clone()
-						s.set("data", small)
-						s.set("media_type", kind)
-						c := n.clone()
-						c.set("source", s)
+						s := ordjson.Clone(src).(*ordjson.Obj)
+						s.Set("data", small)
+						s.Set("media_type", kind)
+						c := ordjson.Clone(n).(*ordjson.Obj)
+						c.Set("source", s)
 						return c, true
 					}
 				}
 			}
 			return n, false
 		}
-		if t, _ := n.str("type"); t == "text" {
-			if text, ok := n.str("text"); ok {
+		if t, _ := str(n, "type"); t == "text" {
+			if text, ok := str(n, "text"); ok {
 				if cutText, changed := cut(text); changed {
-					c := n.clone()
-					c.set("text", cutText)
+					c := ordjson.Clone(n).(*ordjson.Obj)
+					c.Set("text", cutText)
 					return c, true
 				}
 			}
@@ -184,21 +184,21 @@ func slimResult(node any, shrink shrinker) (any, bool) {
 
 // filled is Python's truth of a JSON value, for the signature field.
 func filled(v any) bool {
-	if o, ok := v.(*obj); ok {
-		return len(o.keys) > 0
+	if o, ok := v.(*ordjson.Obj); ok {
+		return o.Len() > 0
 	}
 	return ordjson.Truthy(v)
 }
 
 // slimPayload lightens one event payload in place; true if it changed.
-func slimPayload(payload *obj, shrink shrinker) bool {
+func slimPayload(payload *ordjson.Obj, shrink shrinker) bool {
 	changed := false
-	kind, _ := payload.str("type")
-	if resp := payload.obj("response"); kind == "control_response" && resp != nil {
-		if listing := resp.obj("response"); listing != nil {
+	kind, _ := str(payload, "type")
+	if resp := child(payload, "response"); kind == "control_response" && resp != nil {
+		if listing := child(resp, "response"); listing != nil {
 			for _, key := range []string{"commands", "agents"} {
-				for _, item := range listing.list(key) {
-					if m, ok := item.(*obj); ok && m.del("description") {
+				for _, item := range list(listing, key) {
+					if m, ok := item.(*ordjson.Obj); ok && del(m, "description") {
 						changed = true
 					}
 				}
@@ -206,48 +206,48 @@ func slimPayload(payload *obj, shrink shrinker) bool {
 		}
 	}
 	var content []any
-	if msg := payload.obj("message"); msg != nil {
-		content = msg.list("content")
+	if msg := child(payload, "message"); msg != nil {
+		content = list(msg, "content")
 	}
 	if kind == "assistant" {
-		if payload.del("wire_tool_inputs") {
+		if del(payload, "wire_tool_inputs") {
 			changed = true
 		}
 		for _, b := range content {
-			if m, ok := b.(*obj); ok && filled(m.m["signature"]) {
-				m.set("signature", "")
+			if m, ok := b.(*ordjson.Obj); ok && filled(field(m, "signature")) {
+				m.Set("signature", "")
 				changed = true
 			}
 		}
 	}
 	if kind == "user" {
 		for _, b := range content {
-			m, ok := b.(*obj)
+			m, ok := b.(*ordjson.Obj)
 			if !ok {
 				continue
 			}
-			if t, _ := m.str("type"); t != "tool_result" {
+			if t, _ := str(m, "type"); t != "tool_result" {
 				continue
 			}
 			// A tool_result written without `content` has always gained it (as
 			// null); a present one is rewritten only when slimming changed it.
-			_, has := m.get("content")
-			slimmed, c := slimResult(m.m["content"], shrink)
+			_, has := m.Get("content")
+			slimmed, c := slimResult(field(m, "content"), shrink)
 			if !has || c {
-				m.set("content", slimmed)
+				m.Set("content", slimmed)
 				changed = true
 			}
 		}
-		switch r := payload.m["tool_use_result"].(type) {
-		case *obj:
+		switch r := field(payload, "tool_use_result").(type) {
+		case *ordjson.Obj:
 			for _, k := range duplicateOutput {
-				if r.del(k) {
+				if del(r, k) {
 					changed = true
 				}
 			}
 		case string:
 			if c, ok := cut(r); ok {
-				payload.set("tool_use_result", c)
+				payload.Set("tool_use_result", c)
 				changed = true
 			}
 		}
@@ -260,14 +260,14 @@ func slimPayload(payload *obj, shrink shrinker) bool {
 // second time just to diff it against the first doubled the cost of every
 // session open.
 func slimEvents(body any, shrink shrinker) bool {
-	top, ok := body.(*obj)
+	top, ok := body.(*ordjson.Obj)
 	if !ok {
 		return false
 	}
 	changed := false
-	for _, e := range top.list("events") {
-		if ev, ok := e.(*obj); ok {
-			if p := ev.obj("payload"); p != nil {
+	for _, e := range list(top, "events") {
+		if ev, ok := e.(*ordjson.Obj); ok {
+			if p := child(ev, "payload"); p != nil {
 				changed = slimPayload(p, shrink) || changed
 			}
 		}
