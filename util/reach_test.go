@@ -271,8 +271,16 @@ func TestReachListingPrintsProgressAndGivesUpOnASilentGateway(t *testing.T) {
 // run measured a 136 ms start against a 142 ms window, the stop firing with
 // 38 ms of curl's own run and no answer. A request the scheduler never let run
 // is not evidence of silence: the probe returns no verdict and the launch goes
-// on. The call's deadline still holds; the probe returns within it plus the
-// reap grace.
+// on. The call's deadline still holds: the probe returns at the stop plus the
+// reap grace. GH-984: counting that promise from the call charged the probe
+// for the scheduler's held start — reach.go arms the stop only after
+// reachStart returns, so on a loaded macOS run, where the fresh stub's
+// first-use exec scan alone costs about a second (#875), the start leg
+// outlasted the deadline before the probe could act at all. Measured under
+// package-parallel load, the probe's own post-stop reap leg is single-digit
+// milliseconds; all of the 0.55 s loss stood in the start. So the limit is
+// counted from the later of the stop and the held start's actual completion,
+// which the mock sees, plus the reap grace.
 func TestReachListingDoesNotBlameAGatewayForAStarvedStart(t *testing.T) {
 	for _, held := range []time.Duration{700 * time.Millisecond, 1200 * time.Millisecond} {
 		t.Run(held.String(), func(t *testing.T) {
@@ -281,14 +289,22 @@ func TestReachListingDoesNotBlameAGatewayForAStarvedStart(t *testing.T) {
 			t.Setenv("CCMORPH_REACH_BOUND", "1")
 			saved := reachStart
 			t.Cleanup(func() { reachStart = saved })
+			start := time.Now()
+			var startedAt time.Duration // when the scheduler let the start complete
 			reachStart = func(cmd *exec.Cmd) error {
 				time.Sleep(held) // the scheduler held the start into the bound
-				return cmd.Start()
+				err := cmd.Start()
+				startedAt = time.Since(start)
+				return err
 			}
-			start := time.Now()
 			r := ReachListing("http://127.0.0.1:9", "k", "", nil, nil)
-			if took, limit := time.Since(start), time.Second+reachWaitDelay; took > limit {
-				t.Fatalf("returned after %v, past the call's 1 s deadline plus the %v wait delay", took, reachWaitDelay)
+			took := time.Since(start)
+			stopAt := time.Second - time.Second/20 // the stop: the 1 s bound less its twentieth, from the call
+			if startedAt > stopAt {
+				stopAt = startedAt // the stop cannot fire before the held start completes
+			}
+			if limit := stopAt + reachWaitDelay; took > limit {
+				t.Fatalf("returned after %v, past the later of the stop and the held start (%v) plus the %v wait delay", took, startedAt, reachWaitDelay)
 			}
 			if r != (Reach{}) {
 				t.Fatalf("got %+v, want nothing to say: the request never got half its window", r)
