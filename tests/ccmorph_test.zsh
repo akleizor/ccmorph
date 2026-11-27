@@ -10562,8 +10562,25 @@ test_launch_refuses_a_key_claude_code_was_told_to_refuse() {
   fake_context_refresh
   local tail='k-issue-236-test-key' rc=0
   local doc="$HOME/.config/ccmorph/profiles/gw/.claude.json" out st
+  # The launch's own words are kept until the test's verdict is known: a red
+  # under gate load must name the message the launch said, never an empty
+  # record (#935, the #901 pattern). Each launch writes its own files, so the
+  # later ones cannot bury the earlier cause.
+  local first_out="$HOME/launch-first.out" first_err="$HOME/launch-first.err"
+  local after_out="$HOME/launch-after.out" after_err="$HOME/launch-after.err"
+  local run_rc=0 launch_out="" launch_err=""
   # First launch of a profile with no stored answer: the launch records it.
-  _ccm_launch -a gw prompt >/dev/null 2>&1 || { print -u2 -- 'the first launch must succeed'; rc=1; }
+  _ccm_launch -a gw prompt >"$first_out" 2>"$first_err" || run_rc=$?
+  if (( run_rc != 0 )); then
+    launch_out=""; launch_err=""
+    [[ -f "$first_out" ]] && launch_out="$(<"$first_out")"
+    [[ -f "$first_err" ]] && launch_err="$(<"$first_err")"
+    print -u2 -- "the first launch must succeed (exit $run_rc); its stderr was:"
+    print -u2 -- "${launch_err:-<empty>}"
+    print -u2 -- "its stdout was:"
+    print -u2 -- "${launch_out:-<empty>}"
+    rc=1
+  fi
   python3 - "$doc" "$tail" <<'PYKEY' || rc=1
 import json, sys
 responses = json.load(open(sys.argv[1])).get("customApiKeyResponses") or {}
@@ -10587,9 +10604,21 @@ responses = json.load(open(sys.argv[1])).get("customApiKeyResponses") or {}
 assert responses.get("approved") == [sys.argv[2]], responses
 assert sys.argv[2] not in (responses.get("rejected") or []), responses
 PYKEY
-  # And the next launch runs claude.
+  # And the next launch runs claude. Its words are kept the same way: a red
+  # here must say which message the launch chose, not prove it by its silence.
   : > "$CCMORPH_TEST_LOG"
-  _ccm_launch -a gw prompt >/dev/null 2>&1 || { print -u2 -- 'the launch after login must succeed'; rc=1; }
+  run_rc=0
+  _ccm_launch -a gw prompt >"$after_out" 2>"$after_err" || run_rc=$?
+  if (( run_rc != 0 )); then
+    launch_out=""; launch_err=""
+    [[ -f "$after_out" ]] && launch_out="$(<"$after_out")"
+    [[ -f "$after_err" ]] && launch_err="$(<"$after_err")"
+    print -u2 -- "the launch after login must succeed (exit $run_rc); its stderr was:"
+    print -u2 -- "${launch_err:-<empty>}"
+    print -u2 -- "its stdout was:"
+    print -u2 -- "${launch_out:-<empty>}"
+    rc=1
+  fi
   [[ -s "$CCMORPH_TEST_LOG" ]] || { print -u2 -- 'claude did not start after login'; rc=1; }
   # A file ccmorph cannot safely rewrite keeps the question; the launch must
   # name the answer rather than start claude into a highlighted No.
