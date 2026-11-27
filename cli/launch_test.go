@@ -12,6 +12,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"testing"
 	"testing/synctest"
@@ -1712,11 +1713,67 @@ func TestSetupDirReleasesTheLiveLockOfTheProfileAHopLeaves(t *testing.T) {
 	}
 }
 
+// retireStubDir makes the test own a stub directory's removal, because the
+// launch's sizing probe is detached by design (probeNudge: metadata discovery
+// runs in the background): the probe's stub invocation can still be alive when
+// the test ends. Its append would recreate calls.log after TempDir's RemoveAll
+// had drained the directory, and the rmdir would fail "directory not empty"
+// (#983). Renaming the directory out of the child's path first makes a late
+// open fail outright instead of racing the removal.
+func retireStubDir(t *testing.T, dir string) {
+	t.Helper()
+	t.Cleanup(func() {
+		retired := dir + ".retired"
+		if os.Rename(dir, retired) != nil {
+			return // already gone; TempDir's cleanup has nothing left to do
+		}
+		os.RemoveAll(retired)
+	})
+}
+
+// GH-983: a launch sizes an unsized model with a detached probe, and that
+// probe's stub invocation can still be appending when the test that owns the
+// stub ends. The stub directory retires out of the writer's path before its
+// removal, so a live append cannot recreate calls.log between RemoveAll's last
+// unlink and its rmdir and fail the TempDir cleanup with "directory not
+// empty". The goroutine stands in for the detached probe: it keeps appending
+// through the stub directory's whole cleanup.
+func TestAStubDirRetiresBeforeALiveWriterCanRecreateIt(t *testing.T) {
+	for i := 0; i < 200; i++ {
+		t.Run("a live writer", func(t *testing.T) {
+			var log string
+			var wg sync.WaitGroup
+			stop := make(chan struct{})
+			// Registered before coreCalls, so it runs after the stub directory's
+			// own cleanup: the writer is live through the retirement.
+			t.Cleanup(func() { close(stop); wg.Wait() })
+			dir, _ := coreCalls(t)
+			log = filepath.Join(dir, "calls.log")
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				for {
+					select {
+					case <-stop:
+						return
+					default:
+					}
+					if f, err := os.OpenFile(log, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600); err == nil {
+						f.WriteString("late probe\n")
+						f.Close()
+					}
+				}
+			}()
+		})
+	}
+}
+
 // coreCalls is a stub ccmorph-core that appends each invocation's argument
 // vector to a log, so a test can see every call, not only the last one.
 func coreCalls(t *testing.T) (dir string, calls func() string) {
 	t.Helper()
 	dir = t.TempDir()
+	retireStubDir(t, dir)
 	log := filepath.Join(dir, "calls.log")
 	body := "#!/bin/sh\n{ for a do printf '%s\\n' \"$a\"; done; printf '.\\n'; } >> '" + log + "'\n"
 	if err := os.WriteFile(filepath.Join(dir, "ccmorph-core"), []byte(body), 0o755); err != nil {
