@@ -755,13 +755,16 @@ func newRouteFixture(t *testing.T) *routeFixture {
 // TestRouteHoldChild is the working holder the route fixture's stub
 // ccmorph-core runs for `util route-hold`: the test binary re-run, so no test
 // depends on an interpreter being installed. It takes the shared lock the real
-// holder takes, answers one byte and waits to be signaled. Run on its own it
-// does nothing.
+// holder takes, answers "s" the moment it is running and "1" once the hold
+// has landed, and waits to be signaled — the two bytes so a parent can tell a
+// start the scheduler starved from a hold that failed (#998, with util's
+// TestMain). Run on its own it does nothing.
 func TestRouteHoldChild(t *testing.T) {
 	users := os.Getenv("CCMORPH_TEST_HOLD_USERS")
 	if users == "" {
 		return
 	}
+	os.Stdout.WriteString("s") // running, hold not yet taken (#998)
 	f, err := os.OpenFile(users, os.O_CREATE|os.O_RDWR, 0o600)
 	if err != nil {
 		os.Exit(1)
@@ -1265,12 +1268,41 @@ func TestRetiringARouteWhoseHolderPidWasReusedLeavesTheSessionsBridge(t *testing
 		t.Fatal(err)
 	}
 	pw.Close()
-	go session.Wait()
+	waited := make(chan error, 1)
+	go func() { waited <- session.Wait() }()
 	t.Cleanup(func() { session.Process.Kill() })
-	pr.SetReadDeadline(time.Now().Add(10 * time.Second))
+	// The wait answers to the child's own bytes, and its clock only measures
+	// what the child has shown: no deadline before the "s" that proves it is
+	// running (a start the -j5 fork storm starved is not a hold that failed —
+	// a fair re-hearing, #935), then #874's measured margin, 8 times the
+	// start the child itself demonstrated, so a started-but-stuck child ends
+	// the test with a verdict instead of hanging it (#998; see util's
+	// holdProc for the full reasoning). Its exit is the other verdict.
+	started := time.Now()
+	runningAt := time.Time{}
 	one := make([]byte, 1)
-	if _, err := io.ReadFull(pr, one); err != nil || one[0] != '1' {
-		t.Fatalf("the session never took its hold on the bridge: %v %q", err, one)
+	for {
+		if !runningAt.IsZero() {
+			pr.SetReadDeadline(runningAt.Add(8 * runningAt.Sub(started)))
+		}
+		if _, err := io.ReadFull(pr, one); err != nil {
+			if err == io.EOF {
+				if runningAt.IsZero() {
+					t.Fatalf("the session died before it was running: read %v, exit %v", err, <-waited)
+				}
+				t.Fatalf("the session never took its hold on the bridge: it answered \"s\" and died: read %v, exit %v", err, <-waited)
+			}
+			if runningAt.IsZero() {
+				t.Fatalf("the session died before it was running: %v %q", err, one)
+			}
+			t.Fatalf("the session never took its hold on the bridge: %v: it took %v getting running and got 8 times that to lock and answer", err, runningAt.Sub(started))
+		}
+		if one[0] == '1' {
+			break
+		}
+		if one[0] == 's' {
+			runningAt = time.Now()
+		}
 	}
 	pr.Close()
 	record := filepath.Join(fx.state, "auth", ".codex.bridge")
