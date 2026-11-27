@@ -417,3 +417,98 @@ func TestRmLeavesAnotherProfilesDefaultAlone(t *testing.T) {
 		t.Fatalf("rm must not report clearing a default it left alone: %s", msg)
 	}
 }
+
+// rmOutput runs rm for one name with a piped answer and returns its stdout,
+// stderr and status.
+func rmOutput(t *testing.T, l *launcher, name, answer string) (string, string, int) {
+	t.Helper()
+	answerRmPrompt(t, answer)
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	old := os.Stderr
+	os.Stderr = w
+	out, rc := captureStdout(t, func() int { return l.rm([]string{name}) })
+	os.Stderr = old
+	w.Close()
+	b, err := io.ReadAll(r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return out, string(b), rc
+}
+
+// GH-971: removing the last profile printed "set one: ccmorph use <profile>"
+// with no profile left to set, directly above the listing's own "No profiles
+// yet — run: ccmorph add <name>". A home with no conf is repairable one way,
+// and the removal summary now names that way alone.
+func TestRmNamesTheWayOnWhenTheLastProfileGoes(t *testing.T) {
+	// remaining names the confs still on disk after the removal, and active
+	// the default before it ("" for none).
+	for _, c := range []struct {
+		name            string
+		confs, active   []string
+		removed, answer string
+		add, use        bool
+	}{
+		{"the last profile was the default", []string{"work"}, []string{"work"}, "work", "y\n", true, false},
+		{"the last profile was not the default", []string{"work"}, nil, "work", "y\n", true, false},
+		{"another profile remains and it was the default", []string{"work", "home"}, []string{"work"}, "work", "y\n", false, true},
+		{"another profile remains and it was not the default", []string{"work", "home"}, []string{"home"}, "work", "y\n", false, false},
+		{"only a skipped conf remains after the default", []string{"work"}, []string{"work"}, "work", "y\n", false, true},
+		{"the removal is declined", []string{"work"}, []string{"work"}, "work", "n\n", false, false},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			state, home := t.TempDir(), t.TempDir()
+			t.Setenv("HOME", home)
+			stubKeychain(t)
+			l := &launcher{dir: state, profileDirs: filepath.Join(home, ".claude")}
+			for _, n := range c.confs {
+				if err := os.WriteFile(filepath.Join(state, n+".conf"), []byte("type=apikey\napi_key=k\n"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			// A conf no listing can load: its name is past the limit, so it is
+			// skipped as a profile while its .conf still marks a non-empty home.
+			if c.name == "only a skipped conf remains after the default" {
+				if err := os.WriteFile(filepath.Join(state, strings.Repeat("n", profile.MaxNameLen+1)+".conf"),
+					[]byte("type=apikey\napi_key=k\n"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if len(c.active) > 0 {
+				if err := os.WriteFile(filepath.Join(state, "active"), []byte(c.active[0]+"\n"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			t.Setenv("CCMORPH_CONTEXT_LOCKED", c.removed)
+			out, stderr, rc := rmOutput(t, l, c.removed, c.answer)
+			wantRC := 0
+			if c.answer == "n\n" {
+				wantRC = 1 // a decline is not a removal
+			}
+			if rc != wantRC {
+				t.Fatalf("rc %d, want %d: %s", rc, wantRC, stderr)
+			}
+			gotAdd := strings.Contains(out, "No profiles yet — run: ccmorph add <name>")
+			gotUse := strings.Contains(stderr, "default profile removed — set one: ccmorph use <profile>")
+			if gotAdd != c.add || gotUse != c.use {
+				t.Fatalf("add hint %v (want %v), use hint %v (want %v)\nstdout: %q\nstderr: %q",
+					gotAdd, c.add, gotUse, c.use, out, stderr)
+			}
+			if c.add {
+				// The removal's own line comes first; the repair is last.
+				lines := strings.Split(strings.TrimRight(out, "\n"), "\n")
+				if lines[0] != "Removed "+c.removed || lines[len(lines)-1] != noProfilesMsg {
+					t.Fatalf("removal summary = %q", lines)
+				}
+			}
+			if c.answer == "n\n" {
+				if _, err := os.Stat(filepath.Join(state, c.removed+".conf")); err != nil {
+					t.Fatalf("a declined removal removed the profile: %v", err)
+				}
+			}
+		})
+	}
+}

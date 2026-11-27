@@ -13,16 +13,26 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
+
+	"github.com/akleizor/ccmorph/util"
 )
 
 const Usage = "ccmorph router [on|off|status|dispatch [--dry-run]|accept|report]"
+
+// stdinIsTerminal reports whether the brief's reader is a person's terminal.
+// A variable so a test can pin the terminal's answer without owning one.
+var stdinIsTerminal = func(r io.Reader) bool {
+	f, ok := r.(*os.File)
+	return ok && util.IsTerminal(int(f.Fd()))
+}
 
 // TaskHelp is `ccmorph router dispatch --help`: every flag stated with the
 // effect it has, on a run and on --dry-run, because a flag that is parsed and
 // then means nothing reads like a bug (GH-694).
 const TaskHelp = `usage: ccmorph router dispatch [--dry-run] [flags] [brief] [-- claude flags]
 
-The brief is the words, or stdin when there are none; a word that starts
+The brief is the words, or stdin when there are none — never a terminal:
+with neither, dispatch refuses and prints this usage. A word that starts
 with - is read as a flag, so give such a brief on stdin. dispatch routes it,
 runs it on the picked profile through ccmorph run and prints the worker's
 stdout unchanged: its final answer, or the output format it was given. The
@@ -163,7 +173,14 @@ func status(stdout, stderr io.Writer) int {
 		case p.UnavailableUntil > now:
 			mark = " unavailable"
 		}
-		pace := "no reading"
+		// A profile with no pace says which kind of none it is (GH-971): a
+		// subscription or budget the router paces has simply not been read
+		// yet, while every other class is never paced at all. The bare "no
+		// reading" read as a fault in either case.
+		pace := "not quota-paced"
+		if p.Class == "subscription" || p.Class == "budget" {
+			pace = "no quota reading yet"
+		}
 		if len(p.Windows) > 0 {
 			pace = fmt.Sprintf("slack %+.1f points", Slack(p, now, ""))
 		}
@@ -248,10 +265,22 @@ func task(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 			words = append(words, a)
 		}
 	}
+	// A brief with no words is on stdin — but never on a terminal: reading one
+	// there waits for keys no one was asked to type, so dispatch looked hung
+	// and Ctrl-C was the only answer (#971). And a brief that is words and
+	// blank alike names no task: routing an empty one printed a real pick, as
+	// if the question had been asked.
 	r.Prompt = strings.Join(words, " ")
-	if r.Prompt == "" {
-		b, _ := io.ReadAll(stdin)
-		r.Prompt = string(b)
+	if strings.TrimSpace(r.Prompt) == "" {
+		if !stdinIsTerminal(stdin) {
+			b, _ := io.ReadAll(stdin)
+			r.Prompt = string(b)
+		}
+	}
+	if strings.TrimSpace(r.Prompt) == "" {
+		fmt.Fprintln(stderr, "ccmorph: router: dispatch needs a task: give it as words or on stdin")
+		fmt.Fprintln(stderr, "usage: "+Usage)
+		return 2
 	}
 	if r.Kind != "" && !slices.Contains(Kinds, r.Kind) || r.Tier != "" && Efforts[r.Tier] == "" {
 		fmt.Fprintln(stderr, "ccmorph: router: --kind is one of", strings.Join(Kinds, ", "), "and --tier one of", strings.Join(Tiers, ", "))

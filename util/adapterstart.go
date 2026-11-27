@@ -56,9 +56,14 @@ func adapterStart(args []string, _ io.Reader, out, errw io.Writer) int {
 		return 2
 	}
 	core, profile, model, parent, logPath := args[0], args[1], args[2], args[3], args[4]
+	// The bare id is the one the adapter is asked for and the one the
+	// progress line names: a trailing [1m] is ccmorph's own context-window
+	// marker, an internal that a person saw in "Starting adapter for
+	// 'work (claude-sonnet-5-5[1m])'" and in no other screen (#971).
+	bare := strings.SplitN(model, "[", 2)[0]
 	argv := []string{"adapter", profile, "--auto"}
-	if model != "" {
-		argv = append(argv, "--model", strings.SplitN(model, "[", 2)[0])
+	if bare != "" {
+		argv = append(argv, "--model", bare)
 	}
 	argv = append(argv, "--parent-pid", parent)
 	logf, err := os.OpenFile(logPath, os.O_WRONLY|os.O_APPEND|os.O_CREATE, 0o600)
@@ -89,8 +94,8 @@ func adapterStart(args []string, _ io.Reader, out, errw io.Writer) int {
 	}
 	limit := adapterReadyLimit()
 	label := profile
-	if model != "" {
-		label += " (" + model + ")"
+	if bare != "" {
+		label += " (" + bare + ")"
 	}
 	start := adapterNow()
 	tick, stopTick := adapterTicker()

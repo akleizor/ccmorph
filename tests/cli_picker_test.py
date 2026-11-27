@@ -486,6 +486,18 @@ class PickerTTYTest(unittest.TestCase):
         self.assertEqual(ids, ['gw', 'tok'])  # keyless 'work' is not offered
         self.assertIn('CRED=picker-canary-key RC=0', out)
 
+    def test_cred_ends_the_secret_with_one_newline_on_a_terminal_issue_971(self):
+        """GH-971: cred printed the secret with no trailing newline, so the
+        value welded onto the shell prompt or whatever printed next. The
+        secret is a line of its own on a terminal too — exactly one CRLF
+        from the terminal driver, never two, and never none."""
+        env = self.env(fzf=False)
+        self.seed_cred_profiles()
+        rc, out, missed = run_pty('ccmorph cred gw', env)
+        self.assertIsNone(missed, out)
+        self.assertEqual(rc, 0, out)
+        self.assertEqual(out, 'picker-canary-key\r\n')
+
     def test_the_credential_picker_names_the_way_to_add_a_credential_when_none_qualifies(self):
         # GH-790: filtering must not leave a person facing an empty menu, and
         # the way it names must be one that can add a credential. `config`
@@ -830,6 +842,14 @@ class PickerTTYTest(unittest.TestCase):
         ])
         self.assertIsNone(missed, out)
         self.assertNotEqual(rc, 0, out)
+        self.assertEqual((conf.read_bytes(), self.native()), before)
+        # GH-971: a terminal's Esc at the first menu is still a plain cancel;
+        # the "needs a terminal" cause belongs only to a stdin that ran out.
+        rc, out, missed = run_pty('ccmorph config demo', env, [(b'Settings', b'\x1b')])
+        self.assertIsNone(missed, out)
+        self.assertEqual(rc, 1, out)
+        self.assertIn('Cancelled', out)
+        self.assertNotIn('config needs a terminal', out)
         self.assertEqual((conf.read_bytes(), self.native()), before)
 
     def test_connection_edit_skips_models_and_next_picker_uses_new_connection(self):
@@ -1290,6 +1310,68 @@ class PickerTTYTest(unittest.TestCase):
                     # the help line names — they precede the refusal, never trail
                     # it (#840).
                     self.assertIn('picker-alpha', result.stderr, result.stderr)
+
+    def test_a_headless_refusal_lists_the_bare_values_issue_971(self):
+        """GH-971: `run -i` and `set <p> model` with no terminal dumped each
+        menu's whole row — id, label, kind and endpoint, tab-separated — above
+        the line naming the way through. Those columns are the menu's own
+        rendering; the listing is what a direct command takes, so it is one
+        bare ID per line and nothing else."""
+        def headless(command, env):
+            return subprocess.run(
+                ['zsh', '-fc', 'source "$1"\n' + command, 'test', str(CCMORPH)],
+                env=env, stdin=subprocess.DEVNULL, capture_output=True, text=True,
+                timeout=HANG_TIMEOUT, start_new_session=True)
+
+        def listing(result, last):
+            assert result.stdout == '', result.stdout  # no answer was taken
+            lines = result.stderr.rstrip('\n').splitlines()
+            assert lines[-1] == last, result.stderr
+            return lines[:-1]
+
+        demo_rows, alpha_rows = ['demo', 'other'], ['picker-alpha', 'picker-beta']
+        # The adapter work of the profiles is the conf's; only the picker's own
+        # listing is under test, so a saved model with the window marker rides
+        # along and must not reach the listing as a column or a spelled marker.
+        self.profile()
+        self.profile('other')
+        (self.state / 'profiles/demo/settings.json').write_text(
+            json.dumps({'model': 'native-model[1m]', 'effortLevel': 'low'}))
+        with self.subTest(command='run -i'):
+            result = headless('ccmorph run -i', self.env(fzf=False))
+            assert result.returncode != 0
+            # Rows follow the profile name here; one bare ID a line, no tab.
+            assert sorted(listing(result, 'ccmorph: selection needs a terminal or fzf; '
+                                           'pass the value directly')) == demo_rows, result.stderr
+            assert '\t' not in result.stderr
+        for curl in ('ok', 'fail'):
+            with self.subTest(command='set demo model, catalogue ' + curl):
+                result = headless('ccmorph set demo model', self.env(fzf=False, curl=curl))
+                last = 'ccmorph: selection needs a terminal or fzf; pass the value directly'
+                rows = listing(result, last)
+                assert '\t' not in result.stderr, result.stderr
+                assert not [r for r in rows if r.startswith('@')], result.stderr
+                if curl == 'ok':
+                    # The catalogue's own ids are the values, whole lines (a
+                    # progress line may precede them, but no row's columns).
+                    assert [r for r in rows if r in alpha_rows] == alpha_rows, result.stderr
+        # With fzf on PATH but no terminal to draw on, the refusal names only
+        # the terminal it cannot reach (#725) and still lists the values.
+        with self.subTest(command='run -i, fzf on PATH'):
+            result = headless('ccmorph run -i', self.env(fzf=True))
+            assert sorted(listing(result, 'ccmorph: selection needs a terminal; '
+                                           'pass the value directly')) == demo_rows, result.stderr
+            assert '\t' not in result.stderr
+        # The inline native menu refuses in the picker's words, not fzf's,
+        # because it never wanted fzf: the same bare listing ends it.
+        with self.subTest(command='native menu'):
+            result = headless(
+                "ccmorph _ui select native \"Profile\" "
+                "$'demo\\tdemo\\tAPI key\\tURL\\nother\\tother\\tAPI key'",
+                self.env(fzf=False))
+            assert listing(result, 'ccmorph: selection needs a terminal; pass the value directly') \
+                == demo_rows, result.stderr
+            assert '\t' not in result.stderr
 
     def test_set_without_slot_picks_slot_then_value(self):
         env = self.env()

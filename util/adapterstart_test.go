@@ -82,9 +82,15 @@ type virtualStart struct {
 }
 
 // startVirtual swaps adapterNow and adapterTicker for a clock the test moves
-// and an unbuffered tick, starts adapterStart, and returns once the loop has
-// read its start time.
+// and an unbuffered tick, starts adapterStart on the model its cases use, and
+// returns once the loop has read its start time.
 func startVirtual(t *testing.T) *virtualStart {
+	return startVirtualModel(t, "llmgate/claude-opus-5-5")
+}
+
+// startVirtualModel is startVirtual for any model: a case about the progress
+// line's label needs the id it names, not the one another case uses.
+func startVirtualModel(t *testing.T, model string) *virtualStart {
 	t.Helper()
 	core := fakeCore(t, "exec sleep 300") // never answers; exec keeps it killable
 	v := &virtualStart{
@@ -108,7 +114,7 @@ func startVirtual(t *testing.T) *virtualStart {
 	}
 	var out bytes.Buffer
 	go func() {
-		v.result <- adapterStart([]string{core, "p", "llmgate/claude-opus-5-5", "1", os.DevNull}, nil, &out, &v.errw)
+		v.result <- adapterStart([]string{core, "p", model, "1", os.DevNull}, nil, &out, &v.errw)
 	}()
 	select {
 	case <-started:
@@ -197,5 +203,45 @@ func TestAdapterStartSaysWhyItFailed(t *testing.T) {
 		if rc := adapterStart([]string{fakeCore(t, tc.body), "p", "m", "1", os.DevNull}, nil, &out, &errw); rc != 1 || !strings.Contains(errw.String(), tc.want) || tc.refused != strings.Contains(out.String(), Refused) {
 			t.Errorf("%q: rc %d, out %q, stderr %q", tc.body, rc, out.String(), errw.String())
 		}
+	}
+}
+
+// GH-971: the progress line printed the launch's model with its context
+// window marker — "Starting adapter for 'work (claude-sonnet-5-5[1m])'" — an
+// internal no other screen shows (`inspect` renders the window as a count).
+// The line names the bare id, the same one the adapter's --model gets.
+func TestAdapterStartNamesTheBareModelInItsProgressLine(t *testing.T) {
+	t.Setenv("CCMORPH_ADAPTER_START_TIMEOUT", "5")
+	for _, c := range []struct{ model, label string }{
+		{"claude-sonnet-5-5[1m]", "p (claude-sonnet-5-5)"},
+		{"llmgate/claude-opus-5-5", "p (llmgate/claude-opus-5-5)"},
+		{"", "p"},
+	} {
+		t.Run(c.label, func(t *testing.T) {
+			v := startVirtualModel(t, c.model)
+			// The first full second is when the line is said, and the next
+			// poll is what makes it visible: the loop only takes that tick
+			// once it is back at its select, after the line's write. The bound
+			// is five, so neither poll ends the wait.
+			for _, at := range []time.Duration{time.Second, 2 * time.Second} {
+				if rc, done := v.poll(at); done {
+					t.Fatalf("rc %d before the line was due; stderr %q", rc, v.errw.String())
+				}
+			}
+			if got := v.errw.String(); !strings.Contains(got, "Starting adapter for '"+c.label+"'…") {
+				t.Fatalf("stderr %q does not name %q", got, c.label)
+			}
+			if strings.Contains(v.errw.String(), "[1m]") {
+				t.Fatalf("stderr carries the window marker: %q", v.errw.String())
+			}
+			// The poll past the bound ends the wait; the next one collects
+			// its status, as the bounded cases above do.
+			if rc, done := v.poll(10 * time.Second); done {
+				t.Fatalf("rc %d on the poll past the bound", rc)
+			}
+			if _, done := v.poll(20 * time.Second); !done {
+				t.Fatal("the wait did not end past the bound")
+			}
+		})
 	}
 }

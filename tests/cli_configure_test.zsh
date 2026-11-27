@@ -86,8 +86,31 @@ printf '\n\n' | CCMORPH_CONTEXT_LOCKED=demo ccmorph config demo >/dev/null 2>&1 
 assert_eq "$(<"$CONF")" "$before_conf" 'cancel preserved conf'
 assert_eq "$(<"$SETTINGS")" "$before_settings" 'cancel preserved settings'
 
+# GH-971: with no terminal, a config run whose stdin ended before a prompt was
+# answered stopped on a dangling bare prompt — no newline, no word about why.
+# Every prompt now closes its line and the run names the one thing it needed.
+config_eof_case() { # <label> <printf format> <prompt the input stopped at>
+  local label=$1 fmt=$2 prompt=$3 out rc
+  local msg='ccmorph: config needs a terminal, or one answer per prompt on stdin; input ended, nothing saved'
+  local before_conf=$(<"$CONF") before_settings=$(<"$SETTINGS")
+  out=$(printf "$fmt" | CCMORPH_CONTEXT_LOCKED=demo ccmorph config demo 2>&1); rc=$?
+  (( rc != 0 )) || fail "$label: config exited 0 after its stdin ended"
+  [[ "$out" == *"${prompt}"$'\n'"${msg}"* ]] ||
+    fail "$label: want '$prompt' closed by a newline then the cause (got ${(qqq)out})"
+  (( $(print -r -- "$out" | command grep -c -F -- "$msg") == 1 )) ||
+    fail "$label: the cause printed more than once (got ${(qqq)out})"
+  assert_eq "$(<"$CONF")" "$before_conf" "$label preserved conf"
+  assert_eq "$(<"$SETTINGS")" "$before_settings" "$label preserved settings"
+}
+config_eof_case 'config stdin empty' '' 'Endpoint [https://old.example]: '
+config_eof_case 'config stdin stops at the credential question' '\n' 'Replace stored credential? [y/N] '
+config_eof_case 'config stdin stops at the hidden credential' '\ny\n' 'Credential (hidden; Enter keeps current): '
+config_eof_case 'config stdin stops at the model' '\n\n' 'Default model [new-model]: '
+config_eof_case 'config stdin stops at the effort' '\n\nsome-model\n' 'Default effort [max]: '
+
 output=$(printf 'https://new.example\ny\nnew-secret\nconfigured-model\nmedium\n' | ccmorph config demo 2>&1) || fail "configure failed: $output"
 [[ "$output" != *new-secret* ]] || fail 'credential leaked in configure output'
+[[ "$output" != *'needs a terminal'* ]] || fail 'a full set of piped answers claimed a terminal is needed'
 grep -q '^base_url=https://new.example$' "$CONF" || fail 'endpoint not saved'
 grep -q '^api_key=new-secret$' "$CONF" || fail 'credential not saved'
 grep -q '^tag=keep-me$' "$CONF" || fail 'unrelated conf key lost'

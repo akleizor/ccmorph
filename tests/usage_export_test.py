@@ -436,6 +436,7 @@ def test_a_receipt_still_there_but_unreadable_still_fails_the_export_issue_583(t
     assert ran.returncode == 1, ran.stdout + ran.stderr
     assert f"usage-export: {rows / 'b.json'}: Permission denied" in ran.stderr
     assert "Nothing written" in ran.stdout and "the gateway billed, $1.00" in ran.stdout
+    assert "day files are named by local date" not in ran.stdout, ran.stdout
     assert "[Errno" not in ran.stderr and "Traceback" not in ran.stderr
     assert day.read_bytes() == before
 
@@ -1138,6 +1139,9 @@ def test_the_summary_names_where_the_files_went_and_the_command_to_run_next_issu
     assert ran.stdout == "\n".join([
         f"Exported 4 turns over 1 day from {os.path.realpath(rows)} to {root}",  # both ends named
         "one folder per profile under projects/, ccusage.json beside it",
+        # GH-971: the one place the two date spellings meet names the relation.
+        "day files are named by local date, the receipt folders by UTC date: "
+        "a turn near midnight can sit under a different date in each",
         # 0.1 + 0.0599 is 0.15990000000000001 and the estimate 0.05333333333333333:
         # both print at cents, never as the float's own spelling. The three priced
         # kinds are the whole 4, so a reader can reconcile the counts.
