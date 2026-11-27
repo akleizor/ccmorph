@@ -444,15 +444,20 @@ func TestRetireRouteNeverSignalsAPidNotRunningTheBridge(t *testing.T) {
 }
 
 // TestMain lets a test run this binary as a route hold: with
-// CCMORPH_TEST_HOLD_USERS set it takes routeHold's hold on that file, whatever
-// its argv says, and runs no test. It is also the fake security the keychain
-// tests put on PATH under the name "security" (GH-830): that dispatch needs
-// both variables, so an operator's env alone runs no test differently.
+// CCMORPH_TEST_HOLD_USERS set it answers "s" the moment it is running, then
+// takes routeHold's hold on that file, whatever its argv says, and runs no
+// test. The "s" is for the parent's sake, not the hold's: it marks where the
+// child's own part of the wait begins, so a start the scheduler starved can
+// never be read as a hold that failed (#998). It is also the fake security
+// the keychain tests put on PATH under the name "security" (GH-830): that
+// dispatch needs both variables, so an operator's env alone runs no test
+// differently.
 func TestMain(m *testing.M) {
 	if state := os.Getenv(fakeSecurityEnv); state != "" && filepath.Base(os.Args[0]) == "security" {
 		os.Exit(fakeSecurity(state, os.Args[1:], os.Stdin, os.Stdout, os.Stderr))
 	}
 	if users := os.Getenv("CCMORPH_TEST_HOLD_USERS"); users != "" {
+		os.Stdout.WriteString("s")
 		os.Exit(routeHold([]string{users}, nil, os.Stdout, io.Discard))
 	}
 	os.Exit(m.Run())
@@ -488,6 +493,21 @@ func coreCopy(t *testing.T) string {
 
 // holdProc runs this test binary from the file exe with argv as its whole argv,
 // holding users (TestMain), and returns once the hold has landed.
+//
+// The wait is bounded by the child's own evidence — its bytes, or its exit —
+// and never by the wall clock. The literal 10 s read deadline this replaced
+// charged the hold for the child's start: under make test's -j5 fork storm
+// the re-exec'd binary's exec, runtime init and TestMain outgrew the window,
+// and a start the scheduler starved went red as a hold that never landed —
+// the class #874 and #984 repaired, at 6.9 s alone against a 10 s budget even
+// unloaded (#998). A starved start is not evidence of a failed hold and gets
+// a fair re-hearing (#935), so no time the child spends merely getting going
+// counts against anything: it answers "s" the moment it is running and "1"
+// once the hold lands, and only its exit can indict it. The deadline's teeth
+// stay — a holder whose hold never lands still goes red, in the same moment
+// and with better words: routeHold answers "1" as its first act after the
+// lock, and every way it fails to take the hold exits, which closes the pipe
+// here and reports the exit status that says why.
 func holdProc(t *testing.T, exe, users string, argv ...string) *exec.Cmd {
 	t.Helper()
 	cmd := exec.Command(exe)
@@ -502,15 +522,30 @@ func holdProc(t *testing.T, exe, users string, argv ...string) *exec.Cmd {
 		t.Fatal(err)
 	}
 	pw.Close()
-	go cmd.Wait()
+	waited := make(chan error, 1)
+	go func() { waited <- cmd.Wait() }()
 	t.Cleanup(func() { cmd.Process.Kill() })
 	defer pr.Close()
-	pr.SetReadDeadline(time.Now().Add(10 * time.Second))
+	running := false
 	one := make([]byte, 1)
-	if _, err := io.ReadFull(pr, one); err != nil || one[0] != '1' {
-		t.Fatalf("the hold never landed: %v %q", err, one)
+	for {
+		if _, err := io.ReadFull(pr, one); err != nil {
+			why := "the holder died before it was running"
+			if running {
+				why = "the hold never landed"
+			}
+			if err == io.EOF {
+				t.Fatalf("%s: read %v, exit %v", why, err, <-waited)
+			}
+			t.Fatalf("%s: read %v %q", why, err, one)
+		}
+		if one[0] == '1' {
+			return cmd
+		}
+		if one[0] == 's' {
+			running = true
+		}
 	}
-	return cmd
 }
 
 // argvOf keeps the argument boundaries the joined command line loses: one
