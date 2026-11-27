@@ -9,6 +9,9 @@ import (
 	"runtime"
 	"strings"
 	"unicode/utf8"
+
+	"github.com/akleizor/ccmorph/ordjson"
+	"github.com/akleizor/ccmorph/util"
 )
 
 // What the Remote Control edge does to a request body: which model it names
@@ -16,10 +19,10 @@ import (
 // and the event uploads the phone downloads lightened.
 
 // A pinned tier (`tier.fable=gpt-6-astra` in rc-hosts) reaches the session as
-// ANTHROPIC_DEFAULT_FABLE_MODEL, which only covers the bare alias. The phone's
+// the tier's env key (util.TierEnvKey), which only covers the bare alias. The phone's
 // model picker sends the full id (claude-fable-5-1), so the proxy pins the
 // whole family.
-var claudeFamily = regexp.MustCompile(`^claude-(fable|opus|sonnet|haiku)-\d`)
+var claudeFamily = regexp.MustCompile(`^claude-(` + strings.Join(util.TierWords, "|") + `)-\d`)
 
 // pinnedModel is the model a pinned tier sends model to, "" when none does.
 func pinnedModel(model string, tiers map[string]string) string {
@@ -33,12 +36,9 @@ func pinnedModel(model string, tiers map[string]string) string {
 	return strings.TrimSuffix(tiers[key], "[1m]")
 }
 
-// aliasOrder is the order a model shared by two aliases is read back in.
-var aliasOrder = []string{"fable", "opus", "sonnet", "haiku"}
-
 // routeAlias is the alias the route's own tiers map to model, "" when none.
 func routeAlias(model string, routeTiers map[string]string) string {
-	for _, a := range aliasOrder {
+	for _, a := range util.TierWords {
 		if routeTiers[a] == model {
 			return a
 		}
@@ -182,21 +182,12 @@ func slimResult(node any, shrink shrinker) (any, bool) {
 	return node, false
 }
 
-// truthy is Python's truth of a JSON value, for the signature field.
-func truthy(v any) bool {
-	switch x := v.(type) {
-	case nil:
-		return false
-	case string:
-		return x != ""
-	case bool:
-		return x
-	case []any:
-		return len(x) > 0
-	case *obj:
-		return len(x.keys) > 0
+// filled is Python's truth of a JSON value, for the signature field.
+func filled(v any) bool {
+	if o, ok := v.(*obj); ok {
+		return len(o.keys) > 0
 	}
-	return true // a number: 0 is the one that is not, and no signature is 0
+	return ordjson.Truthy(v)
 }
 
 // slimPayload lightens one event payload in place; true if it changed.
@@ -223,7 +214,7 @@ func slimPayload(payload *obj, shrink shrinker) bool {
 			changed = true
 		}
 		for _, b := range content {
-			if m, ok := b.(*obj); ok && truthy(m.m["signature"]) {
+			if m, ok := b.(*obj); ok && filled(m.m["signature"]) {
 				m.set("signature", "")
 				changed = true
 			}

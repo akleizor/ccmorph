@@ -17,6 +17,8 @@ import (
 	"sync"
 	"syscall"
 	"time"
+
+	"github.com/akleizor/ccmorph/util/paths"
 )
 
 // Edge is the Remote Control edge's side of the proxy: the same proxy as a
@@ -162,20 +164,7 @@ func (e *Edge) PublishHeld() error {
 	}
 	b, _ := json.Marshal(map[string]any{"edge": e.Parent, "edge_started": started, "profiles": profiles})
 	path := e.heldPath()
-	f, err := os.CreateTemp(filepath.Dir(path), filepath.Base(path)+".*.tmp")
-	if err != nil {
-		return err
-	}
-	_, err = f.Write(b)
-	if cerr := f.Close(); err == nil {
-		err = cerr
-	}
-	if err == nil {
-		err = os.Rename(f.Name(), path)
-	}
-	if err != nil {
-		os.Remove(f.Name())
-	}
+	err := paths.AtomicWrite(paths.WriteIn{Path: path, Temp: filepath.Base(path) + ".*.tmp", Data: b, Mode: 0o600})
 	return err
 }
 
