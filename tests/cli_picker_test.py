@@ -29,7 +29,7 @@ except ModuleNotFoundError:  # GH-932: this file also runs as a standalone stdli
 
     pytest = _NoPytest
 
-from support import HANG_TIMEOUT, path_without, stdin_a_terminal, wait_until
+from support import HANG_TIMEOUT, SPAWN_TEST_BUDGET, path_without, stdin_a_terminal, wait_until
 
 ROOT = Path(__file__).resolve().parents[1]
 CCMORPH = ROOT / 'lib/ccmorph.sh'
@@ -602,10 +602,10 @@ class PickerTTYTest(unittest.TestCase):
                 self.assertEqual(key(last_lines(out)), key(last_lines(headless.stderr)), out + headless.stderr)
 
     # GH-932: two `run_pty` children (`ccmorph run demo`), each a zsh that
-    # sources lib/ccmorph.sh and is HANG_TIMEOUT (120 s) bounded; on the night
+    # sources lib/ccmorph.sh and is HANG_TIMEOUT bounded; on the night
     # gate's saturated host those spawns crossed the 60 s ceiling. Per-test
     # headroom; the ceiling stays 60 s everywhere else (#892).
-    @pytest.mark.timeout(300)
+    @pytest.mark.timeout(SPAWN_TEST_BUDGET)
     def test_cold_launch_selects_a_model_before_starting_the_adapter(self):
         env = self.env(fzf=True)
         self.profile()
@@ -626,10 +626,10 @@ class PickerTTYTest(unittest.TestCase):
         self.assertNotIn('SELECTED=', out)  # cancellation must not start anything
 
     # GH-932: seven children — six `run_pty` and one `subprocess.run`, each a
-    # zsh that sources lib/ccmorph.sh, HANG_TIMEOUT (120 s) bounded; on the
+    # zsh that sources lib/ccmorph.sh, HANG_TIMEOUT bounded; on the
     # night gate's saturated host that stack crossed the 60 s ceiling.
     # Per-test headroom; the ceiling stays 60 s everywhere else (#892).
-    @pytest.mark.timeout(300)
+    @pytest.mark.timeout(SPAWN_TEST_BUDGET)
     def test_automatic_picker_preserves_explicit_saved_and_headless_choices(self):
         env = self.env(fzf=True)
         self.profile()
@@ -1227,10 +1227,10 @@ class PickerTTYTest(unittest.TestCase):
         self.assertNotIn('\x1b[', out)
 
     # GH-932: four `run_pty` `ccmorph set demo model -i` children, each a zsh
-    # that sources lib/ccmorph.sh, HANG_TIMEOUT (120 s) bounded; on the night
+    # that sources lib/ccmorph.sh, HANG_TIMEOUT bounded; on the night
     # gate's saturated host the four crossed the 60 s ceiling. Per-test
     # headroom; the ceiling stays 60 s everywhere else (#892).
-    @pytest.mark.timeout(300)
+    @pytest.mark.timeout(SPAWN_TEST_BUDGET)
     def test_numbered_fallback_types_names_starting_with_j_or_k_issue_840(self):
         """GH-840 gate: j/k move while nothing is typed, yet a name that
         starts with j or k stays typeable at any pace. The gate typed j,
@@ -1461,10 +1461,10 @@ class PickerTTYTest(unittest.TestCase):
         self.assertEqual(self.field('demo', 'effort'), 'medium')
 
     # GH-932: nine children — one `subprocess.run` and eight `run_pty`, each a
-    # zsh that sources lib/ccmorph.sh, HANG_TIMEOUT (120 s) bounded; on the
+    # zsh that sources lib/ccmorph.sh, HANG_TIMEOUT bounded; on the
     # night gate's saturated host they crossed the 60 s ceiling. Per-test
     # headroom; the ceiling stays 60 s everywhere else (#892).
-    @pytest.mark.timeout(300)
+    @pytest.mark.timeout(SPAWN_TEST_BUDGET)
     def test_set_confirms_once_in_a_terminal_and_pipes_the_value_alone_issue_358(self):
         """#358: a terminal saw the Saved sentence and then the value again on a
         line of its own: the sentence went to stderr, the value to stdout, and a
@@ -1547,11 +1547,11 @@ class PickerTTYTest(unittest.TestCase):
             self.assertNotIn('medium', rows, out)
 
     # GH-932: three `run_pty` children (`config demo`, then two `set demo model
-    # -i`), each a zsh that sources lib/ccmorph.sh, HANG_TIMEOUT (120 s)
+    # -i`), each a zsh that sources lib/ccmorph.sh, HANG_TIMEOUT
     # bounded; on the night gate's saturated host they crossed the 60 s
     # ceiling. Per-test headroom; the ceiling stays 60 s everywhere else
     # (#892).
-    @pytest.mark.timeout(300)
+    @pytest.mark.timeout(SPAWN_TEST_BUDGET)
     def test_set_model_picker_opens_the_config_model_step_issue_279(self):
         """`set <profile> model -i` and config's model step are one picker.
 

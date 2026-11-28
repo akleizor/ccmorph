@@ -18,7 +18,7 @@ import threading
 
 import pytest
 
-from support import CORE, HANG_TIMEOUT, needs_shim
+from support import CORE, HANG_TIMEOUT, SPAWN_TEST_BUDGET, needs_shim
 
 pytestmark = needs_shim
 
@@ -58,10 +58,10 @@ def core(env, *args, stdin=''):
                           text=True, capture_output=True, timeout=HANG_TIMEOUT)
 
 
-# GH-932: four `core()` calls, each a HANG_TIMEOUT (120 s) subprocess; on the
+# GH-932: four `core()` calls, each a HANG_TIMEOUT subprocess; on the
 # night gate's saturated host they crossed the 60 s ceiling. Per-test headroom;
 # the ceiling stays 60 s everywhere else (#892's rule).
-@pytest.mark.timeout(300)
+@pytest.mark.timeout(SPAWN_TEST_BUDGET)
 def test_a_launcher_from_an_earlier_release_still_starts_claude_on_its_route(box):
     state, env, seen = box
     # profile-read: a v0.4.3 launcher passes two env-key lists after <secure>.
