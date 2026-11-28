@@ -52,6 +52,15 @@
   gets none, so no live profile ever names a build that can be removed
   (#987).
 
+- **A `ccmorph run` with no terminal and no saved model now stops before
+  anything starts, with the list/save guidance.** It used to go on to Claude
+  Code, which met its own non-tty `--print` guard and left the person with a
+  ~40 s teardown instead of a next step. An argv carrying the work, run's own
+  `--`, and the stable `_ccm_launch -a` entry start as before. Claude Code's
+  message for a cancelled session-end hook now names the plugin's
+  `session-end.sh` script, not its shell source, and a launch that fails no
+  longer waits on its sizing probe before retiring the adapter (#969).
+
 - **A launch beside a live session no longer rewrites the profile's auth
   files.** Provisioning read and replaced `config.json` and `.claude.json`
   whole-file without the profile's live lock, so a save the running session

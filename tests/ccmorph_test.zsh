@@ -6302,7 +6302,7 @@ test_profile_advisor_disable_reaches_launch_without_leaking() {
   actual=$(ccmorph _env gw) || rc=1
   assert_contains "$actual" 'CLAUDE_CODE_DISABLE_ADVISOR_TOOL=1' \
     'a profile must be able to disable the native advisor' || rc=1
-  ccmorph run gw >/dev/null 2>&1 || rc=1
+  ccmorph run gw prompt >/dev/null 2>&1 || rc=1
   assert_contains "$(<"$CCMORPH_TEST_LOG")" 'DISABLE_ADVISOR=1' \
     'the native child must receive the declared advisor control' || rc=1
   : > "$CCMORPH_TEST_LOG"
@@ -6331,11 +6331,11 @@ test_profile_simple_mode_reaches_launch_without_leaking() {
     'a profile must be able to select minimal mode' || rc=1
   assert_contains "$actual" 'CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1' \
     'a profile must be able to stop non-essential model calls' || rc=1
-  ccmorph run local >/dev/null 2>&1 || rc=1
+  ccmorph run local prompt >/dev/null 2>&1 || rc=1
   assert_contains "$(<"$CCMORPH_TEST_LOG")" 'SIMPLE=1' \
     'the child must receive the declared minimal mode' || rc=1
   : > "$CCMORPH_TEST_LOG"
-  ccmorph run other >/dev/null 2>&1 || rc=1
+  ccmorph run other prompt >/dev/null 2>&1 || rc=1
   assert_contains "$(<"$CCMORPH_TEST_LOG")" 'SIMPLE=<unset>' \
     'minimal mode must not leak into another profile' || rc=1
   rm -rf "$test_home"
