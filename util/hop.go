@@ -19,15 +19,15 @@ type psRow struct {
 	start time.Time // when the process started; zero when the table cannot tell
 }
 
-// sysctlTable is sysctlProcessTable. A variable so a test can reach the ps
-// fallback on darwin, where the kernel's read never fails and no PATH double
-// reaches it.
+// sysctlTable is sysctlProcessTable: the kernel's own list, sysctl on darwin
+// and /proc on Linux. A variable so a test can reach the ps fallback, or count
+// the reads a launch or a sweep makes.
 var sysctlTable = sysctlProcessTable
 
 // processTable is one read of the process table: pid -> parent, executable,
-// argv and start time; sysctl on darwin, ps elsewhere or when that read fails
-// its self-check. Its ps fallback reads without a deadline: a caller that needs
-// one uses processTableWithin.
+// argv and start time; from the kernel's own list on darwin and Linux, or from
+// ps when that read cannot speak. Its ps fallback reads without a deadline: a
+// caller that needs one uses processTableWithin.
 func processTable() map[int]psRow { return processTableWithin(context.Background()) }
 
 // processTableWithin is processTable with the ps fallback bounded by ctx: a

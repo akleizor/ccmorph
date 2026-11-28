@@ -53,8 +53,10 @@ func TestGCReapsWhatAKilledLaunchLeaves(t *testing.T) {
 	}
 	defer func() { script.Process.Kill(); script.Wait() }()
 	// A view's record is joined by the kernel's mark of when its claude
-	// started (#218): a process that is not the holder stands in for the dead
-	// claude's mark.
+	// started (#218): a mark that is not the holder's stands in for the dead
+	// claude's. Two processes started in one kernel tick (10ms on Linux) carry
+	// the same real mark, so the record's mark is stepped off the holder's
+	// rather than raced against another live process's start.
 	mark := func(pid int) string {
 		s, ok := procStartToken(pid)
 		if !ok {
@@ -62,7 +64,17 @@ func TestGCReapsWhatAKilledLaunchLeaves(t *testing.T) {
 		}
 		return s
 	}
-	self := mark(os.Getpid())
+	otherMark := func(pid int) string {
+		s := mark(pid)
+		d := byte('0')
+		if s[len(s)-1] == '0' {
+			d = '1'
+		}
+		return s[:len(s)-1] + string(d)
+	}
+	// The process that now holds the dead claude's number started at another
+	// mark, so its record is not the claude's.
+	deadMark := otherMark(recycled.Process.Pid)
 
 	root := t.TempDir()
 	state, tmp := filepath.Join(root, "state"), filepath.Join(root, "tmp")
@@ -110,7 +122,7 @@ func TestGCReapsWhatAKilledLaunchLeaves(t *testing.T) {
 	ancient := time.Date(2000, 1, 1, 0, 0, 0, 0, time.UTC)
 	deadViewTmp := view(tmp, "ccmorph-private.1", "999997", "")
 	deadViewRun := view(filepath.Join(state, "run"), "ccmorph-private.2", "999996", "")
-	recycledView := view(tmp, "ccmorph-private.3", strconv.Itoa(recycled.Process.Pid), self)
+	recycledView := view(tmp, "ccmorph-private.3", strconv.Itoa(recycled.Process.Pid), deadMark)
 	claudeView := view(tmp, "ccmorph-private.4", strconv.Itoa(claude.Process.Pid), mark(claude.Process.Pid))
 	youngView := view(filepath.Join(state, "run"), "ccmorph-private.5", "999995", "")
 	noOwner := view(filepath.Join(state, "run"), "ccmorph-private.6", "", "")
@@ -126,10 +138,10 @@ func TestGCReapsWhatAKilledLaunchLeaves(t *testing.T) {
 	// mark, a start that reads two minutes past the record is cannot-tell, so
 	// the view stays while the pid lives (#218).
 	legacyView := view(tmp, "ccmorph-private.10", strconv.Itoa(claude.Process.Pid), "")
-	// A recycled pid whose record reads newer than its holder's start, so
-	// that no clock could call the holder later, is still not the claude: the
-	// marks differ, and the view goes (#218).
-	lateView := view(tmp, "ccmorph-private.9", strconv.Itoa(recycled.Process.Pid), self)
+	// A recycled pid whose record names a different start from its holder's is
+	// still not the claude, however a clock would order the two: identity is
+	// the kernel's mark, not a time compared against one (#218).
+	lateView := view(tmp, "ccmorph-private.9", strconv.Itoa(recycled.Process.Pid), deadMark)
 	late := time.Now().Add(-time.Hour)
 	for _, d := range []string{deadViewTmp, deadViewRun, recycledView, skewedView, legacyView} {
 		os.Chtimes(d, past, past)
