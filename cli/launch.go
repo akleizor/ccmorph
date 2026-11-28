@@ -90,7 +90,7 @@ type relayNext struct {
 func Main(args []string) int {
 	l := fromEnv()
 	l.theme()
-	return l.launchMain(args)
+	return endedStatus(l.launchMain(args))
 }
 
 func (l *launcher) launchMain(args []string) int {
@@ -241,13 +241,25 @@ func (l *launcher) theme() {
 }
 
 // signals is _ccm_launch's traps and _ccm_fork_forward's: INT and QUIT belong to
-// Claude Code (it shares the terminal's process group), TERM and HUP are handed to
-// it while it runs, and otherwise stop the helpers and end this launch by them.
+// Claude Code while it runs (it shares the terminal's process group and gets them
+// itself) and to a picker while one reads the keys, TERM and HUP are handed to the
+// child while it runs, and otherwise stop the helpers and end this launch by them.
+// The swallow was the launch's whole life, so every pre-session wait that prints
+// "Ctrl-C to cancel" — the endpoint check, the adapter's readiness — ignored the
+// signal it advertised: with no session running and no picker holding the keys,
+// Ctrl-C points at the launcher, and the launch ends like it does under a TERM
+// (GH-1028).
 func (l *launcher) signals(ch chan os.Signal) {
 	for s := range ch {
 		sig := s.(syscall.Signal)
 		if sig == syscall.SIGINT || sig == syscall.SIGQUIT {
-			continue
+			l.mu.Lock()
+			session := l.child != nil
+			l.mu.Unlock()
+			if session || keysReading() {
+				swallowed(s) // the session takes it from the terminal; a picker answers with its own leave
+				continue
+			}
 		}
 		l.mu.Lock()
 		child := l.child
@@ -258,11 +270,7 @@ func (l *launcher) signals(ch chan os.Signal) {
 			continue
 		}
 		l.mu.Unlock()
-		l.stopHelpers()
-		signal.Reset(sig)
-		syscall.Kill(os.Getpid(), sig)
-		time.Sleep(time.Second)
-		os.Exit(128 + int(sig))
+		endCommand(l, sig)
 	}
 }
 

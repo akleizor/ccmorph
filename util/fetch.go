@@ -209,8 +209,17 @@ func curlFed(config string, args []string, errw io.Writer) (string, error) {
 	cmd := exec.Command("curl", append([]string{"-K", "-"}, args...)...)
 	cmd.Stdin = strings.NewReader(config)
 	cmd.Stderr = errw
-	b, err := cmd.Output()
-	return string(b), err
+	var out strings.Builder
+	cmd.Stdout = &out
+	if err := cmd.Start(); err != nil {
+		return "", err
+	}
+	// A credential check is a wait Ctrl-C may interrupt; the curl it started
+	// must not outlive the command that was told to cancel (GH-1028).
+	release := TrackChild(cmd.Process)
+	defer release()
+	err := cmd.Wait()
+	return out.String(), err
 }
 
 // escCred escapes a credential for one line of curl's stdin config.
