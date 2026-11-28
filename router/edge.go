@@ -99,9 +99,6 @@ func leavePick(session, prompt, word, model string) error {
 	return agentproxy.LeavePick(edgeAgents(), session, prompt, agentproxy.Pick{Word: word, Model: model})
 }
 
-// dropAgent removes a stopped agent's binding (agentproxy.Bound).
-func dropAgent(agent string) { agentproxy.DropAgent(edgeAgents(), agent) }
-
 // proxyServes is whether the launcher's agent proxy can carry profile's sign-in:
 // a subscription sign-in or token, an API key, a gateway or a provider
 // (cli.agentProxyServes keeps the same list).

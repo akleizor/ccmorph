@@ -2086,8 +2086,10 @@ the pending pick from that session's own folder to `agents/<agent id>.json`, and
 sends that request and every later one of that agent to the pick with the pick's
 model. A pick binds only an agent of the session that left it: two sessions
 sending one prompt leave two picks, and in a same-session fan-out the later agent
-finds none and runs on the session's own models. SubagentStop removes the
-binding; a pick unclaimed after ten minutes is swept. When the proxy cannot hold
+finds none and runs on the session's own models. The binding outlives
+SubagentStop, because Claude Code can resume a stopped agent under the same id
+and its transcript carries the pick's reasoning blocks; it goes with the run's
+proxy dir, and the edge sweeps one a week old. A pick unclaimed after ten minutes is swept. When the proxy cannot hold
 the profile, the hook falls back to the session's native aliases.
 
 Every other session the launcher opens with the router on runs behind the

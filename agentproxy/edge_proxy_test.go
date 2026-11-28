@@ -326,9 +326,8 @@ func TestAPickedSubagentIsServedByItsPick(t *testing.T) {
 	}
 	r.post(t, msgs, "s1", "a2", "claude-opus-5-5", "unrelated") // no pick waits
 	r.expect(t, r.first, "the account")
-	DropAgent(r.e.AgentsDir(), "a1")
-	r.post(t, msgs, "s1", "a1", "claude-opus-5-5", "after stop")
-	r.expect(t, r.first, "the account")
+	r.post(t, msgs, "s1", "a1", "claude-opus-5-5", "a resumed turn") // still bound after a stop
+	r.expect(t, r.route, "the route")
 	if _, err := os.Stat(r.e.AgentsDir()); err != nil {
 		t.Fatal("the router's folder is gone")
 	}

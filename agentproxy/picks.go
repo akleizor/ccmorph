@@ -17,7 +17,8 @@ import (
 // writes {word, model} to <dir>/pending/<session id>/<sha256 of the agent's
 // prompt>.json, in the folder of the session that left it; the proxy binds it to
 // the agent whose first request carries that prompt by renaming it to
-// <dir>/<agent id>.json; SubagentStop removes the binding. The Remote Control
+// <dir>/<agent id>.json. The binding outlives SubagentStop (a stopped agent can
+// be resumed under its id) and goes with the run dir, or is swept. The Remote Control
 // proxy (agentproxy.Claim) keeps the same layout in the edge's bridge dir.
 
 // AgentHeader names the subagent a request comes from.
@@ -38,7 +39,7 @@ var (
 
 const (
 	pendingTTL = 600 * time.Second  // a pick waits this long for its agent's first request
-	boundTTL   = 7 * 24 * time.Hour // a binding whose agent never stopped is swept after this
+	boundTTL   = 7 * 24 * time.Hour // a binding is swept this long after its agent was bound
 )
 
 // Pick is where one subagent's requests go: a switch word (a profile name for
@@ -76,13 +77,6 @@ func LeavePick(dir, session, prompt string, p Pick) error {
 	}
 	b, _ := json.Marshal(map[string]string{"word": p.Word, "model": p.Model})
 	return paths.AtomicWrite(paths.WriteIn{Path: filepath.Join(folder, PromptKey(prompt)+".json"), Temp: ".pick.*.tmp", Data: b, NoChmod: true})
-}
-
-// DropAgent removes a stopped agent's binding.
-func DropAgent(dir, agent string) {
-	if dir != "" && agentID.MatchString(agent) {
-		os.Remove(filepath.Join(dir, agent+".json"))
-	}
 }
 
 func readPick(path string) (Pick, bool) {

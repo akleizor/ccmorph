@@ -256,8 +256,10 @@ func SubagentStop(in io.Reader, w io.Writer) {
 	if hard == "" && failed {
 		hard = "error"
 	}
-	dropAgent(ev.AgentID)
-	agentproxy.DropAgent(os.Getenv(agentproxy.DirEnv), ev.AgentID)
+	// The agent's binding stays: Claude Code can resume a stopped agent under
+	// the same id, and its transcript holds the pick's reasoning blocks, which
+	// only the pick's endpoint accepts. The run dir goes with the run, and the
+	// edge sweeps an old binding.
 	if hint := complete(c, id, text, hard); hint != "" {
 		hookOut(w, map[string]any{"systemMessage": hint})
 	}

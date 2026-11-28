@@ -155,9 +155,8 @@ func TestPickedAgentGoesToItsProfile(t *testing.T) {
 	if g := <-first; g.agent != "agent2" {
 		t.Fatalf("agent2 went elsewhere: %+v", g)
 	}
-	DropAgent(p.Dir, "agent1")
-	send(t, c, "agent1", "after stop")
-	<-first
+	send(t, c, "agent1", "a resumed turn") // a stopped agent resumed: still its pick
+	<-gw
 }
 
 // #959: a pick names the session that left it, so two sessions sending one

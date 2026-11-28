@@ -522,8 +522,8 @@ func TestPreToolUseHandsAnotherProfilesPickToTheEdgeProxy(t *testing.T) {
 		t.Fatal(err)
 	}
 	SubagentStop(strings.NewReader(`{"agent_type":"general-purpose","agent_id":"a1b2","last_assistant_message":"done"}`), io.Discard)
-	if _, err := os.Stat(bound); !os.IsNotExist(err) {
-		t.Fatalf("a stopped agent's binding is removed: %v", err)
+	if _, err := os.Stat(bound); err != nil {
+		t.Fatalf("a stopped agent keeps its binding, so a resume stays on its pick: %v", err)
 	}
 }
 
@@ -546,8 +546,8 @@ func TestPreToolUseHandsAnotherProfilesPickToTheAgentProxy(t *testing.T) {
 		t.Fatalf("the proxy claims the pick from the agent's prompt: %+v %v", p, ok)
 	}
 	SubagentStop(strings.NewReader(`{"agent_type":"general-purpose","agent_id":"a1","last_assistant_message":"done"}`), io.Discard)
-	if _, ok := agentproxy.Bound(dir, "a1"); ok {
-		t.Fatal("a stopped agent's binding is removed")
+	if _, ok := agentproxy.Bound(dir, "a1"); !ok {
+		t.Fatal("a stopped agent keeps its binding, so a resume stays on its pick")
 	}
 
 	// A provider or another subscription account is left for the proxy too.
