@@ -580,12 +580,51 @@ func TestStoreSaveWritesARepeatedConfLineOnceIssue1031(t *testing.T) {
 	if _, err := profile.Read(filepath.Dir(s.conf), "demo", false, profile.Defaults(), func(string) {}); err != nil {
 		t.Fatal(err)
 	}
-	// The canonical layout settles a comment once; after that a save is a no-op.
+	// The first save's layout is the last one: the very next save must leave
+	// these bytes alone, not move a retained comment to another key.
+	first := got
 	s.ok("seed-model-defaults", "model", StoreChange{})
-	settled := s.read(s.conf)
+	if second := s.read(s.conf); second != first {
+		t.Fatalf("the second save rewrote the healed conf:\nfirst:\n%s\nsecond:\n%s", first, second)
+	}
 	s.ok("seed-model-defaults", "model", StoreChange{})
-	if s.read(s.conf) != settled || countLine(settled, "model=m") != 1 {
-		t.Fatalf("a further save changed the conf:\n%s", settled)
+	if third := s.read(s.conf); third != first {
+		t.Fatalf("a third save rewrote the healed conf:\n%s", third)
+	}
+}
+
+// The gate's own conf: the comments sit above the repeated model line and a
+// context_window key sorts after it, so a save that appends the keys it writes
+// at the end carries the comments past their neighbours on the first pass and
+// back on the second. Every save must land the same bytes (#1031).
+func TestStoreSecondSaveLeavesTheHealedConfByteForByteIssue1031(t *testing.T) {
+	for _, op := range []string{"seed-model-defaults", "set"} {
+		t.Run(op, func(t *testing.T) {
+			s := newStoreEnv(t)
+			s.write(s.conf, storeConf+"\ncontext_window.m=10000\n"+
+				"model=m\nmodel=m\ntag=t\ntag=t\n# note\n# note\n")
+			ch := StoreChange{}
+			key := ""
+			if op == "seed-model-defaults" {
+				key = "model"
+			} else {
+				ch = StoreChange{Model: "m"}
+			}
+			s.ok(op, key, ch)
+			first := s.read(s.conf)
+			for line, want := range map[string]int{"model=m": 1, "tag=t": 1, "model_defaults=1": 1, "# note": 2} {
+				if n := countLine(first, line); n != want {
+					t.Fatalf("%q x%d, want %d:\n%s", line, n, want, first)
+				}
+			}
+			if _, err := profile.Read(filepath.Dir(s.conf), "demo", false, profile.Defaults(), func(string) {}); err != nil {
+				t.Fatal(err)
+			}
+			s.ok(op, key, ch)
+			if second := s.read(s.conf); second != first {
+				t.Fatalf("the second save moved lines:\nfirst:\n%s\nsecond:\n%s", first, second)
+			}
+		})
 	}
 }
 
