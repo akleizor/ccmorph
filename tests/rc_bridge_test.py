@@ -1861,3 +1861,14 @@ def test_a_rehand_holds_a_profile_without_a_word(tmp_path, monkeypatch):
     rc.switch("gw", "me", rehand=True)
     assert (rc.STATE / "switch-gw.json").exists()
     assert not (rc.STATE / "inference").exists()
+
+
+def test_a_rehand_of_a_profile_another_edge_serves_exits_nonzero(tmp_path, monkeypatch):
+    """The router reads --switch --rehand's exit as "the edge's proxy holds it": the
+    no-op for a profile whose word is something else must not exit 0."""
+    rc, _ = _switch_state(tmp_path, monkeypatch)
+    monkeypatch.setattr(rc, "inference_word", lambda profile, account: "route")
+    with pytest.raises(SystemExit) as e:
+        rc.switch("gw", "me", rehand=True)
+    assert e.value.code == rc.REHAND_NOT_HELD != 0
+    assert not (rc.STATE / "switch-gw.json").exists()

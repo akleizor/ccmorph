@@ -997,6 +997,9 @@ def _switch_lock():
     return open(STATE / ".switch.lock", "a")
 
 
+REHAND_NOT_HELD = 3   # --switch --rehand: the profile has its own live edge, not this one
+
+
 def switch(profile: str, account: str, session: str | None = None, rehand: bool = False) -> None:
     """Send inference to `profile` from the next turn, with no restart: every host's,
     or with `session` that one phone session's only (the rest keep the shared switch).
@@ -1018,7 +1021,7 @@ def switch(profile: str, account: str, session: str | None = None, rehand: bool 
     word = inference_word(profile, account)
     if rehand and word != profile:
         print(f"ccmorph-rc: '{profile}' is the '{word}' word now; nothing to hand over", file=sys.stderr)
-        return
+        raise SystemExit(REHAND_NOT_HELD)   # the caller must not treat the profile as held
     hand = payload = up = None
     if word == "account":
         # The account's own model per alias, for a tier the route pinned (fable -> the
