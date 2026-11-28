@@ -1852,11 +1852,13 @@ class PickerTTYTest(unittest.TestCase):
         silent browser sign-in (whose captured `claude logout` answers only
         "logout failed"); the footer names the keys the picker answers."""
         env = self.env()
+        env['NO_COLOR'] = '1'  # match the pointer in the repaint
         stub = self.tmp / 'bin' / 'claude'
         stub.write_text('#!/bin/sh\nexit 1\n')  # any account sign-in fails here
         stub.chmod(0o755)
         rc, out, missed = run_pty('ccmorph add pick3', env, [
-            (b'Sign-in method', b'3\r'),   # jump to "API key", Enter takes it
+            (b'Sign-in method', b'3'),
+            ('❯ API key'.encode(), b'\r'),  # Enter only after the jump repaints
             (b'Select [1-', b'1\n'),       # the numbered provider list: Anthropic
             (b'API key for', b'sk-digit-not-real\n'),
         ])
@@ -1889,7 +1891,9 @@ class PickerTTYTest(unittest.TestCase):
         ])
         self.assertIsNone(missed, out)
         self.assertNotEqual(rc, 0)
-        self.assertIn('❯ P9', '\n'.join(screen(out)))
+        # Ctrl-C clears the picker, so the End jump is read from the raw
+        # capture of the redraw before the cancel, never from screen(out).
+        self.assertIn('❯ P9', out, out)
         footers = [line for line in out.splitlines() if 'Move' in line and 'Jump' in line]
         self.assertTrue(footers, out)
         foot = footers[-1]
