@@ -135,7 +135,10 @@ func (l *launcher) inspect(args []string) int {
 	if _, native := nativeBase(base); native {
 		grid(10, "protocol", "native Anthropic")
 	} else {
-		grid(10, "protocol", "automatic — cached compatibility or validation at launch")
+		// GH-1041: "cached compatibility or validation at launch" named the
+		// mechanism, not the promise; the row now says what ccmorph does and
+		// when, in words that need no prior contact with the adapter.
+		grid(10, "protocol", "automatic — ccmorph works out which dialect the endpoint answers and remembers it")
 	}
 	// The one promise only this option makes, and no other row names: the
 	// session's history does not outlive it (#292).
@@ -156,7 +159,10 @@ func (l *launcher) inspect(args []string) int {
 	case maskable && maskBad:
 		grid(10, "masking", "env.CCMORPH_MASK="+maskVal+"  "+l.dim+"— a launch refuses this value (must be 1 or 0)"+l.reset)
 	case maskable:
-		grid(10, "masking", "off  "+l.dim+"— secrets reach the endpoint as they are; env.CCMORPH_MASK=1 sends them as placeholders"+l.reset)
+		// GH-1041: the bare "secrets reach the endpoint as they are" alarmed
+		// without context; the row now says this is Claude Code's own
+		// behaviour and which endpoint sees them — the one named above.
+		grid(10, "masking", "off  "+l.dim+"— Claude Code's own behaviour: only the endpoint above sees them; env.CCMORPH_MASK=1 sends them as placeholders"+l.reset)
 	case maskOn:
 		grid(10, "masking", "env.CCMORPH_MASK="+maskVal+"  "+l.dim+"— not available on this route, nothing is masked"+l.reset)
 	default:

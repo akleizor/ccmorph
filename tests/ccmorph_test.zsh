@@ -12004,9 +12004,11 @@ test_inspect_names_masking_for_every_profile() {
     'a gateway profile without the setting must say masking is off' || rc=1
   # GH-384: the off state carried no words, so the row could only be read
   # once the setting was already known. It must say what the state means and
-  # name the switch that changes it.
-  assert_contains "$actual" 'secrets reach the endpoint as they are' \
-    'the off line must say what off means for secrets' || rc=1
+  # name the switch that changes it. GH-1041: the words give the state its
+  # context -- Claude Code's own behaviour, and only the profile's own
+  # endpoint sees them -- instead of alarming on first contact.
+  assert_contains "$actual" "Claude Code's own behaviour: only the endpoint above sees them" \
+    'the off line must say whose behaviour off is and who sees them' || rc=1
   assert_contains "$actual" 'env.CCMORPH_MASK=1 sends them as placeholders' \
     'the off line must say what masking is and how to turn it on' || rc=1
   actual=$(ccmorph inspect gw) || { rm -rf "$test_home"; return 1; }

@@ -925,6 +925,21 @@ def test_inspect_never_prints_the_stored_credential(box):
         assert 'deleted when the session ends' not in out.stdout
 
 
+def test_inspect_protocol_row_reads_at_first_contact_gh_1041(box):
+    # GH-1041: "automatic — cached compatibility or validation at launch" was
+    # undefined at first contact; the row now says what ccmorph does, and a
+    # native endpoint still gets its own words.
+    seed(box)
+    box.conf('anth', 'type=apikey\napi_key={{SECRET_r2m8xk4q7wne}}\nbase_url=https://api.anthropic.com\n')
+    out = box.run('inspect', 'gw')
+    assert out.returncode == 0, out.stderr
+    assert 'automatic — ccmorph works out which dialect the endpoint answers and remembers it' in out.stdout, out.stdout
+    native = box.run('inspect', 'anth')
+    assert native.returncode == 0, native.stderr
+    assert 'native Anthropic' in native.stdout, native.stdout
+    assert 'cached compatibility' not in native.stdout, native.stdout
+
+
 def test_inspect_shows_a_profile_whose_conf_fails_validation_gh_113(box):
     # GH-113: inspect read the conf through the validating reader, so it
     # refused exactly the profiles that need diagnosing — the conf `list`
