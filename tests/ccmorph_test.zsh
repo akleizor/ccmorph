@@ -86,6 +86,19 @@ typeset -gi _ccm_test_filter_hits=0
 # zselect counts hundredths.
 readonly CCMORPH_TEST_HANG_TIMEOUT="${CCMORPH_TEST_HANG_TIMEOUT:-120}"
 
+# #1026: a gateway launch first asks its endpoint to answer (#260, cli/run.go),
+# and this suite's answer is a stub curl the test installs: a child process a
+# gate at its -j5 load can leave unscheduled past the probe's five seconds.
+# #875, #935, #947 and #997 each patched one test of that class; the class guard
+# is the product's harness-only CCMORPH_TEST_REACH_WAIT, which moves only the
+# probe's own stop. The promise to people is untouched -- the progress line, the
+# sentence and CCMORPH_REACH_BOUND's clamp stay five seconds, and it is this
+# suite alone that sets the wait. Its value is half of this suite's own hang
+# bound (CCMORPH_TEST_HANG_TIMEOUT, 120 s unless overridden), so a stub that
+# truly never answers is still named silent before the hang detector fires,
+# never mistaken for silent because it had not run yet.
+export CCMORPH_TEST_REACH_WAIT=$(( CCMORPH_TEST_HANG_TIMEOUT / 2 ))
+
 # Every test builds its own scratch home, so the suite runs as N shards at once;
 # CCMORPH_TEST_JOBS=1 runs it serially. Default: every core. The shards mostly wait
 # on macOS's first-exec scan of each fresh stub, and concurrent scans overlap: on the
@@ -736,8 +749,15 @@ write_curl_mock() {
 }
 
 fake_gateway() {
+  # fake_gateway [DELAY]: the same fixture, its answer held DELAY seconds when
+  # the launch's reach probe is the asker (-D is the shape util.ReachListing
+  # alone sends). A test that needs the #1026 race uses a shortened
+  # CCMORPH_REACH_BOUND, not a real stall, so the suite pays no clock time.
+  local delay="${1:-0}"
   printf '%s\n' \
     '#!/bin/sh' \
+    "delay=$delay" \
+    'if [ "$delay" != 0 ]; then for a do case "$a" in -D) sleep "$delay"; break ;; esac; done; fi' \
     '# record the invocation so tests can assert on url and auth' \
     'for a do printf "%s\n" "$a" >> "$HOME/curl.args"; done' \
     '[ "${1-}" = -K ] && cat >> "$HOME/curl.args"' \
@@ -7446,6 +7466,71 @@ test_declared_model_capabilities_is_never_overruled() {
   return $rc
 }
 
+# #1026: the class behind #875/#935/#947/#997 and this issue's six reds. A
+# gateway launch's asserted behaviour sat behind the reach probe's five-second
+# bound, and the answer was a child this suite installed, which a gate at its
+# load could leave unscheduled past the bound; the probe honestly named the
+# gateway silent and the launch ended before the test's behaviour ran. The
+# harness-only CCMORPH_TEST_REACH_WAIT (suite header) moves the probe's own
+# stop, so a stub the scheduler runs after the advertised bound still answers.
+# The advertised bound is shortened here -- the product knob may shorten it --
+# so the race is proved without spending a clock second on it.
+#
+# The fixture is the caps test's own: test_declared_model_capabilities_is_never_
+# overruled declares the same env on an adapter gateway, and this issue's first
+# red was that launch ending before Claude opened, with the suite discarding the
+# launch's words. On this Linux host the cause is the reach probe's stop: with
+# the stub held 6 s the caps test fails at 6c07a7f5 and at 47df2e6 with "no
+# answer from gateway.invalid port 443 after 6 seconds" -- the issue's macOS
+# observation that the launch went on did not reproduce here. The control arm
+# proves that cause: without the seam the same stub ends the launch on the
+# probe's verdict and Claude never opens.
+test_a_gateway_launch_waits_out_a_stub_scheduled_past_the_reach_bound() {
+  local test_home
+  test_home=$(mktemp -d)
+  setup_home "$test_home"
+  fake_gateway 0.6
+  fake_adapter
+  write_apikey_conf gw 'api_key=sk_prod_test' 'base_url=https://gateway.invalid' 'adapter=true' \
+    'env.CLAUDE_CODE_MODEL_CAPABILITIES=claude-*=-mid_conv_tool_change' \
+    'env.CLAUDE_CODE_DISABLE_ADVISOR_TOOL=0'
+  source "$CCMORPH_SOURCE"
+
+  local rc=0 launch_rc=0 err="$test_home/launch.err" control="$test_home/control.err"
+  # Control: door #260 with the seam cleared, so the stub really is later than
+  # the advertised bound and the launch must end on the probe's own verdict.
+  if CCMORPH_TEST_REACH_WAIT= CCMORPH_REACH_BOUND=0.2 _ccm_launch -a gw prompt >/dev/null 2>"$control"; then
+    print -u2 -- 'without the seam the held stub must end the launch on the probe stop'
+    rc=1
+  fi
+  [[ ! -s "$CCMORPH_TEST_LOG" ]] || {
+    print -u2 -- 'the control launch reached Claude Code; the stub is not later than the bound'
+    rc=1
+  }
+  assert_contains "$(<"$control")" "could not reach 'https://gateway.invalid'" \
+    'the control must name the reach probe the way the caps red did' || rc=1
+
+  # Seam arm: the suite's own CCMORPH_TEST_REACH_WAIT lets the same stub answer,
+  # and the caps assertion then runs against the launch it was written for.
+  CCMORPH_REACH_BOUND=0.2 _ccm_launch -a gw prompt >/dev/null 2>"$err" || launch_rc=$?
+  (( launch_rc == 0 )) || {
+    print -u2 -- "a stub scheduled past the advertised bound must not end the launch (exit $launch_rc):"
+    print -u2 -- "$(<"$err")"
+    rc=1
+  }
+  local log="$(<"$CCMORPH_TEST_LOG")"
+  assert_contains "$log" 'BASE_URL=http://127.0.0.1:45999' \
+    'the launch must reach Claude Code once the harness stub answers' || rc=1
+  assert_contains "$log" 'MODEL_CAPS=claude-*=-mid_conv_tool_change' \
+    'a conf-declared capability mask must reach the engine unchanged' || rc=1
+  assert_not_contains "$log" '-mid_conv_system' \
+    'the conf value must not be replaced by the ccmorph default' || rc=1
+  assert_contains "$log" 'DISABLE_ADVISOR=0' \
+    'a conf that keeps the advisor must not be overruled' || rc=1
+  rm -rf "$test_home"
+  return $rc
+}
+
 # Only an adapter route hoists, so only it gets the default.
 test_native_endpoint_keeps_mid_conversation_system() {
   local test_home
@@ -12848,13 +12933,37 @@ _ccm_run_test_under_a_terminal() {
   return $rc
 }
 
+# #1026: a failed test's verdict prints the launch's own words when run_test's
+# per-test launch log holds any. A test that silences its launches
+# (`>/dev/null 2>&1`) still gets the sentence that ended them into the verdict,
+# so a load-only red is diagnosed in one line instead of a scout investigation.
+print_launch_words() {
+  local name="$1" log="${2:-}"
+  [[ -n "$log" && -s "$log" ]] || return 0
+  print -u2 -- "the launch's own words ($name):"
+  print -u2 -- "$(<"$log")"
+}
+
 run_test() {
-  local name="$1" rc=0
+  local name="$1" rc=0 launch_log=""
   [[ -z "${CCMORPH_TEST_FILTER:-}" || "$name" == *"$CCMORPH_TEST_FILTER"* ]] || return 0
   (( ++_ccm_test_filter_hits ))
   [[ -z "${CCMORPH_TEST_SHARD:-}" ]] ||
     (( tests_seen++ % ${CCMORPH_TEST_SHARD#*/} == ${CCMORPH_TEST_SHARD%/*} )) || return 0
   (( ++tests_run ))
+  # #1026: name the file this test's launches copy their own stdout and stderr
+  # to (tests/core_lib.zsh), so the verdict below can print the launch's own
+  # words when the test fails. It is outside every scratch home -- a test
+  # removes its home before it returns -- and outside any bound: a test that
+  # discarded a launch's output on failure now still shows why the launch
+  # ended before the behaviour it asserts.
+  launch_log=$(command mktemp "${ORIGINAL_TMPDIR}/ccmorph-launch.XXXXXX" 2>/dev/null)
+  [[ -n "$launch_log" ]] && : > "$launch_log" 2>/dev/null || launch_log=""
+  if [[ -n "$launch_log" ]]; then
+    typeset -g CCMORPH_TEST_LAUNCH_LOG="$launch_log"
+  else
+    unset CCMORPH_TEST_LAUNCH_LOG
+  fi
   if (( ${_ccm_terminal_tests[(I)$name]} )) && [[ ! -t 0 ]]; then
     _ccm_run_test_under_a_terminal "$name" || rc=1
   else
@@ -12868,8 +12977,11 @@ run_test() {
     print -- "PASS: $name"
   else
     print -u2 -- "FAIL: $name"
+    print_launch_words "$name" "$launch_log"
     (( ++tests_failed ))
   fi
+  [[ -z "$launch_log" ]] || command rm -f -- "$launch_log"
+  unset CCMORPH_TEST_LAUNCH_LOG
 }
 
 test_a_conf_env_budget_pin_reaches_the_launch() {
@@ -13302,6 +13414,7 @@ run_test test_an_ambient_proxy_reaches_the_child_and_the_adapter
 # Custom endpoints use the automatic adapter path, even without a legacy adapter key.
 run_test test_adapter_launch_withholds_mid_conversation_system_for_claude_models
 run_test test_declared_model_capabilities_is_never_overruled
+run_test test_a_gateway_launch_waits_out_a_stub_scheduled_past_the_reach_bound
 run_test test_native_endpoint_keeps_mid_conversation_system
 run_test test_launch_aborts_when_the_adapter_cannot_serve
 run_test test_a_legacy_transport_key_is_reported_and_ignored
@@ -15522,6 +15635,247 @@ test_a_sub_profile_never_announces_a_gateway_on_a_terminal() {
 }
 run_test test_a_sub_profile_launch_for_the_terminal_check
 run_test test_a_sub_profile_never_announces_a_gateway_on_a_terminal
+
+# #1026: a launch test silences the launch whose side effect is all it needs,
+# and when the launch itself is what failed, the sentence saying why used to go
+# to /dev/null with it -- the caps red of #1026 cost a scout investigation and
+# still could not be named. run_test names CCMORPH_TEST_LAUNCH_LOG for the test
+# and prints it on failure; this checks the capture half with the silenced
+# shape: a route whose probe hears curl's own timeout and ends the launch
+# before Claude Code opens. The stub exits at once, so nothing here waits on a
+# clock (GH-260's five seconds stay the launch's promise).
+test_a_silenced_launch_keeps_its_own_words_for_the_verdict() {
+  local test_home
+  test_home=$(mktemp -d)
+  setup_home "$test_home"
+  write_curl_mock 'exit 28'
+  write_apikey_conf gw 'api_key=sk_prod_test' 'base_url=https://gateway.invalid' 'adapter=true'
+  source "$CCMORPH_SOURCE"
+
+  local rc=0 log="${CCMORPH_TEST_LAUNCH_LOG:-}"
+  [[ -n "$log" ]] || {
+    print -u2 -- 'run_test must name CCMORPH_TEST_LAUNCH_LOG for every test'
+    rm -rf "$test_home"
+    return 1
+  }
+  : > "$log"
+
+  _ccm_launch -a gw prompt >/dev/null 2>&1 || :
+  local words="$(<"$log")"
+  assert_contains "$words" 'could not reach' \
+    "a silenced launch's own words must survive for the verdict (got: ${(qqq)words})" || rc=1
+  assert_contains "$words" 'no answer from gateway.invalid port 443' \
+    'the capture must hold the probe sentence, not only the progress line' || rc=1
+  rm -rf "$test_home"
+  return $rc
+}
+run_test test_a_silenced_launch_keeps_its_own_words_for_the_verdict
+
+# #1026: the print half of the verdict. run_test calls print_launch_words on a
+# failure; a log with words prints the header and the words, and nothing prints
+# for an empty log, a missing path or an empty path name -- a passing test's
+# empty log must not add a header to the suite's output.
+test_a_failed_tests_verdict_prints_the_launch_words_it_captured() {
+  local rc=0 test_home shown
+  test_home=$(mktemp -d)
+  : > "$test_home/empty"
+  printf '%s\n' "ccmorph: could not reach gw" > "$test_home/log"
+
+  shown="$(print_launch_words some_test "$test_home/log" 2>&1)"
+  assert_contains "$shown" "the launch's own words (some_test):" \
+    'the verdict must name the test whose launch spoke' || rc=1
+  assert_contains "$shown" 'could not reach gw' \
+    "the verdict must print the launch's own words (got: ${(qqq)shown})" || rc=1
+
+  local silent_path
+  for silent_path in "$test_home/empty" "$test_home/missing" ""; do
+    shown="$(print_launch_words some_test "$silent_path" 2>&1)"
+    [[ -z "$shown" ]] || {
+      print -u2 -- "an empty log, a missing path and an empty path name must print nothing (${(qqq)silent_path} printed: ${(qqq)shown})"
+      rc=1
+    }
+  done
+  rm -rf "$test_home"
+  return $rc
+}
+run_test test_a_failed_tests_verdict_prints_the_launch_words_it_captured
+
+# #1026: the seam is derived from the suite's shared hang bound, never a
+# literal: a wait sized past the hang detector would report the detector's
+# silence as the stub's, and a number the suite picked would drift from the
+# bound it has to stay under. The suite's own export also overrides a value an
+# operator exported before it, so every shard answers with the same patience.
+test_the_suite_reach_wait_follows_the_shared_hang_bound() {
+  local rc=0 want=$(( CCMORPH_TEST_HANG_TIMEOUT / 2 ))
+  [[ "${CCMORPH_TEST_REACH_WAIT:-}" == "$want" ]] || {
+    print -u2 -- "the suite's reach wait is ${CCMORPH_TEST_REACH_WAIT:-<unset>}, want half the shared hang bound ($want)"
+    rc=1
+  }
+  return $rc
+}
+run_test test_the_suite_reach_wait_follows_the_shared_hang_bound
+
+# #1026: the capture copies each stream, it never rewrites it. A launch whose
+# stdout a test captures with $(...) keeps the same value, a stream the test
+# silenced stays silent while the other still reaches the descriptor the test
+# gave it, and a file capture holds the exact bytes (tee is not a line filter).
+test_the_launch_capture_copies_a_stream_without_rewriting_it() {
+  local test_home err out wrapped plain rc=0 bytes
+  test_home=$(mktemp -d)
+  setup_home "$test_home"
+  source "$CCMORPH_SOURCE"
+  err="$test_home/err" out="$test_home/out"
+  local log="${CCMORPH_TEST_LAUNCH_LOG:-}"
+  [[ -n "$log" ]] || {
+    print -u2 -- 'run_test must name CCMORPH_TEST_LAUNCH_LOG for every test'
+    rm -rf "$test_home"
+    return 1
+  }
+  : > "$log"
+
+  _emit_both_streams() { print -r -- OUT; print -ru2 -- ERR }
+  # stdout captured by $(...) with stderr to a file: the value is the unwrapped
+  # command's, and both streams reach the log beside their own descriptors.
+  wrapped=$( _ccm_test_capture_launch _emit_both_streams 2>"$err" )
+  plain=$( _emit_both_streams 2>/dev/null )
+  [[ "$wrapped" == "$plain" ]] || {
+    print -u2 -- "the capture rewrote captured stdout: ${(qqq)wrapped} vs ${(qqq)plain}"
+    rc=1
+  }
+  [[ "$(<"$err")" == ERR ]] || {
+    print -u2 -- "stderr did not reach the file the test gave it: ${(qqq)"$(<"$err")"}"
+    rc=1
+  }
+  assert_contains "$(<"$log")" OUT 'the log must hold the launch stdout' || rc=1
+  assert_contains "$(<"$log")" ERR 'the log must hold the launch stderr' || rc=1
+
+  # Only stdout silenced and only stderr silenced: the other stream still
+  # reaches its own descriptor.
+  _ccm_test_capture_launch _emit_both_streams >/dev/null 2>"$err"
+  [[ "$(<"$err")" == ERR ]] || {
+    print -u2 -- "a stdout-silenced launch lost its stderr: ${(qqq)"$(<"$err")"}"
+    rc=1
+  }
+  _ccm_test_capture_launch _emit_both_streams >"$out" 2>/dev/null
+  [[ "$(<"$out")" == OUT ]] || {
+    print -u2 -- "a stderr-silenced launch lost its stdout: ${(qqq)"$(<"$out")"}"
+    rc=1
+  }
+  # No trailing newline added or removed: tee copies bytes.
+  _ccm_test_capture_launch print -rn -- tail >"$out" 2>/dev/null
+  bytes=$(command wc -c < "$out" | tr -d ' ')
+  [[ "$(<"$out")" == tail && "$bytes" == 4 ]] || {
+    print -u2 -- "the capture added or removed a trailing newline: ${bytes} bytes for a 4-byte word"
+    rc=1
+  }
+  rm -rf "$test_home"
+  return $rc
+}
+run_test test_the_launch_capture_copies_a_stream_without_rewriting_it
+
+# #1026: `ccmorph run <profile>` reaches the probe through _ccm_main_exec, the
+# third wrapped entry point, so a run that ends on its own route keeps the
+# sentence that says why even when the test silenced it.
+test_ccmorph_run_keeps_its_own_words_for_the_verdict() {
+  local test_home
+  test_home=$(mktemp -d)
+  setup_home "$test_home"
+  write_curl_mock 'exit 28'
+  write_apikey_conf gw 'api_key=sk_prod_test' 'base_url=https://gateway.invalid' 'adapter=true'
+  source "$CCMORPH_SOURCE"
+
+  local rc=0 log="${CCMORPH_TEST_LAUNCH_LOG:-}"
+  [[ -n "$log" ]] || {
+    print -u2 -- 'run_test must name CCMORPH_TEST_LAUNCH_LOG for every test'
+    rm -rf "$test_home"
+    return 1
+  }
+  : > "$log"
+
+  ccmorph run gw >/dev/null 2>&1 || :
+  assert_contains "$(<"$log")" "could not reach 'https://gateway.invalid'" \
+    'a silenced `ccmorph run` must keep its own words for the verdict' || rc=1
+  rm -rf "$test_home"
+  return $rc
+}
+run_test test_ccmorph_run_keeps_its_own_words_for_the_verdict
+
+# #1026: a stream that is a terminal is never wrapped -- tee would hand the
+# launcher a pipe where the test gave it a tty -- so the terminal tests keep
+# their tty while the other stream is still captured. A test cannot fake -t, so
+# this one runs under a pty with stderr sent to a file.
+test_the_capture_leaves_a_terminal_stream_unwrapped() {
+  local test_home rc=0 out log err
+  test_home=$(mktemp -d)
+  mkdir -p "$test_home/home" "$test_home/tmp"
+  out="$test_home/terminal.log" log="$test_home/launch.log" err="$test_home/err.log"
+  python3 -c 'import os, pty; m, s = pty.openpty(); os.close(m); os.close(s)' 2>/dev/null || {
+    print -u2 -- 'note: no pty here; skipping the terminal-only check'
+    rm -rf "$test_home"; return 0
+  }
+  # The library resolves from the file's own path unless an env override says
+  # otherwise; a sibling test's installed-copy override would name its scratch
+  # home here, so clear the three that redirect it.
+  run_under_a_terminal "$out" env -u CCMORPH_LIB_DIR -u CCMORPH_STATE_DIR -u XDG_CONFIG_HOME \
+    HOME="$test_home/home" TMPDIR="$test_home/tmp" \
+    zsh -c '
+      source "$1/tests/core_lib.zsh" || exit 1
+      export CCMORPH_TEST_LAUNCH_LOG="$2"
+      _emit_tty_check() {
+        if [[ -t 1 ]]; then print -r -- child-out-tty; else print -r -- child-out-pipe; fi
+        if [[ -t 2 ]]; then print -ru2 -- child-err-tty; else print -ru2 -- child-err-pipe; fi
+      }
+      _ccm_test_capture_launch _emit_tty_check 2>"$3"
+    ' ccmorph-capture "$REPO_ROOT" "$log" "$err" || rc=1
+
+  assert_contains "$(<"$out")" child-out-tty \
+    'a terminal stdout must not be replaced by a pipe' || rc=1
+  assert_contains "$(<"$err")" child-err-pipe \
+    'a non-terminal stderr must still reach the file the test gave it' || rc=1
+  assert_contains "$(<"$log")" child-err-pipe \
+    'a non-terminal stderr must still be captured' || rc=1
+  rm -rf "$test_home"
+  return $rc
+}
+run_test test_the_capture_leaves_a_terminal_stream_unwrapped
+
+# #1026: the per-test capture file outlives neither the verdict nor the scratch
+# home. A passing child suite leaves none in its own TMPDIR, and neither does
+# one whose test fails -- the failing run's log is the case the capture exists
+# for, and it must not become litter. The failing child is the gateway
+# regression with its hang bound at 1 s, which derives a zero seam (0/2), so
+# its seam arm fails exactly as the product does without a harness wait.
+test_a_suite_run_leaves_no_launch_capture_behind() {
+  local test_home rc=0 leftovers
+  test_home=$(mktemp -d)
+  mkdir -p "$test_home/tmp"
+
+  env TMPDIR="$test_home/tmp" CCMORPH_TEST_FILTER=the_suite_reach_wait_follows \
+    CCMORPH_TEST_SHARD=0/1 CCMORPH_TEST_JOBS=1 zsh "$SCRIPT_DIR/ccmorph_test.zsh" >/dev/null 2>&1 || rc=1
+  leftovers=( "$test_home/tmp"/ccmorph-launch.*(N) )
+  (( $#leftovers == 0 )) || {
+    print -u2 -- "a passing run left launch captures behind: ${leftovers[*]}"
+    rc=1
+  }
+
+  local failed="$test_home/failing.log"
+  env TMPDIR="$test_home/tmp" CCMORPH_TEST_HANG_TIMEOUT=1 \
+    CCMORPH_TEST_FILTER=waits_out_a_stub CCMORPH_TEST_SHARD=0/1 CCMORPH_TEST_JOBS=1 \
+    zsh "$SCRIPT_DIR/ccmorph_test.zsh" >"$failed" 2>&1 || :
+  grep -q '^FAIL: test_a_gateway_launch_waits_out_a_stub' "$failed" || {
+    print -u2 -- 'the failing child suite did not fail its named test; the cleanup case was not exercised:'
+    print -u2 -- "$(<"$failed")"
+    rc=1
+  }
+  leftovers=( "$test_home/tmp"/ccmorph-launch.*(N) )
+  (( $#leftovers == 0 )) || {
+    print -u2 -- "a failing run left launch captures behind: ${leftovers[*]}"
+    rc=1
+  }
+  rm -rf "$test_home"
+  return $rc
+}
+run_test test_a_suite_run_leaves_no_launch_capture_behind
 
 # libexec/ccmorph-core is build output, so a fresh worktree or checkout has
 # none, and the suite entered there used to fail through every launch test's

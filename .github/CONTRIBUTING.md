@@ -23,6 +23,25 @@ are light and run bare.
 Use isolated test homes; do not run the installer against the operator's home as
 a smoke test.
 
+### Harness-only seams
+
+A launch test's gateway is a stub `curl` the test installs, so its answer is a
+child process. A gate at its load can hold that child past the launch's
+five-second reach probe; the probe then honestly names the gateway silent and
+the launch ends before the behaviour the test asserts — the class behind #875,
+#935, #947, #997 and #1026. `CCMORPH_TEST_REACH_WAIT=<seconds>` is the suite's
+backstop for it: it moves only the probe's own stop, far past any healthy start,
+and a launch that does not set it is untouched. The promise to people does not
+move — `CCMORPH_REACH_BOUND` still cannot advertise or wait longer than five
+seconds, and a stub that truly never answers is still named silent. Only the
+zsh launch suite, `tests/ccmorph_test.zsh`, exports `CCMORPH_TEST_REACH_WAIT`,
+and it derives the value from its own hang bound (half of
+`CCMORPH_TEST_HANG_TIMEOUT`). Go unit tests set it only through `t.Setenv` in
+the probe's own tests, and each Go package's `TestMain` clears an exported one
+so it cannot stand in for the five-second promise. Never a profile's `env.`
+lines, a user's shell, or another harness that can answer the probe without a
+child.
+
 ## Rules
 
 - Every patch ships with a regression test in `tests/` that fails before the

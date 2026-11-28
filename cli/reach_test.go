@@ -297,3 +297,12 @@ func TestIssue260ProfileProxyReachProbe(t *testing.T) {
 		})
 	}
 }
+
+// #1026: the reach seam is the zsh suite's, never the Go suite's: an exported
+// one must not stand in for the five-second promise these tests read.
+// TestMain clears it; a test that wants it sets it with t.Setenv.
+func TestReachSeamIsNotInheritedFromTheEnvironment(t *testing.T) {
+	if v := os.Getenv("CCMORPH_TEST_REACH_WAIT"); v != "" {
+		t.Fatalf("CCMORPH_TEST_REACH_WAIT=%q leaked into the Go suite; TestMain must clear an exported seam", v)
+	}
+}

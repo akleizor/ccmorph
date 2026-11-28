@@ -235,6 +235,29 @@ const reachDefaultBound = 5 * time.Second
 
 func reachBound() time.Duration { return min(envDuration("CCMORPH_REACH_BOUND", 5), reachDefaultBound) }
 
+// reachHarnessWaitMax bounds the harness-only backstop below, so a mistyped
+// value can not disable the probe's hang detector altogether.
+const reachHarnessWaitMax = 600 * time.Second
+
+// reachStopBound is the bound the probe's own stop counts from the call. For a
+// launch it is the advertised reachBound. A harness that answers the probe with
+// a child process it installs may set CCMORPH_TEST_REACH_WAIT (seconds): a
+// loaded gate can leave that child unscheduled past five seconds, and the stop
+// then reports a scheduler's silence as the gateway's (#875, #935, #947,
+// #997 patched that class one test at a time; #1026 is the class). Only the
+// stop moves: the progress line, the sentence's claim and CCMORPH_REACH_BOUND's
+// five-second clamp stay the product's promise to people, and a launch that
+// does not set the variable is untouched. The harness wait is a hang backstop
+// far above any healthy start, never a deadline — a stub that truly never
+// answers is still named silent, just not before it has had its turn.
+func reachStopBound() time.Duration {
+	bound := reachBound()
+	if wait, err := EnvSeconds(os.Getenv, "CCMORPH_TEST_REACH_WAIT", 0); err == nil && wait > 0 {
+		return min(max(wait, bound), reachHarnessWaitMax)
+	}
+	return bound
+}
+
 // reachRetryWindow is the window a second dial may take of the probe's shared
 // deadline: left itself, or 0 for none. It reads the deadline alone, so a
 // start the scheduler held (#935) can neither be credited nor start a dial
@@ -363,11 +386,13 @@ func ReachListing(base, key, via string, strip []string, progress func()) Reach 
 			}
 		}
 	}
-	// curl is stopped with a twentieth of the bound to spare, so the probe has
-	// returned, curl reaped, within the bound: never later than doctor's own
-	// request, in one dial or two.
+	// curl is stopped with a twentieth of the stop bound to spare, so the probe
+	// has returned, curl reaped, within that bound: never later than doctor's
+	// own request for a launch, and inside the harness's own backstop for a
+	// suite whose resolver is a child (reachStopBound).
+	stopBound := reachStopBound()
 	p := reachProbe{listing: listing, config: config, base: base, via: viaProxy, env: env,
-		start: start, stopAt: start.Add(bound - bound/20), bound: bound}
+		start: start, stopAt: start.Add(stopBound - stopBound/20), bound: bound}
 	r, again := reachDial(p, min(bound, 2*time.Second), bound, false, progress)
 	if again <= 0 {
 		return r

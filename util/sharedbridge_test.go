@@ -457,6 +457,7 @@ func TestMain(m *testing.M) {
 	if users := os.Getenv("CCMORPH_TEST_HOLD_USERS"); users != "" {
 		os.Exit(routeHold([]string{users}, nil, os.Stdout, io.Discard))
 	}
+	os.Unsetenv("CCMORPH_TEST_REACH_WAIT") // #1026: an exported seam must not stand in for the 5 s promise
 	os.Exit(m.Run())
 }
 
