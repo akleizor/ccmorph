@@ -286,8 +286,10 @@ func (h *agentHop) resolver(l *launcher) func(agentproxy.Pick) (agentproxy.Targe
 			return t, nil
 		}
 		// The adapter is the one every session of this profile and model shares,
-		// held for this session until it ends.
-		sa, ok := util.AcquireAdapter(core, filepath.Join(dir, "auth"), pick.Word, pick.Model, filepath.Join(dir, pick.Word+".conf"), io.Discard)
+		// held for this session until it ends. It is a subagent's route, not the
+		// profile this session runs on, so its hold must never answer `ccmorph hop`
+		// for the session (#1022).
+		sa, ok := util.AcquireAdapterForSubagent(core, filepath.Join(dir, "auth"), pick.Word, pick.Model, filepath.Join(dir, pick.Word+".conf"), io.Discard)
 		if !ok {
 			return agentproxy.Target{}, fmt.Errorf("adapter for %s did not start", pick.Word)
 		}

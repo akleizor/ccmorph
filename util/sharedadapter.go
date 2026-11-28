@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -32,6 +33,116 @@ type SharedAdapter struct {
 	mutex   string
 	state   string
 	users   *os.File
+	// usersPath is the users file this session holds; hold is the child that
+	// names it in the process table for `ccmorph hop`; role says whether the
+	// hold is the session's own marker or a subagent's, which the hop ignores.
+	usersPath string
+	hold      *sessionHold
+	role      holdRole
+}
+
+// sessionHold is one session's marker on a shared adapter: a route-hold child
+// on the adapter's users file, so the hop names the profile from the launcher's
+// own children. in is the write end of the pipe the launcher keeps for its
+// lifetime: when the launcher dies, the kernel closes it, the hold reads EOF,
+// and no marker outlives the session that started it.
+type sessionHold struct {
+	pid int
+	in  *os.File
+}
+
+// sessionHoldReady is how long a marker may take to land: it takes one shared
+// lock, and no path holds the users file exclusively for longer than a
+// non-blocking test.
+const sessionHoldReady = 10 * time.Second
+
+// startSessionHold spawns `<core> util route-hold <users> --exit-on-stdin-eof`
+// (with --subagent for a pick's hold) and waits for its one readiness byte. The
+// pipe's write end is returned with it: the hold can end only while this
+// process lives, and when it dies the kernel closes that end.
+func startSessionHold(core, users string, role holdRole) (*sessionHold, bool) {
+	inR, inW, err := os.Pipe()
+	if err != nil {
+		return nil, false
+	}
+	readyR, readyW, err := os.Pipe()
+	if err != nil {
+		inR.Close()
+		inW.Close()
+		return nil, false
+	}
+	argv := []string{"util", "route-hold", users, routeHoldExitStdin}
+	if role == holdSubagent {
+		argv = append(argv, routeHoldSubagent)
+	}
+	cmd := exec.Command(core, argv...)
+	cmd.Stdin, cmd.Stdout = inR, readyW
+	// Its own session: a terminal signal to the launch's group must not end a
+	// hold whose launch keeps running.
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+	if err := cmd.Start(); err != nil {
+		inR.Close()
+		inW.Close()
+		readyR.Close()
+		readyW.Close()
+		return nil, false
+	}
+	inR.Close()
+	readyW.Close()
+	go cmd.Wait() // reap it; the pipe says when it goes
+	readyR.SetReadDeadline(time.Now().Add(sessionHoldReady))
+	one := make([]byte, 1)
+	_, err = io.ReadFull(readyR, one)
+	readyR.Close()
+	if err != nil || one[0] != '1' {
+		inW.Close()
+		cmd.Process.Kill()
+		return nil, false
+	}
+	return &sessionHold{pid: cmd.Process.Pid, in: inW}, true
+}
+
+// endSessionHold ends this session's marker: TERM, then wait briefly for it to
+// be gone. The PID is signalled only while the process table proves it is the
+// core's route-hold on users (holdsRoute), so a number the system reused is
+// never hit (#408). The wait watches the PID alone, not the users file: rm may
+// have taken that path, and opening it would put back what rm removed.
+func endSessionHold(holder int, users string) {
+	if holder <= 0 || !holdsRoute(holder, users) {
+		return
+	}
+	syscall.Kill(holder, syscall.SIGTERM)
+	for range 200 { // ~2s
+		if syscall.Kill(holder, 0) != nil {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+// holdSession starts this use's marker on the adapter it holds. A session
+// without its own marker is exactly the session `ccmorph hop` can no longer
+// name, so a marker that cannot land refuses the acquisition rather than
+// silently losing the #257 guard (#1022). A subagent's marker is the same
+// lifetime, marked --subagent so the hop never reads it as the session's own.
+func (a *SharedAdapter) holdSession(core, name string, errw io.Writer) bool {
+	h, ok := startSessionHold(core, a.usersPath, a.role)
+	if !ok {
+		fmt.Fprintf(errw, "ccmorph: could not keep a hold on the shared adapter for '%s'; session not started.\n", name)
+		return false
+	}
+	a.hold = h
+	return true
+}
+
+// endHold stops this session's marker and closes the pipe the launcher kept.
+func (a *SharedAdapter) endHold() {
+	if a.hold == nil {
+		return
+	}
+	endSessionHold(a.hold.pid, a.usersPath)
+	a.hold.in.Close()
+	a.hold = nil
 }
 
 // AdapterBase is the path a key's adapter state hangs off: the record, and
@@ -40,6 +151,22 @@ type SharedAdapter struct {
 // is proven.
 func AdapterBase(root, name, key string) string {
 	return filepath.Join(root, "."+name+".adapter."+key)
+}
+
+// adapterProfileFromUsers is the profile a shared adapter's users file names:
+// <root>/.<name>.adapter.<key>.users, the shape AdapterBase builds. A profile
+// name holds no dot, so the name is the segment between the leading dot and
+// ".adapter."; any other path names no profile.
+func adapterProfileFromUsers(path string) string {
+	rest, ok := strings.CutSuffix(filepath.Base(path), ".users")
+	if !ok || !strings.HasPrefix(rest, ".") {
+		return ""
+	}
+	name, key, ok := strings.Cut(rest[1:], ".adapter.")
+	if !ok || name == "" || key == "" || strings.ContainsAny(name, `/\`) {
+		return ""
+	}
+	return name
 }
 
 // AdapterFiles are every shared-adapter file of a profile under root, whatever
@@ -120,10 +247,24 @@ func stopProcess(pid int) {
 // AcquireAdapter returns the running adapter for (name, model) or starts one,
 // and holds this session's use of it until Release. The result's Port/Native/
 // Refused say what `util adapter-start` would have printed; ok is false when
-// the adapter did not start (its reason is already on errw).
+// the adapter did not start (its reason is already on errw). Its hold names the
+// profile `ccmorph hop` reports for the session, so it is the session launcher's
+// own profile that may call this.
 func AcquireAdapter(core, root, name, model, confPath string, errw io.Writer) (*SharedAdapter, bool) {
+	return acquireAdapter(core, root, name, model, confPath, holdSession, errw)
+}
+
+// AcquireAdapterForSubagent is AcquireAdapter for an adapter a subagent pick
+// joins or starts: the same lifetime and the same refusal when its hold cannot
+// land, but the hold is marked so `ccmorph hop` never answers with the
+// subagent's profile instead of the profile the session itself runs on (#1022).
+func AcquireAdapterForSubagent(core, root, name, model, confPath string, errw io.Writer) (*SharedAdapter, bool) {
+	return acquireAdapter(core, root, name, model, confPath, holdSubagent, errw)
+}
+
+func acquireAdapter(core, root, name, model, confPath string, role holdRole, errw io.Writer) (*SharedAdapter, bool) {
 	base := AdapterBase(root, name, AdapterKey(name, model, confPath, core))
-	a := &SharedAdapter{mutex: base + ".lock", state: base, Log: base + ".log"}
+	a := &SharedAdapter{mutex: base + ".lock", state: base, usersPath: base + ".users", Log: base + ".log", role: role}
 	if os.MkdirAll(root, 0o700) != nil {
 		fmt.Fprintf(errw, "ccmorph: '%s': could not create %s.\n", name, root)
 		return a, false
@@ -143,6 +284,10 @@ func AcquireAdapter(core, root, name, model, confPath string, errw io.Writer) (*
 		if pid, port, ok := parseAdapterRecord(string(raw)); ok {
 			if yours, known := adapterOwns(pid, base); yours || !known {
 				a.PID, a.Port, a.users = pid, port, users
+				if !a.holdSession(core, name, errw) {
+					users.Close()
+					return a, false
+				}
 				return a, true
 			}
 		}
@@ -183,12 +328,27 @@ func AcquireAdapter(core, root, name, model, confPath string, errw io.Writer) (*
 		return a, false
 	}
 	a.users = users
+	if !a.holdSession(core, name, errw) {
+		// The mutex kept every other session out, so this one is the only user:
+		// the adapter it just started and recorded is nobody's.
+		stopProcess(a.PID)
+		if raw, err := os.ReadFile(base); err == nil {
+			if pid, _, ok := parseAdapterRecord(string(raw)); ok && pid == a.PID {
+				os.Remove(base)
+			}
+		}
+		users.Close()
+		return a, false
+	}
 	return a, true
 }
 
 // Release ends this session's use; the last user out stops the adapter. It
 // never signals an adapter another session holds, and never a pid that does not
-// run this one.
+// run this one. This session's marker goes first, while the mutex keeps every
+// acquire out: the last-user test below would see the marker's own shared lock
+// otherwise, and a marker left behind would keep the adapter alive after its
+// session died.
 func (a *SharedAdapter) Release() {
 	if a == nil || a.users == nil {
 		return
@@ -201,6 +361,7 @@ func (a *SharedAdapter) Release() {
 	}
 	fd := int(a.users.Fd())
 	syscall.Flock(fd, syscall.LOCK_UN)
+	a.endHold()
 	if syscall.Flock(fd, syscall.LOCK_EX|syscall.LOCK_NB) == nil {
 		if yours, known := adapterOwns(a.PID, a.state); known {
 			if yours {
