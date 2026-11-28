@@ -3674,6 +3674,96 @@ test_add_apikey_native_endpoint_skips_adapter() {
   return $rc
 }
 
+# GH-1038: a password typed into the endpoint URL was hidden in the Added
+# line and doctor but printed in full by the key prompt's header, `list` and
+# `inspect` — the lines a person pastes into a bug report or a screenshot.
+# One masking rule (the add's own shownEndpoint/RedactURL) answers every
+# rendering; the scripted read (get base_url) keeps answering the stored
+# value, like api_key.
+test_endpoint_password_never_printed_gh_1038() {
+  local test_home rc=0 out
+  local pw='endpoint-fixture-canary-1038'
+  local url="https://bob:${pw}@gw.example.invalid/y"
+  test_home=$(mktemp -d)
+  setup_home "$test_home"
+  source "$CCMORPH_SOURCE"
+  command cp "$REPO_ROOT/share/provider-presets.tsv" "$HOME/.config/ccmorph/share/"
+  # A fixture with a plain credential reaches the keychain migration on
+  # macOS, and a scratch HOME does not isolate the login keychain: the
+  # fixture's own failing security stub keeps every call out of the real
+  # one, as in the GH-915 test.
+  stub_security_in_home || {
+    print -u2 -- 'the test security stub must be first on PATH'
+    rm -rf "$test_home"
+    return 1
+  }
+  out=$(ccmorph add pw <<< "3
+custom
+${url}
+sk-pw
+" 2>&1) || rc=1
+  assert_not_contains "$out" "$pw" 'the key prompt must not echo the endpoint password' || rc=1
+  assert_contains "$out" 'API key for pw — https://gw.example.invalid/y (hidden):' 'the key prompt must name the masked endpoint' || rc=1
+  out=$(ccmorph list 2>&1) || rc=1
+  assert_not_contains "$out" "$pw" 'list must hide the endpoint password' || rc=1
+  assert_contains "$out" 'https://gw.example.invalid/y' 'list must still name the host and path' || rc=1
+  out=$(ccmorph inspect pw 2>&1) || rc=1
+  assert_not_contains "$out" "$pw" 'inspect must hide the endpoint password' || rc=1
+  assert_contains "$out" 'gw.example.invalid/y' 'inspect must still name the host and path' || rc=1
+  [[ "$(ccmorph get pw base_url)" == "$url" ]] || {
+    print -u2 -- 'get base_url must keep answering the saved endpoint verbatim'
+    rc=1
+  }
+  [[ "$(ccmorph get pw --json | jq -er .base_url)" == "$url" ]] || {
+    print -u2 -- 'get --json must keep answering the saved endpoint verbatim'
+    rc=1
+  }
+  # The masking keeps the path's own escapes: /team%2Fone names a route
+  # /team/one does not, so the rendered line neither rewrites it nor leaks.
+  local esc_url="https://bob:${pw}@gw.example.invalid/team%2Fone"
+  write_apikey_conf esc1 'api_key=sk-esc1' "base_url=${esc_url}"
+  out=$(ccmorph inspect esc1 2>&1) || rc=1
+  assert_not_contains "$out" "$pw" 'inspect must hide the password on the escaped route' || rc=1
+  assert_contains "$out" 'gw.example.invalid/team%2Fone' 'inspect must keep the escaped route intact' || rc=1
+
+  # Stop at the key prompt. The stub records even an attempted probe;
+  # no key was supplied, so nothing should reach it.
+  printf '%s\n' '#!/bin/sh' 'touch "$HOME/endpoint-probed"' 'exit 1' > "$HOME/bin/curl"
+  chmod +x "$HOME/bin/curl"
+  local n=0 route add_rc
+  for route in 'café' 'team%2Fone'; do
+    n=$(( n + 1 ))
+    add_rc=0
+    out=$(printf '3\ncustom\n%s\n' "https://GW.Example.invalid/${route}" | ccmorph add "spelled$n" 2>&1) || add_rc=$?
+    assert_contains "$out" "API key for spelled$n — https://GW.Example.invalid/${route} (hidden):" \
+      'the key prompt must name a userinfo-free endpoint exactly as typed' || rc=1
+    [[ $add_rc -eq 1 ]] || { print -u2 -- 'add must stop at EOF without a key'; rc=1 }
+  done
+  add_rc=0
+  out=$(printf '3\ncustom\n\n' | ccmorph add blank 2>&1) || add_rc=$?
+  assert_contains "$out" 'API key for blank — api.anthropic.com (hidden):' \
+    'the key prompt must name the default for a blank endpoint' || rc=1
+  [[ $add_rc -eq 1 ]] || { print -u2 -- 'add must stop at EOF without a key'; rc=1 }
+  add_rc=0
+  out=$(printf '3\nanthropic\n' | ccmorph add native 2>&1) || add_rc=$?
+  assert_contains "$out" 'API key for native — Anthropic (hidden):' \
+    'the key prompt must keep the chosen provider label' || rc=1
+  [[ $add_rc -eq 1 && ! -e "$HOME/endpoint-probed" ]] || {
+    print -u2 -- 'add without a key must exit 1 without probing'
+    rc=1
+  }
+
+  write_apikey_conf lit1 'api_key=sk-lit1' "base_url=https://bob:${pw}@gw.example.invalid/café"
+  out=$(ccmorph inspect lit1 2>&1) || rc=1
+  assert_not_contains "$out" "$pw" 'inspect must hide the password on a literal route' || rc=1
+  assert_contains "$out" 'gw.example.invalid/café' 'inspect must keep a literal route as typed' || rc=1
+  write_apikey_conf lit2 'api_key=sk-lit2' 'base_url=https://GW.Example.invalid/café'
+  out=$(ccmorph inspect lit2 2>&1) || rc=1
+  assert_contains "$out" 'GW.Example.invalid/café' 'inspect must show a userinfo-free endpoint as stored' || rc=1
+  rm -rf "$test_home"
+  return $rc
+}
+
 
 # The auto-detect probe decides on the RESPONSE BODY, not on the status alone,
 # and these four cases are why. Each one shipped uncovered and each was wrong:
@@ -13273,6 +13363,7 @@ run_test test_add_never_asks_how_to_reach_the_endpoint
 run_test test_add_apikey_preset_fills_endpoint_and_tiers
 run_test test_add_apikey_lists_anthropic_first
 run_test test_add_apikey_native_endpoint_skips_adapter
+run_test test_endpoint_password_never_printed_gh_1038
 run_test test_add_apikey_model_level_404_is_native
 # add does not persist adapter decisions; launch performs automatic compatibility handling.
 run_test test_help_teaches_credential_type_not_gateway_shape

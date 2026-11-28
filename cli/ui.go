@@ -1806,6 +1806,16 @@ func (t uiTheme) refuseNoTerminal(rows []string, fzfNamed bool) {
 
 // uiInput is ccm_ui_input: one line, hidden when secret. rc 1 cancelled or EOF.
 func uiInput(prompt string, secret bool) (string, int) {
+	return uiInputShown(prompt, secret, nil)
+}
+
+// uiInputShown asks one question and returns exactly what was typed; shown,
+// when set, is how the answered question names that answer on the line it
+// leaves behind. The endpoint questions pass the masking rule every endpoint
+// line already uses: the erased typing took the password off the screen, so
+// the receipt must not put it back (GH-1038). A secret echoes nothing and
+// leaves no answer line, so shown belongs to visible answers only.
+func uiInputShown(prompt string, secret bool, shown func(string) string) (string, int) {
 	t := themeFor(2)
 	w := os.Stderr
 	if !isTTY(0) {
@@ -1862,9 +1872,12 @@ func uiInput(prompt string, secret bool) (string, int) {
 		return "", rc
 	}
 	if fold {
-		if secret || value == "" {
+		switch {
+		case secret || value == "":
 			fmt.Fprintln(w, t.heading(prompt, columns))
-		} else {
+		case shown != nil:
+			t.receipt(prompt, shown(value))
+		default:
 			t.receipt(prompt, value)
 		}
 	}

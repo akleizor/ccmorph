@@ -5,7 +5,9 @@ import (
 	"strings"
 )
 
-// RedactURL is a URL safe to print: no userinfo, no query, no fragment.
+// RedactURL is a URL safe to print: no userinfo, no query, no fragment. The
+// path is the input's own spelling, neither decoded (/team%2Fone is not
+// /team/one) nor re-encoded (/café is not /caf%C3%A9) (GH-1038).
 func RedactURL(raw string) string {
 	// A password can hold /, ? or #, or open on digits Go reads as a port, so
 	// neither parser reliably finds the @ that closes the userinfo. Cut through
@@ -45,9 +47,19 @@ func RedactURL(raw string) string {
 		host += ":" + p
 	}
 	if host == "" {
-		return u.Scheme + ":" + u.Path
+		return u.Scheme + ":" + spelledPath(u)
 	}
-	return u.Scheme + "://" + host + u.Path
+	return u.Scheme + "://" + host + spelledPath(u)
+}
+
+// spelledPath is the path as the input spelled it. url.Parse records the
+// original in RawPath when it differs from Go's default escaping; otherwise
+// EscapedPath returns that spelling (GH-1038).
+func spelledPath(u *url.URL) string {
+	if u.RawPath != "" {
+		return u.RawPath
+	}
+	return u.EscapedPath()
 }
 
 // closesUserinfo reports whether the @ at raw[at] must close a userinfo when

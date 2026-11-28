@@ -888,6 +888,40 @@ class PickerTTYTest(unittest.TestCase):
         self.assertEqual(self.field('demo', 'model'), 'picker-beta')
         self.assertEqual(self.field('demo', 'effort'), 'high')
 
+    def test_endpoint_password_is_gone_from_the_finished_screen(self):
+        # GH-1038: an answered endpoint question folds to one receipt line
+        # naming the answer, and the erased typing is gone before it. A
+        # password typed into the URL must leave no trace on the finished
+        # screen — the whole point of a screen you paste — while the saved
+        # value keeps exactly what was typed.
+        canary = 'picker-fixture-canary'
+        endpoint = f'https://bob:{canary}@gw.example.invalid/y'
+        env = self.env(fzf=True)
+        self.spec('Provider=custom')
+        rc, out, missed = run_pty('ccmorph add pw', env, [
+            (b'Sign-in method', b'\x1b[B' * 2 + b'\r'),
+            (b'Endpoint (blank', endpoint.encode() + b'\n'),
+            (b'API key for pw', b'fixture-key\n'),
+        ], size=(40, 140))
+        self.assertIsNone(missed, out)
+        self.assertEqual(rc, 0, out)
+        self.assertEqual(self.field('pw', 'base_url'), endpoint)
+        self.assertNotIn(canary, '\n'.join(screen(out, columns=140)))
+        self.assertIn('https://gw.example.invalid/y', out)
+
+        env = self.env(fzf=True)
+        self.profile('pw', endpoint=endpoint, key='fixture-key')
+        rc, out, missed = run_pty('ccmorph config pw', env, [
+            (b'Settings', b'\x1b[B\r'),
+            (b'Endpoint [', endpoint.encode() + b'\n'),
+            (b'Credential (hidden', b'\n'),
+        ], size=(40, 140))
+        self.assertIsNone(missed, out)
+        self.assertEqual(rc, 0, out)
+        self.assertEqual(self.field('pw', 'base_url'), endpoint)
+        self.assertNotIn(canary, '\n'.join(screen(out, columns=140)))
+        self.assertIn('Endpoint: https://gw.example.invalid/y', out)
+
     def test_confirmation_uses_native_menu_with_safe_default(self):
         env = self.env()
         rc, out, missed = run_pty('source "$1"\nccm_ui_confirm "Proceed?"', env, [
