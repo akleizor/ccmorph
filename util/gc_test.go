@@ -82,23 +82,10 @@ func TestGCReapsWhatAKilledLaunchLeaves(t *testing.T) {
 	staleTmp := filepath.Join(tmp, "ccmorph-session-env.999999")
 	staleRun := filepath.Join(state, "run", "ccmorph-session-env.999998")
 	fresh := filepath.Join(tmp, "ccmorph-session-env.42")
-	// #1047: the launcher writes its pid into the env file's name, and the
-	// helper that reads it runs when the child gets its turn — under a
-	// fork/exec storm that can be past the minute. An aged file whose named
-	// launcher lives is that launch, not an orphan, and stays; a dead
-	// launcher's aged file goes; and an older build's random-only name,
-	// which carries no pid, keeps the age-only reaping it always had.
-	liveEnvTmp := filepath.Join(tmp, "ccmorph-session-env."+strconv.Itoa(os.Getpid())+".700001")
-	liveEnvRun := filepath.Join(state, "run", "ccmorph-session-env."+strconv.Itoa(claude.Process.Pid)+".700002")
-	deadEnvTmp := filepath.Join(tmp, "ccmorph-session-env.999997.700003")
-	deadEnvRun := filepath.Join(state, "run", "ccmorph-session-env.999996.700004")
-	oldShape := filepath.Join(tmp, "ccmorph-session-env.abc")
-	for _, f := range []string{dead, mine, recycledRelay, young, staleTmp, staleRun, fresh,
-		liveEnvTmp, liveEnvRun, deadEnvTmp, deadEnvRun, oldShape} {
+	for _, f := range []string{dead, mine, recycledRelay, young, staleTmp, staleRun, fresh} {
 		os.WriteFile(f, nil, 0o600)
 	}
-	for _, f := range []string{dead, mine, recycledRelay, staleTmp, staleRun,
-		liveEnvTmp, liveEnvRun, deadEnvTmp, deadEnvRun, oldShape} {
+	for _, f := range []string{dead, mine, recycledRelay, staleTmp, staleRun} {
 		os.Chtimes(f, past, past)
 	}
 	// A private view is a dir whose owner record names the claude that ran
@@ -161,13 +148,12 @@ func TestGCReapsWhatAKilledLaunchLeaves(t *testing.T) {
 	os.Chtimes(noOwner, ancient, ancient)
 	GCStale(state, filepath.Join(root, "profiles"), tmp)
 	for _, f := range []string{mine, young, fresh, claudeView, scriptView,
-		youngView, noOwner, skewedView, legacyView, liveEnvTmp, liveEnvRun} {
+		youngView, noOwner, skewedView, legacyView} {
 		if _, err := os.Stat(f); err != nil {
 			t.Fatalf("%s must stay (live or unknown owner, or under a minute old)", f)
 		}
 	}
-	for _, f := range []string{dead, recycledRelay, staleTmp, staleRun,
-		deadEnvTmp, deadEnvRun, oldShape} {
+	for _, f := range []string{dead, recycledRelay, staleTmp, staleRun} {
 		if _, err := os.Stat(f); err == nil {
 			t.Fatalf("%s must go: a killed launch left it behind", f)
 		}
@@ -175,6 +161,49 @@ func TestGCReapsWhatAKilledLaunchLeaves(t *testing.T) {
 	for _, d := range []string{deadViewTmp, deadViewRun, recycledView, lateView} {
 		if _, err := os.Stat(d); err == nil {
 			t.Fatalf("%s must go: the claude that ran from it is gone, its pid dead or held by another process", d)
+		}
+	}
+}
+
+// A helper delayed past the age limit still needs its live launcher's env (#1047).
+func TestGCSessionEnvHolder(t *testing.T) {
+	state, tmp := t.TempDir(), t.TempDir()
+	run := filepath.Join(state, "run")
+	if err := os.Mkdir(run, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	past := time.Now().Add(-2 * time.Minute)
+	for _, dir := range []string{tmp, run} {
+		for _, tc := range []struct {
+			name string
+			aged bool
+			keep bool
+		}{
+			{"ccmorph-session-env." + strconv.Itoa(os.Getpid()) + ".700001", true, true},
+			{"ccmorph-session-env.2147483647.700002", true, false}, // above Linux and macOS PID limits
+			{"ccmorph-session-env.2147483647.700003", false, true},
+			{"ccmorph-session-env.123456", true, false},
+			{"ccmorph-session-env.abc", true, false},
+		} {
+			t.Run(filepath.Base(dir)+"/"+tc.name, func(t *testing.T) {
+				file := filepath.Join(dir, tc.name)
+				if err := os.WriteFile(file, nil, 0o600); err != nil {
+					t.Fatal(err)
+				}
+				if tc.aged {
+					if err := os.Chtimes(file, past, past); err != nil {
+						t.Fatal(err)
+					}
+				}
+				GCStale(state, filepath.Join(state, "profiles"), tmp)
+				_, err := os.Stat(file)
+				if tc.keep && err != nil {
+					t.Fatalf("env file must stay: %v", err)
+				}
+				if !tc.keep && !os.IsNotExist(err) {
+					t.Fatalf("env file must be reaped, stat error: %v", err)
+				}
+			})
 		}
 	}
 }

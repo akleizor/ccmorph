@@ -53,28 +53,12 @@ func GCStale(state, profiles, tmp string) {
 		return err == nil && fi.Mode()&os.ModeSymlink == 0 && now.Sub(fi.ModTime()) >= age
 	}
 
-	// holds reports whether pid still runs the process a record's time names:
-	// alive, and started no later than a minute after that time. A pid the
-	// table cannot place, or one whose start it cannot read, holds: the sweep
-	// never takes live state on a guess (#189).
-	var tab map[int]psRow
-	read := false
-	holds := func(pid int, since time.Time) bool {
-		if syscall.Kill(pid, 0) != nil {
-			return false
-		}
-		if !read {
-			tab, read = processTable(), true
-		}
-		r, ok := tab[pid]
-		return !ok || r.start.IsZero() || !r.start.After(since.Add(time.Minute))
-	}
 	// reap is the one stale-record decision both sweeps read (#1047): a
 	// regular file a minute old may go only once the holder its name carries
-	// is gone. hasPid false is a name from a build that wrote none — age alone,
-	// as before. since is the launch clock a relay's name carries; zero keeps
-	// the kill check alone, and a clock proves a recycled pid by the start the
-	// table gives it (#189, #206).
+	// is gone. Names with no pid keep age alone. A relay's launch clock can
+	// also prove a recycled pid by the start the table gives it (#189, #206).
+	var tab map[int]psRow
+	read := false
 	reap := func(f string, pid int, hasPid bool, since time.Time) bool {
 		if !paths.IsFile(f) || !old(f, time.Minute) {
 			return false
@@ -82,10 +66,19 @@ func GCStale(state, profiles, tmp string) {
 		if !hasPid {
 			return true
 		}
-		if since.IsZero() {
-			return syscall.Kill(pid, 0) != nil
+		err := syscall.Kill(pid, 0)
+		if err == syscall.ESRCH {
+			return true
 		}
-		return !holds(pid, since)
+		// EPERM and other probe failures are not proof the holder is gone.
+		if err != nil || since.IsZero() {
+			return false
+		}
+		if !read {
+			tab, read = processTable(), true
+		}
+		r, ok := tab[pid]
+		return ok && !r.start.IsZero() && r.start.After(since.Add(time.Minute))
 	}
 
 	relays, _ := filepath.Glob(filepath.Join(paths.GlobQuote(state), ".reswitch.*"))

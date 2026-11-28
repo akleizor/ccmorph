@@ -143,8 +143,14 @@ func TestRunClaudeStartsWhenTmpdirCannotBeWritten(t *testing.T) {
 	if rc := l.runClaude([]string{"ANTHROPIC_API_KEY=" + key}, nil); rc != 0 {
 		t.Fatalf("claude did not start with an unwritable TMPDIR: rc %d", rc)
 	}
-	if strings.Contains(argv(), key) {
-		t.Fatalf("credential on the command line: %q", argv())
+	seen := argv()
+	if strings.Contains(seen, key) {
+		t.Fatalf("credential on the command line: %q", seen)
+	}
+	fields := strings.Split(seen, "\n")
+	if len(fields) < 8 || filepath.Dir(fields[6]) != filepath.Join(state, "run") ||
+		!strings.HasPrefix(filepath.Base(fields[6]), "ccmorph-session-env."+strconv.Itoa(os.Getpid())+".") {
+		t.Fatalf("expected a session env file with the launcher pid under state/run, got %q", seen)
 	}
 	copied, err := os.Stat(filepath.Join(dir, "file.log"))
 	if err != nil || copied.Mode().Perm() != 0o600 {
