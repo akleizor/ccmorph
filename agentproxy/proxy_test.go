@@ -198,6 +198,14 @@ func TestAPickIsClaimedOnlyByItsSessionsAgent(t *testing.T) {
 func TestALoopbackTargetIsDialedDirectly(t *testing.T) {
 	t.Setenv("HTTPS_PROXY", "")
 	t.Setenv("https_proxy", "")
+	// The chain assertion below routes by NO_PROXY (netroute.Exempt answers
+	// through httpproxy), so the test pins it too: under the gate's hostile
+	// NO_PROXY='*' every host is exempt, the remote request would dial direct
+	// exactly as the product intends, and this test's upstream would never see
+	// it — the env, not the proxy, would then decide what the test proves
+	// (#774, the same rule the gate's NO_PROXY run states).
+	t.Setenv("NO_PROXY", "")
+	t.Setenv("no_proxy", "")
 	adapter, got := recorder(t, false, "")
 	upstreamHits := make(chan string, 4)
 	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
