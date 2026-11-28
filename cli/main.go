@@ -879,42 +879,47 @@ func (l *launcher) usageAt(topic string, width int) int {
 		// `all` is the same page with the rest of the vocabulary below the
 		// everyday groups, not the short page printed again inside it (#365).
 		all := topic == "all"
+		// Every row prints the command's own page synopsis (usageLine), so the
+		// list and the pages cannot drift apart again: GH-730 closed that gap
+		// for the router row, GH-1034 for the rest of the list, whose hand-
+		// copied spellings taught optional profiles as required. run is the one
+		// command shown per use instead: each row is one whole invocation whose
+		// brackets are true for that use, and the three together name every use
+		// a scanner of the list reads.
 		fmt.Println("ccmorph — Claude Code profile switcher")
 		fmt.Println("\nUsage: ccmorph <command> [arguments]")
 		head("Launch:")
 		help("ccmorph run", "Launch the default profile")
 		help("ccmorph run <profile>", "Use a profile for this session")
 		help("ccmorph run -i", "Choose a profile interactively")
-		help("ccmorph hop [profile]", "Switch a running session, from inside Claude")
+		help(usageLine("hop"), "Switch a running session, from inside Claude")
 		head("Profiles:")
-		help("ccmorph add <profile>", "Add an account or API key")
-		help("ccmorph list", "See profiles and the default")
-		help("ccmorph quota [profile]", "Plan usage and spend of every profile")
-		help("ccmorph use <profile>", "Set the default; do not launch")
-		help("ccmorph config [profile]", "Change model, effort, or connection")
+		help(usageLine("add"), "Add an account or API key")
+		help(usageLine("list"), "See profiles and the default")
+		help(usageLine("quota"), "Plan usage and spend of every profile")
+		help(usageLine("use"), "Set the default without launching; no argument shows the current default")
+		help(usageLine("config"), "Change model, effort, or connection")
 		head("Troubleshooting:")
-		help("ccmorph inspect [profile]", "Show effective settings and masking; no secrets")
-		help("ccmorph doctor [--verbose] [profile]", "Check why a profile is not working")
+		help(usageLine("inspect"), "Show effective settings and masking; no secrets")
+		help(usageLine("doctor"), "Check why a profile is not working")
 		if all {
 			head("More commands:")
-			help("ccmorph models <profile>", "List models from an API-key endpoint")
-			help("ccmorph price <model>...", "Read cached model list prices")
-			help("ccmorph check <profile> <model>", "Ask one model one token: does it answer now?")
-			// The line is the command's own synopsis, so the list and the
-			// command's page cannot drift apart again (GH-730).
-			help(router.Usage, "Spread subagents across profiles; off by default")
-			help("ccmorph get <profile> <field|--json>", "Read one profile field, or all as JSON")
-			help("ccmorph set <profile> <model|effort> [value]", "Save a default; omit value to choose")
-			help("ccmorph login <profile>", "Sign in again to a provider account")
-			help("ccmorph mv <old> <new>", "Rename a profile")
-			help("ccmorph rm <profile>", "Delete a profile and its private sign-in state")
-			help("ccmorph profile", "Name the profile a session runs on")
-			help("ccmorph cred <profile>", "Print a stored secret (sensitive)")
-			help("ccmorph update [ref]", "Update to the latest version, or to a branch or tag")
-			help("ccmorph uninstall", "Remove the command; profiles stay")
+			help(usageLine("models"), "List models from an API-key endpoint")
+			help(usageLine("price"), "Read cached model list prices")
+			help(usageLine("check"), "Ask one model one token: does it answer now?")
+			help(usageLine("router"), "Spread subagents across profiles; off by default")
+			help(usageLine("get"), "Read one profile field, or all as JSON")
+			help(usageLine("set"), "Save a default; omit value to choose")
+			help(usageLine("login"), "Sign in again to a Claude account or a provider account, or re-allow a refused API key")
+			help(usageLine("mv"), "Rename a profile")
+			help(usageLine("rm"), "Delete a profile and its private sign-in state")
+			help(usageLine("profile"), "Name the profile a session runs on")
+			help(usageLine("cred"), "Print a stored secret (sensitive)")
+			help(usageLine("update"), "Update to the latest version, or to a branch or tag")
+			help(usageLine("uninstall"), "Remove the command; profiles stay")
 			head("Advanced troubleshooting (normally automatic):")
-			help("ccmorph probe [profile]", "Look up context window sizes; no inference")
-			help("ccmorph context <profile> <model> [tokens|auto]", "Override or reset one model context limit")
+			help(usageLine("probe"), "Look up published context window sizes; measuring is opt-in")
+			help(usageLine("context"), "Read a model's context limit, set it, or restore automatic discovery")
 		}
 		// The footer ends whichever page this is, once. Where to start is advice
 		// for a reader with no profile yet: one who has any is past it, and the
