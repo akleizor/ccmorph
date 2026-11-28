@@ -183,6 +183,18 @@ func underClaude(t map[int]psRow, pid int) bool {
 
 var adapterArgv = regexp.MustCompile(`ccmorph-(?:core )?adapter\s+(\S+)`)
 
+// carriesSubagentMarker is whether a command line in the joined process table
+// carries the subagent marker: a hold, or an adapter started, by the session's
+// launcher for a pick and never for the session itself (#1043).
+func carriesSubagentMarker(args string) bool {
+	for _, a := range strings.Fields(args) {
+		if a == subagentMarker {
+			return true
+		}
+	}
+	return false
+}
+
 // sessionHoldProfile is the profile of the shared adapter whose session marker
 // pid is: a core route-hold spawned with --exit-on-stdin-eof on that adapter's
 // users file, proved from the kernel's own record the way EndRouteHold proves a
@@ -208,16 +220,18 @@ func sessionHoldProfile(pid int) string {
 // A shared adapter is joined rather than started, and a joining launcher is
 // parent of no adapter at all: the mark it does have is the route-hold child
 // AcquireAdapter spawns on the adapter's users file, which dies with it (#1022).
-// Both are read in one pass over the pids ascending, the order ps prints, so the
-// answer does not depend on map iteration; an adapter in argv wins over a hold,
-// as it did before shared adapters existed.
+// A pick can make the same launcher start the adapter instead, and that one is
+// its child: it carries the subagent marker and never answers for the session
+// (#1043). Both are read in one pass over the pids ascending, the order ps
+// prints, so the answer does not depend on map iteration; an adapter in argv
+// wins over a hold, as it did before shared adapters existed.
 func findSessionAdapter(t map[int]psRow, launcher int) string {
 	parent := regexp.MustCompile(`(?:^|\s)--parent-pid[= ]` + strconv.Itoa(launcher) + `(?:\s|$)`)
 	hold := ""
 	for _, pid := range sortedPids(t) {
 		r := t[pid]
 		if r.ppid == launcher || parent.MatchString(r.args) {
-			if m := adapterArgv.FindStringSubmatch(r.args); m != nil {
+			if m := adapterArgv.FindStringSubmatch(r.args); m != nil && !carriesSubagentMarker(r.args) {
 				return m[1]
 			}
 		}

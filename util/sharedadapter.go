@@ -73,7 +73,7 @@ func startSessionHold(core, users string, role holdRole) (*sessionHold, bool) {
 	}
 	argv := []string{"util", "route-hold", users, routeHoldExitStdin}
 	if role == holdSubagent {
-		argv = append(argv, routeHoldSubagent)
+		argv = append(argv, subagentMarker)
 	}
 	cmd := exec.Command(core, argv...)
 	cmd.Stdin, cmd.Stdout = inR, readyW
@@ -294,8 +294,15 @@ func acquireAdapter(core, root, name, model, confPath string, role holdRole, err
 		os.Remove(base) // a record of an adapter that is gone
 	}
 	os.Remove(a.Log) // one adapter's lifetime of log, never an ever-growing file
+	// The lifetime the start writes carries the role with it: a pick's adapter
+	// is spawned from the session's launcher, so without the marker the process
+	// table would name the borrowed profile as the session's own (#1043).
+	lifetime := []string{"--shared", base}
+	if role == holdSubagent {
+		lifetime = append(lifetime, subagentMarker)
+	}
 	var out bytes.Buffer
-	code := spawnAdapter(core, name, model, []string{"--shared", base}, true, a.Log, &out, errw)
+	code := spawnAdapter(core, name, model, lifetime, true, a.Log, &out, errw)
 	for _, line := range strings.Split(out.String(), "\n") {
 		k, v, _ := strings.Cut(line, "=")
 		switch {

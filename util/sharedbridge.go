@@ -168,10 +168,11 @@ func owns(pid int, tmp string) (yours, known bool) {
 // closes it and the marker goes with its session (#1022).
 const routeHoldExitStdin = "--exit-on-stdin-eof"
 
-// routeHoldSubagent marks a hold kept for a subagent pick's shared adapter:
-// the session's launcher acquires it for another profile, so `ccmorph hop` must
-// never read it as the profile the session itself runs on (#1022).
-const routeHoldSubagent = "--subagent"
+// subagentMarker marks every process a session's launcher keeps for a subagent
+// pick: the pick's route hold, and the shared adapter the pick started from the
+// launcher when no session had. `ccmorph hop` must never read either as the
+// profile the session itself runs on (#1022, #1043).
+const subagentMarker = "--subagent"
 
 // holdRole is what a core route-hold child runs, read from its exact operands.
 // A session's own shared-adapter marker is the only hold the hop may read as
@@ -211,7 +212,7 @@ func routeHoldUsers(pid int) (users string, role holdRole, ok bool) {
 		return argv[3], holdRoute, true
 	case len(argv) == 5 && argv[1] == "util" && argv[2] == "route-hold" && argv[4] == routeHoldExitStdin:
 		return argv[3], holdSession, true
-	case len(argv) == 6 && argv[1] == "util" && argv[2] == "route-hold" && argv[4] == routeHoldExitStdin && argv[5] == routeHoldSubagent:
+	case len(argv) == 6 && argv[1] == "util" && argv[2] == "route-hold" && argv[4] == routeHoldExitStdin && argv[5] == subagentMarker:
 		return argv[3], holdSubagent, true
 	}
 	return "", holdNone, false
@@ -409,11 +410,11 @@ func routeHold(args []string, in io.Reader, out, errw io.Writer) int {
 	switch {
 	case len(args) == 2 && args[1] == routeHoldExitStdin:
 		watch = true
-	case len(args) == 3 && args[1] == routeHoldExitStdin && args[2] == routeHoldSubagent:
+	case len(args) == 3 && args[1] == routeHoldExitStdin && args[2] == subagentMarker:
 		watch = true
 	case len(args) == 1:
 	default:
-		fmt.Fprintln(errw, "usage: ccmorph-core util route-hold <users-file> ["+routeHoldExitStdin+" ["+routeHoldSubagent+"]]")
+		fmt.Fprintln(errw, "usage: ccmorph-core util route-hold <users-file> ["+routeHoldExitStdin+" ["+subagentMarker+"]]")
 		return 2
 	}
 	f, err := lockFile(args[0], syscall.LOCK_SH)

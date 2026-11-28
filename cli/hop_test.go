@@ -236,3 +236,72 @@ func TestHopInANativeSessionIgnoresASubagentsAdapter(t *testing.T) {
 		t.Fatalf("hop must ignore the joined subagent adapter: rc=%d output=%q", rc, out)
 	}
 }
+
+// TestHopInANativeSessionIgnoresAStartedSubagentsAdapter is #1043: the pick's
+// gateway profile has no adapter yet, so the launcher's own start path parents
+// the adapter to the launcher for the pick's lifetime. It must no more answer
+// for the session than a joined one does — the no-profile hop still marks
+// native, the pick's word is not `Already on`, and native answers the #257
+// no-change guard.
+func TestHopInANativeSessionIgnoresAStartedSubagentsAdapter(t *testing.T) {
+	state, profiles := gatewayProfile(t, "native", "type=apikey\nbase_url=https://api.anthropic.com\napi_key=k")
+	conf := filepath.Join(state, "gw.conf")
+	if err := os.WriteFile(conf, []byte("type=apikey\nbase_url=https://gw.test\napi_key=k"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	bin := t.TempDir()
+	core := filepath.Join(bin, "ccmorph-core")
+	// The core the launcher hands its pick-adapter start: the adapter verb
+	// answers readiness and holds until signalled, util is the real route-hold.
+	body := "#!/bin/sh\n" +
+		"if [ \"$1\" = util ]; then export CCMORPH_TEST_HOLD_USERS=1; exec " + shellQuote(coreCopy(t)) + " \"$@\"; fi\n" +
+		"trap 'kill $!; exit 0' TERM; echo PORT=$$; sleep 60 & wait\n"
+	if err := os.WriteFile(core, []byte(body), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(filepath.Join(state, "auth"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	l := &launcher{dir: state, profileDirs: profiles, libexec: bin}
+	h := &agentHop{targets: map[string]*target{}}
+	dst, err := h.resolver(l)(agentproxy.Pick{Word: "gw", Model: "m"})
+	if err != nil || dst.Base == nil || dst.Base.Port() == "" {
+		t.Fatalf("the router did not start the pick's adapter: %v (%v)", dst.Base, err)
+	}
+	defer func() {
+		for _, a := range h.adapters {
+			a.Release()
+		}
+	}()
+	t.Setenv("CLAUDE_CODE_SESSION_ID", "native-session")
+	t.Setenv("CCMORPH_RELAY_ID", strconv.Itoa(os.Getpid())+".0")
+	t.Setenv("CLAUDE_CONFIG_DIR", filepath.Join(profiles, "native"))
+
+	// The started shape is the fixture's own: no record existed, so the router's
+	// acquireAdapter had to spawn the adapter from this process — the launcher
+	// the hop reads. util's two-process probe proves the same shape blind-safe.
+	if len(h.adapters) != 1 {
+		t.Fatalf("the router must hold the one adapter it started, got %d", len(h.adapters))
+	}
+
+	rc, out := hopRun(t, l)
+	if rc != 0 {
+		t.Fatalf("hop with no profile: rc %d:\n%s", rc, out)
+	}
+	if !strings.Contains(out, "(now on native)") {
+		t.Fatalf("hop must mark the session's own profile, not the pick's, got:\n%s", out)
+	}
+
+	rc, out = hopRun(t, l, "gw")
+	if strings.Contains(out, "Already on") {
+		t.Fatalf("a hop to the pick's word must not answer Already on, got:\n%s", out)
+	}
+	if rc != 1 {
+		t.Fatalf("a hop to the pick's word must take its normal path (rc 1, no process to end): rc %d:\n%s", rc, out)
+	}
+
+	rc, out = hopRun(t, l, "native")
+	if rc != 0 || !strings.Contains(out, "Already on native — nothing changed") {
+		t.Fatalf("hop must ignore the started subagent adapter: rc=%d output=%q", rc, out)
+	}
+}
