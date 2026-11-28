@@ -92,7 +92,7 @@ func GCStale(state, profiles, tmp string) {
 	}
 
 	overlays, _ := filepath.Glob(filepath.Join(paths.GlobQuote(profiles), "*", "cache", "launch-settings.*"))
-	var bridges, envs, ends, views []string
+	var bridges, envs, ends, views, agentRuns []string
 	ents, _ := os.ReadDir(tmp)
 	bridgePrefix := "ccmorph-bridge-" + strconv.Itoa(os.Getuid()) + "-"
 	for _, e := range ents {
@@ -119,6 +119,8 @@ func GCStale(state, profiles, tmp string) {
 				envs = append(envs, filepath.Join(state, "run", n))
 			case strings.HasPrefix(n, "ccmorph-private."):
 				views = append(views, filepath.Join(state, "run", n))
+			case strings.HasPrefix(n, "agent-proxy."):
+				agentRuns = append(agentRuns, filepath.Join(state, "run", n))
 			}
 		}
 	}
@@ -173,6 +175,17 @@ func GCStale(state, profiles, tmp string) {
 			}
 		}
 		_ = os.RemoveAll(d)
+	}
+	// An agent proxy's run dir (run/agent-proxy.<launcher pid>, cli/agentproxy.go)
+	// holds the trust bundle and the Bash env file; its launcher removes it on
+	// the way out, so one a minute old whose launcher is gone was left by a kill.
+	// The launcher's pid is the only owner mark, so a number that answers kill
+	// keeps the dir: the sweep never takes live state on a guess (#189).
+	for _, d := range agentRuns {
+		pid, err := strconv.Atoi(strings.TrimPrefix(filepath.Base(d), "agent-proxy."))
+		if err == nil && pid > 0 && paths.IsDir(d) && old(d, time.Minute) && syscall.Kill(pid, 0) == syscall.ESRCH {
+			_ = os.RemoveAll(d)
+		}
 	}
 	var live *string
 	alive := func(needle string) bool {
