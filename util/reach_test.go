@@ -1055,6 +1055,60 @@ func TestReachHarnessWaitStillNamesASilentStubSilent(t *testing.T) {
 	}
 }
 
+// #1026: #1021's retry dial is a second stub exec inside the same probe, so
+// the harness's patience must cover it too, and its silence belongs to the
+// whole probe. The first dial exits 28 at once (curl's own connect timeout);
+// what the second does is the case. Without the harness wait the shortened
+// bound leaves under a second and there is no retry: that is the honest
+// silence, filed under the advertised bound, never the harness's number.
+func TestReachHarnessWaitCoversTheRetryDial(t *testing.T) {
+	count := `n=$(cat "$REACH_DIALS" 2>/dev/null || echo 0); n=$((n+1)); echo "$n" > "$REACH_DIALS"`
+	silence := `printf '%s\n' 'curl: (28) Failed to connect to 127.0.0.1 port 9 after 2003 ms: Timeout was reached' >&2; exit 28`
+	answer := "sleep 0.4\nprintf 'HTTP/1.1 200 OK\\r\\nContent-Length: 0\\r\\n\\r\\n'"
+	for _, c := range []struct {
+		name, wait, second, wantDials, wantWhy string
+		wantNoVerdict                          bool
+	}{
+		{"a retry that answers inside the seam", "5", answer, "2", "", true},
+		{"no seam, the shortened bound leaves no retry", "", answer, "1", "after 1 second", false},
+		{"a retry silent at the seam's backstop", "2", "exec sleep 30", "2", "after 1 second", false},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			dials := filepath.Join(t.TempDir(), "dials")
+			t.Setenv("REACH_DIALS", dials)
+			body := count + "\nif [ \"$n\" = 1 ]; then " + silence + "\nfi\n" + c.second
+			dir := reachCurl(t, body)
+			warmCurl(t, dir)
+			os.Remove(dials) // the warm run is not one of the probe's dials
+			t.Setenv("CCMORPH_REACH_PROGRESS", "0.05")
+			t.Setenv("CCMORPH_REACH_BOUND", "0.2")
+			t.Setenv("CCMORPH_TEST_REACH_WAIT", c.wait)
+			start := time.Now()
+			r := ReachListing("http://127.0.0.1:9", "k", "", nil, nil)
+			took := time.Since(start)
+			asked, err := os.ReadFile(dials)
+			if err != nil {
+				t.Fatalf("the probe made no dials of its own: %v (verdict %+v)", err, r)
+			}
+			if n := strings.TrimSpace(string(asked)); n != c.wantDials {
+				t.Fatalf("the probe dialed %s times, want %s: verdict %+v", n, c.wantDials, r)
+			}
+			if c.wantNoVerdict {
+				if r != (Reach{}) {
+					t.Fatalf("got %+v, want nothing to say about a stub that answered the retry", r)
+				}
+				return
+			}
+			if !r.Waited || !strings.Contains(r.Why, c.wantWhy) {
+				t.Fatalf("got %+v, want a waited no-answer containing %q", r, c.wantWhy)
+			}
+			if c.wait == "2" && took > 3*time.Second {
+				t.Fatalf("the probe returned after %v, want about the seam's 2 s backstop, not the stub's 30 s", took)
+			}
+		})
+	}
+}
+
 // GH-260 (gate finding): with the knobs asking for more than the contract and
 // a curl that ignores its own --max-time, the progress line still comes after
 // the product's one second and within two, and the probe has returned,
