@@ -3105,7 +3105,7 @@ test_only_the_current_vocabulary_is_taught() {
   # not literal `print "  ccmorph …"` lines, so the check matches the call shape.
   local help_all
   help_all=$(command env -i HOME="$HOME" PATH="$PATH" NO_COLOR=1 zsh "$REPO_ROOT/bin/ccmorph" help all 2>&1)
-  if [[ "$help_all" != *'ccmorph set <profile> <model|effort>'* ]]; then
+  if [[ "$help_all" != *'ccmorph set [profile] [model|effort] [value]'* ]]; then
     print -u2 -- 'help must teach the set verb'
     rc=1
   fi
