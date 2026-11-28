@@ -60,6 +60,19 @@ var endCommand = func(l *launcher, sig syscall.Signal) {
 	os.Exit(128 + int(sig))
 }
 
+// ctrlCSwallowed reports each signal a command-wide owner declined because a
+// picker or a handed-off child holds it. The send never blocks and drops when
+// the buffer is full, so production pays a compare and the tests get a sync
+// point: "the owner saw it and stood down", proven rather than raced.
+var ctrlCSwallowed = make(chan os.Signal, 16)
+
+func swallowed(s os.Signal) {
+	select {
+	case ctrlCSwallowed <- s:
+	default:
+	}
+}
+
 // keepCtrlC is `add`'s and `login`'s promise that Ctrl-C cancels for the whole
 // command, not only while a picker has the keys. SIGINT that belongs to no
 // picker and no handed-off child ends the command where it stands, saving
@@ -73,7 +86,8 @@ func (l *launcher) keepCtrlC() (release func()) {
 	go func() {
 		for s := range sigs {
 			if keysReading() || handoffs.Load() > 0 {
-				continue // a picker or the child it waits on owns this one
+				swallowed(s) // a picker or the child it waits on owns this one
+				continue
 			}
 			if sig, ok := s.(syscall.Signal); ok {
 				endCommand(l, sig)

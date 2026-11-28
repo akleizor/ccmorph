@@ -20,7 +20,7 @@ from pathlib import Path
 
 import pytest
 
-from support import CORE, needs_shim
+from support import CORE, HANG_TIMEOUT, needs_shim
 
 pytestmark = needs_shim
 
@@ -62,7 +62,7 @@ def start_add(env, started_ignored=True):
     return p
 
 
-def wait_for_line(proc, needle, timeout=30, stream="stderr"):
+def wait_for_line(proc, needle, timeout=HANG_TIMEOUT, stream="stderr"):
     """True once `needle` has passed on the named stream; the prompts and the
     sign-in notes print whole lines, so a line read is the deterministic point
     the flow has reached."""
@@ -82,7 +82,7 @@ def wait_for_line(proc, needle, timeout=30, stream="stderr"):
         pytest.fail(f"'{needle}' never reached {stream}:\n{''.join(seen)}")
 
 
-def sigint_and_wait(proc, timeout=15):
+def sigint_and_wait(proc, timeout=HANG_TIMEOUT):
     """Ctrl-C itself: SIGINT to the command's own pid, and its exit."""
     proc.send_signal(signal.SIGINT)
     try:
@@ -137,7 +137,7 @@ def test_sigint_cancels_the_provider_sign_in_wait(tmp_path):
         proc.stdin.write("antigravity\n")
         proc.stdin.flush()
         wait_for_line(proc, "Ctrl-C to cancel", stream="stdout")  # the line that promises the way out
-        deadline = time.monotonic() + 20  # until the fake bridge is actually up and waiting
+        deadline = time.monotonic() + HANG_TIMEOUT  # until the fake bridge is actually up and waiting
         while not pidfile.exists() and time.monotonic() < deadline:
             time.sleep(0.02)
         assert pidfile.exists(), "the fake bridge never started"
@@ -152,6 +152,88 @@ def test_sigint_cancels_the_provider_sign_in_wait(tmp_path):
             os.kill(bridge_pid, 0)
             os.kill(bridge_pid, signal.SIGKILL)  # the walk's orphan backstop
         except (ProcessLookupError, NameError):
+            pass
+        proc.kill()
+        proc.wait()
+
+
+def launch_env(tmp_path, conf, binenv=(), **extra):
+    """State with one profile and the env a bare `ccmorph-core launch` reads."""
+    state = tmp_path / "state"
+    (state / "profiles" / "gw").mkdir(parents=True)
+    (state / "gw.conf").write_text(conf)
+    env = {k: v for k, v in os.environ.items()
+           if not k.startswith(("CCMORPH_", "_CCMORPH_", "CLAUDE_", "ANTHROPIC_"))}
+    env.update(HOME=str(tmp_path / "home"), XDG_CONFIG_HOME=str(tmp_path / "home" / ".config"),
+               CCMORPH_STATE_DIR=str(state), CCMORPH_LIB_DIR=str(ROOT / "lib"),
+               TMPDIR=str(tmp_path / "tmp"), _CCMORPH_LAUNCH_PROFILE="gw",
+               PATH=os.pathsep.join([str(b) for b in binenv] + ["/usr/bin", "/bin"]),
+               HTTP_PROXY="http://127.0.0.1:1", HTTPS_PROXY="http://127.0.0.1:1",
+               http_proxy="http://127.0.0.1:1", https_proxy="http://127.0.0.1:1")
+    env.update(extra)
+    return env, state
+
+
+def test_sigint_cancels_the_launch_endpoint_check(tmp_path):
+    """`ccmorph run` prints "Checking 'gw' gateway (up to Ns); Ctrl-C to
+    cancel." — and the walked run ignored SIGINT through that whole wait,
+    because the launcher swallowed INT for its whole life and the swallow was
+    scoped to the handoff to Claude Code only by accident. Ctrl-C before any
+    session exists points at the launcher itself."""
+    fakebin = tmp_path / "bin"
+    fakebin.mkdir()
+    (tmp_path / "tmp").mkdir()
+    (fakebin / "curl").write_text("#!/bin/sh\nexec sleep 30\n")  # the probe never answers
+    (fakebin / "curl").chmod(0o755)
+    env, _ = launch_env(tmp_path, "type=apikey\nbase_url=http://10.255.255.1:8080\napi_key=k",
+                        binenv=[fakebin], CCMORPH_REACH_BOUND="25", CCMORPH_REACH_PROGRESS="0.2")
+    proc = subprocess.Popen([str(CORE), "launch"], stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                            text=True, env=env, preexec_fn=os.setsid)
+    try:
+        wait_for_line(proc, "Checking 'gw' gateway")  # the line that promises the way out
+        rc = sigint_and_wait(proc)
+        assert rc in (-int(signal.SIGINT.value), 128 + signal.SIGINT.value), \
+            f"Ctrl-C must end the checking launch (130/-2), got {rc}"
+    finally:
+        proc.kill()
+        proc.wait()
+
+
+def test_sigint_during_a_running_session_is_claudes_own(tmp_path):
+    """The half of the promise that must not move: while the session runs,
+    INT belongs to Claude Code (it shares the process group). A SIGINT to the
+    launcher during a live session ends nothing — the launch is still there to
+    report the session's exit."""
+    fakebin = tmp_path / "bin"
+    fakebin.mkdir()
+    up, pidf = tmp_path / "claude.started", tmp_path / "claude.pid"
+    (fakebin / "claude").write_text(
+        "#!/bin/sh\n"
+        'if [ "$1" = --help ]; then printf "Commands:\\n  mcp\\n"; exit 0; fi\n'
+        "printf x >> '" + str(up) + "'\n"
+        "printf '%s\\n' \"$$\" > '" + str(pidf) + "'\n"
+        "trap '' INT\n"  # a real Claude Code lives through Ctrl-C; it handles it
+        "while :; do sleep 1; done\n")
+    (fakebin / "claude").chmod(0o755)
+    env, _ = launch_env(tmp_path, "type=apikey\napi_key=k", binenv=[fakebin])
+    proc = subprocess.Popen([str(CORE), "launch"], stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                            text=True, env=env, preexec_fn=os.setsid)
+    try:
+        deadline = time.monotonic() + HANG_TIMEOUT
+        while not pidf.exists() and time.monotonic() < deadline:
+            time.sleep(0.02)
+        assert pidf.exists(), "the session never started"
+        claude_pid = int(pidf.read_text().strip())
+        proc.send_signal(signal.SIGINT)  # Ctrl-C at the launcher, mid-session
+        proc.terminate()  # end the session; the launcher must still be alive to report it
+        rc = proc.wait(timeout=HANG_TIMEOUT)
+        assert rc not in (-int(signal.SIGINT.value), 128 + signal.SIGINT.value), \
+            "a mid-session SIGINT ended the launcher itself: INT no longer belongs to the session"
+        assert up.read_bytes().count(b"x") == 1, "the session was restarted instead of ended"
+    finally:
+        try:
+            os.kill(claude_pid, signal.SIGKILL)
+        except (ProcessLookupError, NameError, UnboundLocalError):
             pass
         proc.kill()
         proc.wait()
