@@ -348,6 +348,143 @@ def test_update_and_uninstall_under_homebrew_name_the_brew_command(tmp_path):
         assert brew in result.stderr, result.stderr
 
 
+def _keg(tmp_path, rel):
+    """An install laid out like a Homebrew keg under tmp_path/rel: the library in
+    lib/, the core beside it. Returns the install root, the dir lib/'s parent."""
+    root = tmp_path / rel
+    (root / 'lib').mkdir(parents=True)
+    for f in (ROOT / 'lib').iterdir():
+        (root / 'lib' / f.name).write_bytes(f.read_bytes())
+    (root / 'libexec').mkdir()
+    shutil.copy2(ROOT / 'libexec/ccmorph-core', root / 'libexec/ccmorph-core')
+    return root
+
+
+def _env_home(tmp_path, lib_dir):
+    # ZDOTDIR with HOME: the zsh launcher reads $ZDOTDIR/.zshenv before any CLI
+    # code, so a real machine's startup file would print into stderr and break
+    # these stderr assertions (REVIEW.md kind 3).
+    return {**os.environ, 'HOME': str(tmp_path / 'home'), 'ZDOTDIR': str(tmp_path / 'home'),
+            'CCMORPH_LIB_DIR': str(lib_dir), 'CCMORPH_STATE_DIR': str(tmp_path / 'state')}
+
+
+def test_update_and_uninstall_help_name_the_homebrew_case_and_print_its_brew_command(tmp_path):
+    # GH-1035: the README promises "ccmorph update and ccmorph uninstall refuse a
+    # Homebrew install and print those commands", and a brew user who met that
+    # refusal opens help first — where Homebrew was never named, and update's
+    # example showed v0.1.0 on a 0.5.42 product.
+    keg = _keg(tmp_path, Path('Cellar/ccmorph/0.2.0/libexec'))
+    clone = _keg(tmp_path, 'clone')
+    (clone / '.git').mkdir()  # a checkout is the layout the refusal was seen on
+    opt = tmp_path / 'opt'
+    opt.mkdir()
+    (opt / 'ccmorph').symlink_to(keg)  # how a real brew reaches its keg
+    envs = {'checkout': _env_home(tmp_path, clone / 'lib'),
+            'cellar': _env_home(tmp_path, keg / 'lib'),
+            'opt': _env_home(tmp_path, opt / 'ccmorph' / 'lib')}
+    pages = {}
+    for verb, brew in (('update', 'brew upgrade ccmorph'), ('uninstall', 'brew uninstall ccmorph')):
+        forms = [['help', verb], [verb, '--help'], [verb, '-h'],
+                 ['--help', verb], ['-h', verb]]
+        if verb == 'update':
+            forms.insert(3, ['update', 'v1', '--help'])
+        pages[verb] = []
+        for where, env in envs.items():
+            for argv in forms:
+                result = subprocess.run([str(ROOT / 'bin/ccmorph'), *argv], env=env,
+                                        capture_output=True, text=True, timeout=HANG_TIMEOUT)
+                assert result.returncode == 0, (where, argv, result.stderr)
+                assert result.stderr == '', (where, argv, result.stderr)
+                assert result.stdout.startswith('Usage: ccmorph ' + verb), (where, argv)
+                flat = ' '.join(result.stdout.split())
+                assert brew in flat, (where, argv, result.stdout)
+                assert 'A Homebrew install' in flat, (where, argv, result.stdout)
+                assert 'v0.1.0' not in result.stdout, (where, argv, result.stdout)
+                pages[verb].append(result.stdout)
+        assert all(p == pages[verb][0] for p in pages[verb][1:]), \
+            f'help {verb}: a form or a layout printed a different page'
+    update_page = ' '.join(pages['update'][0].split())
+    assert 'A git checkout is refused: update it with git.' in update_page
+    assert 'ccmorph update main' in update_page
+    # The branch example must not read as a working install command: a plain
+    # GitHub ref archive has no core binary, and the real installer refuses it.
+    assert 'archive contains no ccmorph-core binary' in update_page
+    assert 'update with no name installs the latest' in update_page
+    uninstall_page = ' '.join(pages['uninstall'][0].split())
+    assert 'Remove the ccmorph command from ~/.local/bin' in uninstall_page
+    assert 'profiles and credentials stay' in uninstall_page
+    assert 'not removed by this command' in uninstall_page
+    assert 'not in ~/.local/bin' in uninstall_page
+    assert not (tmp_path / 'state' / 'profiles').exists(), 'help must not provision state'
+
+
+def test_update_help_example_is_durable_and_honest_about_what_it_installs(tmp_path):
+    # GH-1035 (evaluator refusal): the branch example must read as a valid ref
+    # name, not as a working install command — a plain GitHub archive of a
+    # branch or tag carries no ccmorph-core binary, and the real installer
+    # refuses such a tree before changing anything. The page says so, and names
+    # the bare command as the path whose archive ships the binary.
+    env = _env_home(tmp_path, _keg(tmp_path, 'clone') / 'lib')
+    result = subprocess.run([str(ROOT / 'bin/ccmorph'), 'help', 'update'], env=env,
+                            capture_output=True, text=True, timeout=HANG_TIMEOUT)
+    assert result.returncode == 0, result.stderr
+    assert result.stderr == '', result.stderr
+    flat = ' '.join(result.stdout.split())
+    assert 'ccmorph update main' in flat  # the durable ref-name example stays
+    assert 'archive contains no ccmorph-core binary' in flat
+    assert 'update with no name installs the latest' in flat
+    assert 'v0.1.0' not in flat
+
+
+def test_update_refuses_bad_refs_with_a_durable_example_and_never_reaches_the_installer(tmp_path):
+    # GH-1035: update's example ages no more — in the page and in the advice a
+    # mistyped ref lands on. The stub installer shows a rejected ref never
+    # reaches it, a bare update still selects the latest release, and a
+    # version-shaped ref is still accepted and installed.
+    root = _keg(tmp_path, 'install')
+    log = tmp_path / 'installer.log'
+    installer = root / 'install.sh'
+    installer.write_text('#!/bin/sh\n'
+                         '{ echo "args: $*"; echo "ref: [${CCMORPH_REF-}]"; } > "$INSTALL_LOG"\n')
+    installer.chmod(0o755)
+    env = _env_home(tmp_path, root / 'lib')
+    env['INSTALL_LOG'] = str(log)
+    cli = str(ROOT / 'bin/ccmorph')
+    for bad in ('', 'v0.1.0..bad', 'a b\nc'):
+        result = subprocess.run([cli, 'update', bad], env=env, stdin=subprocess.DEVNULL,
+                                capture_output=True, text=True, timeout=HANG_TIMEOUT)
+        assert result.returncode == 2, (bad, result.returncode, result.stderr)
+        assert not log.exists(), f'ref {bad!r} reached the installer'
+        assert 'invalid ref' in result.stderr, (bad, result.stderr)
+        advice = ' '.join(result.stderr.split()).split("' — ")[1]  # past the echoed operand
+        assert 'such as main' in advice, (bad, advice)
+        assert 'v0.1.0' not in advice, (bad, advice)
+    assert subprocess.run([cli, 'update'], env=env, stdin=subprocess.DEVNULL,
+                          capture_output=True, text=True, timeout=HANG_TIMEOUT).returncode == 0
+    assert log.read_text().splitlines() == ['args: --remote', 'ref: []'], log.read_text()
+    log.unlink()
+    assert subprocess.run([cli, 'update', 'v0.1.0'], env=env, stdin=subprocess.DEVNULL,
+                          capture_output=True, text=True, timeout=HANG_TIMEOUT).returncode == 0
+    assert log.read_text().splitlines() == ['args: --remote', 'ref: [v0.1.0]'], log.read_text()
+
+
+def test_homebrew_reached_through_the_opt_symlink_still_refuses_byte_identically(tmp_path):
+    # The refusal resolves the library dir, and a real brew reaches its keg through
+    # opt/ccmorph: a test that only supplies a literal Cellar path would miss a
+    # regression for brew installs as every brew machine spells them.
+    keg = _keg(tmp_path, Path('Cellar/ccmorph/0.2.0/libexec'))
+    opt = tmp_path / 'opt'
+    opt.mkdir()
+    (opt / 'ccmorph').symlink_to(keg)
+    env = _env_home(tmp_path, opt / 'ccmorph' / 'lib')
+    for verb, brew in (('update', 'brew upgrade ccmorph'), ('uninstall', 'brew uninstall ccmorph')):
+        result = subprocess.run([str(ROOT / 'bin/ccmorph'), verb], env=env, stdin=subprocess.DEVNULL,
+                                capture_output=True, text=True, timeout=HANG_TIMEOUT)
+        assert result.returncode == 1, (verb, result.returncode, result.stderr)
+        assert result.stderr == ('ccmorph: ccmorph was installed with Homebrew; '
+                                 'run: ' + brew + '\n'), result.stderr
+
+
 def _help_add(tmp_path, bridge, providers='claude antigravity codex'):
     """help add with a PATH that has only a fake cliproxyapi, when bridge is
     given — and holds none otherwise, wherever the runner carries one (#414)."""
