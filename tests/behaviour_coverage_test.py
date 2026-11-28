@@ -545,6 +545,30 @@ def test_login_for_an_api_key_profile_records_the_approval_again(box):
     assert gone.returncode != 0 and "no profile 'ghost'" in gone.stderr
 
 
+def test_login_says_what_the_key_answer_actually_was(box):
+    # GH-1041: "will use the API key of x again" promised a refusal to undo on
+    # a key that had never been refused; each state of the stored answer now
+    # gets the sentence that fits it.
+    seed(box)
+    key = next(line.split('=', 1)[1] for line in (box.state / 'gw.conf').read_text().splitlines()
+               if line.startswith('api_key='))
+    first = box.run('login', 'gw')  # no answer stored yet
+    assert first.returncode == 0, first.stderr
+    assert 'again' not in first.stdout, first.stdout
+    assert 'without asking' in first.stdout, first.stdout
+    second = box.run('login', 'gw')  # the answer is already approved
+    assert second.returncode == 0, second.stderr
+    assert 'again' not in second.stdout, second.stdout
+    assert 'already uses' in second.stdout, second.stdout
+    doc_path = box.state / 'profiles' / 'gw' / '.claude.json'
+    doc = json.loads(doc_path.read_text())
+    doc['customApiKeyResponses'] = {"approved": [], "rejected": [key[-20:]]}
+    doc_path.write_text(json.dumps(doc))
+    fixed = box.run('login', 'gw')  # a real refusal being undone
+    assert fixed.returncode == 0, fixed.stderr
+    assert "will use the API key of 'gw' again" in fixed.stdout, fixed.stdout
+
+
 def test_a_login_saved_under_an_open_session_lands_at_the_next_launch(box):
     # #299: while a session of the profile is open, login saves the answer
     # instead of rewriting .claude.json under the session. A launch then waits

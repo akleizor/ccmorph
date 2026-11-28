@@ -920,6 +920,9 @@ func (l *launcher) login(args []string) int {
 		if !l.setupDir(name, "apikey", liveSilent) {
 			return 1
 		}
+		// The answer as Claude Code stored it before this command touched it:
+		// the sentence below may only claim what the stored answer was.
+		was := util.KeyResponse(filepath.Join(l.profileDirs, name), f["api_key"])
 		if err := util.ApproveKey(l.profileDirs, name, f["api_key"]); err != nil {
 			if errors.Is(err, util.ErrProfileInUse) {
 				// A session or launch of the profile is open and rewrites the
@@ -936,7 +939,16 @@ func (l *launcher) login(args []string) int {
 			return 1
 		}
 		util.DropApproval(l.profileDirs, name, f["api_key"])
-		fmt.Println("Claude Code will use the API key of '" + name + "' again. Start it: ccmorph run " + name)
+		// GH-1041: "again" promised a refusal to undo; the sentence now follows
+		// the answer the profile actually held when login ran.
+		switch was {
+		case util.KeyRefused:
+			fmt.Println("Claude Code will use the API key of '" + name + "' again. Start it: ccmorph run " + name)
+		case util.KeyApproved:
+			fmt.Println("Claude Code already uses the API key of '" + name + "'. Start it: ccmorph run " + name)
+		default:
+			fmt.Println("Claude Code will use the API key of '" + name + "' without asking. Start it: ccmorph run " + name)
+		}
 		return 0
 	}
 	if f["type"] != "provider" {
