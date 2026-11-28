@@ -697,8 +697,16 @@ func eraseLines(n int) {
 	}
 }
 
+// uiInputEnded is the status uiSelect and uiInput answer when the input itself
+// ended — the terminal closed or its read failed — not when a person left with
+// Esc, q or ^C. Every other status is unchanged, so a caller that only asks
+// "was there an answer" treats it as the cancel it used to be; a wizard that
+// names the cause reads it apart from a deliberate leave (#1030).
+const uiInputEnded = 3
+
 // uiSelect is ccm_ui_select: the chosen ID, or rc 1 cancelled, 2 invalid or no
-// terminal to pick with, 128+n signal.
+// terminal to pick with, uiInputEnded when the terminal's input ended, 128+n
+// signal.
 func uiSelect(mode, title, rows, display string) (string, int) {
 	if display == "" {
 		display = "labels"
@@ -1131,6 +1139,16 @@ func (t uiTheme) numberedKeys(prompt string, rows []string, display string, dumb
 		t.cancelled()
 		return "", 1, true
 	}
+	// ended is the input itself ending: the terminal closed (or its read
+	// failed) with no answer in. The screen keeps the one line every leave
+	// prints; the status carries the input-ended result to the wizard, which
+	// names the cause (#1030).
+	ended := func() (string, int, bool) {
+		closeEcho()
+		fold()
+		t.cancelled()
+		return "", uiInputEnded, true
+	}
 	pick := func(r string) (string, int, bool) {
 		closeEcho()
 		fold()
@@ -1147,10 +1165,14 @@ func (t uiTheme) numberedKeys(prompt string, rows []string, display string, dumb
 			paint()
 			continue
 		}
-		if s != nil || !ok {
-			// A signal or a closed terminal leaves as Esc does: one Cancelled
-			// line and status 1, the answer the line loop gave.
+		if s != nil {
+			// A signal leaves as Esc does: one Cancelled line and its status.
 			return leave()
+		}
+		if !ok {
+			// A closed terminal is not a person's leave: same screen, but the
+			// status says the input ended so the wizard can name it (#1030).
+			return ended()
 		}
 		// Only another j/k extends the run and only a printable key takes it
 		// into a name; any other key ends it (#840).
@@ -1306,8 +1328,8 @@ func readKeys() *keys { return &keys{in: os.Stdin} }
 
 const keyResize = -2
 
-// next waits for one key; timeout 0 waits forever. ok false is EOF or timeout;
-// a resize answers keyResize.
+// next waits for one key; timeout 0 waits forever. ok false is the input
+// ending (EOF or a closed terminal) or a timeout; a resize answers keyResize.
 func (k *keys) next(timeout time.Duration, stop, winch <-chan os.Signal) (int, os.Signal, bool) {
 	start := time.Now()
 	b := make([]byte, 1)
@@ -1323,7 +1345,10 @@ func (k *keys) next(timeout time.Duration, stop, winch <-chan os.Signal) (int, o
 		if n == 1 {
 			return int(b[0]), nil, true
 		}
-		if err != nil && err != io.EOF {
+		if err != nil {
+			// io.EOF is the input ending as much as a read error is: a pty
+			// whose other end closed answers either, and waiting out a timeout
+			// that never comes spun forever on the EOF ones (#1030).
 			return 0, nil, false
 		}
 		if timeout > 0 && time.Since(start) >= timeout {
@@ -1476,6 +1501,10 @@ func (t uiTheme) native(prompt string, rows []string, display string) (string, i
 				return
 			}
 			if !ok {
+				// The terminal's input ended: the cancel line stays, and the
+				// status carries the result to a wizard that names the cause
+				// (#1030).
+				result = uiInputEnded
 				return
 			}
 			switch c {
@@ -1529,7 +1558,7 @@ func (t uiTheme) native(prompt string, rows []string, display string) (string, i
 	}
 	if result != 0 {
 		t.cancelled()
-		return "", 1
+		return "", result
 	}
 	t.receipt(prompt, rowID(visible(rows[selected], display)))
 	return rowID(rows[selected]), 0
@@ -1804,7 +1833,9 @@ func (t uiTheme) refuseNoTerminal(rows []string, fzfNamed bool) {
 	}
 }
 
-// uiInput is ccm_ui_input: one line, hidden when secret. rc 1 cancelled or EOF.
+// uiInput is ccm_ui_input: one line, hidden when secret. rc 0 answered, rc 1
+// cancelled, uiInputEnded when a terminal's input ended, 128+n signal; a pipe
+// that runs out answers rc 1, the cancel every piped prompt reports.
 func uiInput(prompt string, secret bool) (string, int) {
 	t := themeFor(2)
 	w := os.Stderr
@@ -1903,7 +1934,10 @@ func readKeyLine(k *keys, sigs <-chan os.Signal, secret bool, w *os.File) (strin
 			return string(value), sigRC(s)
 		}
 		if !ok {
-			return string(value), 1
+			// The terminal's input ended, which is not the leave Esc and ^D
+			// ask for: the status says so and the caller names the cause
+			// (#1030).
+			return string(value), uiInputEnded
 		}
 		switch {
 		case c == '\r' || c == '\n':

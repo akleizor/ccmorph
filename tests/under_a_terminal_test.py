@@ -91,3 +91,23 @@ def test_the_launcher_suite_has_one_pty_runner():
     # launch on a busy machine (#421).
     suite = (Path(__file__).resolve().parent / "ccmorph_test.zsh").read_text()
     assert "subprocess.Popen" not in suite
+
+
+def test_scripted_flags_parse_and_the_command_survives():
+    # The scripted mode (#1030) takes its flags before the command and hands the
+    # command through whole: a marker's answer, then where the input ends.
+    script, command = under_a_terminal.parse_script(
+        ["--answer", "Ready", "3\\n",
+         "--answer", "Pick", "custom\\n",
+         "--end-input-at", "Name:",
+         "env", "TERM=dumb", "zsh", "-c", "true"])
+    assert command == ["env", "TERM=dumb", "zsh", "-c", "true"]
+    assert script.answers == [("Ready", "3\\n"), ("Pick", "custom\\n")]
+    assert script.end_input_at == "Name:"
+
+
+def test_a_command_without_flags_keeps_the_plain_runner():
+    # Every existing caller passes only a command; none of it is read as a
+    # runner flag, and the plain single-pty path answers as it always did.
+    argv = ["env", "PATH=/bin", "zsh", "-c", "true"]
+    assert under_a_terminal.parse_script(argv) == (None, argv)
