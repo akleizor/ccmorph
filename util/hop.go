@@ -183,16 +183,34 @@ func underClaude(t map[int]psRow, pid int) bool {
 
 var adapterArgv = regexp.MustCompile(`ccmorph-(?:core )?adapter\s+(\S+)`)
 
-// carriesSubagentMarker is whether a command line in the joined process table
-// carries the subagent marker: a hold, or an adapter started, by the session's
-// launcher for a pick and never for the session itself (#1043).
-func carriesSubagentMarker(args string) bool {
-	for _, a := range strings.Fields(args) {
-		if a == subagentMarker {
-			return true
+// unmarkedAdapterProfile names a session adapter from kernel argv. Only a
+// flag marks a subagent; paths and option values can contain marker text (#1043).
+func unmarkedAdapterProfile(argv []string) string {
+	if len(argv) > 0 && shellComm.MatchString(filepath.Base(argv[0])) {
+		// A shell script used as the core has its interpreter before the script.
+		argv = argv[1:]
+	}
+	args := adapterOperands(argv)
+	profile := ""
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		if !strings.HasPrefix(arg, "--") || arg == "--" {
+			profile = arg
+			continue
+		}
+		name, _, inline := strings.Cut(arg, "=")
+		switch name {
+		case subagentMarker:
+			return ""
+		case "--parent-pid", "--shared", "--model", "--inbound-token-file", "--port",
+			"--ensure-config", "--ensure-port", "--ensure-identity":
+			// These flags consume the next argument unless the value is inline.
+			if !inline {
+				i++
+			}
 		}
 	}
-	return false
+	return profile
 }
 
 // sessionHoldProfile is the profile of the shared adapter whose session marker
@@ -231,8 +249,18 @@ func findSessionAdapter(t map[int]psRow, launcher int) string {
 	for _, pid := range sortedPids(t) {
 		r := t[pid]
 		if r.ppid == launcher || parent.MatchString(r.args) {
-			if m := adapterArgv.FindStringSubmatch(r.args); m != nil && !carriesSubagentMarker(r.args) {
-				return m[1]
+			if m := adapterArgv.FindStringSubmatch(r.args); m != nil {
+				if !strings.Contains(r.args, subagentMarker) {
+					return m[1]
+				}
+				// Joined text can flag a candidate for inspection, but only argv
+				// can distinguish a standalone flag from part of another argument.
+				// If the row is gone or unreadable, don't claim it for the session.
+				if argv, ok := argvOf(pid); ok {
+					if profile := unmarkedAdapterProfile(argv); profile != "" {
+						return profile
+					}
+				}
 			}
 		}
 		if hold == "" && r.ppid == launcher {
@@ -250,20 +278,26 @@ func SessionAdapter(t ProcTable, launcher int) string { return findSessionAdapte
 // `ccmorph-core adapter <profile>`, the older build `ccmorph-adapter <profile>`,
 // either possibly behind the python host a wrapped install runs it through.
 func adapterProfile(a []string) (string, bool) {
-	i := execIndex(a)
-	if i < 0 || i+1 >= len(a) {
-		return "", false
-	}
-	if filepath.Base(a[i]) == "ccmorph-core" && a[i+1] == "adapter" {
-		if i+2 < len(a) {
-			return a[i+2], true
-		}
-		return "", false
-	}
-	if filepath.Base(a[i]) == "ccmorph-adapter" {
-		return a[i+1], true
+	if args := adapterOperands(a); len(args) > 0 {
+		return args[0], true
 	}
 	return "", false
+}
+
+func adapterOperands(a []string) []string {
+	i := execIndex(a)
+	if i < 0 || i+1 >= len(a) {
+		return nil
+	}
+	switch filepath.Base(a[i]) {
+	case "ccmorph-core":
+		if a[i+1] == "adapter" {
+			return a[i+2:]
+		}
+	case "ccmorph-adapter":
+		return a[i+1:]
+	}
+	return nil
 }
 
 // findAdapter is the pid of the adapter serving profile, 0 when there is none.

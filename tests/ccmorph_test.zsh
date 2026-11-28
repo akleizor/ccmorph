@@ -4891,6 +4891,34 @@ test_hop_without_a_profile_names_the_choices_instead_of_restarting() {
   return $rc
 }
 
+test_hop_names_an_unmarked_adapter_with_marker_text_in_its_path() {
+  local test_home adapter ready pid out rc=0 launcher=1073741824
+  test_home=$(mktemp -d) || return 1
+  setup_home "$test_home"
+  printf '%s\n' 'type=sub' 'email=a@b.c' > "$HOME/.config/ccmorph/subacct.conf"
+  mkdir "$HOME/bin --subagent tools"
+  adapter="$HOME/bin --subagent tools/ccmorph-core"
+  printf '%s\n' '#!/bin/sh' "trap 'kill \$!; wait; exit 0' TERM" \
+    'echo PORT=12345' '/bin/sleep 30 & wait' > "$adapter"
+  chmod +x "$adapter"
+  ready=$("$REPO_ROOT/libexec/ccmorph-core" util adapter-start "$adapter" proxy m "$launcher" /dev/null)
+  pid=${${(f)ready}[1]#PID=}
+  if [[ "$pid" != <-> ]] || ! kill -0 "$pid" 2>/dev/null; then
+    print -u2 -- "PROBE BLIND: adapter-start did not leave a live adapter: ${(qqq)ready}"
+    return 1
+  fi
+
+  # No config-dir fallback: only the adapter's --parent-pid names the session.
+  out=$(CLAUDE_CONFIG_DIR= CLAUDE_CODE_SESSION_ID=legacy-session CCMORPH_RELAY_ID="$launcher.0" hop_as_claude 2>&1)
+  [[ $? == 0 && "$out" == 'Name a profile to hop to (now on proxy): subacct' ]] || {
+    print -u2 -- "hop must name the unmarked adapter despite its path: ${(qqq)out}"
+    rc=1
+  }
+  kill -TERM "$pid" 2>/dev/null
+  rm -rf "$test_home"
+  return $rc
+}
+
 test_hop_to_the_running_profile_changes_nothing() {
   # GH-257: hopping to the profile the session already runs on must say so and
   # keep the session running: no queued switch, no TERM.
@@ -13398,6 +13426,7 @@ run_test test_hop_refuses_to_switch_away_from_a_private_profile
 run_test test_launch_failure_names_the_cause_and_the_doctor_command
 run_test test_hop_refuses_when_no_claude_process_runs_it
 run_test test_hop_without_a_profile_names_the_choices_instead_of_restarting
+run_test test_hop_names_an_unmarked_adapter_with_marker_text_in_its_path
 run_test test_hop_to_the_running_profile_changes_nothing
 run_test test_hop_to_a_wrong_name_inside_claude_answers_in_one_line
 run_test test_hop_falls_back_when_the_target_cannot_serve_the_model

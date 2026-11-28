@@ -97,6 +97,9 @@ func TestParseArgsAcceptsTheSubagentMarker(t *testing.T) {
 	if !strings.Contains(string(out), "profile=gw shared=/r/.gw.adapter.k auto=true") {
 		t.Fatalf("the marker changed what was parsed: %q", out)
 	}
+	if !strings.Contains(usage, "[--subagent]") {
+		t.Fatal("adapter usage must list --subagent")
+	}
 }
 
 func writeFile(t *testing.T, path, text string, mode os.FileMode) {

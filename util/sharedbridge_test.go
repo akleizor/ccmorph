@@ -785,7 +785,7 @@ func TestRouteHoldFlag(t *testing.T) {
 		args []string
 	}{
 		{"a flagged hold ends on stdin EOF", []string{users, routeHoldExitStdin}},
-		{"a subagent's flagged hold ends on stdin EOF", []string{users, routeHoldExitStdin, subagentMarker}},
+		{"a subagent's flagged hold ends on stdin EOF", []string{users, routeHoldExitStdin, "--subagent"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			pr, pw, err := os.Pipe()
