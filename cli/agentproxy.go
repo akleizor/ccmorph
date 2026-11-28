@@ -39,7 +39,6 @@ type agentHop struct {
 	bridges  []*util.SharedBridge  // provider bridges this session holds a use of
 	auth     []string              // each one's auth dir, for its release
 	adapters []*util.SharedAdapter // gateway adapters this session holds a use of
-	pids     map[string]int        // each target's adapter pid: a dead one evicts the cached target
 	logMu    sync.Mutex
 }
 
@@ -52,6 +51,7 @@ type target struct {
 	err  error
 	at   time.Time
 	sub  bool // a subscription token, which its own sessions refresh in place
+	pid  int  // its adapter's pid: a dead one evicts the cached target
 }
 
 // adapterGone: the adapter a cached target names has exited, so the target is
@@ -256,7 +256,7 @@ func agentProxyServes(typ string) bool {
 // read, never a method that changes it: this runs on the proxy's goroutines.
 func (h *agentHop) resolver(l *launcher) func(agentproxy.Pick) (agentproxy.Target, error) {
 	dir, profiles, core, logPath := l.dir, l.profileDirs, filepath.Join(l.libexec, "ccmorph-core"), l.logOrNull()
-	resolve := func(pick agentproxy.Pick) (agentproxy.Target, error) {
+	resolve := func(pick agentproxy.Pick, pid *int) (agentproxy.Target, error) {
 		typ, env, err := util.ProfileEnv(dir, profiles, pick.Word, func(string) {})
 		if err != nil {
 			return agentproxy.Target{}, err
@@ -323,11 +323,8 @@ func (h *agentHop) resolver(l *launcher) func(agentproxy.Pick) (agentproxy.Targe
 		} else {
 			h.mu.Lock()
 			h.adapters = append(h.adapters, sa)
-			if h.pids == nil {
-				h.pids = map[string]int{}
-			}
-			h.pids[pick.Word+"\x00"+pick.Model] = sa.PID
 			h.mu.Unlock()
+			*pid = sa.PID
 		}
 		if port != "" { // else the endpoint serves this model as it is
 			t.Base = &url.URL{Scheme: "http", Host: "127.0.0.1:" + port}
@@ -340,16 +337,16 @@ func (h *agentHop) resolver(l *launcher) func(agentproxy.Pick) (agentproxy.Targe
 		id := pick.Word + "\x00" + pick.Model
 		h.mu.Lock()
 		e := h.targets[id]
-		if e == nil || (e.err != nil && time.Since(e.at) > failureKept) || (e.sub && time.Since(e.at) > subTokenKept) || adapterGone(h.pids[id]) {
-			delete(h.pids, id)
+		if e == nil || (e.err != nil && time.Since(e.at) > failureKept) || (e.sub && time.Since(e.at) > subTokenKept) || adapterGone(e.pid) {
 			e = &target{}
 			h.targets[id] = e
 		}
 		h.mu.Unlock()
 		e.once.Do(func() {
-			t, err := resolve(pick)
+			var pid int
+			t, err := resolve(pick, &pid)
 			h.mu.Lock()
-			e.t, e.err, e.at, e.sub = t, err, time.Now(), t.OAuth != ""
+			e.t, e.err, e.at, e.sub, e.pid = t, err, time.Now(), t.OAuth != "", pid
 			h.mu.Unlock()
 		})
 		h.mu.Lock()

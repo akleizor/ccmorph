@@ -101,10 +101,9 @@ func TestATargetWhoseAdapterDiedIsResolvedAgain(t *testing.T) {
 		t.Fatal(err)
 	}
 	id := "gw\x00m1"
-	stale := &target{t: agentproxy.Target{Base: &url.URL{Scheme: "http", Host: "127.0.0.1:1"}}}
+	stale := &target{t: agentproxy.Target{Base: &url.URL{Scheme: "http", Host: "127.0.0.1:1"}}, pid: dead.Process.Pid}
 	stale.once.Do(func() {})
 	h.targets[id] = stale
-	h.pids = map[string]int{id: dead.Process.Pid}
 	tg, err := h.resolver(l)(agentproxy.Pick{Word: "gw", Model: "m1"})
 	if err == nil || tg.Base != nil {
 		t.Fatalf("the dead adapter's target was served: %+v %v", tg, err)
