@@ -70,7 +70,10 @@ func (l *launcher) doctorVerb(args []string) int {
 	if len(args) > 1 {
 		return l.extraArg("doctor", args[1])
 	}
-	legacy := filepath.Join(os.Getenv("HOME"), ".claude-profiles")
+	// On the account home, never on a raw $HOME: with HOME unset the raw join
+	// named ".claude-profiles" in the cwd, and doctor would report whatever was
+	// planted there as the profile storage (#1065).
+	legacy := filepath.Join(paths.Home(), ".claude-profiles")
 	if _, err := os.Lstat(l.profileDirs); err != nil && paths.IsDir(legacy) && !paths.IsSymlink(legacy) {
 		l.profileDirs = legacy
 	}

@@ -319,8 +319,7 @@ func (l *launcher) secureDirs() bool {
 			return false
 		}
 	}
-	home := os.Getenv("HOME")
-	legacyHome := filepath.Join(home, ".claude-profiles")
+	legacyHome := filepath.Join(paths.Home(), ".claude-profiles")
 	if _, err := os.Lstat(legacyHome); err == nil {
 		same := paths.IsSymlink(legacyHome) && paths.IsDir(l.profileDirs) && !paths.IsSymlink(l.profileDirs) &&
 			paths.Resolve(legacyHome) == paths.Resolve(l.profileDirs)
@@ -359,9 +358,9 @@ func (l *launcher) secureDirs() bool {
 }
 
 func (l *launcher) normalizePluginIndex() {
-	home := os.Getenv("HOME")
+	home := paths.Home()
 	for _, name := range []string{"known_marketplaces.json", "installed_plugins.json"} {
-		b, err := os.ReadFile(filepath.Join(home, ".claude", "plugins", name))
+		b, err := os.ReadFile(filepath.Join(paths.ClaudeHome(), "plugins", name))
 		if err != nil {
 			continue
 		}

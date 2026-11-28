@@ -585,6 +585,88 @@ func TestHomeUnsetReadsTheAccountHomeNotTheCwd(t *testing.T) {
 	}
 }
 
+// homeUnsetNoHomeLaunch is #1065's fixture: HOME unset, the account's own home
+// pinned to one that holds nothing, and a cwd outside it. A path joined on a raw
+// $HOME is empty-here, so it names the cwd, which is where the plantings are.
+// The launcher is handed its state roots the way a secured launch has them: this
+// is the seam where #138's account-home resolution had never been required to
+// reach, because these joins read $HOME themselves.
+func homeUnsetNoHomeLaunch(t *testing.T) (cwd string, l *launcher) {
+	t.Helper()
+	root := t.TempDir()
+	acct, cwd, state := filepath.Join(root, "acct"), filepath.Join(root, "cwd"), filepath.Join(root, "state")
+	for _, d := range []string{acct, cwd} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Setenv("HOME", "")
+	os.Unsetenv("HOME")
+	old := paths.AccountHome
+	paths.AccountHome = func() string { return acct }
+	t.Cleanup(func() { paths.AccountHome = old })
+	t.Chdir(cwd)
+	return cwd, &launcher{dir: state, profileDirs: filepath.Join(state, "profiles")}
+}
+
+// GH-1065: secureDirs built the legacy profile home from a raw $HOME, so with
+// HOME unset it Lstat'ed ".claude-profiles" — the cwd's. A directory planted
+// there was migrated into the real profile storage and a compatibility symlink
+// left in its place: launch moving a directory out of whatever directory it
+// happened to start in. It reads the account home like every other home path.
+func TestHomeUnsetSecureDirsDoesNotMigrateTheCwdProfileHome(t *testing.T) {
+	cwd, l := homeUnsetNoHomeLaunch(t)
+	legacy := filepath.Join(cwd, ".claude-profiles")
+	if err := os.MkdirAll(filepath.Join(legacy, "p1"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(legacy, "p1.conf"), []byte("type=token\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if !l.secureDirs() {
+		t.Fatal("secureDirs failed")
+	}
+	st, err := os.Lstat(legacy)
+	if err != nil {
+		t.Fatalf("the cwd's .claude-profiles is gone: %v", err)
+	}
+	if !st.IsDir() {
+		t.Fatalf("the cwd's .claude-profiles is %v, not the directory launch was handed nothing about", st.Mode())
+	}
+	if b, _ := os.ReadFile(filepath.Join(legacy, "p1.conf")); string(b) != "type=token\n" {
+		t.Error("the planted profile home's contents must stay where they were")
+	}
+	if _, err := os.Lstat(filepath.Join(l.profileDirs, "p1.conf")); err == nil {
+		t.Error("the planted profile home was migrated into the profile storage")
+	}
+}
+
+// GH-1065: the same raw-$HOME join aimed the plugin index at the cwd, and a
+// planted known_marketplaces.json there was rewritten in place — its absolute
+// installLocation replaced with the rewrite's own target join, which was
+// relative for the same reason. Launch touches no plugin index it was not asked
+// to repair, and the one it does repair lives under the account home.
+func TestHomeUnsetSecureDirsDoesNotRewriteTheCwdPluginIndex(t *testing.T) {
+	cwd, l := homeUnsetNoHomeLaunch(t)
+	plugins := filepath.Join(cwd, ".claude", "plugins")
+	if err := os.MkdirAll(filepath.Join(plugins, "marketplaces", "foo"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// An absolute installLocation under the profile storage: the shape the
+	// repair exists to rewrite, planted where a raw $HOME points with HOME unset.
+	index := filepath.Join(plugins, "known_marketplaces.json")
+	body := `{"foo":{"installLocation":"` + filepath.ToSlash(filepath.Join(l.profileDirs, "p1", "plugins", "marketplaces", "foo")) + `"}}` + "\n"
+	if err := os.WriteFile(index, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if !l.secureDirs() {
+		t.Fatal("secureDirs failed")
+	}
+	if got, err := os.ReadFile(index); err != nil || string(got) != body {
+		t.Fatalf("the cwd's plugin index was rewritten:\n got %q (%v)\nwant %q", got, err, body)
+	}
+}
+
 // GH-523: the profile root is spelled once. With HOME unset and no env rung
 // handed over, the launcher and the context probe answer the account home's
 // .config/ccmorph — one absolute root, never the probe's old /-rooted

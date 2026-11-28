@@ -90,9 +90,15 @@ func MigrateProfileHome(legacy, target string) (moved bool, err error) {
 }
 
 // NormalizePluginIndex repairs plugin index paths made stale by the shared-plugins
-// topology; false when a rewrite failed.
+// topology; false when a rewrite failed. homeDir is the caller's own home when it
+// names one: a value that does not — empty, as install.sh's uninstall spells
+// "$HOME" with HOME unset, or relative — resolves through paths.Home, because
+// joined it would name the cwd and rewrite the index found there (#1065).
 func NormalizePluginIndex(homeDir, profileDir string) bool {
 	home, profileRoot := filepath.Clean(homeDir), filepath.Clean(profileDir)
+	if !filepath.IsAbs(home) {
+		home = filepath.Clean(paths.Home())
+	}
 	plugins := filepath.Join(home, ".claude", "plugins")
 	legacyRoot := filepath.Join(home, ".claude-profiles")
 	canonical := func(v any, kind string) (string, bool) {
