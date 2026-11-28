@@ -7475,24 +7475,58 @@ test_declared_model_capabilities_is_never_overruled() {
 # stop, so a stub the scheduler runs after the advertised bound still answers.
 # The advertised bound is shortened here -- the product knob may shorten it --
 # so the race is proved without spending a clock second on it.
+#
+# The fixture is the caps test's own: test_declared_model_capabilities_is_never_
+# overruled declares the same env on an adapter gateway, and this issue's first
+# red was that launch ending before Claude opened, with the suite discarding the
+# launch's words. On this Linux host the cause is the reach probe's stop: with
+# the stub held 6 s the caps test fails at 6c07a7f5 and at 47df2e6 with "no
+# answer from gateway.invalid port 443 after 6 seconds" -- the issue's macOS
+# observation that the launch went on did not reproduce here. The control arm
+# proves that cause: without the seam the same stub ends the launch on the
+# probe's verdict and Claude never opens.
 test_a_gateway_launch_waits_out_a_stub_scheduled_past_the_reach_bound() {
   local test_home
   test_home=$(mktemp -d)
   setup_home "$test_home"
   fake_gateway 0.6
   fake_adapter
-  write_apikey_conf gw 'api_key=sk_prod_test' 'base_url=https://gateway.invalid' 'adapter=true'
+  write_apikey_conf gw 'api_key=sk_prod_test' 'base_url=https://gateway.invalid' 'adapter=true' \
+    'env.CLAUDE_CODE_MODEL_CAPABILITIES=claude-*=-mid_conv_tool_change' \
+    'env.CLAUDE_CODE_DISABLE_ADVISOR_TOOL=0'
   source "$CCMORPH_SOURCE"
 
-  local rc=0 launch_rc=0 err="$test_home/launch.err"
+  local rc=0 launch_rc=0 err="$test_home/launch.err" control="$test_home/control.err"
+  # Control: door #260 with the seam cleared, so the stub really is later than
+  # the advertised bound and the launch must end on the probe's own verdict.
+  if CCMORPH_TEST_REACH_WAIT= CCMORPH_REACH_BOUND=0.2 _ccm_launch -a gw prompt >/dev/null 2>"$control"; then
+    print -u2 -- 'without the seam the held stub must end the launch on the probe stop'
+    rc=1
+  fi
+  [[ ! -s "$CCMORPH_TEST_LOG" ]] || {
+    print -u2 -- 'the control launch reached Claude Code; the stub is not later than the bound'
+    rc=1
+  }
+  assert_contains "$(<"$control")" "could not reach 'https://gateway.invalid'" \
+    'the control must name the reach probe the way the caps red did' || rc=1
+
+  # Seam arm: the suite's own CCMORPH_TEST_REACH_WAIT lets the same stub answer,
+  # and the caps assertion then runs against the launch it was written for.
   CCMORPH_REACH_BOUND=0.2 _ccm_launch -a gw prompt >/dev/null 2>"$err" || launch_rc=$?
   (( launch_rc == 0 )) || {
     print -u2 -- "a stub scheduled past the advertised bound must not end the launch (exit $launch_rc):"
     print -u2 -- "$(<"$err")"
     rc=1
   }
-  assert_contains "$(<"$CCMORPH_TEST_LOG")" 'BASE_URL=http://127.0.0.1:45999' \
+  local log="$(<"$CCMORPH_TEST_LOG")"
+  assert_contains "$log" 'BASE_URL=http://127.0.0.1:45999' \
     'the launch must reach Claude Code once the harness stub answers' || rc=1
+  assert_contains "$log" 'MODEL_CAPS=claude-*=-mid_conv_tool_change' \
+    'a conf-declared capability mask must reach the engine unchanged' || rc=1
+  assert_not_contains "$log" '-mid_conv_system' \
+    'the conf value must not be replaced by the ccmorph default' || rc=1
+  assert_contains "$log" 'DISABLE_ADVISOR=0' \
+    'a conf that keeps the advisor must not be overruled' || rc=1
   rm -rf "$test_home"
   return $rc
 }
