@@ -609,3 +609,38 @@ func TestTheEdgePickNamesItsSession(t *testing.T) {
 		}
 	}
 }
+
+func TestARefusalOnAnUnservedEdgeOrProxyRowPausesNothing(t *testing.T) {
+	hookEnv(t, true)
+	c, _ := LoadConfig()
+	for _, via := range []string{"edge", "proxy"} {
+		ledgerAppend(Row{"id": via, "profile": "there", "model": "claude-opus-5-5", via: "there"})
+		complete(c, via, "", "quota")
+		if unavailableUntil("there") != 0 || unavailableUntil("there/claude-opus-5-5") != 0 {
+			t.Fatalf("a %s row nothing proved served must not pause its picked profile", via)
+		}
+		settled := false
+		for _, r := range readRows(ledgerPath()) {
+			settled = settled || r.matches(via) && r["outcome"] == "quota"
+		}
+		if !settled {
+			t.Fatalf("the %s row's outcome is still recorded", via)
+		}
+	}
+}
+
+func TestRCHoldAsksCCMorphRCToStopWithTermAtTheDeadline(t *testing.T) {
+	dir := t.TempDir()
+	marker := filepath.Join(dir, "termed")
+	script := "#!/bin/sh\ntrap 'echo term > " + marker + "; exit 0' TERM\nwhile :; do sleep 0.1; done\n"
+	if err := os.WriteFile(filepath.Join(dir, "ccmorph-rc"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	defer cancel()
+	rcHold(ctx, "there", "here")
+	if _, err := os.Stat(marker); err != nil {
+		t.Fatal("the deadline must TERM ccmorph-rc so it can finish its handoff, not SIGKILL it")
+	}
+}

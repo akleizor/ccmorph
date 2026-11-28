@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/akleizor/ccmorph/ctxwindow"
@@ -52,8 +53,17 @@ var rcHold = func(ctx context.Context, profile, account string) error {
 		home, _ := os.UserHomeDir()
 		rc = filepath.Join(home, ".local", "bin", "ccmorph-rc") // where the add-on's install.sh links it
 	}
-	return exec.CommandContext(ctx, rc, profile, "--as", account, "--switch", "--rehand").Run()
+	cmd := exec.CommandContext(ctx, rc, profile, "--as", account, "--switch", "--rehand")
+	// The deadline asks ccmorph-rc to stop (it finishes a handoff it is publishing
+	// on TERM) and kills it only after rcWaitDelay, inside the hook's headroom.
+	cmd.Cancel = func() error { return cmd.Process.Signal(syscall.SIGTERM) }
+	cmd.WaitDelay = rcWaitDelay
+	return cmd.Run()
 }
+
+// rcWaitDelay is how long ccmorph-rc may finish after TERM: hookBudget plus this
+// stays under hooks.json's 20 s timeout.
+const rcWaitDelay = 3 * time.Second
 
 // edgeWord is the switch word under which this edge session's proxy serves
 // profile ("account", "route" or the profile's name), once the proxy holds it;
