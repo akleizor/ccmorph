@@ -507,6 +507,13 @@ func complete(c Config, id, text, hard string) string {
 	}
 	// Only a subscription's refusal is the account's: a gateway's 403 or 429 names
 	// the one upstream behind that model, and its other models still answer.
+	// A row sent through the edge or the agent proxy records the pick before anything
+	// served it: the refusal may be the session's own account's, so no pause lands
+	// on the picked profile.
+	if hard != "" && (row["edge"] != nil || row["proxy"] != nil) {
+		ledgerUpdate(id, Row{"outcome": hard, "finished": now})
+		return fmt.Sprintf("router: %s/%s failed after %s; retry the same brief at the same tier.", profile, model, hard)
+	}
 	if hard != "" && !(len(ps) == 1 && ps[0].Class == "subscription") {
 		// One broken model must not pause its siblings; an error is retried, not a verdict.
 		markUnavailable(profile+"/"+model, now+modelBackoff)
