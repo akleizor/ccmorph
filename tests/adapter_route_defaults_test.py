@@ -26,7 +26,7 @@ import tempfile
 import fake_adapter
 import pytest
 
-from support import HANG_TIMEOUT, wait_until
+from support import HANG_TIMEOUT, SPAWN_TEST_BUDGET, wait_until
 
 ROOT = Path(__file__).resolve().parents[1]
 LIB_FILES = ('lib/ccmorph.sh',
@@ -183,12 +183,12 @@ def test_empty_caps_in_the_profile_layer_still_gets_the_route_default(launch):
         'an empty string is not a choice: the adapter route must still be withheld the turn'
 
 
-# GH-932: this case is one `launch.run()` — a HANG_TIMEOUT (120 s) subprocess,
+# GH-932: this case is one `launch.run()` — a HANG_TIMEOUT subprocess,
 # whose adapter-start wait polls a fake adapter that claims itself with a
 # `ps -A` scan. On the night gate's saturated host that wait alone crossed the
 # 60 s ceiling, so the marker is this test's per-test headroom; the ceiling
 # stays 60 s everywhere else (#892's rule).
-@pytest.mark.timeout(300)
+@pytest.mark.timeout(SPAWN_TEST_BUDGET)
 def test_a_declared_caps_value_still_wins_over_the_default(launch):
     declared = 'claude-*=-per_turn_effort'
     launch.profile_settings({'CLAUDE_CODE_MODEL_CAPABILITIES': declared})
@@ -214,11 +214,11 @@ def test_one_blanked_key_does_not_withhold_the_other_defaults(launch):
     assert row['settings_env']['CLAUDE_CODE_DISABLE_ADVISOR_TOOL'] == '0'
 
 
-# GH-932: one `launch.run()` whose adapter-start wait is HANG_TIMEOUT (120 s)
+# GH-932: one `launch.run()` whose adapter-start wait is HANG_TIMEOUT
 # bounded, the same spawn-bound path as the declared-caps case above; the
 # night gate's saturated host stretched it past the 60 s ceiling. Per-test
 # headroom, ceiling unchanged.
-@pytest.mark.timeout(300)
+@pytest.mark.timeout(SPAWN_TEST_BUDGET)
 def test_a_profile_tombstone_removes_a_canon_key_so_the_default_applies(launch):
     """A key the profile deleted (settings-compose's $ccmorphUnset) is not chosen."""
     launch.canonical_settings({'CLAUDE_CODE_DISABLE_ADVISOR_TOOL': '0'})
@@ -285,10 +285,10 @@ def test_a_nonempty_caps_in_canon_survives_an_empty_profile_value(launch):
         'a key the launch sets itself must not remain in the generated env block'
 
 
-# GH-932: two `launch.run()`s, each HANG_TIMEOUT (120 s) bounded, so a loaded
+# GH-932: two `launch.run()`s, each HANG_TIMEOUT bounded, so a loaded
 # host pays the adapter-start spawn twice; the night gate struck the [token]
 # row. Per-test headroom covers every row; the 60 s ceiling stays for the rest.
-@pytest.mark.timeout(300)
+@pytest.mark.timeout(SPAWN_TEST_BUDGET)
 @pytest.mark.parametrize('case', ['gateway', 'gateway-no-model', 'token', 'hazard'])
 def test_a_routed_launch_starts_no_python(launch, case):
     """A launch needs no interpreter, whatever the route's shape.
