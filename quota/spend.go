@@ -96,7 +96,8 @@ func spendEntry(name, budgetRaw string) Entry {
 	today := now()
 	todayStart := time.Date(today.Year(), today.Month(), today.Day(), 0, 0, 0, 0, time.Local)
 	monthStart := time.Date(today.Year(), today.Month(), 1, 0, 0, 0, 0, time.Local)
-	tallies, err := monthTallies(filepath.Join(paths.StateDir(), "usage"), today, monthStart, todayStart)
+	dir := filepath.Join(paths.StateDir(), "usage")
+	tallies, err := monthTallies(dir, today, monthStart, todayStart)
 	var gaps *unreadableReceipts
 	if errors.As(err, &gaps) {
 		// Only receipts could not be read: the spend is every other receipt's,
@@ -114,6 +115,15 @@ func spendEntry(name, budgetRaw string) Entry {
 			e.Error = err.Error()
 		}
 		return e
+	}
+	// #1033: a store the machine has never written is not a month used for
+	// free, so the entry says which zero it is. The question is asked of the
+	// reader's own resolved root on every read — a warm spend cache or a
+	// quota cache under the profile root says nothing about receipts, and
+	// only a folder that is truly absent is "no session yet": a file or an
+	// unreadable path is the refusal above, never this line.
+	if _, statErr := os.Stat(dir); errors.Is(statErr, fs.ErrNotExist) {
+		s.NoReceiptsYet = true
 	}
 	t := tallies[name]
 	s.TodayUSD, s.MonthUSD, s.Estimated = t.TodayUSD, t.MonthUSD, t.Estimated
