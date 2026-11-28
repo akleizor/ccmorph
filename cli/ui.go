@@ -978,6 +978,7 @@ const numberKeysHint = "Type to filter · j/k or ↑/↓ Move · Enter Select ·
 // text (#387). ok false means raw mode was refused before anything printed;
 // the caller's line loop answers that terminal instead.
 func (t uiTheme) numberedKeys(prompt string, rows []string, display string, dumb bool) (string, int, bool) {
+	defer keysHeld()() // this loop owns the keys and the terminal until it returns (GH-1028)
 	sigs := make(chan os.Signal, 4)
 	signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP)
 	defer signal.Stop(sigs)
@@ -1388,6 +1389,7 @@ func (t uiTheme) native(prompt string, rows []string, display string) (string, i
 	if os.Getenv("TERM") == "dumb" {
 		return t.numbered(prompt, rows, display)
 	}
+	defer keysHeld()() // this loop owns the keys and the terminal until it returns (GH-1028)
 	sigs := make(chan os.Signal, 4)
 	signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP)
 	winch := make(chan os.Signal, 4)
@@ -1735,6 +1737,7 @@ func (t uiTheme) search(prompt string, rows []string) (string, int) {
 		// A terminal answers this call — stdin's own or the controlling one —
 		// so the person's picker runs exactly as ever, bound by no clock: a
 		// key may take as long as the hand reading the list.
+		defer keysHeld()() // fzf holds the terminal's keys for this wait (GH-1028)
 		cmd.Stderr = os.Stderr
 		out, err := cmd.Output()
 		choice := strings.TrimRight(string(out), "\n")
@@ -1827,6 +1830,7 @@ func uiInput(prompt string, secret bool) (string, int) {
 	}
 	// Signals and raw mode before the prompt: a key typed the moment it shows
 	// must not reach a cooked terminal or kill the process unrestored.
+	defer keysHeld()() // this prompt owns the keys and the terminal until it returns (GH-1028)
 	sigs := make(chan os.Signal, 4)
 	signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP)
 	defer signal.Stop(sigs)
