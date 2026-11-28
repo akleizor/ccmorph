@@ -922,11 +922,21 @@ func (l *launcher) usageAt(topic string, width int) int {
 			help(usageLine("context"), "Read a model's context limit, set it, or restore automatic discovery")
 		}
 		// The footer ends whichever page this is, once. Where to start is advice
-		// for a reader with no profile yet: one who has any is past it, and the
-		// example name might be a profile they already have (#365).
+		// for a reader with no profile yet: one who has any is past the example
+		// name (#365) — and past silence too (GH-1041): the line now names the
+		// reader's own next step, never an example they may already have.
 		fmt.Println()
-		if len(l.confNames()) == 0 {
+		switch names := l.confNames(); {
+		case len(names) == 0:
 			fmt.Println("Start here: ccmorph add work")
+		default:
+			// readActiveFile, not active(): this page stays read-only.
+			def, _ := l.readActiveFile()
+			if def != "" {
+				fmt.Println("Start here: ccmorph run " + def)
+			} else {
+				fmt.Println("Start here: ccmorph use <profile>")
+			}
 		}
 		if !all {
 			fmt.Println("More commands: ccmorph help all")

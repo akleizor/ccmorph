@@ -153,14 +153,23 @@ def test_help_is_concise_truthful_and_read_only(tmp_path):
     assert result.stdout.rstrip().endswith(
         'Command details: ccmorph help <command>\nVersion: ccmorph --version')
     assert 'Start here: ccmorph add work' in result.stdout  # no profile exists yet
-    # A reader with a profile has already started: neither page may point them
-    # at a first profile they have (#365).
+    # A reader with a profile is past the example name (#365), but the footer
+    # does not just vanish (GH-1041): with no default yet it names the command
+    # that sets one, and once a default exists it names that one.
     (state / 'work.conf').write_text('type=apikey\nbase_url=https://api.anthropic.com\n')
     for args in (['--help'], ['help', 'all']):
         page = subprocess.run([cli, *args], env=env, capture_output=True,
                               text=True, timeout=HANG_TIMEOUT)
         assert page.returncode == 0, page.stderr
-        assert 'Start here' not in page.stdout, args
+        assert 'Start here: ccmorph use <profile>' in page.stdout, args
+        assert 'add work' not in page.stdout, args
+    (state / 'active').write_text('work\n')
+    for args in (['--help'], ['help', 'all']):
+        page = subprocess.run([cli, *args], env=env, capture_output=True,
+                              text=True, timeout=HANG_TIMEOUT)
+        assert page.returncode == 0, page.stderr
+        assert 'Start here: ccmorph run work' in page.stdout, args
+        assert 'Start here: ccmorph use' not in page.stdout, args
     for verb in ('help', 'version'):
         page = subprocess.run([cli, 'help', verb], env=env, capture_output=True,
                               text=True, timeout=HANG_TIMEOUT)
