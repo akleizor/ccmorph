@@ -12898,6 +12898,17 @@ _ccm_run_test_under_a_terminal() {
   return $rc
 }
 
+# #1026: a failed test's verdict prints the launch's own words when run_test's
+# per-test launch log holds any. A test that silences its launches
+# (`>/dev/null 2>&1`) still gets the sentence that ended them into the verdict,
+# so a load-only red is diagnosed in one line instead of a scout investigation.
+print_launch_words() {
+  local name="$1" log="${2:-}"
+  [[ -n "$log" && -s "$log" ]] || return 0
+  print -u2 -- "the launch's own words ($name):"
+  print -u2 -- "$(<"$log")"
+}
+
 run_test() {
   local name="$1" rc=0 launch_log=""
   [[ -z "${CCMORPH_TEST_FILTER:-}" || "$name" == *"$CCMORPH_TEST_FILTER"* ]] || return 0
@@ -12931,10 +12942,7 @@ run_test() {
     print -- "PASS: $name"
   else
     print -u2 -- "FAIL: $name"
-    if [[ -n "$launch_log" && -s "$launch_log" ]]; then
-      print -u2 -- "the launch's own words ($name):"
-      print -u2 -- "$(<"$launch_log")"
-    fi
+    print_launch_words "$name" "$launch_log"
     (( ++tests_failed ))
   fi
   [[ -z "$launch_log" ]] || command rm -f -- "$launch_log"
@@ -15627,6 +15635,35 @@ test_a_silenced_launch_keeps_its_own_words_for_the_verdict() {
   return $rc
 }
 run_test test_a_silenced_launch_keeps_its_own_words_for_the_verdict
+
+# #1026: the print half of the verdict. run_test calls print_launch_words on a
+# failure; a log with words prints the header and the words, and nothing prints
+# for an empty log, a missing path or an empty path name -- a passing test's
+# empty log must not add a header to the suite's output.
+test_a_failed_tests_verdict_prints_the_launch_words_it_captured() {
+  local rc=0 test_home shown
+  test_home=$(mktemp -d)
+  : > "$test_home/empty"
+  printf '%s\n' "ccmorph: could not reach gw" > "$test_home/log"
+
+  shown="$(print_launch_words some_test "$test_home/log" 2>&1)"
+  assert_contains "$shown" "the launch's own words (some_test):" \
+    'the verdict must name the test whose launch spoke' || rc=1
+  assert_contains "$shown" 'could not reach gw' \
+    "the verdict must print the launch's own words (got: ${(qqq)shown})" || rc=1
+
+  local silent_path
+  for silent_path in "$test_home/empty" "$test_home/missing" ""; do
+    shown="$(print_launch_words some_test "$silent_path" 2>&1)"
+    [[ -z "$shown" ]] || {
+      print -u2 -- "an empty log, a missing path and an empty path name must print nothing (${(qqq)silent_path} printed: ${(qqq)shown})"
+      rc=1
+    }
+  done
+  rm -rf "$test_home"
+  return $rc
+}
+run_test test_a_failed_tests_verdict_prints_the_launch_words_it_captured
 
 # libexec/ccmorph-core is build output, so a fresh worktree or checkout has
 # none, and the suite entered there used to fail through every launch test's
