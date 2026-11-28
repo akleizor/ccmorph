@@ -376,7 +376,11 @@ func (l *launcher) config(args []string) int {
 	}
 	if section != "defaults" && typ == "apikey" {
 		shown, _ := nativeBase(endpoint)
-		answer, ok := l.configAsk("Endpoint ["+shown+"]: ", false)
+		// The keep-current echo is a rendering, not the stored value: the
+		// masked line is shown and the answered line folds to a masked
+		// receipt, while an empty answer keeps the saved value verbatim
+		// (GH-1038).
+		answer, ok := l.configAskShown("Endpoint ["+shownEndpoint(shown)+"]: ", shownEndpoint)
 		if !ok {
 			return 1
 		}
@@ -442,7 +446,7 @@ func (l *launcher) config(args []string) int {
 	if section != "defaults" {
 		if typ == "apikey" {
 			shown, _ := nativeBase(endpoint)
-			say("Endpoint: " + shown)
+			say("Endpoint: " + shownEndpoint(shown))
 		}
 		say("Credential: hidden")
 	}
@@ -503,6 +507,19 @@ func (l *launcher) configInputEnded() {
 // uiInput's EOF, so the message always stands alone under the question.
 func (l *launcher) configAsk(prompt string, secret bool) (string, bool) {
 	answer, rc := uiInput(prompt, secret)
+	if rc != 0 {
+		l.configInputEnded()
+		return "", false
+	}
+	return answer, true
+}
+
+// configAskShown is configAsk with a display rule for the answered line: the
+// receipt names the value through shown while the answer returned — and the
+// value saved when the person just presses Enter — stays exactly what was
+// typed (GH-1038).
+func (l *launcher) configAskShown(prompt string, shown func(string) string) (string, bool) {
+	answer, rc := uiInputShown(prompt, false, shown)
 	if rc != 0 {
 		l.configInputEnded()
 		return "", false

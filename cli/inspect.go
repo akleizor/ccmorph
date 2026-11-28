@@ -50,7 +50,9 @@ func (l *launcher) inspect(args []string) int {
 	fmt.Println(head + l.reset)
 	fmt.Println()
 	if base != "" {
-		grid(10, "endpoint", strings.TrimPrefix(base, "https://"))
+		// Masked like every other line that names the endpoint (GH-1038);
+		// the trim is inspect's own older style, kept.
+		grid(10, "endpoint", strings.TrimPrefix(shownEndpoint(base), "https://"))
 	}
 
 	// The conf's own model= line, already read above, is the row's value. The

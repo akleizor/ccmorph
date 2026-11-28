@@ -5,7 +5,10 @@ import (
 	"strings"
 )
 
-// RedactURL is a URL safe to print: no userinfo, no query, no fragment.
+// RedactURL is a URL safe to print: no userinfo, no query, no fragment. The
+// path keeps its own percent-escapes: /team%2Fone and /team/one can name
+// different routes, and a masked line that rewrites one into the other says
+// the profile reaches an endpoint it does not (GH-1038).
 func RedactURL(raw string) string {
 	// A password can hold /, ? or #, or open on digits Go reads as a port, so
 	// neither parser reliably finds the @ that closes the userinfo. Cut through
@@ -45,9 +48,9 @@ func RedactURL(raw string) string {
 		host += ":" + p
 	}
 	if host == "" {
-		return u.Scheme + ":" + u.Path
+		return u.Scheme + ":" + u.EscapedPath()
 	}
-	return u.Scheme + "://" + host + u.Path
+	return u.Scheme + "://" + host + u.EscapedPath()
 }
 
 // closesUserinfo reports whether the @ at raw[at] must close a userinfo when

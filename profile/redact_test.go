@@ -57,6 +57,11 @@ func TestRedactURLNeverPrintsTheUserinfo(t *testing.T) {
 		{"userinfo with no scheme", "alice:pa/ss@proxy:3128", "<redacted>", true},
 		{"plain proxy", "http://Proxy:3128", "http://proxy:3128", true},
 		{"IPv6 proxy", "http://[::1]:3128", "http://[::1]:3128", true},
+		// The path's own escapes name the route: /team%2Fone is not
+		// /team/one, so masking a login must not rewrite one into the
+		// other (#1038).
+		{"escaped route survives masking", "https://gw.example.invalid/team%2Fone", "https://gw.example.invalid/team%2Fone", true},
+		{"escaped route survives the login cut", "https://bob:pw@gw.example.invalid/team%2Fone", "https://gw.example.invalid/team%2Fone", true},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

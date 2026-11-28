@@ -70,10 +70,10 @@ func (l *launcher) describeProfiles(active string, types []string, accept func(m
 				d.detail += ", " + l.modelOrigin(n) // #862
 			}
 		case "apikey":
-			d.detail = f["base_url"]
-			if d.detail == "" {
-				d.detail = "api.anthropic.com"
-			}
+			// Shown through the one masking rule (GH-1038): a password in
+			// the URL never rides the detail every surface prints, and a
+			// blank endpoint reads as the default it means.
+			d.detail = shownEndpoint(f["base_url"])
 			if m := l.accountModel(n); m != "" {
 				d.detail += " → " + m + ", " + l.modelOrigin(n)
 			}
