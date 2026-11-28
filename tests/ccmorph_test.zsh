@@ -27,18 +27,6 @@ ccmorph_test_scrub_runner_env() {
 }
 ccmorph_test_scrub_runner_env
 
-# #1026: a gateway launch first asks its endpoint to answer (#260, cli/run.go),
-# and this suite's answer is a stub curl the test installs: a child process a
-# gate at its -j5 load can leave unscheduled past the probe's five seconds.
-# #875, #935, #947 and #997 each patched one test of that class; the class guard
-# is the product's harness-only CCMORPH_TEST_REACH_WAIT, which moves only the
-# probe's own stop. The promise to people is untouched -- the progress line, the
-# sentence and CCMORPH_REACH_BOUND's clamp stay five seconds, and it is this
-# suite alone that sets the wait. It is sized far above any healthy start and
-# under this suite's own 120 s hang detector, so a stub that truly never answers
-# is still named silent, never mistaken for silent because it had not run yet.
-export CCMORPH_TEST_REACH_WAIT=60
-
 readonly SCRIPT_DIR="${0:A:h}"
 readonly REPO_ROOT="${SCRIPT_DIR:h}"
 readonly CCMORPH_SOURCE="$REPO_ROOT/tests/core_lib.zsh"
@@ -97,6 +85,19 @@ typeset -gi _ccm_test_filter_hits=0
 # a hang detector sized far above any healthy duration, never a deadline. Seconds;
 # zselect counts hundredths.
 readonly CCMORPH_TEST_HANG_TIMEOUT="${CCMORPH_TEST_HANG_TIMEOUT:-120}"
+
+# #1026: a gateway launch first asks its endpoint to answer (#260, cli/run.go),
+# and this suite's answer is a stub curl the test installs: a child process a
+# gate at its -j5 load can leave unscheduled past the probe's five seconds.
+# #875, #935, #947 and #997 each patched one test of that class; the class guard
+# is the product's harness-only CCMORPH_TEST_REACH_WAIT, which moves only the
+# probe's own stop. The promise to people is untouched -- the progress line, the
+# sentence and CCMORPH_REACH_BOUND's clamp stay five seconds, and it is this
+# suite alone that sets the wait. Its value is half of this suite's own hang
+# bound (CCMORPH_TEST_HANG_TIMEOUT, 120 s unless overridden), so a stub that
+# truly never answers is still named silent before the hang detector fires,
+# never mistaken for silent because it had not run yet.
+export CCMORPH_TEST_REACH_WAIT=$(( CCMORPH_TEST_HANG_TIMEOUT / 2 ))
 
 # Every test builds its own scratch home, so the suite runs as N shards at once;
 # CCMORPH_TEST_JOBS=1 runs it serially. Default: every core. The shards mostly wait
@@ -15664,6 +15665,21 @@ test_a_failed_tests_verdict_prints_the_launch_words_it_captured() {
   return $rc
 }
 run_test test_a_failed_tests_verdict_prints_the_launch_words_it_captured
+
+# #1026: the seam is derived from the suite's shared hang bound, never a
+# literal: a wait sized past the hang detector would report the detector's
+# silence as the stub's, and a number the suite picked would drift from the
+# bound it has to stay under. The suite's own export also overrides a value an
+# operator exported before it, so every shard answers with the same patience.
+test_the_suite_reach_wait_follows_the_shared_hang_bound() {
+  local rc=0 want=$(( CCMORPH_TEST_HANG_TIMEOUT / 2 ))
+  [[ "${CCMORPH_TEST_REACH_WAIT:-}" == "$want" ]] || {
+    print -u2 -- "the suite's reach wait is ${CCMORPH_TEST_REACH_WAIT:-<unset>}, want half the shared hang bound ($want)"
+    rc=1
+  }
+  return $rc
+}
+run_test test_the_suite_reach_wait_follows_the_shared_hang_bound
 
 # libexec/ccmorph-core is build output, so a fresh worktree or checkout has
 # none, and the suite entered there used to fail through every launch test's
