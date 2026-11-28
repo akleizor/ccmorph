@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/akleizor/ccmorph/ordjson"
+	"github.com/akleizor/ccmorph/util/paths"
 )
 
 // answeredDoc is the .claude.json of a profile the person answered Claude
@@ -307,7 +308,7 @@ func TestSeedPersonAnswersDefersWhileALiveSessionHoldsTheLock(t *testing.T) {
 
 	// A live session of the same profile holds the live lock shared; it may be
 	// writing its own answers, so the seeding defers to the next launch.
-	lock := LiveLockPath(profiles, "target")
+	lock := paths.LiveLockPath(profiles, "target")
 	if err := os.MkdirAll(filepath.Dir(lock), 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -320,7 +321,7 @@ func TestSeedPersonAnswersDefersWhileALiveSessionHoldsTheLock(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
-	restore := SetLockWait(0)
+	restore := paths.SetLockWait(0)
 	defer restore()
 
 	gaps, err := SeedPersonAnswers(profiles, "target", folder)
@@ -351,7 +352,7 @@ func TestSeedPersonAnswersWithoutTheLiveLockLeavesTheAnswersForLater(t *testing.
 
 	// Another launch holds the live lock exclusively, as its merge does; the
 	// wait expires while it still holds it.
-	lock := LiveLockPath(profiles, "target")
+	lock := paths.LiveLockPath(profiles, "target")
 	if err := os.MkdirAll(filepath.Dir(lock), 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -364,7 +365,7 @@ func TestSeedPersonAnswersWithoutTheLiveLockLeavesTheAnswersForLater(t *testing.
 		t.Fatal(err)
 	}
 	defer syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
-	restore := SetLockWait(0)
+	restore := paths.SetLockWait(0)
 	defer restore()
 
 	gaps, err := SeedPersonAnswers(profiles, "target", folder)
@@ -395,7 +396,7 @@ func TestSeedPersonAnswersKeepsAKeyApprovalMadeAtItsSeam(t *testing.T) {
 	folder := resolved(filepath.Join(t.TempDir(), "work"))
 	writeClaudeJSON(t, filepath.Join(profiles, "sibling"), answeredDoc(t, folder, "dark", ""))
 	target := writeClaudeJSON(t, filepath.Join(profiles, "p"), `{"numStartups":3}`)
-	if err := os.MkdirAll(filepath.Dir(LiveLockPath(profiles, "p")), 0o700); err != nil {
+	if err := os.MkdirAll(filepath.Dir(paths.LiveLockPath(profiles, "p")), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	old := profileJSONRead

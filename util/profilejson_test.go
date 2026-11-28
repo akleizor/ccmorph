@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/akleizor/ccmorph/ordjson"
+	"github.com/akleizor/ccmorph/util/paths"
 )
 
 // #861: the one locked rewrite takes no lock when its edit changes nothing, and
@@ -16,10 +17,10 @@ import (
 func TestRewriteProfileJSONWithNothingToChangeTakesNoLock(t *testing.T) {
 	profiles := filepath.Join(t.TempDir(), "profiles")
 	path := writeClaudeJSON(t, filepath.Join(profiles, "p"), `{"numStartups":3}`)
-	if err := os.MkdirAll(filepath.Dir(LiveLockPath(profiles, "p")), 0o700); err != nil {
+	if err := os.MkdirAll(filepath.Dir(paths.LiveLockPath(profiles, "p")), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	f, err := os.OpenFile(LiveLockPath(profiles, "p"), os.O_CREATE|os.O_RDWR, 0o600)
+	f, err := os.OpenFile(paths.LiveLockPath(profiles, "p"), os.O_CREATE|os.O_RDWR, 0o600)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -27,7 +28,7 @@ func TestRewriteProfileJSONWithNothingToChangeTakesNoLock(t *testing.T) {
 	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX); err != nil {
 		t.Fatal(err)
 	}
-	restore := SetLockWait(0)
+	restore := paths.SetLockWait(0)
 	defer restore()
 	saved := 0
 	save := func(string, *ordjson.Obj) error { saved++; return nil }

@@ -134,7 +134,9 @@ func (l *launcher) contextEnv(name string, penv []string, explicit, defaultModel
 		if strings.HasPrefix(pmodelEnv, "claude-") {
 			pmodelEnv = ""
 		}
-		plw = l.launchWindow(name, modelid.TrimWindowMarker(pmodel))
+		// The probe sizes the window the engine sizes, so it cuts the marker
+		// where the engine does (modelid.CutWindowMarker), anywhere in the id.
+		plw = l.launchWindow(name, modelid.CutWindowMarker(pmodel))
 		plwRan = true
 		pwin := ""
 		if pmodel != "" {
@@ -185,7 +187,7 @@ func (l *launcher) contextEnv(name string, penv []string, explicit, defaultModel
 			if fb == "" {
 				fb = "none"
 			}
-			l.log("window unknown profile=" + name + " model=" + modelid.TrimWindowMarker(pmodel) + " fallback=" + fb)
+			l.log("window unknown profile=" + name + " model=" + modelid.CutWindowMarker(pmodel) + " fallback=" + fb)
 		}
 	}
 	if pceil == "" {

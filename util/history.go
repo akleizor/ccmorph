@@ -153,14 +153,14 @@ func mergeHistory(from, to string) bool {
 // historyLock takes the one machine-wide lock every shared-history merge
 // holds — beside the shared file, so any ccmorph, any profile, any launch
 // serializes through it — and returns its release with whether it was taken
-// at all (#177). It waits no longer than lockWait: the merge it guards is file
+// at all (#177). It waits no longer than paths.LockWait: the merge it guards is file
 // I/O only and brief, and a stuck holder must never hang a launch (#185).
 func historyLock(to string) (func(), bool) {
 	f, err := os.OpenFile(filepath.Join(filepath.Dir(to), ".ccm-history.lock"), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
 	if err != nil {
 		return func() {}, false
 	}
-	if !flockWithin(f, syscall.LOCK_EX) {
+	if !paths.FlockWithin(f, syscall.LOCK_EX) {
 		f.Close()
 		return func() {}, false // a stuck holder defers the merge to the next launch (#185)
 	}

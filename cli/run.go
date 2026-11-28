@@ -1374,7 +1374,7 @@ func (l *launcher) setupDir(name, typ string, policy livePolicy) bool {
 		return true
 	}
 	setup := util.SetupProfile
-	if why != nil && !errors.Is(why, util.ErrLiveHeld) {
+	if why != nil && !errors.Is(why, paths.ErrLiveHeld) {
 		// #217: `add` and `use` go on when the live lock cannot be made. The
 		// auth files' rewrite needs that lock (GH-938), so their setup skips it
 		// and logs why; a launch refuses until the lock can be made, and then
@@ -1420,7 +1420,7 @@ func (l *launcher) holdLive(name string, policy livePolicy) bool {
 }
 
 // takeLive is holdLive that also returns why this process holds no live lock:
-// nil when it holds it, util.ErrLiveHeld for another holder, any other error
+// nil when it holds it, paths.ErrLiveHeld for another holder, any other error
 // for a lock file that could not be made (#217). setupDir reads it (GH-938).
 func (l *launcher) takeLive(name string, policy livePolicy) (bool, error) {
 	f, why := util.HoldLive(l.profileDirs, name, l.log)
@@ -1430,16 +1430,16 @@ func (l *launcher) takeLive(name string, policy livePolicy) (bool, error) {
 	if policy == liveSilent {
 		return true, why
 	}
-	path := util.LiveLockPath(l.profileDirs, name)
+	path := paths.LiveLockPath(l.profileDirs, name)
 	if policy == liveNote {
-		if errors.Is(why, util.ErrLiveHeld) {
+		if errors.Is(why, paths.ErrLiveHeld) {
 			l.err("another launch of '" + name + "' is holding its live lock while it links shared history; the shared history links on a later launch")
 		} else {
 			l.err("the live lock for '" + name + "' could not be created at " + path + " (" + why.Error() + "); remove what blocks the path — the shared history links on a later launch that can make it")
 		}
 		return true, why
 	}
-	if errors.Is(why, util.ErrLiveHeld) {
+	if errors.Is(why, paths.ErrLiveHeld) {
 		l.err("another launch of '" + name + "' is holding its live lock (" + path + ") while it links shared history and has not let go; nothing started. Try again in a moment; if it stays stuck, `lsof " + path + "` names the holder.")
 	} else {
 		l.err("the live lock for '" + name + "' could not be created at " + path + " (" + why.Error() + "); nothing started. Remove what blocks the path and try again.")

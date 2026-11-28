@@ -7,6 +7,7 @@ import (
 
 	"github.com/akleizor/ccmorph/ordjson"
 	"github.com/akleizor/ccmorph/profile"
+	"github.com/akleizor/ccmorph/util/paths"
 )
 
 // ErrProfileInUse is why a rewrite of a profile's config did not run: a session
@@ -50,7 +51,7 @@ func LiveExclusive(profiles, name string, fn func()) (bool, error) {
 // rewritten, is carried in the contention error so a launch's skip log names
 // that file; empty names the lock instead.
 func liveExclusiveLock(profiles, name, path string) (func(), error) {
-	lock := LiveLockPath(profiles, name)
+	lock := paths.LiveLockPath(profiles, name)
 	if path == "" {
 		path = lock
 	}
@@ -75,16 +76,16 @@ func liveExclusiveLock(profiles, name, path string) (func(), error) {
 	liveMu.Unlock()
 	live, why := HoldLive(profiles, name, nil)
 	if live == nil {
-		if errors.Is(why, ErrLiveHeld) {
+		if errors.Is(why, paths.ErrLiveHeld) {
 			return nil, fmt.Errorf("%s: another launch is rewriting the profile's config: %w", path, ErrProfileInUse)
 		}
 		return nil, fmt.Errorf("%s: %w: %v", lock, errLiveLockUnavailable, why)
 	}
-	if !flockWithin(live, syscall.LOCK_EX) {
+	if !paths.FlockWithin(live, syscall.LOCK_EX) {
 		// The failed conversion can leave this fd unlocked (Linux drops the
 		// shared lock first), so the lock the session runs under is taken back
 		// or gone; either way this writer waits for a caller that holds it.
-		restored := flockWithin(live, syscall.LOCK_SH)
+		restored := paths.FlockWithin(live, syscall.LOCK_SH)
 		if !held || !restored {
 			ReleaseLive(profiles, name)
 		}

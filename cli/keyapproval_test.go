@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/akleizor/ccmorph/util"
+	"github.com/akleizor/ccmorph/util/paths"
 )
 
 // keyApprovalLauncher builds a profile home holding gw's .claude.json and the
@@ -112,7 +113,7 @@ func TestKeyApprovalKeepsASavedApprovalWhileTheProfileIsInUse(t *testing.T) {
 			if err := util.SaveApproval(l.profileDirs, "gw", gh299Key); err != nil {
 				t.Fatal(err)
 			}
-			lock := util.LiveLockPath(l.profileDirs, "gw")
+			lock := paths.LiveLockPath(l.profileDirs, "gw")
 			if err := os.MkdirAll(filepath.Dir(lock), 0o700); err != nil {
 				t.Fatal(err)
 			}
@@ -125,7 +126,7 @@ func TestKeyApprovalKeepsASavedApprovalWhileTheProfileIsInUse(t *testing.T) {
 				t.Fatal(err)
 			}
 			defer syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
-			restore := util.SetLockWait(0)
+			restore := paths.SetLockWait(0)
 			defer restore()
 
 			if l.keyApproval("gw", gh299Key) {
@@ -151,7 +152,7 @@ func TestKeyApprovalKeepsASavedApprovalTheFileRefuses(t *testing.T) {
 	if err := util.SaveApproval(l.profileDirs, "gw", gh299Key); err != nil {
 		t.Fatal(err)
 	}
-	restore := util.SetLockWait(0)
+	restore := paths.SetLockWait(0)
 	defer restore()
 
 	if l.keyApproval("gw", gh299Key) {

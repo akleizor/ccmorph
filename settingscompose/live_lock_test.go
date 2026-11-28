@@ -6,6 +6,8 @@ import (
 	"strings"
 	"syscall"
 	"testing"
+
+	"github.com/akleizor/ccmorph/util/paths"
 )
 
 // #939: with a live session of the profile holding the live lock shared, the
@@ -31,7 +33,7 @@ func TestMaterializeUnderTheLiveLockKeepsThePolicyAndTheLayer(t *testing.T) {
 	if err := syscall.Flock(int(held.Fd()), syscall.LOCK_SH); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(SetLiveLockWait(0))
+	t.Cleanup(paths.SetLockWait(0))
 	code, stderr := f.run("materialize")
 	if code != 0 {
 		t.Fatalf("materialize under a live session: %d %s", code, stderr)

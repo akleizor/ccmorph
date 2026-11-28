@@ -143,6 +143,12 @@ CONSOLIDATED = {
     "isTier": "modelid.IsTier",
     "endHold": "util.EndRouteHold",
     "apiURL": "ctxwindow.APIURL",
+    # The live-lock protocol util and settingscompose each spelled out, citing
+    # the other's copy: one bounded take, one inode recheck, one open loop.
+    "flockWithin": "paths.FlockWithin",
+    "lockWithin": "paths.FlockWithin",
+    "sameLockInode": "paths.LockNamesPath",
+    "lockNamesFile": "paths.LockNamesPath",
 }
 # #422's predicates, and #520's strays beside them: the unexported spelling a
 # new copy would take, mapped to the exported definition that replaced it.

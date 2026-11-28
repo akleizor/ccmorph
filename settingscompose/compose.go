@@ -1090,66 +1090,16 @@ func locked(profileDir string, fn func()) {
 	fn()
 }
 
-// liveLockWait bounds a fold's or a projection's wait for the profile's live
-// lock, as util's lockWait bounds the launch path's: a holder stuck on a
-// stalled volume defers the write to the next launch instead of hanging the
-// session (INTENT promise 8). Tests shorten it.
-var liveLockWait = 2 * time.Second
-
-// SetLiveLockWait replaces how long settingscompose waits for the live lock,
-// for tests in other packages; the returned func restores the previous value.
-func SetLiveLockWait(d time.Duration) (restore func()) {
-	old := liveLockWait
-	liveLockWait = d
-	return func() { liveLockWait = old }
-}
-
 // errLiveBusy is why a fold or a projection did not run: another session,
 // launch or whole-file writer holds the profile's live lock past the bounded
-// wait, so renaming the layer now could lose that holder's edit (#939).
+// wait (paths.LockWait), so renaming the layer now could lose that holder's
+// edit (#939).
 var errLiveBusy = errors.New("another session or launch of the profile holds its live lock")
 
-// liveLockFor names a profile's live lock from its profile dir, as
-// util.LiveLockPath builds it: the profiles dir is the profile dir's parent
-// and the locks live beside it. settingscompose cannot import util (util
-// imports this package), so the two lines are spelled here; the test that
-// races the picker and the fold keeps the two spellings one path (#939).
+// liveLockFor names a profile's live lock from its profile dir: the profiles
+// dir is the profile dir's parent.
 func liveLockFor(profileDir string) string {
-	return filepath.Join(filepath.Dir(filepath.Dir(profileDir)), ".locks", filepath.Base(profileDir)+".live")
-}
-
-// liveLockTries bounds the open-lock-check loop that keeps a take off an inode
-// the path no longer names (GH-837), as util's liveLockTries does. Five is slack.
-const liveLockTries = 5
-
-// lockWithin takes how on f, retrying without blocking until liveLockWait
-// expires; false means someone else holds the lock past the wait.
-func lockWithin(f *os.File, how int) bool {
-	deadline := time.Now().Add(liveLockWait)
-	for {
-		if syscall.Flock(int(f.Fd()), how|syscall.LOCK_NB) == nil {
-			return true
-		}
-		if !time.Now().Before(deadline) {
-			return false
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-}
-
-// lockNamesFile reports whether f still names what path names: a lock on an
-// inode the path no longer names covers nothing, and a removal may unlink the
-// file between the open and the flock (GH-837).
-func lockNamesFile(f *os.File, path string) bool {
-	fi, err := f.Stat()
-	if err != nil {
-		return false
-	}
-	pi, err := os.Lstat(path)
-	if err != nil {
-		return false
-	}
-	return os.SameFile(fi, pi)
+	return paths.LiveLockPath(filepath.Dir(profileDir), filepath.Base(profileDir))
 }
 
 // takeLiveLock takes the profile's live lock exclusively and returns its
@@ -1162,36 +1112,28 @@ func lockNamesFile(f *os.File, path string) bool {
 func takeLiveLock(profileDir string, held *os.File) (func(), error) {
 	path := liveLockFor(profileDir)
 	if held != nil {
-		if !lockWithin(held, syscall.LOCK_EX) {
+		if !paths.FlockWithin(held, syscall.LOCK_EX) {
 			// A failed conversion can leave the descriptor without its shared
 			// lock (Linux drops SH before trying EX), so take the launch's
 			// coverage back before saying the layer was left alone (#205).
-			if !lockWithin(held, syscall.LOCK_SH) {
+			if !paths.FlockWithin(held, syscall.LOCK_SH) {
 				return nil, fmt.Errorf("%s: %w, and this launch's shared lock was lost", path, errLiveBusy)
 			}
 			return nil, fmt.Errorf("%s: %w", path, errLiveBusy)
 		}
 		return func() { syscall.Flock(int(held.Fd()), syscall.LOCK_SH) }, nil
 	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-		return nil, err
+	f, err := paths.TakeLive(path, syscall.LOCK_EX, nil, nil)
+	if errors.Is(err, paths.ErrLiveHeld) {
+		return nil, fmt.Errorf("%s: %w", path, errLiveBusy)
 	}
-	for attempt := 0; attempt < liveLockTries; attempt++ {
-		f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY|syscall.O_NOFOLLOW, 0o600)
-		if err != nil {
-			return nil, err
-		}
-		if !lockWithin(f, syscall.LOCK_EX) {
-			f.Close()
-			return nil, fmt.Errorf("%s: %w", path, errLiveBusy)
-		}
-		if !lockNamesFile(f, path) {
-			f.Close()
-			continue
-		}
-		return func() { f.Close() }, nil
+	if errors.Is(err, paths.ErrLiveIsLink) || errors.Is(err, paths.ErrLiveReplaced) {
+		return nil, fmt.Errorf("%s: %w", path, err)
 	}
-	return nil, errors.New(path + ": the live lock file was replaced while it was being taken")
+	if err != nil {
+		return nil, err // the open or mkdir error already names the path
+	}
+	return func() { f.Close() }, nil
 }
 
 // withLiveLock runs fn holding the profile's live lock exclusively. A holder

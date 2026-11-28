@@ -83,7 +83,7 @@ func (l *launcher) rm(args []string) int {
 	// cancelled sign-in is the profile home and the live lock, never the auth
 	// directory the browser logins use, so the offer names only paths on disk.
 	pdir, auth := filepath.Join(l.profileDirs, name), filepath.Join(l.dir, "auth", name)
-	live := util.LiveLockPath(l.profileDirs, name)
+	live := paths.LiveLockPath(l.profileDirs, name)
 	if !l.exists(name) {
 		var leftover []string
 		for _, p := range []string{pdir, auth, live} {
@@ -152,7 +152,7 @@ func (l *launcher) rm(args []string) int {
 	util.DropApprovals(l.profileDirs, name)
 	// The live lock goes with the profile (GH-837), unless a launch still holds
 	// it: that lock is its #185 cover, so it stays and rm says so.
-	if err := util.RemoveLive(l.profileDirs, name); errors.Is(err, util.ErrLiveHeld) {
+	if err := util.RemoveLive(l.profileDirs, name); errors.Is(err, paths.ErrLiveHeld) {
 		l.err("kept " + live + ": another launch of '" + name + "' still holds it — `lsof " + live + "` names the holder")
 	} else if err != nil {
 		l.err("kept " + live + ": " + err.Error())

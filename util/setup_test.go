@@ -11,6 +11,8 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"github.com/akleizor/ccmorph/util/paths"
 )
 
 // ~/.claude is Claude Code's: provisioning links the shared layer into the
@@ -561,11 +563,10 @@ func TestHoldLiveGivesUpOnAStuckHolder(t *testing.T) {
 	if err := syscall.Flock(int(holder.Fd()), syscall.LOCK_EX); err != nil {
 		t.Fatal(err)
 	}
-	lockWait = 0
-	t.Cleanup(func() { lockWait = 2 * time.Second })
+	t.Cleanup(paths.SetLockWait(0))
 	// #217: the nil says the lock was not taken, and the error says why — a
 	// stuck holder, not a lock file that could not be made.
-	if f, why := HoldLive(profiles, "p", nil); f != nil || !errors.Is(why, ErrLiveHeld) {
+	if f, why := HoldLive(profiles, "p", nil); f != nil || !errors.Is(why, paths.ErrLiveHeld) {
 		t.Fatalf("a stuck holder must not be waited on past the deadline: %v", why)
 	}
 	var errs []string
@@ -594,7 +595,7 @@ func TestHoldLiveNamesALockFileItCannotMake(t *testing.T) {
 	if f != nil {
 		t.Fatal("a lock file that cannot be made must not be held")
 	}
-	if why == nil || errors.Is(why, ErrLiveHeld) {
+	if why == nil || errors.Is(why, paths.ErrLiveHeld) {
 		t.Fatalf("an unmakeable lock file is not a stuck holder: %v", why)
 	}
 }
@@ -606,7 +607,7 @@ func TestRemoveLiveTakesAFreeLockAndKeepsAHeldOne(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	profiles := filepath.Join(home, ".config/ccmorph/profiles")
-	lock := LiveLockPath(profiles, "p")
+	lock := paths.LiveLockPath(profiles, "p")
 	if err := RemoveLive(profiles, "p"); err != nil {
 		t.Fatalf("no lock file is nothing to remove: %v", err)
 	}
@@ -635,7 +636,7 @@ func TestRemoveLiveTakesAFreeLockAndKeepsAHeldOne(t *testing.T) {
 	if err := syscall.Flock(int(holder.Fd()), syscall.LOCK_SH); err != nil {
 		t.Fatal(err)
 	}
-	if err := RemoveLive(profiles, "p"); !errors.Is(err, ErrLiveHeld) {
+	if err := RemoveLive(profiles, "p"); !errors.Is(err, paths.ErrLiveHeld) {
 		t.Fatalf("a held lock must not be unlinked: %v", err)
 	}
 	if _, err := os.Lstat(lock); err != nil {
@@ -659,7 +660,7 @@ func TestHoldLiveRetakesTheLockWhenAnRmUnlinksItBeforeTheFlock(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	profiles := filepath.Join(home, ".config/ccmorph/profiles")
-	lock := LiveLockPath(profiles, "p")
+	lock := paths.LiveLockPath(profiles, "p")
 	if err := os.MkdirAll(filepath.Dir(lock), 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -677,7 +678,7 @@ func TestHoldLiveRetakesTheLockWhenAnRmUnlinksItBeforeTheFlock(t *testing.T) {
 		t.Fatalf("the take must start again after the unlink: %v", why)
 	}
 	defer ReleaseLive(profiles, "p")
-	if !sameLockInode(f, lock) {
+	if !paths.LockNamesPath(f, lock) {
 		t.Fatal("HoldLive must not return a lock on an inode the path no longer names")
 	}
 	// The lock the path names is the only one: a second take on the path is
@@ -699,7 +700,7 @@ func TestRemoveLiveKeepsAReplacementLockItDidNotOpen(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	profiles := filepath.Join(home, ".config/ccmorph/profiles")
-	lock := LiveLockPath(profiles, "p")
+	lock := paths.LiveLockPath(profiles, "p")
 	if err := os.MkdirAll(filepath.Dir(lock), 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -725,7 +726,7 @@ func TestRemoveLiveKeepsAReplacementLockItDidNotOpen(t *testing.T) {
 			holder.Close()
 		}
 	})
-	if err := RemoveLive(profiles, "p"); !errors.Is(err, ErrLiveHeld) {
+	if err := RemoveLive(profiles, "p"); !errors.Is(err, paths.ErrLiveHeld) {
 		t.Fatalf("a lock made at the path after the open must not be unlinked: %v", err)
 	}
 	if _, err := os.Lstat(lock); err != nil {
@@ -739,7 +740,7 @@ func TestRemoveLiveTakesADanglingLinkAway(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	profiles := filepath.Join(home, ".config/ccmorph/profiles")
-	lock := LiveLockPath(profiles, "p")
+	lock := paths.LiveLockPath(profiles, "p")
 	if err := os.MkdirAll(filepath.Dir(lock), 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -774,7 +775,7 @@ func TestALinkAtTheLiveLockPathIsNeverALiveLock(t *testing.T) {
 			home := t.TempDir()
 			t.Setenv("HOME", home)
 			profiles := filepath.Join(home, ".config/ccmorph/profiles")
-			lock := LiveLockPath(profiles, "p")
+			lock := paths.LiveLockPath(profiles, "p")
 			if err := os.MkdirAll(filepath.Dir(lock), 0o700); err != nil {
 				t.Fatal(err)
 			}
@@ -813,7 +814,7 @@ func TestALinkAtTheLiveLockPathIsNeverALiveLock(t *testing.T) {
 			if !ran {
 				t.Fatal("the launch must have run between rm seeing the link and unlinking it")
 			}
-			if during != nil || !errors.Is(whyDuring, errLiveIsLink) {
+			if during != nil || !errors.Is(whyDuring, paths.ErrLiveIsLink) {
 				t.Fatalf("a launch must take no lock through a link at the lock path: held=%v why=%v", during != nil, whyDuring)
 			}
 			targetAsItWas("a refused launch and the removal")
@@ -826,7 +827,7 @@ func TestALinkAtTheLiveLockPathIsNeverALiveLock(t *testing.T) {
 			if f == nil {
 				t.Fatalf("a launch after the removal makes the lock: %v", why)
 			}
-			if fi, err := os.Lstat(lock); err != nil || !fi.Mode().IsRegular() || !sameLockInode(f, lock) {
+			if fi, err := os.Lstat(lock); err != nil || !fi.Mode().IsRegular() || !paths.LockNamesPath(f, lock) {
 				t.Fatalf("the launch must hold a regular file at the path: %v", err)
 			}
 			other, err := os.OpenFile(lock, os.O_APPEND|os.O_WRONLY, 0)
@@ -871,7 +872,7 @@ func TestASecondRmWaitsForAFirstThatHasSeenALink(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	profiles := filepath.Join(home, ".config/ccmorph/profiles")
-	lock := LiveLockPath(profiles, "p")
+	lock := paths.LiveLockPath(profiles, "p")
 	if err := os.MkdirAll(filepath.Dir(lock), 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -931,10 +932,10 @@ func TestASecondRmWaitsForAFirstThatHasSeenALink(t *testing.T) {
 	if err := second.Wait(); err != nil {
 		t.Fatalf("the second rm failed: %v\n%s", err, secondOut.String())
 	}
-	if during != nil && !sameLockInode(during, lock) {
+	if during != nil && !paths.LockNamesPath(during, lock) {
 		t.Fatal("the first rm unlinked the lock a launch made after the second rm cleared the link")
 	}
-	if during != nil || !errors.Is(whyDuring, errLiveIsLink) {
+	if during != nil || !errors.Is(whyDuring, paths.ErrLiveIsLink) {
 		t.Fatalf("the second rm must wait for the first, so the launch still finds the link: held=%v why=%v", during != nil, whyDuring)
 	}
 	if _, err := os.Lstat(lock); !os.IsNotExist(err) {
@@ -947,7 +948,7 @@ func TestASecondRmWaitsForAFirstThatHasSeenALink(t *testing.T) {
 	if f == nil {
 		t.Fatalf("a launch after both removals makes the lock: %v", why)
 	}
-	if fi, err := os.Lstat(lock); err != nil || !fi.Mode().IsRegular() || !sameLockInode(f, lock) {
+	if fi, err := os.Lstat(lock); err != nil || !fi.Mode().IsRegular() || !paths.LockNamesPath(f, lock) {
 		t.Fatalf("the launch must hold a regular file at the path: %v", err)
 	}
 	other, err := os.OpenFile(lock, os.O_APPEND|os.O_WRONLY, 0)
@@ -970,7 +971,7 @@ func TestALaunchHoldsThePathsLockWhenAnRmRemovesItMidTake(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	profiles := filepath.Join(home, ".config/ccmorph/profiles")
-	lock := LiveLockPath(profiles, "p")
+	lock := paths.LiveLockPath(profiles, "p")
 	if err := os.MkdirAll(filepath.Dir(lock), 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -997,7 +998,7 @@ func TestALaunchHoldsThePathsLockWhenAnRmRemovesItMidTake(t *testing.T) {
 	if !removed {
 		t.Fatal("the rm must have removed the lock inside the launch's open-and-flock window")
 	}
-	if !sameLockInode(f, lock) {
+	if !paths.LockNamesPath(f, lock) {
 		t.Fatal("the launch must hold the file the path names, not the inode the rm removed")
 	}
 	other, err := os.OpenFile(lock, os.O_APPEND|os.O_WRONLY, 0)

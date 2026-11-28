@@ -8,8 +8,7 @@ import (
 	"testing"
 
 	"github.com/akleizor/ccmorph/profile"
-	"github.com/akleizor/ccmorph/settingscompose"
-	"github.com/akleizor/ccmorph/util"
+	"github.com/akleizor/ccmorph/util/paths"
 )
 
 // #939: the fold of a launch whose profile already has a live session cannot
@@ -23,8 +22,7 @@ func TestABusyFoldIsLoggedAndTheLaunchGoesOn(t *testing.T) {
 	old := refreshOwnedPrices
 	refreshOwnedPrices = func(string) {}
 	t.Cleanup(func() { refreshOwnedPrices = old })
-	t.Cleanup(util.SetLockWait(0))
-	t.Cleanup(settingscompose.SetLiveLockWait(0))
+	t.Cleanup(paths.SetLockWait(0))
 
 	state, profiles := t.TempDir(), filepath.Join(t.TempDir(), "profiles")
 	name := "busy939"
@@ -49,7 +47,7 @@ func TestABusyFoldIsLoggedAndTheLaunchGoesOn(t *testing.T) {
 
 	// A live session of the same profile: shared on the live lock, so this
 	// launch may start beside it but no whole-file writer may rename the layer.
-	lock := util.LiveLockPath(profiles, name)
+	lock := paths.LiveLockPath(profiles, name)
 	if err := os.MkdirAll(filepath.Dir(lock), 0o700); err != nil {
 		t.Fatal(err)
 	}

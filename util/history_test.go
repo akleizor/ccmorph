@@ -7,7 +7,8 @@ import (
 	"sync"
 	"syscall"
 	"testing"
-	"time"
+
+	"github.com/akleizor/ccmorph/util/paths"
 )
 
 // #177: the shared history's inode is never replaced — a writer holding it
@@ -153,8 +154,7 @@ func TestMergeHistoryGivesUpOnAStuckLock(t *testing.T) {
 	if err := syscall.Flock(int(holder.Fd()), syscall.LOCK_EX); err != nil {
 		t.Fatal(err)
 	}
-	lockWait = 0
-	t.Cleanup(func() { lockWait = 2 * time.Second })
+	t.Cleanup(paths.SetLockWait(0))
 	if mergeHistory(own, shared) {
 		t.Fatal("a merge that could not take the lock must report failure")
 	}

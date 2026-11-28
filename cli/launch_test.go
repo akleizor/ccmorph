@@ -1558,7 +1558,7 @@ func TestSetupDirRefusesALaunchWithoutItsLiveLock(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	profiles := filepath.Join(home, ".config/ccmorph/profiles")
-	lock := util.LiveLockPath(profiles, "p")
+	lock := paths.LiveLockPath(profiles, "p")
 	if err := os.MkdirAll(filepath.Dir(lock), 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -1570,7 +1570,7 @@ func TestSetupDirRefusesALaunchWithoutItsLiveLock(t *testing.T) {
 	if err := syscall.Flock(int(holder.Fd()), syscall.LOCK_EX); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(util.SetLockWait(0))
+	t.Cleanup(paths.SetLockWait(0))
 	l := &launcher{profileDirs: profiles}
 	if l.setupDir("p", "proxy", liveRefuse) {
 		t.Fatal("a launch that could not take its live lock must not start claude")
@@ -1589,7 +1589,7 @@ func TestPersonAnswersRequiresTheLiveLockBeforeClaudeStarts(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	profiles := filepath.Join(home, ".config/ccmorph/profiles")
-	lock := util.LiveLockPath(profiles, "p")
+	lock := paths.LiveLockPath(profiles, "p")
 	if err := os.MkdirAll(filepath.Dir(lock), 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -1601,7 +1601,7 @@ func TestPersonAnswersRequiresTheLiveLockBeforeClaudeStarts(t *testing.T) {
 	if err := syscall.Flock(int(holder.Fd()), syscall.LOCK_EX); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(util.SetLockWait(0))
+	t.Cleanup(paths.SetLockWait(0))
 	l := &launcher{profileDirs: profiles}
 	saved := os.Stderr
 	r, w, err := os.Pipe()
@@ -1638,7 +1638,7 @@ func TestSetupDirProceedsForVerbsThatStartNoSession(t *testing.T) {
 		home := t.TempDir()
 		t.Setenv("HOME", home)
 		profiles := filepath.Join(home, ".config/ccmorph/profiles")
-		lock := util.LiveLockPath(profiles, "p")
+		lock := paths.LiveLockPath(profiles, "p")
 		if err := os.MkdirAll(filepath.Dir(lock), 0o700); err != nil {
 			t.Fatal(err)
 		}
@@ -1649,7 +1649,7 @@ func TestSetupDirProceedsForVerbsThatStartNoSession(t *testing.T) {
 		if err := syscall.Flock(int(holder.Fd()), syscall.LOCK_EX); err != nil {
 			t.Fatal(err)
 		}
-		t.Cleanup(util.SetLockWait(0))
+		t.Cleanup(paths.SetLockWait(0))
 		l := &launcher{profileDirs: profiles}
 		saved := os.Stderr
 		r, w, err := os.Pipe()
@@ -1683,8 +1683,8 @@ func TestSetupDirProceedsForVerbsThatStartNoSession(t *testing.T) {
 func cliBlockLiveLockDir(t *testing.T, profiles string) string {
 	t.Helper()
 	blocker := filepath.Join(filepath.Dir(profiles), ".locks")
-	if filepath.Dir(util.LiveLockPath(profiles, "p")) != blocker {
-		t.Fatalf("the fixture must block the directory LiveLockPath names: %s", util.LiveLockPath(profiles, "p"))
+	if filepath.Dir(paths.LiveLockPath(profiles, "p")) != blocker {
+		t.Fatalf("the fixture must block the directory LiveLockPath names: %s", paths.LiveLockPath(profiles, "p"))
 	}
 	if err := os.WriteFile(blocker, []byte("not a directory\n"), 0o600); err != nil {
 		t.Fatal(err)
@@ -1734,7 +1734,7 @@ func TestSetupDirLeavesTheAuthFilesToALaunchWhenTheLiveLockCannotBeMade(t *testi
 				t.Fatal(err)
 			}
 			blocker := cliBlockLiveLockDir(t, profiles)
-			t.Cleanup(util.SetLockWait(0))
+			t.Cleanup(paths.SetLockWait(0))
 			t.Cleanup(func() { util.ReleaseLive(profiles, "p") })
 
 			ok, note := setupDirStderr(t, &launcher{profileDirs: profiles}, "p", "proxy", tc.policy)
@@ -1800,7 +1800,7 @@ func TestSetupDirStillRefusesAnInvalidAuthFileWhenTheLiveLockCannotBeMade(t *tes
 				t.Fatal(err)
 			}
 			cliBlockLiveLockDir(t, profiles)
-			t.Cleanup(util.SetLockWait(0))
+			t.Cleanup(paths.SetLockWait(0))
 			t.Cleanup(func() { util.ReleaseLive(profiles, "p") })
 
 			ok, note := setupDirStderr(t, &launcher{profileDirs: profiles}, "p", "proxy", tc.policy)
@@ -1848,10 +1848,10 @@ func TestSetupDirReleasesTheLiveLockOfTheProfileAHopLeaves(t *testing.T) {
 	if !l.setupDir("b", "proxy", liveRefuse) {
 		t.Fatal("the hop target must start")
 	}
-	if !canTakeExclusive(t, util.LiveLockPath(profiles, "a")) {
+	if !canTakeExclusive(t, paths.LiveLockPath(profiles, "a")) {
 		t.Fatal("after a hop, a launch of the hopped-away profile must find no live session")
 	}
-	if canTakeExclusive(t, util.LiveLockPath(profiles, "b")) {
+	if canTakeExclusive(t, paths.LiveLockPath(profiles, "b")) {
 		t.Fatal("the hop target must stay covered by its live lock")
 	}
 }

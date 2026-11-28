@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/akleizor/ccmorph/settingscompose"
+	"github.com/akleizor/ccmorph/util/paths"
 )
 
 // foldLockFixture is profile gw's home holding an edit Claude Code made to
@@ -53,7 +54,7 @@ func foldLockFixture(t *testing.T) (profiles, dir, canonical, layer string, in P
 // exclusively by someone else while the fold runs.
 func holdLiveExclusive(t *testing.T, profiles string) *os.File {
 	t.Helper()
-	lock := LiveLockPath(profiles, "gw")
+	lock := paths.LiveLockPath(profiles, "gw")
 	if err := os.MkdirAll(filepath.Dir(lock), 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -76,7 +77,7 @@ func TestAFoldUnderTheLiveLockLeavesTheLayerAlone(t *testing.T) {
 	profiles, dir, canonical, layer, _ := foldLockFixture(t)
 	held := holdLiveExclusive(t, profiles)
 	defer held.Close()
-	t.Cleanup(settingscompose.SetLiveLockWait(0))
+	t.Cleanup(paths.SetLockWait(0))
 	var errw bytes.Buffer
 	rc := settingscompose.Main([]string{"fold", dir, "--canonical", canonical}, &errw)
 	if rc == 0 {
@@ -99,8 +100,7 @@ func TestAFoldUnderTheLiveLockLeavesTheLayerAlone(t *testing.T) {
 // lets go, both edits stand.
 func TestTheFoldAndThePickerKeepBothWrites(t *testing.T) {
 	_, dir, canonical, layer, in := foldLockFixture(t)
-	t.Cleanup(settingscompose.SetLiveLockWait(0))
-	t.Cleanup(SetLockWait(0))
+	t.Cleanup(paths.SetLockWait(0))
 	var errw bytes.Buffer
 	seam := false
 	err := settingscompose.Fold(dir, canonical, nil, nil, func() {
@@ -165,7 +165,7 @@ func TestAProjectionUnderTheLiveLockLeavesTheLayerAlone(t *testing.T) {
 	profiles, dir, canonical, layer, _ := foldLockFixture(t)
 	held := holdLiveExclusive(t, profiles)
 	defer held.Close()
-	t.Cleanup(settingscompose.SetLiveLockWait(0))
+	t.Cleanup(paths.SetLockWait(0))
 	var errw bytes.Buffer
 	rc := settingscompose.Main([]string{"materialize", dir, "--canonical", canonical, "--saved", "{}"}, &errw)
 	if rc != 0 {
@@ -203,7 +203,7 @@ func TestPrepareLaunchUnderTheLiveLockLeavesTheLayerAlone(t *testing.T) {
 	if err := os.WriteFile(canonical, []byte("{}"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	lock := LiveLockPath(profiles, "p")
+	lock := paths.LiveLockPath(profiles, "p")
 	if err := os.MkdirAll(filepath.Dir(lock), 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -215,7 +215,7 @@ func TestPrepareLaunchUnderTheLiveLockLeavesTheLayerAlone(t *testing.T) {
 	if err := syscall.Flock(int(session.Fd()), syscall.LOCK_SH); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(SetLockWait(0))
+	t.Cleanup(paths.SetLockWait(0))
 	args := StoreArgs{Op: "prepare-launch", Conf: conf, Settings: layer, Shared: canonical,
 		Change: StoreChange{Model: "m-new"}}
 	var errw bytes.Buffer
