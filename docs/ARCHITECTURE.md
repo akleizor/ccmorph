@@ -88,6 +88,7 @@ beside itself. `CCMORPH_LIB_DIR` names the `lib/` directory.
 | `cli/` | The command: dispatch, help, every verb, doctor, the menus (`ui.go`, `menus.go`) and the launch (profile and model resolution, bridge and adapter, settings projection, the claude child, the relay loop). |
 | `profile/` | Reading and validating a profile's conf, and the environment-name lists (`envkeys.go`). |
 | `util/` | The small verbs the CLI and launch share: config store, profile setup, migrations, listings, process readers. |
+| `util/paths`, `util/modelid` | Leaf packages every layer imports: the file layout and its locks; the model-id spellings (tier words, the `[1m]` window marker, the tier env key). See [ADR 0001](adr/0001-leaf-packages-own-shared-rules.md). |
 
 ## 1. Profile model
 

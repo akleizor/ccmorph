@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"github.com/akleizor/ccmorph/util"
+	"github.com/akleizor/ccmorph/util/modelid"
 	"os"
 	"slices"
 	"strings"
@@ -165,7 +166,7 @@ func (l *launcher) getSet(verb string, args []string) int {
 			// pins tiers (the Remote Control supervisor) reads them here rather
 			// than keeping a second copy that drifts.
 			tiers := map[string]string{}
-			for _, tier := range util.TierWords {
+			for _, tier := range modelid.TierWords {
 				if m, ok := resolveTier(tier,
 					func(key string) (string, bool) { v, ok := f["env."+key]; return v, ok },
 					func(tier string) (string, bool) { return l.tierAlias(name, tier) }); ok {

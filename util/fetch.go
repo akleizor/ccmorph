@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/akleizor/ccmorph/ctxwindow"
+	"github.com/akleizor/ccmorph/util/modelid"
 )
 
 // LaunchListing is the per-launch /v1/models listing: GET <base>/v1/models?limit=1000
@@ -356,16 +357,16 @@ func probeServed(want, typ, base, modelMap, key string, fetch listingFetch) serv
 // any [1m], the tier aliases, and the provider and bare-route answers. decided
 // says the answer is final; otherwise the caller asks the route's listing.
 func servedBeforeListing(want, typ, base string) (spelled string, answer Served, decided bool) {
-	// The strip is TrimWindowMarker's and the word TierWord's — the one answer
+	// The strip is modelid.TrimWindowMarker's and the word modelid.TierWord's — the one answer
 	// each gives everywhere a model is named — so a tier word in either case,
 	// with or without its marker, is served here exactly as it resolves
 	// elsewhere (#539).
-	want = TrimWindowMarker(want)
-	word := TierWord(want)
+	want = modelid.TrimWindowMarker(want)
+	word := modelid.TierWord(want)
 	switch {
 	case word == "":
 		return want, ServedUnknown, true
-	case IsTier(word):
+	case modelid.IsTier(word):
 		return want, ServedYes, true
 	case typ == "provider":
 		if strings.HasPrefix(want, "claude-") {

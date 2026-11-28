@@ -13,6 +13,8 @@ import (
 	"slices"
 	"strings"
 	"time"
+
+	"github.com/akleizor/ccmorph/util/modelid"
 )
 
 const maxChars = 7000
@@ -194,7 +196,7 @@ var (
 )
 
 func tokens(model string) []string {
-	return tokenSplit.Split(strings.ToLower(strings.TrimSuffix(model, "[1m]")), -1)
+	return tokenSplit.Split(strings.ToLower(modelid.TrimWindowMarker(model)), -1)
 }
 
 // namedTier: a vendor tier word in the ID is the vendor's own label.
@@ -240,7 +242,7 @@ func HeuristicLabel(model string) Label {
 		family = "gemini-flash"
 	}
 	if family == "" {
-		name := strings.ToLower(strings.TrimSuffix(model, "[1m]"))
+		name := strings.ToLower(modelid.TrimWindowMarker(model))
 		name = name[strings.LastIndex(name, "/")+1:]
 		family = regexp.MustCompile(`[-_.]`).Split(name, 2)[0]
 		if family == "" {

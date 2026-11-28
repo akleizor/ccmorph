@@ -17,6 +17,7 @@ import (
 	"github.com/akleizor/ccmorph/quota"
 	"github.com/akleizor/ccmorph/shim"
 	"github.com/akleizor/ccmorph/util"
+	"github.com/akleizor/ccmorph/util/modelid"
 	"github.com/akleizor/ccmorph/util/paths"
 )
 
@@ -69,12 +70,12 @@ func readServed(name string) (served, bool) {
 	for m := range ctxwindow.DiscoveredValues(f) {
 		set[m] = true
 	}
-	for _, k := range util.TierWords {
-		set[f["env."+util.TierEnvKey(k)]] = true
+	for _, k := range modelid.TierWords {
+		set[f["env."+modelid.TierEnvKey(k)]] = true
 	}
 	set[f["model"]] = true
 	for m := range set {
-		m = strings.TrimSuffix(m, "[1m]")
+		m = modelid.TrimWindowMarker(m)
 		if m != "" && !ctxwindow.IsExcluded(f, m) && !slices.Contains(s.models, m) {
 			s.models = append(s.models, m)
 		}

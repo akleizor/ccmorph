@@ -83,3 +83,10 @@ func TestEngineBoolReadsLikeTheEngine(t *testing.T) {
 		}
 	}
 }
+
+// #544: a bracket-bearing id is a whole id; only the trailing marker goes.
+func TestBareIDKeepsAnIDsOwnBracketsIssue544(t *testing.T) {
+	if got := bareID("vendor[beta][1M]"); got != "vendor[beta]" {
+		t.Fatalf("bareID = %q", got)
+	}
+}

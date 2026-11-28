@@ -9,6 +9,7 @@ import (
 	"strings"
 	"syscall"
 
+	"github.com/akleizor/ccmorph/util/modelid"
 	"github.com/akleizor/ccmorph/util/paths"
 )
 
@@ -62,7 +63,7 @@ func cacheEntries(lines []string) []cacheEntry {
 			continue
 		}
 		if n, ok := Positive(value); ok {
-			out = append(out, cacheEntry{strings.TrimSuffix(model, "[1m]"), n})
+			out = append(out, cacheEntry{modelid.TrimWindowMarker(model), n})
 		}
 	}
 	return out

@@ -6,6 +6,7 @@ import (
 
 	"github.com/akleizor/ccmorph/settingscompose"
 	"github.com/akleizor/ccmorph/util"
+	"github.com/akleizor/ccmorph/util/modelid"
 	"github.com/akleizor/ccmorph/util/paths"
 	"os"
 	"os/exec"
@@ -133,7 +134,7 @@ func (l *launcher) contextEnv(name string, penv []string, explicit, defaultModel
 		if strings.HasPrefix(pmodelEnv, "claude-") {
 			pmodelEnv = ""
 		}
-		plw = l.launchWindow(name, strings.SplitN(pmodel, "[", 2)[0])
+		plw = l.launchWindow(name, modelid.TrimWindowMarker(pmodel))
 		plwRan = true
 		pwin := ""
 		if pmodel != "" {
@@ -184,7 +185,7 @@ func (l *launcher) contextEnv(name string, penv []string, explicit, defaultModel
 			if fb == "" {
 				fb = "none"
 			}
-			l.log("window unknown profile=" + name + " model=" + strings.SplitN(pmodel, "[", 2)[0] + " fallback=" + fb)
+			l.log("window unknown profile=" + name + " model=" + modelid.TrimWindowMarker(pmodel) + " fallback=" + fb)
 		}
 	}
 	if pceil == "" {

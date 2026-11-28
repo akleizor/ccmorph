@@ -31,6 +31,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/akleizor/ccmorph/profile"
+	"github.com/akleizor/ccmorph/util/modelid"
 	"github.com/akleizor/ccmorph/util/paths"
 )
 
@@ -418,8 +419,6 @@ func RealID(modelID string) string {
 	return modelID
 }
 
-var oneMSuffix = regexp.MustCompile(`(?i)\[1m\]$`)
-
 // IsExcluded reports whether excluded_models names this model, directly or
 // through the tier alias it maps.
 func IsExcluded(fields map[string]string, modelID string) bool {
@@ -429,12 +428,12 @@ func IsExcluded(fields map[string]string, modelID string) bool {
 			excluded[m] = true
 		}
 	}
-	bare := oneMSuffix.ReplaceAllString(RealID(modelID), "")
-	mapped, ok := fields["env.ANTHROPIC_DEFAULT_"+strings.ToUpper(bare)+"_MODEL"]
+	bare := modelid.TrimWindowMarker(RealID(modelID))
+	mapped, ok := fields["env."+modelid.TierEnvKey(bare)]
 	if !ok {
 		mapped = bare
 	}
-	return excluded[bare] || excluded[oneMSuffix.ReplaceAllString(mapped, "")]
+	return excluded[bare] || excluded[modelid.TrimWindowMarker(mapped)]
 }
 
 // ValidModel rejects empty ids and ids with whitespace or "=".
@@ -616,7 +615,7 @@ func mappedTarget(fields map[string]string, mapping obj, bare string) string {
 	if !ok || s == "" {
 		return bare
 	}
-	return strings.TrimSuffix(s, "[1m]")
+	return modelid.TrimWindowMarker(s)
 }
 
 // RouteKnown is whether the route's discovered table carries model, as itself
@@ -727,13 +726,25 @@ func flockCtx(ctx context.Context, f *os.File) error {
 // line below it.
 var confSections = [][]string{
 	{"type", "provider", "email", "token", "base_url", "api_key", "adapter", "tag"},
-	{"model", "model_map", "effort", "effort.*",
-		"env.ANTHROPIC_DEFAULT_FABLE_MODEL", "env.ANTHROPIC_DEFAULT_OPUS_MODEL*",
-		"env.ANTHROPIC_DEFAULT_SONNET_MODEL", "env.ANTHROPIC_DEFAULT_HAIKU_MODEL",
-		"env.ANTHROPIC_SMALL_FAST_MODEL", "env.CLAUDE_CODE_SUBAGENT_MODEL", "excluded_models"},
+	slices.Concat([]string{"model", "model_map", "effort", "effort.*"}, tierConfKeys(),
+		[]string{"env.ANTHROPIC_SMALL_FAST_MODEL", "env.CLAUDE_CODE_SUBAGENT_MODEL", "excluded_models"}),
 	{"private", "usage_route", "env.*"},
 	{"window_sources", "context_window.*"},
 	{"model_defaults", "model_source", "context_discovered"},
+}
+
+// tierConfKeys is each tier word's env key as a conf key, in the word order;
+// opus's glob also places its display name and description lines.
+func tierConfKeys() []string {
+	var keys []string
+	for _, w := range modelid.TierWords {
+		k := "env." + modelid.TierEnvKey(w)
+		if w == "opus" {
+			k += "*"
+		}
+		keys = append(keys, k)
+	}
+	return keys
 }
 
 type rank struct {

@@ -9647,12 +9647,12 @@ test_relay_relaunch_keeps_a_mapped_alias_allowed() {
   source "$CCMORPH_SOURCE"
 
   # The window marker is stripped for the map lookup exactly as the shim strips
-  # it, which is case-sensitive, so a spelling the shim would not map is no
-  # mapped alias here either. An id that is neither a map key nor a served row
-  # stays out, as it does today.
+  # it, through modelid.TrimWindowMarker in either case (#544), so both
+  # spellings are the mapped alias. An id that is neither a map key nor a served
+  # row stays out.
   local spec model expect launched allowed
   for spec in 'sol-alias:allowed' 'claude-sonnet-5-5:allowed' \
-              'claude-sonnet-5-5[1m]:allowed' 'claude-sonnet-5-5[1M]:absent' \
+              'claude-sonnet-5-5[1m]:allowed' 'claude-sonnet-5-5[1M]:allowed' \
               'ghost-model:absent'; do
     model="${spec%%:*}"
     expect="${spec##*:}"

@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/akleizor/ccmorph/util"
+	"github.com/akleizor/ccmorph/util/modelid"
 )
 
 // dispatchEnv is an isolated router with two profiles of two families: "sub"
@@ -22,7 +22,7 @@ func dispatchEnv(t *testing.T) {
 	t.Setenv("XDG_STATE_HOME", state)
 	t.Setenv(WorkerEnv, "")
 	for _, a := range []string{"OPUS", "SONNET", "HAIKU"} {
-		t.Setenv(util.TierEnvKey(a), "")
+		t.Setenv(modelid.TierEnvKey(a), "")
 	}
 	for name, conf := range map[string]string{
 		"sub": "type=sub\n",

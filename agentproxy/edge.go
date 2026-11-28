@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"github.com/akleizor/ccmorph/ordjson"
+	"github.com/akleizor/ccmorph/util/modelid"
 	"io"
 	"net"
 	"net/http"
@@ -625,7 +626,7 @@ func pickModel(model string, tiers map[string]string) string {
 	if own := pinnedModel(model, tiers); own != "" {
 		return own
 	}
-	return strings.TrimSuffix(model, "[1m]")
+	return modelid.TrimWindowMarker(model)
 }
 
 // setPick names the model outright when an agent's pick does.

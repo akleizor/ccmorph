@@ -7,6 +7,8 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+
+	"github.com/akleizor/ccmorph/util/modelid"
 )
 
 // Limit is a context window derived from a models.dev `limit` object.
@@ -337,12 +339,16 @@ func Resolve(profile, model string) Record {
 // CLAUDE_CODE_MAX_CONTEXT_TOKENS pin: that belongs to Resolve's environment.
 func (in *Inputs) Resolve(model string) Record {
 	fields := in.fields
-	bare := strings.TrimSuffix(model, "[1m]")
+	bare := modelid.TrimWindowMarker(model)
 	// The served id sizes the session; the requested id stays what the client sees.
 	target := in.mappedTarget(bare)
 	manual := ManualValues(fields)
-	// An explicit pin wins, on the requested id first and then on the served id.
-	window, have := manual[bare]
+	// An explicit pin wins, on the requested id first (as written, then bare:
+	// a pin may be saved under the marked spelling) and then on the served id.
+	window, have := manual[model]
+	if !have {
+		window, have = manual[bare]
+	}
 	if !have {
 		window, have = manual[target]
 	}
@@ -385,7 +391,7 @@ func (in *Inputs) Resolve(model string) Record {
 		rec.Unprobed, rec.Budget = true, UnknownBudget
 	}
 	if strings.HasPrefix(bare, "claude-") && rec.Window >= oneM {
-		rec.SendID = bare + "[1m]"
+		rec.SendID = bare + modelid.WindowMarker
 	}
 	return rec
 }

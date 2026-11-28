@@ -944,3 +944,22 @@ func TestLockedTakesASkippedConfsExactNameOnly(t *testing.T) {
 		}
 	}
 }
+
+// #544: an uppercase-marked id is sized by its bare id's pin and sent with one
+// marker, never two; a pin saved under the marked spelling is still found.
+func TestResolveStripsEitherMarkerCaseOnceIssue544(t *testing.T) {
+	t.Setenv("MODEL_WINDOW_ENDPOINT_JSON", "")
+	in := NewInputs(map[string]string{
+		"context_window.claude-x-1": "1000000",
+		"context_window.glm[1M]":    "300000",
+	})
+	if got := in.Resolve("claude-x-1[1M]"); got.Window != 1000000 || got.SendID != "claude-x-1[1m]" {
+		t.Fatalf("claude-x-1[1M]: %+v", got)
+	}
+	if got := in.Resolve("glm[1M]"); got.Window != 300000 || got.SendID != "glm" {
+		t.Fatalf("glm[1M]: %+v", got)
+	}
+	if got := in.Resolve("vendor[beta]"); got.SendID != "vendor[beta]" {
+		t.Fatalf("vendor[beta] cut: %+v", got)
+	}
+}

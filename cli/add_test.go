@@ -62,7 +62,7 @@ func TestProviderListSkipsABridgeFlagThatOnlyLooksLikeALogin(t *testing.T) {
 }
 
 // #449: the preset's three tier columns are opus, sonnet and haiku by name.
-// The wizard zips them onto the words after fable, so reordering util.TierWords
+// The wizard zips them onto the words after fable, so reordering modelid.TierWords
 // would silently write a column under another tier's key; this pins the keys
 // the columns land on. Fable has no column: it is left to `ccmorph config set`.
 func TestAddWizardTierColumnsArePinnedByName(t *testing.T) {

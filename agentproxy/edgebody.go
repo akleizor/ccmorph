@@ -13,7 +13,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/akleizor/ccmorph/ordjson"
-	"github.com/akleizor/ccmorph/util"
+	"github.com/akleizor/ccmorph/util/modelid"
 )
 
 // What the Remote Control edge does to a request body: which model it names
@@ -21,10 +21,10 @@ import (
 // and the event uploads the phone downloads lightened.
 
 // A pinned tier (`tier.fable=gpt-6-astra` in rc-hosts) reaches the session as
-// the tier's env key (util.TierEnvKey), which only covers the bare alias. The phone's
+// the tier's env key (modelid.TierEnvKey), which only covers the bare alias. The phone's
 // model picker sends the full id (claude-fable-5-1), so the proxy pins the
 // whole family.
-var claudeFamily = regexp.MustCompile(`^claude-(` + strings.Join(util.TierWords, "|") + `)-\d`)
+var claudeFamily = regexp.MustCompile(`^claude-(` + strings.Join(modelid.TierWords, "|") + `)-\d`)
 
 // pinnedModel is the model a pinned tier sends model to, "" when none does.
 func pinnedModel(model string, tiers map[string]string) string {
@@ -35,12 +35,12 @@ func pinnedModel(model string, tiers map[string]string) string {
 	// `[1m]` is Claude Code's own context marker, stripped before a request is
 	// sent; a profile's tier carries it (claude-opus-5-5[1m]) and the backend
 	// 404s on it.
-	return strings.TrimSuffix(tiers[key], "[1m]")
+	return modelid.TrimWindowMarker(tiers[key])
 }
 
 // routeAlias is the alias the route's own tiers map to model, "" when none.
 func routeAlias(model string, routeTiers map[string]string) string {
-	for _, a := range util.TierWords {
+	for _, a := range modelid.TierWords {
 		if routeTiers[a] == model {
 			return a
 		}
