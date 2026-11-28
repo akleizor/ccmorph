@@ -308,6 +308,46 @@ chmod +x "$HOME/core/ccmorph-core"
 _CCMORPH_LIBEXEC_DIR="$HOME/core"
 '''
 
+# A boundary whose adapter answers as a native-compatible endpoint (NATIVE=1,
+# the first line the launch reads) and exits 0, so the launch goes on to
+# claude; the model it was asked for lands in $HOME/adapter-model.
+NATIVE_BOUNDARY = r'''mkdir -p "$HOME/core"
+printf '%s\n' '#!/bin/sh' "real='$_CCMORPH_LIBEXEC_DIR/ccmorph-core'" \
+  'if [ "$1" = adapter ]; then m=; p=; for a in "$@"; do [ "$p" = --model ] && m=$a; p=$a; done; printf "%s\n" "$m" > "$HOME/adapter-model"; echo NATIVE=1; exit 0; fi' \
+  'exec "$real" "$@"' > "$HOME/core/ccmorph-core"
+chmod +x "$HOME/core/ccmorph-core"
+_CCMORPH_LIBEXEC_DIR="$HOME/core"
+'''
+
+# A claude first on the test PATH whose --help lists a fixed command set, so
+# what the launcher reads as a Claude subcommand never depends on the Claude
+# Code this machine carries (REVIEW.md gate rule 3); any other call runs the
+# session body the test gives it.
+CLAUDE_HELP = r'''if [ "${1-}" = --help ]; then
+  printf 'Usage: claude [options] [command] [prompt]\n\nCommands:\n  doctor  Check the health of your install\n  mcp     Configure and manage MCP servers\n'
+  exit 0
+fi
+'''
+
+# The session body of a claude that fails at once, printing the line Claude
+# Code gives for each SessionEnd hook it cancels: the hook's own command text.
+CLAUDE_CANCELS_ITS_HOOKS = r'''printf '%s\n' "$*" >> "$HOME/claude-args"
+old_ifs=$IFS
+IFS=:
+for dir in $CLAUDE_CODE_PLUGIN_DIRS; do
+  [ -f "$dir/hooks/hooks.json" ] || continue
+  python3 - "$dir/hooks/hooks.json" <<'PY' >&2
+import json, sys
+for group in json.load(open(sys.argv[1]))['hooks'].get('SessionEnd', []):
+    for hook in group['hooks']:
+        print('SessionEnd hook [%s] failed: Hook cancelled' % hook['command'])
+PY
+done
+IFS=$old_ifs
+echo 'Error: Input must be provided either through stdin or as a prompt argument when using --print' >&2
+exit 1
+'''
+
 # GH-260's endings for an unreachable gateway, as a launch states them: the
 # refused port named, or the bounded no-answer sentence. The launch's probe may
 # stop curl at its bound before curl's own refusal is reaped, so a refused stub
@@ -407,6 +447,16 @@ class PickerTTYTest(unittest.TestCase):
 
     def spec(self, *lines):
         (self.tmp / 'fzf.spec').write_text('\n'.join(lines) + '\n')
+
+    def claude_stub(self, session='exit 0'):
+        """A claude first on the test PATH whose --help lists a fixed command
+        set, so what the launcher reads as a Claude subcommand never depends on
+        the Claude Code this machine carries (REVIEW.md gate rule 3); any other
+        call runs `session`."""
+        path = self.tmp / 'bin' / 'claude'
+        path.write_text('#!/bin/sh\n' + CLAUDE_HELP + session + '\n')
+        path.chmod(0o755)
+        return path
 
     def profile(self, name='demo', endpoint='https://old.example', key='old-secret'):
         (self.state / f'{name}.conf').write_text(
@@ -625,6 +675,24 @@ class PickerTTYTest(unittest.TestCase):
         self.assertNotEqual(rc, 0, out)
         self.assertNotIn('SELECTED=', out)  # cancellation must not start anything
 
+    # GH-932: one `run_pty` child, HANG_TIMEOUT bounded; per-test headroom.
+    @pytest.mark.timeout(300)
+    def test_ctrl_d_at_the_numbered_picker_starts_nothing_issue_969(self):
+        # The real EOF action on the numbered picker (no fzf), not the fzf
+        # stub's canned cancellation: it leaves with status 1 and starts
+        # neither the adapter nor Claude Code.
+        env = self.env(fzf=False)
+        self.profile()
+        (self.state / 'profiles/demo/settings.json').write_text('{}')
+        self.claude_stub('echo CLAUDE-STARTED > "$HOME/claude-ran"')
+        rc, out, missed = run_pty(ADAPTER_BOUNDARY + 'ccmorph run demo', env,
+                                  exchanges=((b'picker-alpha', b'\x04'),))
+        self.assertIsNone(missed, out)
+        self.assertNotEqual(rc, 0, out)
+        self.assertIn('Cancelled', out)
+        self.assertNotIn('SELECTED=', out)
+        self.assertFalse((self.tmp / 'home/claude-ran').exists(), out)
+
     # GH-932: seven children — six `run_pty` and one `subprocess.run`, each a
     # zsh that sources lib/ccmorph.sh, HANG_TIMEOUT (120 s) bounded; on the
     # night gate's saturated host that stack crossed the 60 s ceiling.
@@ -642,10 +710,17 @@ class PickerTTYTest(unittest.TestCase):
             with self.subTest(args=args):
                 rc, out, _ = run_pty(command + ' ' + args, env)
                 self.assertIn('SELECTED=<' + expected + '>', out)
+        # GH-969 changes the bare headless case here: with no terminal to
+        # answer the launch picker it is now refused before the adapter (see
+        # test_headless_run_with_no_saved_model_refuses_before_the_adapter_issue_969),
+        # while every answer the argv itself carries — the loop above, and the
+        # saved model below — still reaches it. The child is its own session:
+        # no controlling terminal, as the no-terminal refusal is what runs.
         result = subprocess.run(['zsh', '-fc', 'source "$1"\n' + command, 'test', str(CCMORPH)],
                                 env=env, stdin=subprocess.DEVNULL, capture_output=True,
-                                text=True, timeout=HANG_TIMEOUT)
-        self.assertIn('SELECTED=<>', result.stderr)
+                                text=True, timeout=HANG_TIMEOUT, start_new_session=True)
+        self.assertNotIn('SELECTED=', result.stderr)
+        self.assertIn('demo has no saved model', result.stderr)
         with (self.state / 'demo.conf').open('a') as conf:
             conf.write('model=picker-alpha\n')
         rc, out, _ = run_pty(command, env)
@@ -785,6 +860,94 @@ class PickerTTYTest(unittest.TestCase):
         # the launching shell sources local.sh exactly once, as it always did.
         runs = self.tmp / 'home' / 'local-sh-runs'
         self.assertEqual(len(runs.read_text().splitlines()), 1, result.stdout + result.stderr)
+
+    # GH-932: seven children — six zsh launches and one `_ccm_launch` — each
+    # sources lib/ccmorph.sh and is HANG_TIMEOUT (120 s) bounded; on the night
+    # gate's saturated host that stack crossed the 60 s ceiling. Per-test
+    # headroom; the ceiling stays 60 s everywhere else (#892).
+    @pytest.mark.timeout(300)
+    def test_headless_run_with_no_saved_model_refuses_before_the_adapter_issue_969(self):
+        """GH-969: a launch with no terminal to answer the model picker went on
+        to exec claude with no model at all. Claude Code answered with its own
+        non-printable-stdin --print guard, the run sat tens of seconds in
+        teardown, and the SessionEnd hook's own script reached the terminal —
+        headless automation, the launcher that most needs guidance, got the one
+        path without any. Nothing can pick without a terminal, so the launch
+        now stops where the terminal launch would have asked: it starts no
+        adapter and no session, and prints the same guidance the adapter and
+        doctor give — list them, then save one. A prompt on the argv is its own
+        answer: that headless launch still reaches its adapter (#650)."""
+        env = self.env(fzf=True)
+        stub = self.claude_stub()
+        self.assertEqual(shutil.which('claude', path=env['PATH']), str(stub))
+        self.profile()
+        (self.state / 'profiles/demo/settings.json').write_text('{}')
+        command = ADAPTER_BOUNDARY + 'ccmorph run demo'
+        # The child is its own session: a cron/CI launcher — and a developer
+        # running this suite from a terminal — must both leave it no
+        # controlling terminal, or the refusal under test would be a picker.
+        result = subprocess.run(
+            ['zsh', '-fc', 'source "$1"\n' + command, 'test', str(CCMORPH)],
+            env=env, stdin=subprocess.DEVNULL, capture_output=True, text=True,
+            timeout=HANG_TIMEOUT, start_new_session=True)
+        self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertNotIn('SELECTED=', result.stderr, result.stderr)  # the adapter never started
+        self.assertNotIn('Starting adapter', result.stderr, result.stderr)
+        # The existing guidance, named in full: why, and both commands.
+        self.assertIn('demo has no saved model', result.stderr, result.stderr)
+        self.assertIn('list them: ccmorph models demo', result.stderr, result.stderr)
+        self.assertIn('save one: ccmorph set demo model <model-id>', result.stderr, result.stderr)
+        # The launches that never owed this pick are unchanged: an argv that
+        # carries what claude is to do (the stable `_ccm_launch -a` entry),
+        # and one the person made interactive on purpose — #725 words its own
+        # no-terminal refusal, not the no-saved-model one.
+        for args in ('--print hello', 'hello', '--', '-- hello'):
+            with self.subTest(args=args):
+                result = subprocess.run(
+                    ['zsh', '-fc', 'source "$1"\n' + command + ' ' + args, 'test', str(CCMORPH)],
+                    env=env, stdin=subprocess.DEVNULL, capture_output=True, text=True,
+                    timeout=HANG_TIMEOUT, start_new_session=True)
+                self.assertIn('SELECTED=<>', result.stderr, result.stderr)
+                self.assertNotIn('has no saved model', result.stderr, result.stderr)
+        result = subprocess.run(
+            ['zsh', '-fc', 'source "$1"\n' + command + ' -i', 'test', str(CCMORPH)],
+            env=env, stdin=subprocess.DEVNULL, capture_output=True, text=True,
+            timeout=HANG_TIMEOUT, start_new_session=True)
+        self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertNotIn('has no saved model', result.stderr, result.stderr)
+        self.assertIn('needs a terminal', result.stderr, result.stderr)
+        # The stable `_ccm_launch -a` entry other tools call keeps its launch:
+        # the refusal belongs to `ccmorph run`'s own first pass (#969).
+        result = subprocess.run(
+            ['zsh', '-fc', 'source "$1"\n' + ADAPTER_BOUNDARY + '_ccm_launch -a demo', 'test', str(CCMORPH)],
+            env=env, stdin=subprocess.DEVNULL, capture_output=True, text=True,
+            timeout=HANG_TIMEOUT, start_new_session=True)
+        self.assertIn('SELECTED=<>', result.stderr, result.stderr)
+        self.assertNotIn('has no saved model', result.stderr, result.stderr)
+
+    def test_an_immediate_claude_failure_names_the_hook_not_its_source_issue_969(self):
+        """GH-969: when Claude Code cancels a SessionEnd hook, the line it
+        prints carries that hook's command. The command used to be the whole
+        shell body, so a launch that died at once showed the person its script;
+        it is one call of `hooks/session-end.sh` now, and the line names the
+        script. The exempt launch still reaches claude with its own argv."""
+        env = self.env(fzf=True)
+        self.profile()
+        (self.state / 'profiles/demo/settings.json').write_text('{}')
+        self.claude_stub(CLAUDE_CANCELS_ITS_HOOKS)
+        result = subprocess.run(
+            ['zsh', '-fc', 'source "$1"\n' + NATIVE_BOUNDARY + 'ccmorph run demo --model picker-alpha hello',
+             'test', str(CCMORPH)],
+            env=env, stdin=subprocess.DEVNULL, capture_output=True, text=True,
+            timeout=HANG_TIMEOUT, start_new_session=True)
+        self.assertEqual((self.tmp / 'home/adapter-model').read_text().strip(), 'picker-alpha', result.stderr)  # the adapter was asked for the model given
+        self.assertIn('SessionEnd hook [', result.stderr, result.stderr)
+        self.assertIn('session-end.sh', result.stderr, result.stderr)
+        for source in ('mktemp', 'CLAUDE_CODE_SESSION_ATTENDED', 'link "$t"'):
+            self.assertNotIn(source, result.stderr, result.stderr)
+        self.assertIn('--model picker-alpha hello', (self.tmp / 'home/claude-args').read_text(),
+                      result.stderr)
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
 
     def test_models_names_a_rejected_key_and_keeps_the_network_for_silence(self):
         self.profile()

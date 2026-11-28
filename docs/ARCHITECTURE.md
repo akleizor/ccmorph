@@ -347,6 +347,9 @@ that session's conversation is, in `ccmorph-session-end.<claude pid>.json`. When
 that transcript holds no conversation — the session was closed before its first
 message, or was a resume of an id Claude Code could not find — no line prints,
 since the command could only fail with "No conversation found" (#359).
+The hook's command is one call of `hooks/session-end.sh`, so the line Claude
+Code prints when it cancels or fails the hook names the script, never its
+source (#969).
 
 ### Interactive selection is one flag, resolved per verb
 

@@ -425,6 +425,7 @@ func (l *launcher) runVerb(args []string) int {
 	env := append(l.handoff(), "_CCMORPH_LAUNCHER_PID="+strconv.Itoa(l.launcherPID),
 		"_CCMORPH_NOTICE="+l.notice, "_CCMORPH_LAUNCH_PROFILE="+account, "_CCMORPH_NATIVE_ARGS=1",
 		"_CCMORPH_INTERACTIVE="+map[bool]string{true: "1", false: "0"}[interactive],
+		"_CCMORPH_RUN_SEPARATOR="+map[bool]string{true: "1", false: "0"}[hadSeparator],
 		"CCMORPH_SUBCOMMAND_LAUNCH="+sub)
 	core := filepath.Join(l.libexec, "ccmorph-core")
 	base := os.Environ()

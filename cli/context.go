@@ -13,6 +13,8 @@ import (
 	"runtime"
 	"slices"
 	"strings"
+	"syscall"
+	"time"
 )
 
 var goos = runtime.GOOS
@@ -420,6 +422,27 @@ func (l *launcher) probeNudge(name string) {
 	}
 	f.Close()
 }
+
+// cancelProbes asks every sizing probe the pass started to stop: a pass whose
+// session failed has nothing left for the sizing to serve, and the probe's own
+// signal handling keeps what it had already saved. A probe that has not left
+// within probeGrace is killed, so the join below it is bounded (#969).
+func (l *launcher) cancelProbes() {
+	l.mu.Lock()
+	probes := append([]*exec.Cmd(nil), l.probes...)
+	l.mu.Unlock()
+	for _, cmd := range probes {
+		if cmd.Process == nil {
+			continue
+		}
+		_ = cmd.Process.Signal(syscall.SIGTERM)
+		proc := cmd.Process
+		time.AfterFunc(probeGrace, func() { _ = proc.Kill() })
+	}
+}
+
+// probeGrace is how long a cancelled sizing probe has to leave on its own.
+const probeGrace = 2 * time.Second
 
 // awaitProbes joins every sizing probe the pass started, so nothing it spawned
 // outlives it: a launch pass leaves no process of its own behind. The probe's
