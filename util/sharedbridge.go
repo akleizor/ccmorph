@@ -129,7 +129,7 @@ func AcquireBridge(root, name string, start func() (pid, port, key, tmp string, 
 		// A bridge nobody recorded must not outlive the launch: the next launch
 		// would find no handle and start a second on the same auth dir.
 		n, _ := strconv.Atoi(pid)
-		BridgeStop(n, tmp, filepath.Join(root, name))
+		bridgeStop(n, tmp, filepath.Join(root, name))
 		os.Remove(base)
 		users.Close()
 		return nil, false, fmt.Errorf("could not record the bridge for '%s' in %s (%v); stopped it, so no second bridge shares its login", name, base, werr)
@@ -283,7 +283,7 @@ func stopIfOurs(pid, tmp string) {
 	}
 	yours, known := owns(n, tmp)
 	if yours {
-		BridgeStop(n, tmp, "")
+		bridgeStop(n, tmp, "")
 	} else if known {
 		if _, err := os.Stat(tmp); err == nil && strings.Contains(filepath.Base(tmp), "ccmorph-bridge-") {
 			os.RemoveAll(tmp)
@@ -330,7 +330,7 @@ func (b *SharedBridge) Release(authDir string) {
 			if !yours {
 				pid = 0 // a bridge that died left its PID to whatever the system started next
 			}
-			BridgeStop(pid, b.TmpDir, authDir)
+			bridgeStop(pid, b.TmpDir, authDir)
 			// The record goes only while it names this bridge. Once rm has taken
 			// this bridge's files, a fresh launch may have made new ones and
 			// recorded its own bridge at the same path; removing that record
@@ -358,7 +358,7 @@ func RetireRoute(authDir, pid, tmp, holder string) {
 	if authDir == "" { // a handle without an auth directory names no bridge files
 		EndRouteHold(holder, "")
 		if n, ok := retirable(pid, tmp); ok {
-			BridgeStop(n, tmp, "")
+			bridgeStop(n, tmp, "")
 		}
 		return
 	}
@@ -386,7 +386,7 @@ func RetireRoute(authDir, pid, tmp, holder string) {
 	if !ok {
 		return
 	}
-	BridgeStop(n, tmp, authDir)
+	bridgeStop(n, tmp, authDir)
 	os.Remove(files[0])
 }
 

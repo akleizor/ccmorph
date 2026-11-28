@@ -75,7 +75,7 @@ func bridgeStart(args []string, _ io.Reader, out, errw io.Writer) int {
 	logf.Close()
 	died := make(chan struct{})
 	go func() { _ = cmd.Wait(); close(died) }()
-	stop := func() { BridgeStop(cmd.Process.Pid, tmp, authDir) }
+	stop := func() { bridgeStop(cmd.Process.Pid, tmp, authDir) }
 
 	// A bound port is not a ready router: it listens before its model catalogue
 	// loads, and a fresh login (antigravity) answers 200 with no models while it
@@ -125,10 +125,10 @@ func listsModel(port, key string) bool {
 	return verdict == ctxwindow.ListingServed
 }
 
-// BridgeStop sends the bridge TERM, then KILL after 5s, then re-tightens the OAuth
+// bridgeStop sends the bridge TERM, then KILL after 5s, then re-tightens the OAuth
 // files cliproxyapi rewrote at its own umask (observed 0644) in authDir to the 0600
 // SECURITY.md promises, and removes the rendered config dir tmpDir.
-func BridgeStop(pid int, tmpDir, authDir string) {
+func bridgeStop(pid int, tmpDir, authDir string) {
 	if pid > 0 {
 		_ = syscall.Kill(pid, syscall.SIGTERM)
 		if !waitGone(pid, 5*time.Second) {

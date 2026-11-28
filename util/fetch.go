@@ -32,24 +32,17 @@ func listingArgs(base string, bounds ...string) []string {
 	return append(args, ctxwindow.APIURL(base, "/v1/models?limit=1000"))
 }
 
-// ModelsListing is the listing `ccmorph models` and model-known read: no
+// modelsListing is the listing `ccmorph models` and model-known read: no
 // anthropic-version (proxies disguise non-Claude ids when they see it). curl's
 // complaint goes to errw.
-func ModelsListing(base, key string, errw io.Writer) (body string, ok bool) {
+func modelsListing(base, key string, errw io.Writer) (body string, ok bool) {
 	return fetchModels(key, errw, listingArgs(base, "--max-time", "20")...)
 }
 
-// ModelsAnswer is ModelsListing for a person: curl's complaint is read, never
-// printed, and status is the HTTP status the endpoint refused the request with,
-// 0 when nothing answered.
-func ModelsAnswer(base, key string) (body string, status int, ok bool) {
-	body, status, _, ok = modelsAnswer(base, key, false)
-	return body, status, ok
-}
-
-// ModelsAnswerWhy is ModelsAnswer with why: when nothing answered (status 0
-// and not ok), the cause in plain words, "" when WhyUnreachable cannot name it
-// (#260).
+// ModelsAnswerWhy is modelsListing for a person: curl's complaint is read,
+// never printed; status is the HTTP status the endpoint refused the request
+// with, 0 when nothing answered; and why, when nothing answered, is the cause
+// in plain words, "" when WhyUnreachable cannot name it (#260).
 func ModelsAnswerWhy(base, key string) (body string, status int, why string, ok bool) {
 	return modelsAnswer(base, key, true)
 }
@@ -303,7 +296,7 @@ type listingFetch func(base, key string) (body string, ok bool)
 // modelsListingFetch is the full listing `ccmorph models` reads, with its 20 s
 // whole-transfer bound.
 func modelsListingFetch(base, key string) (string, bool) {
-	return ModelsListing(base, key, io.Discard)
+	return modelsListing(base, key, io.Discard)
 }
 
 // boundedListingFetch asks the listing the models verb reads — the one curl

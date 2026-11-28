@@ -149,6 +149,12 @@ CONSOLIDATED = {
     "lockWithin": "paths.FlockWithin",
     "sameLockInode": "paths.LockNamesPath",
     "lockNamesFile": "paths.LockNamesPath",
+    # Forwarders that only renamed the call: the exported name is the
+    # implementation now (Deep Modules: no pure pass-through layer).
+    "globQuote": "paths.GlobQuote",
+    "findHopTarget": "util.HopTarget",
+    "findSessionAdapter": "util.SessionAdapter",
+    "procStartToken": "util.ProcStartToken",
 }
 # #422's predicates, and #520's strays beside them: the unexported spelling a
 # new copy would take, mapped to the exported definition that replaced it.

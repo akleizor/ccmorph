@@ -56,7 +56,7 @@ func TestGCReapsWhatAKilledLaunchLeaves(t *testing.T) {
 	// started (#218): a process that is not the holder stands in for the dead
 	// claude's mark.
 	mark := func(pid int) string {
-		s, ok := procStartToken(pid)
+		s, ok := ProcStartToken(pid)
 		if !ok {
 			t.Fatalf("no start mark for pid %d", pid)
 		}

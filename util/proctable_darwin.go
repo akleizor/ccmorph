@@ -174,12 +174,15 @@ var kinfoLayoutOK = sync.OnceValue(func() bool {
 	return !s.IsZero() && !s.After(time.Now())
 })
 
-// procStartToken is the kernel's own mark of when pid started: p_starttime as
+// ProcStartToken is the kernel's own mark of when pid started: p_starttime as
 // seconds.microseconds, from kern.proc.pid. The kernel stores it at fork and no
 // wall-clock step moves it, so the same mark read twice is the same process.
 // False when the pid is gone, or when this kernel's kinfo_proc is not the
 // layout these offsets describe (kinfoLayoutOK).
-func procStartToken(pid int) (string, bool) {
+// Exported for a caller that keeps a process's identity in a record (#926:
+// the rc-hosts supervisor stamps its pid and start into hosted.json), which
+// must treat false as "not this process", never as a match.
+func ProcStartToken(pid int) (string, bool) {
 	if !kinfoLayoutOK() {
 		return "", false
 	}

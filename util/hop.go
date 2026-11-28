@@ -138,9 +138,7 @@ func ProcessTable() ProcTable { return processTable() }
 // shells between are the relay's forwarding subshells and the one Claude Code runs
 // the command in). 0 when there is none. t is the read the command already made
 // for its first question.
-func HopTarget(t ProcTable, relay, pid int) int { return findHopTarget(t, relay, pid) }
-
-func findHopTarget(t map[int]psRow, relay, pid int) int {
+func HopTarget(t ProcTable, relay, pid int) int {
 	var chain []int
 	for n := 0; pid > 1 && n < 32; n++ {
 		r, ok := t[pid]
@@ -199,7 +197,8 @@ func sessionHoldProfile(pid int) string {
 	return adapterProfileFromUsers(users)
 }
 
-// findSessionAdapter is the profile of the adapter <launcher> started. A session
+// SessionAdapter is the profile of the adapter <launcher> started, read from
+// its argv in t; "" when there is none. A session
 // keeps one adapter alive across passes, but `util adapter-start` exits once it is
 // ready, so the adapter is reparented and its --parent-pid argument names the
 // launcher where its ppid no longer can. The pid must match whole, so 10 is never
@@ -211,7 +210,7 @@ func sessionHoldProfile(pid int) string {
 // Both are read in one pass over the pids ascending, the order ps prints, so the
 // answer does not depend on map iteration; an adapter in argv wins over a hold,
 // as it did before shared adapters existed.
-func findSessionAdapter(t map[int]psRow, launcher int) string {
+func SessionAdapter(t ProcTable, launcher int) string {
 	parent := regexp.MustCompile(`(?:^|\s)--parent-pid[= ]` + strconv.Itoa(launcher) + `(?:\s|$)`)
 	hold := ""
 	for _, pid := range sortedPids(t) {
@@ -227,10 +226,6 @@ func findSessionAdapter(t map[int]psRow, launcher int) string {
 	}
 	return hold
 }
-
-// SessionAdapter is the profile of the adapter the launcher pid started, read
-// from its argv in t; "" when there is none.
-func SessionAdapter(t ProcTable, launcher int) string { return findSessionAdapter(t, launcher) }
 
 // adapterProfile is the profile an adapter's argv names: the core runs
 // `ccmorph-core adapter <profile>`, the older build `ccmorph-adapter <profile>`,

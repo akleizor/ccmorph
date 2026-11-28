@@ -206,7 +206,7 @@ func (l *launcher) removeProfileDir(name string) bool {
 		// #185: a state or home path holding a glob metacharacter made the
 		// pattern malformed; the dropped error skipped the rescue and the
 		// RemoveAll below deleted the parked transcripts.
-		hits, err := filepath.Glob(filepath.Join(globQuote(p), pat))
+		hits, err := filepath.Glob(filepath.Join(paths.GlobQuote(p), pat))
 		if err != nil {
 			l.err("kept '" + name + "': could not look for its parked transcripts: " + err.Error())
 			return false

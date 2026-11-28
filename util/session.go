@@ -32,7 +32,7 @@ var privateSkip = []string{"projects", "sessions", "session-env", "file-history"
 const privateOwner = "ccmorph-owner"
 
 // privateOwnerStart sits beside privateOwner: the kernel's mark of when that
-// claude started (procStartToken), so the sweep knows the claude from a later
+// claude started (ProcStartToken), so the sweep knows the claude from a later
 // process that took its number without reading any clock (#218).
 const privateOwnerStart = "ccmorph-owner-start"
 
@@ -273,7 +273,7 @@ func privateSession(bin string, args []string, runDir string, say func(), errw i
 	// The mark lands before the record, so any record a sweep sees from this
 	// build has its mark; a mark that cannot be read leaves the record alone,
 	// which the sweep keeps while the pid lives (#218).
-	if mark, ok := procStartToken(cmd.Process.Pid); ok {
+	if mark, ok := ProcStartToken(cmd.Process.Pid); ok {
 		_ = os.WriteFile(filepath.Join(tmp, privateOwnerStart), []byte(mark), 0o600)
 	}
 	_ = os.WriteFile(filepath.Join(tmp, privateOwner), []byte(strconv.Itoa(cmd.Process.Pid)), 0o600)

@@ -173,7 +173,7 @@ func GCStale(state, profiles, tmp string) {
 		}
 		if syscall.Kill(pid, 0) == nil {
 			want, merr := os.ReadFile(filepath.Join(d, privateOwnerStart))
-			cur, ok := procStartToken(pid)
+			cur, ok := ProcStartToken(pid)
 			if merr != nil || strings.TrimSpace(string(want)) == "" || !ok || cur == strings.TrimSpace(string(want)) {
 				continue // the claude that runs from it lives, or cannot-tell
 			}
