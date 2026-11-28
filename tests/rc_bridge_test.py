@@ -15,7 +15,7 @@ from pathlib import Path
 
 import pytest
 
-from support import HANG_TIMEOUT, _ScriptedTime, load_script, proxy_took, wait_until
+from support import HANG_TIMEOUT, SPAWN_TEST_BUDGET, _ScriptedTime, load_script, proxy_took, wait_until
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "addons" / "remote-control"))
 
@@ -841,11 +841,11 @@ def test_a_start_removes_what_a_killed_launcher_left_and_keeps_live_ones(tmp_pat
     assert live.exists()
 
 
-# GH-932: each row is one HANG_TIMEOUT (120 s) Python child whose import, proxy
+# GH-932: each row is one HANG_TIMEOUT Python child whose import, proxy
 # spawn and SIGTERM teardown all run under the gate's scheduler; the night gate
 # struck the [sigterm-handle-with-no-stop-api] row, where that child was the
 # whole test. Per-test headroom for every row; the ceiling stays 60 s.
-@pytest.mark.timeout(300)
+@pytest.mark.timeout(SPAWN_TEST_BUDGET)
 @pytest.mark.parametrize("spawn_mode", ["child", "object"], ids=["spawned-child", "handle-with-no-stop-api"])
 @pytest.mark.parametrize("sig,expected", [
     (signal.SIGTERM, str(128 + signal.SIGTERM)),

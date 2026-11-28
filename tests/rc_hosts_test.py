@@ -9,7 +9,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from support import (HANG_TIMEOUT, _ScriptedTime, load_script, needs_loopback,
+from support import (HANG_TIMEOUT, SPAWN_TEST_BUDGET, _ScriptedTime, load_script, needs_loopback,
                      port_outside_the_ephemeral_pool, proxy_took)
 
 SCRIPT = Path(__file__).resolve().parent.parent / "addons" / "remote-control" / "ccmorph-rc-hosts"
@@ -2741,7 +2741,7 @@ def test_a_config_flag_without_a_path_is_a_usage_error_not_a_crash(capsys):
 # gate a single child start can occupy most of the one-minute ceiling (the
 # 2026-11-25 night gate struck this test inside `Popen._execute_child`). The
 # marker is its per-test headroom; the ceiling stays 60 s everywhere else.
-@pytest.mark.timeout(300)
+@pytest.mark.timeout(SPAWN_TEST_BUDGET)
 def test_an_archived_sessions_worktree_is_removed_after_the_limit_unless_it_holds_work(tmp_path, monkeypatch):
     import json
     import subprocess

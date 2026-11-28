@@ -8,13 +8,24 @@ zsh suite, and sleeps each pass holds a fixed wall-clock budget a loaded host
 can exceed. Every such wait reads `support.HANG_TIMEOUT` instead, and so does
 every test file that spawns a process; the zsh suites' embedded python obeys
 the same rule through PYTHONPATH, and these checks hold that line.
+
+GH-976 adds the other half: the 60 s ceiling is a verdict about the host, so a
+test that really starts a child has its own timer extended to HANG_TIMEOUT +
+SPAWN_SLACK at that first spawn (conftest.py), and an explicit marker below
+that budget is a teardown verdict rather than a grant. The timer moves before
+the call that can create the child, and a rejected call puts back what was
+left. The probe below runs the
+real conftest in an inner pytest and proves both directions, and the literal-
+marker scan keeps a stale number from coming back.
 """
 import ast
 import datetime as dt
 import fcntl
+import importlib.util
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import textwrap
@@ -22,9 +33,17 @@ from pathlib import Path
 
 import pytest
 
-from support import CORE, HANG_TIMEOUT, store_month_first
+from support import CORE, HANG_TIMEOUT, SPAWN_SLACK, SPAWN_TEST_BUDGET, store_month_first
 
 TESTS = Path(__file__).resolve().parent
+
+# GH-976: this file parses every test file on each check and starts nothing, so
+# the grant below (which extends a test's timer at its first real spawn) cannot
+# reach it — and the night gate starved exactly
+# `test_no_literal_process_bound_in_the_suite`, the guard that enforces the
+# bound rule, past the 60 s ceiling. The meta-guard carries the same budget it
+# enforces on every other test as a file-level marker.
+pytestmark = pytest.mark.timeout(SPAWN_TEST_BUDGET)
 
 # Calls whose `timeout=` waits on a real process, or on a socket served by one.
 # Thread waits (Barrier, join) and values handed to production code are
@@ -402,6 +421,56 @@ def test_no_python_file_in_tests_pins_a_reach_verdicts_measured_second():
         + "\n".join(reach))
 
 
+def literal_timeout_markers(tree):
+    """Line numbers of `pytest.mark.timeout(<number>)` calls in `tree`.
+
+    A per-test budget spelled as a number is a stale copy of the bound chain: a
+    test that really starts a child would be held to a literal the grant cannot
+    move with HANG_TIMEOUT (#976). The pseudo-code inside a string (the probe
+    sources here) is not a call and is not read."""
+    markers = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        if _names(node.func)[-2:] != ("mark", "timeout"):
+            continue
+        values = list(node.args) + [k.value for k in node.keywords if k.arg == "timeout"]
+        if any(_is_number(value) for value in values):
+            markers.append(node.lineno)
+    return markers
+
+
+def test_no_literal_timeout_marker_in_the_suite():
+    """The grant and every explicit marker read one derived budget; a numeric
+    literal is how #932's stale 300 would come back, and how a test that really
+    starts a child would keep an unreachable ceiling."""
+    _assert_every_suite_file_parses()
+    offenders = []
+    for path in sorted(TESTS.glob("*.py")):
+        try:
+            tree = ast.parse(path.read_text())
+        except SyntaxError as exc:
+            offenders.append(f"{path.name}: does not parse: {exc}")
+            continue
+        offenders += [f"{path.name}:{line}" for line in literal_timeout_markers(tree)]
+    assert not offenders, (
+        "a pytest timeout marker is spelled as a number; use "
+        "@pytest.mark.timeout(SPAWN_TEST_BUDGET) so the one HANG_TIMEOUT knob "
+        "moves it:\n" + "\n".join(offenders))
+
+
+def test_the_marker_scan_reads_the_ast():
+    def flagged(source):
+        return literal_timeout_markers(ast.parse(textwrap.dedent(source).lstrip("\n")))
+
+    assert flagged("@pytest.mark.timeout(300)\ndef test_x():\n    pass\n") == [1]
+    assert flagged("@pytest.mark.timeout(timeout=300)\ndef test_x():\n    pass\n") == [1]
+    assert flagged("@pytest.mark.timeout(SPAWN_TEST_BUDGET)\ndef test_x():\n    pass\n") == []
+    assert flagged("@pytest.mark.timeout(HANG_TIMEOUT + 60)\ndef test_x():\n    pass\n") == []
+    # The probe's own pseudo-code is data, not a call.
+    assert flagged('SOURCE = "pytest.mark.timeout(300)"\n') == []
+
+
 # The zsh suites carry python inline, so the same rule is matched per line: a
 # spawn form bounded by a literal, a wall-clock deadline the suite picked
 # itself, and embedded python that starts a real process without reading the
@@ -671,18 +740,424 @@ def test_the_ast_deadline_check_names_every_clock():
 
 
 def test_hang_bound_reads_its_environment_override():
+    """One knob: the child's bound and the per-test budget move together (#976).
+    Raising the override for a slower host raises both; nothing holds a stale
+    literal the child can die under.
+
+    The child's text is compared as printed, not through float(): an integer-only
+    parser prints `7` where the suite's bound is `7.0`, and that mutation has to
+    keep failing here (it did on main)."""
     def read_bound(override):
         env = {k: v for k, v in os.environ.items() if k != "CCMORPH_TEST_HANG_TIMEOUT"}
         if override is not None:
             env["CCMORPH_TEST_HANG_TIMEOUT"] = override
-        result = subprocess.run([sys.executable, "-c", "import support; print(support.HANG_TIMEOUT)"],
-                                cwd=TESTS, env=env, capture_output=True, text=True,
-                                timeout=HANG_TIMEOUT)
+        result = subprocess.run(
+            [sys.executable, "-c",
+             "import support; print(support.HANG_TIMEOUT, support.SPAWN_TEST_BUDGET)"],
+            cwd=TESTS, env=env, capture_output=True, text=True, timeout=HANG_TIMEOUT)
         assert result.returncode == 0, result.stderr
         return result.stdout.strip()
 
-    assert read_bound("7") == "7.0"
-    assert read_bound(None) == "120.0"
+    assert read_bound("7") == f"7.0 {7.0 + SPAWN_SLACK}"
+    assert read_bound(None) == f"240.0 {240.0 + SPAWN_SLACK}"
+
+
+# The probe is the witness for the spawn grant (#976): it runs under a
+# PROBE_CEILING ini ceiling, so a test that starts a process and is not granted
+# fails its own `armed() > BUDGET - 30` assertion while a test that starts
+# nothing keeps passing at the ceiling. `armed()` reads whichever timer pytest-timeout armed: the
+# threading.Timer under the worker method, the ITIMER_REAL under signal.
+# The inner session's ini ceiling: large enough that a starved no-spawn row is
+# not killed by it, and small enough that the override-7 row still tells it from
+# the budget (20 < 67 - 30).
+PROBE_CEILING = 20
+
+PROBE_TEST = '''\
+import os, signal, subprocess, sys, threading, time, unittest
+import pytest
+
+BUDGET = float(os.environ["PROBE_BUDGET"])
+CEILING = float(os.environ["PROBE_CEILING"])
+
+
+def armed():
+    timers = [t.interval for t in threading.enumerate()
+              if isinstance(t, threading.Timer) and t.name.startswith("pytest_timeout")]
+    return timers[0] if timers else signal.getitimer(signal.ITIMER_REAL)[0]
+
+
+def test_control_no_spawn_keeps_the_ini_ceiling():
+    assert armed() <= CEILING
+
+
+def test_run_extends():
+    subprocess.run([sys.executable, "-c", "pass"], check=True)
+    assert armed() > BUDGET - 30
+
+
+def test_os_system_extends():
+    os.system("true")
+    assert armed() > BUDGET - 30
+
+
+def test_thread_spawn_extends():
+    t = threading.Thread(target=lambda: subprocess.run(["true"]))
+    t.start()
+    t.join()
+    assert armed() > BUDGET - 30
+
+
+def test_delegating_wrapper_extends(monkeypatch):
+    real = subprocess.Popen
+    monkeypatch.setattr(subprocess, "Popen", lambda *a, **k: real(*a, **k))
+    subprocess.run(["true"])
+    assert armed() > BUDGET - 30
+
+
+def test_stub_that_never_spawns_keeps_the_ceiling(monkeypatch):
+    monkeypatch.setattr(subprocess, "Popen", lambda *a, **k: None)
+    subprocess.Popen(["x"])
+    assert armed() <= CEILING
+
+
+def test_a_rejected_popen_call_is_not_a_spawn():
+    with pytest.raises(TypeError, match="bufsize must be an integer"):
+        subprocess.Popen(["/bin/true"], bufsize="invalid")
+    assert armed() <= CEILING
+
+
+@pytest.mark.timeout(5)
+def test_marker_below_the_budget_on_a_rejected_call_is_left_alone():
+    with pytest.raises(TypeError, match="bufsize must be an integer"):
+        subprocess.Popen(["/bin/true"], bufsize="invalid")
+    assert armed() <= 5.0
+
+
+@pytest.mark.timeout(BUDGET)
+def test_marker_at_the_budget_passes():
+    subprocess.run(["true"])
+    assert armed() >= BUDGET - 30
+
+
+@pytest.mark.timeout(5)
+def test_marker_below_the_budget_that_spawns_fails():
+    subprocess.run(["true"])
+
+
+@pytest.mark.timeout(5)
+def test_marker_below_the_budget_without_a_spawn_is_left_alone():
+    assert armed() <= 5.0
+
+
+class Held(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        subprocess.run(["true"])
+
+    def test_a(self):
+        assert armed() > BUDGET - 30
+
+    def test_b(self):
+        assert armed() > BUDGET - 30
+
+
+class Plain(unittest.TestCase):
+    def test_c(self):
+        assert armed() <= CEILING
+
+
+@pytest.fixture(scope="module")
+def held():
+    p = subprocess.Popen(["sleep", "30"])
+    yield p
+    p.kill()
+    p.wait()
+
+
+def test_m1(held):
+    assert armed() > BUDGET - 30
+
+
+def test_m2(held):
+    assert armed() > BUDGET - 30
+
+
+def test_m_unrelated_keeps_the_ceiling():
+    assert armed() <= CEILING
+
+
+def _touch(path):
+    os.close(os.open(path, os.O_CREAT | os.O_WRONLY))
+
+
+def _preexec(path):
+    def child():  # the child is already running while Popen waits for its exec
+        _touch(path)
+        time.sleep(0.4)
+    return child
+
+
+def _fork_form(path):
+    pid = os.fork()
+    if pid == 0:
+        _touch(path)
+        time.sleep(0.6)
+        os._exit(0)
+    os.waitpid(pid, 0)
+
+
+def _sh(path):
+    return f"touch {path}; sleep 0.6"
+
+
+STARTS = {
+    "popen_preexec": lambda path: subprocess.Popen(["true"], preexec_fn=_preexec(path)).wait(),
+    "run": lambda path: subprocess.run(["sh", "-c", _sh(path)]),
+    # these two block until the child ends
+    "os_system": lambda path: os.system(_sh(path)),
+    "spawnv_wait": lambda path: os.spawnv(os.P_WAIT, "/bin/sh", ["sh", "-c", _sh(path)]),
+    "posix_spawn": lambda path: os.waitpid(
+        os.posix_spawn("/bin/sh", ["sh", "-c", _sh(path)], os.environ), 0),
+    "fork": _fork_form,
+}
+
+
+@pytest.mark.parametrize("form", sorted(STARTS))
+def test_the_budget_is_armed_while_the_child_runs(form, tmp_path):
+    """What is armed is read from a thread the moment the child reports that it
+    is running, so a grant that waits for the start call to return reads the
+    ceiling here."""
+    path, seen = str(tmp_path / "running"), []
+
+    def sample():
+        end = time.monotonic() + 60
+        while not os.path.exists(path) and time.monotonic() < end:
+            time.sleep(0.005)
+        if os.path.exists(path):
+            seen.append(armed())
+
+    sampler = threading.Thread(target=sample)
+    sampler.start()
+    try:
+        STARTS[form](path)
+    finally:
+        sampler.join()
+    assert seen and seen[0] > BUDGET - 30, seen
+
+
+# name -> (the rejected call, does it get as far as the wrapper?). Popen's own
+# argument check (bufsize) runs in __init__, before _execute_child, so that call
+# never moves the timer; the others are moved and then put back.
+REJECTED = {
+    "popen_bufsize": (lambda: subprocess.Popen(["/bin/true"], bufsize="invalid"), False),
+    "popen_nul_byte": (lambda: subprocess.Popen(["/bin/true", "a" + chr(0) + "b"]), True),
+    "os_system_none": (lambda: os.system(None), True),
+    "spawnv_not_a_list": (lambda: os.spawnv(os.P_WAIT, "/bin/true", "x"), True),
+}
+
+
+@pytest.mark.parametrize("form", sorted(REJECTED))
+def test_a_rejected_call_puts_the_deadline_back_as_it_was(form):
+    call, moved = REJECTED[form]
+    time.sleep(0.3)
+    with pytest.raises((TypeError, ValueError)):
+        call()
+    # Signal method: armed() is what is left, so refunding the whole ceiling shows.
+    # Thread method: it is the Timer's duration, which an untouched timer keeps
+    # (CEILING) and a put-back one has shortened by what was spent.
+    threaded = any(isinstance(t, threading.Timer) and t.name.startswith("pytest_timeout")
+                   for t in threading.enumerate())
+    limit = CEILING if (threaded and not moved) else CEILING - 0.25
+    assert armed() <= limit, (armed(), limit)
+
+
+def test_a_real_start_after_a_rejected_call_still_extends():
+    with pytest.raises(TypeError):
+        os.system(None)
+    subprocess.run(["true"])
+    assert armed() > BUDGET - 30
+
+
+@pytest.mark.timeout(5)
+def test_marker_below_the_budget_on_a_call_rejected_after_the_wrapper_is_left_alone():
+    with pytest.raises(TypeError):
+        os.system(None)
+
+
+@pytest.mark.timeout(5)
+def test_a_marked_test_keeps_the_verdict_when_a_child_ran_and_popen_raised(tmp_path):
+    path = str(tmp_path / "ran")
+
+    def child():
+        _touch(path)
+        raise ValueError("child setup failed")
+
+    with pytest.raises(subprocess.SubprocessError):
+        subprocess.Popen(["true"], preexec_fn=child)
+    assert os.path.exists(path)
+'''
+
+
+def run_probe(tmp_path, mode, override=None, grant=True):
+    """Run `PROBE_TEST` in an inner pytest with this suite's conftest (or none),
+    and answer ({nodeid: {outcome}}, output)."""
+    if grant:
+        for name in ("conftest.py", "support.py"):
+            shutil.copy(TESTS / name, tmp_path / name)
+        (tmp_path / "proc_pressure_test.py").write_text(PROBE_PROC_PRESSURE)
+    else:
+        (tmp_path / "conftest.py").write_text("# no spawn grant\n")
+    (tmp_path / "pytest.ini").write_text(f"[pytest]\ntimeout = {PROBE_CEILING}\n")
+    (tmp_path / "probe_test.py").write_text(PROBE_TEST)
+    # The inner session reads the same knob the outer one did: CI installs no
+    # xdist, so the serial row drops -n0 there instead of failing to start.
+    inner_hang = float(override) if override is not None else HANG_TIMEOUT
+    budget = inner_hang + SPAWN_SLACK
+    env = {k: v for k, v in os.environ.items() if not k.startswith("PYTEST_")}
+    env["PROBE_BUDGET"] = str(budget)
+    env["PROBE_CEILING"] = str(PROBE_CEILING)
+    env["CCMORPH_TEST_HANG_TIMEOUT"] = str(inner_hang)
+    mode_args = ["-n1"] if mode == "-n1" else (
+        ["-n0"] if importlib.util.find_spec("xdist") is not None else [])
+    proc = subprocess.run(
+        [sys.executable, "-m", "pytest", *mode_args, "-p", "no:cacheprovider", "-rA",
+         "probe_test.py"],
+        cwd=tmp_path, env=env, capture_output=True, text=True, timeout=HANG_TIMEOUT)
+    out = proc.stdout + proc.stderr
+    outcomes = {}
+    for status, nodeid in re.findall(r"^(PASSED|FAILED|ERROR) (probe_test\.py::\S+)", out, re.M):
+        outcomes.setdefault(nodeid, set()).add(status)
+    return outcomes, out
+
+
+# The GH-919 watcher starts a process of its own at a worker's first test
+# setup; the stub makes it real, and `watch.started` proves the setup ran it.
+# The control test is first in PROBE_TEST, so it witnesses that the watcher's
+# spawn was not counted as the test's own.
+PROBE_PROC_PRESSURE = '''\
+import subprocess
+from pathlib import Path
+
+RUN_SHARE = 0.5
+
+
+def per_user_cap():
+    return (1000, "stub")
+
+
+class RunTreeWatch:
+    def __init__(self, *args):
+        pass
+
+    def start(self):
+        subprocess.run(["true"])
+        Path(__file__).with_name("watch.started").write_text("started")
+        return self
+
+    def begin(self, test):
+        pass
+
+    def end(self):
+        return None
+
+    def stop(self):
+        pass
+'''
+
+
+# The parametrized forms in PROBE_TEST (sorted, as pytest ids them).
+PROBE_START_FORMS = ("fork", "os_system", "popen_preexec", "posix_spawn", "run", "spawnv_wait")
+PROBE_REJECTED_FORMS = ("os_system_none", "popen_bufsize", "popen_nul_byte", "spawnv_not_a_list")
+
+PROBE_ALL_PASS = {
+    "probe_test.py::test_control_no_spawn_keeps_the_ini_ceiling": {"PASSED"},
+    "probe_test.py::test_run_extends": {"PASSED"},
+    "probe_test.py::test_os_system_extends": {"PASSED"},
+    "probe_test.py::test_thread_spawn_extends": {"PASSED"},
+    "probe_test.py::test_delegating_wrapper_extends": {"PASSED"},
+    "probe_test.py::test_stub_that_never_spawns_keeps_the_ceiling": {"PASSED"},
+    "probe_test.py::test_a_rejected_popen_call_is_not_a_spawn": {"PASSED"},
+    "probe_test.py::test_marker_at_the_budget_passes": {"PASSED"},
+    # The call phase passes; the teardown verdict is the ERROR. A bare PASSED
+    # would mean the at-budget row above was silently verdicted too.
+    "probe_test.py::test_marker_below_the_budget_that_spawns_fails": {"PASSED", "ERROR"},
+    "probe_test.py::test_marker_below_the_budget_on_a_rejected_call_is_left_alone": {"PASSED"},
+    "probe_test.py::test_marker_below_the_budget_without_a_spawn_is_left_alone": {"PASSED"},
+    "probe_test.py::Held::test_a": {"PASSED"},
+    "probe_test.py::Held::test_b": {"PASSED"},
+    "probe_test.py::Plain::test_c": {"PASSED"},
+    "probe_test.py::test_m1": {"PASSED"},
+    "probe_test.py::test_m2": {"PASSED"},
+    "probe_test.py::test_m_unrelated_keeps_the_ceiling": {"PASSED"},
+    "probe_test.py::test_a_real_start_after_a_rejected_call_still_extends": {"PASSED"},
+    "probe_test.py::test_marker_below_the_budget_on_a_call_rejected_after_the_wrapper_is_left_alone":
+        {"PASSED"},
+    # A child ran and Popen raised afterwards: it is a start, so the marker keeps
+    # its verdict (the call phase passes, the teardown is the ERROR).
+    "probe_test.py::test_a_marked_test_keeps_the_verdict_when_a_child_ran_and_popen_raised":
+        {"PASSED", "ERROR"},
+    **{f"probe_test.py::test_the_budget_is_armed_while_the_child_runs[{form}]": {"PASSED"}
+       for form in PROBE_START_FORMS},
+    **{f"probe_test.py::test_a_rejected_call_puts_the_deadline_back_as_it_was[{form}]": {"PASSED"}
+       for form in PROBE_REJECTED_FORMS},
+}
+
+
+def _assert_probe(outcomes, out):
+    """Every probe node and its exact outcome set: a teardown verdict leaves
+    both PASSED (the call phase) and ERROR (its verdict), so an at-budget row
+    that also collected an ERROR cannot pass silently."""
+    assert outcomes == PROBE_ALL_PASS, out
+    assert "explicit 5s timeout marker" in out, out
+    assert ("test_a_marked_test_keeps_the_verdict_when_a_child_ran_and_popen_raised starts a "
+            "process under an explicit 5s timeout marker") in out, out
+
+
+@pytest.mark.parametrize("mode", ["-n0", "-n1"])
+def test_a_test_that_really_starts_a_process_gets_the_spawn_budget(tmp_path, mode):
+    """A real start extends the test's own timer to SPAWN_TEST_BUDGET, under the
+    serial signal method and the xdist worker thread method alike; a stub, a
+    thread's start() and a test that starts nothing keep the ini ceiling; an
+    explicit marker below the budget is a verdict, not a grant."""
+    if mode == "-n1":
+        pytest.importorskip("xdist")
+    outcomes, out = run_probe(tmp_path, mode)
+    _assert_probe(outcomes, out)
+    # The watcher's own spawn ran at the first test's setup and did not grant it.
+    assert (tmp_path / "watch.started").exists(), out
+
+
+def test_the_probe_is_red_without_the_grant(tmp_path):
+    """The probe cannot pass vacuously: without this conftest's grant, every
+    node that starts a child fails its own armed() assertion and the nodes that
+    start nothing still pass at the ini ceiling."""
+    outcomes, out = run_probe(tmp_path, "-n0", grant=False)
+    for node in ("test_run_extends", "test_os_system_extends", "test_thread_spawn_extends",
+                 "test_delegating_wrapper_extends", "Held::test_a", "Held::test_b",
+                 "test_m1", "test_m2", "test_a_real_start_after_a_rejected_call_still_extends",
+                 *(f"test_the_budget_is_armed_while_the_child_runs[{form}]"
+                   for form in PROBE_START_FORMS)):
+        assert outcomes.get(f"probe_test.py::{node}") == {"FAILED"}, (node, outcomes, out)
+    for node in ("test_control_no_spawn_keeps_the_ini_ceiling",
+                 "test_stub_that_never_spawns_keeps_the_ceiling",
+                 "test_a_rejected_popen_call_is_not_a_spawn",
+                 "test_marker_below_the_budget_on_a_rejected_call_is_left_alone",
+                 "test_marker_below_the_budget_without_a_spawn_is_left_alone",
+                 "test_marker_below_the_budget_on_a_call_rejected_after_the_wrapper_is_left_alone",
+                 "test_a_marked_test_keeps_the_verdict_when_a_child_ran_and_popen_raised",
+                 *(f"test_a_rejected_call_puts_the_deadline_back_as_it_was[{form}]"
+                   for form in PROBE_REJECTED_FORMS),
+                 "Plain::test_c", "test_m_unrelated_keeps_the_ceiling"):
+        assert outcomes.get(f"probe_test.py::{node}") == {"PASSED"}, (node, outcomes, out)
+
+
+def test_the_grant_follows_the_hang_timeout_override(tmp_path):
+    """One knob: with CCMORPH_TEST_HANG_TIMEOUT=7 the inner session's budget is
+    67, and the grant and the explicit-marker verdict read it, not 300."""
+    outcomes, out = run_probe(tmp_path, "-n0", override="7")
+    _assert_probe(outcomes, out)
+    assert (tmp_path / "watch.started").exists(), out
+
 
 EXPORTER = Path(__file__).resolve().parent.parent / "share/usage-export"
 
