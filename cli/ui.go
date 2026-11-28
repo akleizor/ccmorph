@@ -126,7 +126,8 @@ func rowLabel(row string) string {
 }
 
 // namedRows is a piped menu's name half (#1029): the printed rows an answer
-// names — id or label column whole, case folded, first; failing that, the
+// names — first a whole id (the existing answer when an id and a label
+// collide), then whole labels, case folded. Failing that, it finds the
 // rows whose id or label carries the answer as part of its name, which is
 // what "type the number or part of the name" promises. The detail column
 // says why a row exists, not what it is called, so it is no name: "gateway"
@@ -141,7 +142,9 @@ func namedRows(list []string, answer string) []string {
 	for _, r := range list {
 		id, label := strings.ToLower(rowID(r)), strings.ToLower(rowLabel(r))
 		switch {
-		case id == needle || label == needle:
+		case id == needle:
+			return []string{r}
+		case label == needle:
 			exact = append(exact, r)
 		case strings.Contains(id, needle) || strings.Contains(label, needle):
 			part = append(part, r)

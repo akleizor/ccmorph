@@ -1271,13 +1271,13 @@ func TestNamedRowsAnswersTheNameTheListPrintsIssue1029(t *testing.T) {
 			}
 		})
 	}
-	// A whole name wins over the same text as part of another row's name: a
-	// row called "token" and one labelled "Claude token" answer with "token"
-	// alone, never both (#1029's "a full label that is also another row's id
-	// selects one row").
-	two := splitRows("token\tClaude token\tFor scripts/CI\nmytoken\tOther\tx")
-	if got := ids(namedRows(two, "token")); strings.Join(got, ",") != "token" {
-		t.Fatalf("a whole name must beat a part: %q", got)
+	// An existing id wins even if another row wears it as a full label or
+	// a longer label contains it, regardless of case.
+	collision := splitRows("other\tToken\nmytoken\tOther\ntoken\tClaude token")
+	for _, answer := range []string{"token", "TOKEN"} {
+		if got := ids(namedRows(collision, answer)); strings.Join(got, ",") != "token" {
+			t.Fatalf("whole id %q must select one row: %q", answer, got)
+		}
 	}
 }
 
