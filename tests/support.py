@@ -35,13 +35,35 @@ def stdin_a_terminal():
 
 
 # A hang detector, not a performance bound: the longest any test waits on a
-# spawned process, sized so only a real hang reaches it. It sits above pytest.ini's
-# 60 s per-test cap so that no site is stricter than the literal it replaced: the
-# cap reports a single hung wait first, with a thread dump, while this bound holds
-# the waits the cap cannot see — a test that polls a spawned process several times
-# over, where the cap would fire in the middle of the polling.
-# Override with CCMORPH_TEST_HANG_TIMEOUT.
-HANG_TIMEOUT = float(os.environ.get("CCMORPH_TEST_HANG_TIMEOUT", "120"))
+# spawned process, sized so (in principle) only a real hang reaches it. It sits
+# above pytest.ini's 60 s per-test cap so that no site is stricter than the
+# literal it replaced: the cap reports a single hung wait first, with a thread
+# dump, while this bound holds the waits the cap cannot see — a test that polls a
+# spawned process several times over, where the cap would fire in the middle of
+# the polling.
+#
+# GH-976: 120 s was a quiet-host number. On the night gate's own load a single
+# `bin/ccmorph run gw` child crossed it (#932's three marked adapter tests died
+# of `TimeoutExpired` while the test still had budget), and the #932 fix was only
+# as good as this bound: a marked test whose child is killed first can never
+# spend its marker. The child's bound is therefore raised to 240 s — twice the
+# observed death point — and a test that really starts a child has its own timer
+# extended to HANG_TIMEOUT + SPAWN_SLACK by conftest.py, so #932's 300 s budget
+# stays the budget while the child can now spend four fifths of it.
+#
+# One knob governs the chain: override CCMORPH_TEST_HANG_TIMEOUT and both the
+# child's bound and every derived per-test budget move with it.
+HANG_TIMEOUT = float(os.environ.get("CCMORPH_TEST_HANG_TIMEOUT", "240"))
+
+# The named slack between the child's own bound and the test's: room for the
+# fixture lifecycle, further sequential children and report construction after a
+# child hits its bound. 60 s is pytest.ini's old per-test ceiling, so the raised
+# budget is HANG_TIMEOUT + the minute a whole test used to get.
+SPAWN_SLACK = 60.0
+# The pytest per-test budget a test that really starts a child is granted:
+# conftest.py extends a test's timer to this budget when it starts a process, and
+# fails a test whose explicit marker is below it.
+SPAWN_TEST_BUDGET = HANG_TIMEOUT + SPAWN_SLACK
 
 
 def wait_until(pred, timeout, interval=0.05):
