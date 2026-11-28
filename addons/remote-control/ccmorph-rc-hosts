@@ -186,7 +186,7 @@ def is_our_edge(pid: int, route: str) -> bool:
 
 TICK = 1               # a dead host is relaunched within seconds, not minutes
 BACKOFF_MIN, BACKOFF_MAX, HEALTHY_AFTER = 2, 60, 300
-REHAND_NOT_HELD = 3   # ccmorph-rc --switch --rehand: the word has its own live edge, nothing to hand over
+REHAND_NOT_HELD = 3   # ccmorph-rc's REHAND_NOT_HELD (kept equal by tests/rc_hosts_test.py)
 GRACE_INTERRUPT = 12   # seconds for a host to deregister and exit on SIGINT
 GRACE_TERM = 5         # seconds more before SIGKILL, if the interrupt was ignored
 STOP_POLL = 0.1        # seconds between liveness probes while a stop waits for its pid
@@ -2491,20 +2491,19 @@ class Switcher:
                 if applies:
                     self.record_after(word)
                 self.failed.pop(word, None)  # the word is served again: it is no longer behind
-            elif not applies and rc == REHAND_NOT_HELD:
-                # The word has its own live edge now: nothing here to hand over. It
-                # goes behind the other words, with no backoff to hold them up.
-                self.fails += 1
-                self.failed[word] = self.fails
-                self.fail(("rehand-not-held", word), f"inference: {word} has its own edge; not re-handed here")
             else:
-                self.next_try = now + self.backoff
                 if not applies:          # a re-hand that failed goes behind the words that have not
                     self.fails += 1
                     self.failed[word] = self.fails
-                log(f"inference: {word} bring-up failed (rc={rc}); retrying in {self.backoff:g}s "
-                    f"(see {LOGS / 'switch.log'})")
-                self.backoff = min(self.backoff * 2, BACKOFF_MAX)
+                if not applies and rc == REHAND_NOT_HELD:
+                    # The word has its own live edge now: nothing here to hand over,
+                    # and no backoff to hold the other words up.
+                    self.fail(("rehand-not-held", word), f"inference: {word} has its own edge; not re-handed here")
+                else:
+                    self.next_try = now + self.backoff
+                    log(f"inference: {word} bring-up failed (rc={rc}); retrying in {self.backoff:g}s "
+                        f"(see {LOGS / 'switch.log'})")
+                    self.backoff = min(self.backoff * 2, BACKOFF_MAX)
             # no return: this tick still looks at the edges, so a down tick is never missed
         if self.ask is None or now < self.next_try:
             return

@@ -5860,6 +5860,7 @@ def test_a_rehand_of_a_word_with_its_own_edge_sets_no_backoff(tmp_path, monkeypa
     sw.tend(1)
     assert sw.failed == {"gone": 1} and sw.backoff == m.BACKOFF_MIN
     assert [c.word for c in w.children] == ["gone", "kimi"]   # no wait behind a backoff
+    assert m.REHAND_NOT_HELD == m.rc_module().REHAND_NOT_HELD   # one exit code on both sides
 
 
 def test_a_word_whose_rehand_fails_and_is_named_no_more_forgets_its_mark(tmp_path, monkeypatch):

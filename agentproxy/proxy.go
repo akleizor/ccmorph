@@ -531,9 +531,9 @@ func dialTunnel(ctx context.Context, addr string, via *url.URL, trust *tls.Confi
 	if secure {
 		// The proxy hop trusts what the transport's does: the system's roots
 		// plus the session's extra CAs.
-		cfg := &tls.Config{}
-		if trust != nil {
-			cfg = trust.Clone()
+		cfg := trust.Clone()
+		if cfg == nil {
+			cfg = &tls.Config{}
 		}
 		cfg.ServerName = via.Hostname()
 		tc := tls.Client(c, cfg)

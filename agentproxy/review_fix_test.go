@@ -143,10 +143,7 @@ func TestDialTunnelSpeaksTLSToAnHTTPSUpstream(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	_, err := dialTunnel(ctx, "example.test:443", via, nil)
-	var ua x509.UnknownAuthorityError
-	var ci x509.CertificateInvalidError
-	var he x509.HostnameError
-	if err == nil || !(asErr(err, &ua) || asErr(err, &ci) || asErr(err, &he) || strings.Contains(err.Error(), "certificate")) {
+	if err == nil || !strings.Contains(err.Error(), "certificate") {
 		t.Fatalf("expected a TLS certificate error, got %v", err)
 	}
 }
@@ -172,21 +169,6 @@ func TestDialTunnelTrustsTheSessionsCAsForAnHTTPSUpstream(t *testing.T) {
 		t.Fatalf("a proxy signed by a trusted session CA was refused: %v", err)
 	}
 	c.Close()
-}
-
-func asErr[T error](err error, target *T) bool {
-	for err != nil {
-		if e, ok := err.(T); ok {
-			*target = e
-			return true
-		}
-		u, ok := err.(interface{ Unwrap() error })
-		if !ok {
-			return false
-		}
-		err = u.Unwrap()
-	}
-	return false
 }
 
 // A NO_PROXY host dials direct even when a proxy was given.
