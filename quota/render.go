@@ -1,9 +1,12 @@
 package quota
 
 import (
+	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"math"
+	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -59,12 +62,15 @@ func renderText(w io.Writer, entries []Entry, color bool) {
 // the profile root moves with CCMORPH_STATE_DIR while the receipts resolve
 // against the XDG state root (paths.StateDir) — so the view names the path it
 // actually read instead of one a document remembered. A view that read no
-// receipts says nothing. The folder is spelled ~/… under the home, as the help
-// pages spell the state root, so a default install prints the README's own
-// ~/.local/state/ccmorph/usage within the 60 columns; when
-// "receipts: <folder>" would pass the width, the folder takes its own line.
-// The folder is never cut — a cut name leads to no folder — so only a folder
-// whose own path is wider than 60 columns can wrap.
+// receipts says nothing. Since #1033 that covers an absent folder outright:
+// a run that found no store read nothing from it, and naming the path as if
+// it were there sent fresh installs chasing a folder find could not see —
+// the cause line on the row says what is missing instead. The folder is
+// spelled ~/… under the home, as the help pages spell the state root, so a
+// default install prints the README's own ~/.local/state/ccmorph/usage
+// within the 60 columns; when "receipts: <folder>" would pass the width, the
+// folder takes its own line. The folder is never cut — a cut name leads to no
+// folder — so only a folder whose own path is wider than 60 columns can wrap.
 func receiptsFooter(w io.Writer, entries []Entry, color bool) {
 	read := false
 	for _, e := range entries {
@@ -75,8 +81,17 @@ func receiptsFooter(w io.Writer, entries []Entry, color bool) {
 	if !read {
 		return
 	}
+	dir := filepath.Join(paths.StateDir(), "usage")
+	if _, err := os.Stat(dir); errors.Is(err, fs.ErrNotExist) {
+		// The store is known to be absent: this view read nothing from it, and
+		// the row says why (#1033). Any other answer — a present folder, or a
+		// path whose existence permissions hide — keeps the footer, because it
+		// names the folder the reader tried, which is the diagnostic when the
+		// read was refused (#545, #731).
+		return
+	}
+	folder := paths.SpelledFromHome(dir)
 	fmt.Fprintln(w)
-	folder := paths.SpelledFromHome(filepath.Join(paths.StateDir(), "usage"))
 	lines := []string{"receipts: " + folder}
 	if len([]rune(lines[0])) > maxWidth {
 		lines = []string{"receipts:", folder}
@@ -110,7 +125,26 @@ func renderEntry(w io.Writer, e Entry, color bool) {
 		emit(w, windowLine(win, e.Spend), color, style)
 	}
 	if e.Spend != nil {
-		emit(w, spendLine(e.Spend), color, style)
+		// #1033: a zero over a store that does not exist is not a month used
+		// for free. Two lines, the #726 pair's shape: the cause, then the
+		// command that changes the state — whole, like the receipts folder
+		// of #731, because a cut command launches nothing. The prompt and the
+		// command share a line while they fit the width and the command takes
+		// its own line past it: neither is cut, and a long profile name never
+		// pushes the command off the view.
+		if e.Spend.NoReceiptsYet && e.Spend.MonthTurns == 0 {
+			emit(w, "  no session has written a receipt yet", color, style)
+			const prompt = "  launch one:"
+			cmd := "ccmorph run " + e.Profile
+			if len([]rune(prompt+" "+cmd)) <= maxWidth {
+				emitWhole(w, prompt+" "+cmd, color, style)
+			} else {
+				emit(w, prompt, color, style)
+				emitWhole(w, "  "+cmd, color, style)
+			}
+		} else {
+			emit(w, spendLine(e.Spend), color, style)
+		}
 		if l := unpricedLine(e.Spend); l != "" {
 			emit(w, l, color, style)
 		}
@@ -150,7 +184,9 @@ func windowLine(win Window, s *Spend) string {
 
 // spendLine is a gateway or budget profile's use. A price turns into money;
 // without one the turns and tokens still show and the cost says it is unknown,
-// never $0.00; no receipts at all say the profile was not used.
+// never $0.00; no turn this month, in a store that exists, says the profile
+// was not used. A store that does not exist is not this line's case: #1033
+// moved it to the cause pair in renderEntry, above the store's own zeros.
 func spendLine(s *Spend) string {
 	if s.MonthTurns == 0 {
 		if s.UnreadableReceipts > 0 {
@@ -234,13 +270,10 @@ func resetText(at *int64) string {
 	return t.Local().Format("Jan 2")
 }
 
-// emit writes one line: truncated to maxWidth runes so it never wraps, then
-// styled only when the terminal supports colour.
-func emit(w io.Writer, s string, color bool, style string) {
-	r := []rune(s)
-	if len(r) > maxWidth {
-		s = string(r[:maxWidth-1]) + "…"
-	}
+// styleLine is one line with its style applied when the terminal supports
+// colour. It cuts nothing: emit makes the width cut before it gets here, and
+// emitWhole makes none on purpose.
+func styleLine(s string, color bool, style string) string {
 	switch {
 	case !color:
 	case style == "bold":
@@ -248,5 +281,23 @@ func emit(w io.Writer, s string, color bool, style string) {
 	case style == "dim":
 		s = "\033[2m" + s + "\033[0m"
 	}
-	fmt.Fprintln(w, s)
+	return s
+}
+
+// emit writes one line: truncated to maxWidth runes so it never wraps, then
+// styled only when the terminal supports colour.
+func emit(w io.Writer, s string, color bool, style string) {
+	r := []rune(s)
+	if len(r) > maxWidth {
+		s = string(r[:maxWidth-1]) + "…"
+	}
+	fmt.Fprintln(w, styleLine(s, color, style))
+}
+
+// emitWhole writes a line that must reach the person complete: like emit,
+// minus the cut. A line this view sends as a command or a path is worth more
+// wrapped than shortened — a cut command runs as nothing, and a cut folder
+// leads to no folder (#731, #1033).
+func emitWhole(w io.Writer, s string, color bool, style string) {
+	fmt.Fprintln(w, styleLine(s, color, style))
 }
