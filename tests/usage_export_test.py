@@ -832,8 +832,9 @@ def test_a_fresh_install_exports_zeroes_before_the_first_session_issue_647(tmp_p
     """#647: right after an install, before any launched session, the receipt
     store folder does not exist at all. The README's command died with
     "usage-export: [Errno 2] No such file or directory: .../usage/.move.lock" and
-    exit 1. A never-created store is an empty one: the zero report, exit 0, and
-    the reader still creates no store folder."""
+    exit 1. A never-created store is an empty one: exit 0, the reader still
+    creates no store folder, and the empty export is still written. Its head
+    is #1033's: the absence named as the cause, not the confident zero."""
     home, output = tmp_path / "home", tmp_path / "out"
     home.mkdir()
     env = {k: v for k, v in os.environ.items() if k != "XDG_STATE_HOME"}
@@ -848,8 +849,10 @@ def test_a_fresh_install_exports_zeroes_before_the_first_session_issue_647(tmp_p
 
     assert ran.returncode == 0, ran.stderr
     assert ran.stdout.splitlines()[0] == (
-        f"Exported 0 turns over 0 days from "
-        f"{os.path.realpath(state_root / 'ccmorph' / 'usage')} to {os.path.abspath(output)}")
+        f"Nothing exported from "
+        f"{os.path.realpath(state_root / 'ccmorph' / 'usage')} to {os.path.abspath(output)}: "
+        "no session has written a receipt there yet")
+    assert "0 turns over 0 days" not in ran.stdout, "the absent store still read as a counted zero"
     assert "[Errno" not in ran.stdout + ran.stderr
     assert ".move.lock" not in ran.stdout + ran.stderr
     assert not (state_root / "ccmorph").exists()
@@ -1253,3 +1256,227 @@ def test_a_date_in_the_wrong_format_names_the_format_and_an_example_issue_382(tm
     assert ran.returncode == 1
     assert since in ran.stderr  # the person's own input, named back
     assert "YYYYMMDD" in ran.stderr and "20261110" in ran.stderr
+
+
+# --- GH-1033: an absent store is a cause, not a zero ---------------------
+#
+# The README's cost path on a fresh install sent a new user to quota, then
+# this export, then ccusage, and all three read "used nothing" when the truth
+# was "no session has run yet". Each test below runs the exporter the way that
+# user does — the default source, a fresh home — and pins the new wording and
+# the states that must keep the old one.
+
+
+def _fresh_home(tmp_path, with_parent=False):
+    """A home whose default receipt store does not exist. with_parent also
+    lays the state root and its ccmorph folder — the shape the README's own
+    sequence leaves after `ccmorph quota` (whose cache lands under the profile
+    root, not the receipts root) ran first: a state parent exists while the
+    usage leaf still does not."""
+    home, state = tmp_path / "home", tmp_path / "state"
+    home.mkdir(exist_ok=True)
+    env = {k: v for k, v in os.environ.items() if k != "XDG_STATE_HOME"}
+    env["HOME"] = str(home)
+    env["XDG_STATE_HOME"] = str(state)
+    if with_parent:
+        (state / "ccmorph").mkdir(parents=True)
+        cache = home / ".config/ccmorph/cache"
+        cache.mkdir(parents=True)
+        (cache / "quota.json").write_text("{}")
+    return env, state / "ccmorph" / "usage"
+
+
+def test_a_fresh_install_names_the_cause_after_quota_ran_first(tmp_path):
+    """The README sequence: quota first (it leaves its cache behind and never
+    a usage folder), then the export. The missing usage/ leaf is still the
+    first session even beside all that, and neither reader creates it."""
+    env, source = _fresh_home(tmp_path, with_parent=True)
+    output = tmp_path / "out"
+    ran = subprocess.run([sys.executable, str(EXPORTER), "--output", str(output)],
+                         capture_output=True, text=True, timeout=HANG_TIMEOUT, env=env)
+    assert ran.returncode == 0, ran.stderr
+    assert "no session has written a receipt there yet" in ran.stdout, ran.stdout
+    assert "launch one: ccmorph run <profile>" in ran.stdout
+    assert not source.exists(), "the readers created the store they call absent"
+    assert (output / "projects").is_dir() and (output / "ccusage.json").is_file()
+
+
+def test_the_first_session_tail_defers_the_command_it_prints(tmp_path):
+    """ccusage on PATH: the command still prints, whole and copyable, but its
+    day is named as the first receipt — and the head says who has not shown
+    up. The old confident 'with ccusage installed' framing must not stand."""
+    env, _ = _fresh_home(tmp_path)
+    env["PATH"] = f"{ccusage_stub(tmp_path)}{os.pathsep}{env['PATH']}"
+    output = tmp_path / "out"
+    ran = subprocess.run([sys.executable, str(EXPORTER), "--output", str(output)],
+                         capture_output=True, text=True, timeout=HANG_TIMEOUT, env=env)
+    assert ran.returncode == 0, ran.stderr
+    assert "Then, once the first session has written its receipt:" in ran.stdout
+    assert "Then, with ccusage installed:" not in ran.stdout
+    assert any(l.startswith("CLAUDE_CONFIG_DIR=") for l in ran.stdout.splitlines()), ran.stdout
+
+
+def test_the_first_session_names_both_gaps_when_ccusage_is_missing(tmp_path):
+    """No receipts and no ccusage: both reasons are told — GH-843's note is
+    not displaced by GH-1033's cause, and neither prints a dead command."""
+    env, _ = _fresh_home(tmp_path)
+    emptybin = tmp_path / "emptybin"
+    emptybin.mkdir()
+    env["PATH"] = str(emptybin)
+    output = tmp_path / "out"
+    ran = subprocess.run([sys.executable, str(EXPORTER), "--output", str(output)],
+                         capture_output=True, text=True, timeout=HANG_TIMEOUT, env=env)
+    assert ran.returncode == 0, ran.stderr
+    assert "no session has written a receipt there yet" in ran.stdout
+    assert "ccusage is not installed" in ran.stdout
+    assert "CLAUDE_CONFIG_DIR=" not in ran.stdout, "the summary still prints a dead command"
+
+
+def test_the_help_names_the_first_session_gap_and_keeps_the_command(tmp_path):
+    """The issue's 'the export help says so too': --help explains the fresh
+    install's empty report and the launch, and the README sends readers here
+    for the ccusage command, so its copyable line stays on its own line."""
+    ran = subprocess.run([sys.executable, str(EXPORTER), "--help"],
+                         capture_output=True, text=True, timeout=HANG_TIMEOUT)
+    assert ran.returncode == 0, ran.stderr
+    assert "first session" in ran.stdout and "ccmorph run <profile>" in ran.stdout
+    assert any(l.startswith("CLAUDE_CONFIG_DIR=ROOT ") for l in ran.stdout.splitlines()), \
+        "the command stopped being its own copyable line"
+
+
+def test_the_absent_default_path_passed_as_source_still_refuses(tmp_path):
+    """GH-843 stands: the first-session wording is for the resolved default,
+    never for a path named on the command line — naming the very folder the
+    default would use is still the typo refusal, and it writes nothing."""
+    env, source = _fresh_home(tmp_path)
+    output = tmp_path / "out"
+    ran = subprocess.run([sys.executable, str(EXPORTER), "--output", str(output),
+                          "--source", str(source)],
+                         capture_output=True, text=True, timeout=HANG_TIMEOUT, env=env)
+    assert ran.returncode == 1, ran.stdout
+    assert str(source) in ran.stderr
+    assert "no session" not in ran.stdout + ran.stderr
+    assert not output.exists()
+
+
+def test_a_symlink_default_to_an_empty_store_keeps_the_zero_report(tmp_path):
+    """A store moved elsewhere and linked at the default is a present empty
+    store — #843's reading — not the never-launched one."""
+    env, source = _fresh_home(tmp_path)
+    real = tmp_path / "moved-store"
+    real.mkdir()
+    source.parent.mkdir(parents=True)
+    source.symlink_to(real)
+    output = tmp_path / "out"
+    ran = subprocess.run([sys.executable, str(EXPORTER), "--output", str(output)],
+                         capture_output=True, text=True, timeout=HANG_TIMEOUT, env=env)
+    assert ran.returncode == 0, ran.stderr
+    assert ran.stdout.splitlines()[0] == (
+        f"Exported 0 turns over 0 days from {os.path.realpath(real)} "
+        f"to {os.path.abspath(output)}")
+
+
+def test_a_file_at_the_default_source_refuses_naming_the_path(tmp_path):
+    """A regular file where the store belongs is damage, not a first session:
+    the named refusal of #843's family, never the first-session success."""
+    env, source = _fresh_home(tmp_path)
+    source.parent.mkdir(parents=True)
+    source.write_text("not a folder\n")
+    output = tmp_path / "out"
+    ran = subprocess.run([sys.executable, str(EXPORTER), "--output", str(output)],
+                         capture_output=True, text=True, timeout=HANG_TIMEOUT, env=env)
+    assert ran.returncode == 1, ran.stdout
+    assert "no session" not in ran.stdout
+    assert "[Errno" not in ran.stderr and "Traceback" not in ran.stderr
+
+
+def test_a_default_store_behind_an_unsearchable_parent_refuses(tmp_path):
+    """And the path the exporter cannot even ask about: the named refusal,
+    not first-session success and not a traceback."""
+    if os.geteuid() == 0:
+        pytest.skip("root searches a mode-000 folder")
+    env, source = _fresh_home(tmp_path)
+    source.mkdir(parents=True)
+    source.parent.chmod(0o000)
+    try:
+        ran = subprocess.run([sys.executable, str(EXPORTER), "--output", str(tmp_path / "out")],
+                             capture_output=True, text=True, timeout=HANG_TIMEOUT, env=env)
+    finally:
+        source.parent.chmod(0o700)  # let tmp_path clean up
+    assert ran.returncode == 1, ran.stdout
+    assert "no session" not in ran.stdout
+    assert "[Errno" not in ran.stderr and "Traceback" not in ran.stderr
+
+
+def test_a_fresh_install_with_since_names_the_same_gap(tmp_path):
+    """--since is a window on a store; with no store the window holds the
+    same cause, and a malformed --since is still the date diagnostic."""
+    env, _ = _fresh_home(tmp_path)
+    output = tmp_path / "out"
+    ran = subprocess.run([sys.executable, str(EXPORTER), "--output", str(output),
+                          "--since", "20261101"],
+                         capture_output=True, text=True, timeout=HANG_TIMEOUT, env=env)
+    assert ran.returncode == 0, ran.stderr
+    assert "no session has written a receipt there yet" in ran.stdout
+    assert (output / "ccusage.json").is_file()
+
+    bad = tmp_path / "out-bad"
+    ran = subprocess.run([sys.executable, str(EXPORTER), "--output", str(bad),
+                          "--since", "202611"],
+                         capture_output=True, text=True, timeout=HANG_TIMEOUT, env=env)
+    assert ran.returncode == 1 and "YYYYMMDD" in ran.stderr
+
+
+@pytest.mark.parametrize("state", ["empty", "filtered", "incomplete"],
+                         ids=["empty-store", "since-filters-all", "only-incomplete-receipts"])
+def test_a_present_store_reading_empty_keeps_the_ordinary_report(tmp_path, state):
+    """The zero report stays the voice of a store that exists and reads
+    empty — nothing, a window over receipts it excludes, or rows no export
+    can take: their cause is the store's, not a missing session, so neither
+    head nor tail changes."""
+    env, source = _fresh_home(tmp_path)
+    source.mkdir(parents=True)
+    if state == "filtered":
+        write(source, "a.json", receipt("a", "claude-opus-5-5", "2026-10-01T09:00:00+08:00",
+                                        cost=1.0))
+    if state == "incomplete":
+        write(source, "a.json", receipt("a", "claude-opus-5-5", "2026-10-01T09:00:00+08:00",
+                                        cost=1.0, complete=False))
+    env["PATH"] = f"{ccusage_stub(tmp_path)}{os.pathsep}{env['PATH']}"
+    output = tmp_path / "out"
+    argv = [sys.executable, str(EXPORTER), "--output", str(output)]
+    if state == "filtered":
+        argv += ["--since", "20261101"]
+    ran = subprocess.run(argv, capture_output=True, text=True, timeout=HANG_TIMEOUT, env=env)
+    assert ran.returncode == 0, ran.stderr
+    assert ran.stdout.splitlines()[0] == (
+        f"Exported 0 turns over 0 days from {os.path.realpath(source)} "
+        f"to {os.path.abspath(output)}")
+    assert "no session" not in ran.stdout
+    assert "Then, with ccusage installed:" in ran.stdout
+
+
+def test_an_absent_default_keeps_older_days_outside_the_range(tmp_path):
+    """GH-971's preservation stands beside GH-1033's wording: the store was
+    deleted after an export, and the head and tail speak only of this run's
+    data — the day file outside the range is still there for ccusage."""
+    env, source = _fresh_home(tmp_path)
+    source.mkdir(parents=True)
+    write(source, "a.json", receipt("a", "claude-opus-5-5", "2026-10-01T09:00:00+08:00",
+                                    cost=1.0))
+    output = tmp_path / "out"
+    ran = subprocess.run([sys.executable, str(EXPORTER), "--output", str(output)],
+                         capture_output=True, text=True, timeout=HANG_TIMEOUT, env=env)
+    assert ran.returncode == 0, ran.stderr
+    assert read_day(output, "2026-10-01")
+    shutil.rmtree(tmp_path / "state")
+
+    env, _ = _fresh_home(tmp_path)  # same env values; the tree is gone again
+    env["PATH"] = f"{ccusage_stub(tmp_path)}{os.pathsep}{env['PATH']}"
+    ran = subprocess.run([sys.executable, str(EXPORTER), "--output", str(output),
+                          "--since", "20261101"],
+                         capture_output=True, text=True, timeout=HANG_TIMEOUT, env=env)
+    assert ran.returncode == 0, ran.stderr
+    assert "no session has written a receipt there yet" in ran.stdout
+    assert "Then, once the first session has written its receipt:" in ran.stdout
+    assert read_day(output, "2026-10-01"), "the absent-store run threw away an older day"

@@ -676,9 +676,17 @@ func TestQuotaTextNamesTheReceiptsFolder(t *testing.T) {
 	checkWidth(t, out)
 
 	// An XDG root outside the home is the absolute path it is.
+	// (#1033: before the seed the folder does not exist, and this view names no
+	// receipts folder at all and says the store is empty for the one reason it
+	// is — no session has run; after the seed it names the absolute path.)
 	state := t.TempDir()
 	t.Setenv("HOME", t.TempDir())
 	t.Setenv("XDG_STATE_HOME", state)
+	fresh := view()
+	if strings.Contains(fresh, "receipts:") || !strings.Contains(fresh, "no session has written a receipt yet") {
+		t.Fatalf("a store that does not exist was named as read:\n%s", fresh)
+	}
+	seed(state, "1")
 	out = view()
 	if !strings.Contains(out, "\nreceipts:") || !strings.HasSuffix(out, filepath.Join(state, "ccmorph", "usage")+"\n") {
 		t.Fatalf("absolute folder not named:\n%s", out)
@@ -687,6 +695,240 @@ func TestQuotaTextNamesTheReceiptsFolder(t *testing.T) {
 	if jout := view("--json"); strings.Contains(jout, "receipts:") {
 		t.Fatalf("--json carries the person's footer: %s", jout)
 	}
+}
+
+// #1033: on a fresh install no session has ever written a receipt, and every
+// usage screen read that absence as a month used for free. A zero-spend
+// gateway or budget row whose receipts folder does not exist says the cause
+// and names the next step; the zero word stays for the states where a store
+// exists and this month simply holds no turn of this profile.
+func TestQuotaFreshInstallNamesTheLaunchStep(t *testing.T) {
+	useClock(t, time.Date(2026, 10, 20, 12, 0, 0, 0, time.UTC))
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	state := filepath.Join(home, "xdg")
+	t.Setenv("XDG_STATE_HOME", state)
+	useTransport(t, func(r *http.Request) (*http.Response, error) {
+		t.Errorf("a gateway or budget entry must not reach the network: %s", r.URL)
+		return nil, nil
+	})
+	usage := filepath.Join(state, "ccmorph", "usage")
+	receipt := func(name, profile string, cost float64, complete bool) {
+		t.Helper()
+		body, _ := json.Marshal(map[string]any{
+			"complete": complete, "profile": profile, "timestamp": "2026-10-20T09:00:00Z",
+			"usage": map[string]any{"cost": cost},
+		})
+		if err := os.WriteFile(filepath.Join(usage, name+".json"), body, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	in := "gw\tgateway\t\t\ncap\tgateway\t\t500\n"
+	fresh := strings.Join([]string{
+		"Budget accounts",
+		"cap",
+		row("month", 0, "0%", "Nov 1"),
+		"  no session has written a receipt yet",
+		"  launch one: ccmorph run cap",
+		"",
+		"API key and provider profiles",
+		"gw",
+		"  no session has written a receipt yet",
+		"  launch one: ccmorph run gw",
+		"",
+	}, "\n")
+	if strings.Contains(fresh, "receipts:") {
+		t.Fatal("the view advertised a receipts folder it did not read")
+	}
+	for _, pass := range []string{"first", "second"} {
+		out, errOut, code := run(t, nil, in)
+		if code != 0 {
+			t.Fatalf("%s run exit %d: %s", pass, code, errOut)
+		}
+		if out != fresh {
+			t.Fatalf("%s run:\n got %q\nwant %q", pass, out, fresh)
+		}
+		checkWidth(t, out)
+	}
+
+	// The machine shape keeps every reading an absent store leaves: the spend
+	// object with its zeros, the budget window at zero, and no error — the
+	// cause is the text view's, and the router paces on these numbers.
+	jout, _, code := run(t, []string{"--json"}, in)
+	if code != 0 {
+		t.Fatalf("--json exit %d", code)
+	}
+	var doc struct {
+		Profiles []struct {
+			Profile string           `json:"profile"`
+			Error   string           `json:"error"`
+			Spend   map[string]any   `json:"spend"`
+			Windows []map[string]any `json:"windows"`
+		} `json:"profiles"`
+	}
+	if err := json.Unmarshal([]byte(jout), &doc); err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range doc.Profiles {
+		if e.Error != "" {
+			t.Errorf("%s: an absent store became an error: %q", e.Profile, e.Error)
+		}
+		if e.Spend == nil {
+			t.Fatalf("%s: an absent store dropped the spend object: %s", e.Profile, jout)
+		}
+		if e.Spend["month_turns"] != float64(0) {
+			t.Errorf("%s: spend not zero: %v", e.Profile, e.Spend)
+		}
+	}
+
+	// The store appears, empty: #647's used-and-free zero returns, and the
+	// footer may name the folder because this run read it.
+	if err := os.MkdirAll(usage, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	tallyMemo.key = ""
+	out, _, code := run(t, nil, in)
+	if code != 0 {
+		t.Fatalf("exit %d", code)
+	}
+	want := strings.Join([]string{
+		"Budget accounts",
+		"cap",
+		row("month", 0, "0%", "Nov 1"),
+		"  not used this month",
+		"",
+		"API key and provider profiles",
+		"gw",
+		"  not used this month",
+		"",
+		"receipts: ~/xdg/ccmorph/usage",
+		"",
+	}, "\n")
+	if out != want {
+		t.Fatalf("\n got %q\nwant %q", out, want)
+	}
+	// Receipts exist and hold no countable turn of this profile — another
+	// profile's month, an incomplete row, and an explicitly billed $0.00 —
+	// and every one of them keeps the zero word, never the launch hint.
+	for _, body := range []struct {
+		name, profile string
+		cost          float64
+		complete      bool
+	}{
+		{"a", "other", 1, true},
+		{"b", "gw", 2, false},
+	} {
+		tallyMemo.key = ""
+		receipt(body.name, body.profile, body.cost, body.complete)
+		out, _, _ = run(t, nil, in)
+		if !strings.Contains(out, "  not used this month") || strings.Contains(out, "no session") {
+			t.Fatalf("receipt %s did not keep the zero word:\n%q", body.name, out)
+		}
+	}
+	tallyMemo.key = ""
+	receipt("c", "gw", 0, true)
+	out, _, _ = run(t, nil, in)
+	if !strings.Contains(out, "  today $0.00 · month $0.00") || strings.Contains(out, "no session") {
+		t.Fatalf("a billed $0.00 did not keep the money line:\n%q", out)
+	}
+}
+
+// #1033 review edges: the launch command is a command, so the 60-column cut
+// never eats the profile's name (the receipts folder set the same precedent
+// in #731), and the reader's own root answers whether the store exists — a
+// CCMORPH_STATE_DIR that carries a usage folder the reader never opens keeps
+// the first-session rows.
+func TestQuotaAbsentStoreWideNameAndMovedRoots(t *testing.T) {
+	useClock(t, time.Date(2026, 10, 20, 12, 0, 0, 0, time.UTC))
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_STATE_HOME", "")
+	useTransport(t, func(r *http.Request) (*http.Response, error) {
+		t.Errorf("a gateway entry must not reach the network: %s", r.URL)
+		return nil, nil
+	})
+	wide := strings.Repeat("w", 200) // profile.MaxNameLen
+	out, _, code := run(t, nil, wide+"\tgateway\t\t\n")
+	if code != 0 {
+		t.Fatalf("exit %d", code)
+	}
+	if !strings.Contains(out, "  launch one: ccmorph run "+wide+"\n") {
+		t.Fatalf("the launch line did not carry the whole name:\n%q", out)
+	}
+	for _, line := range strings.Split(out, "\n") {
+		if strings.HasPrefix(line, "  launch one:") && strings.Contains(line, "…") {
+			t.Fatalf("the launch line was cut: %q", line)
+		}
+	}
+
+	// A usage folder under the profile root is not the receipts root: the
+	// reader resolves $XDG_STATE_HOME or ~/.local/state, and its absence is
+	// still the first session.
+	csd := t.TempDir()
+	t.Setenv("CCMORPH_STATE_DIR", filepath.Join(csd, "profiles"))
+	if err := os.MkdirAll(filepath.Join(csd, "profiles", "usage"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	tallyMemo.key = ""
+	out, _, code = run(t, nil, "gw\tgateway\t\t\n")
+	if code != 0 {
+		t.Fatalf("exit %d", code)
+	}
+	if !strings.Contains(out, "  no session has written a receipt yet\n") {
+		t.Fatalf("the reader's root was not the one consulted:\n%q", out)
+	}
+}
+
+// #1033 review edge: the cause line sits where the spend line sat and pushes
+// out nothing — a balance read beside an absent store still shows, a refused
+// balance keeps its own reason and the run's exit, and a silent endpoint
+// still says its zero came from local receipts.
+func TestQuotaAbsentStoreKeepsBalanceAndReachabilityLines(t *testing.T) {
+	useClock(t, time.Date(2026, 10, 20, 12, 0, 0, 0, time.UTC))
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_STATE_HOME", filepath.Join(home, "xdg"))
+	useTransport(t, func(r *http.Request) (*http.Response, error) {
+		switch r.URL.Host + r.URL.Path {
+		case "openrouter.ai/api/v1/credits":
+			return reply(200, `{"data":{"total_credits":100,"total_usage":25.5}}`), nil
+		case "open.bigmodel.cn/api/biz/account/query-customer-account-report":
+			return reply(200, `{"success":false,"msg":"token expired or incorrect"}`), nil
+		case "gw-down.example/v1/models":
+			return nil, fmt.Errorf("dial gw-down.example: no answer")
+		case "openrouter.ai/api/v1/models", "open.bigmodel.cn/api/anthropic/v1/models":
+			return reply(200, `{"data":[]}`), nil
+		}
+		t.Errorf("unexpected request %s", r.URL)
+		return reply(404, ""), nil
+	})
+	out, errOut, code := run(t, nil, "or\tgateway\thttps://openrouter.ai/api\t\tsk-or\n"+
+		"glmno\tgateway\thttps://open.bigmodel.cn/api/anthropic\t\trefused\n"+
+		"down\tgateway\thttps://gw-down.example\t\tk")
+	if code != 0 {
+		t.Fatalf("exit %d: %s", code, errOut)
+	}
+	want := strings.Join([]string{
+		"API key and provider profiles",
+		"or",
+		"  no session has written a receipt yet",
+		"  launch one: ccmorph run or",
+		"  balance $74.50",
+		"glmno",
+		"  no session has written a receipt yet",
+		"  launch one: ccmorph run glmno",
+		"  balance: key refused: token expired or incorrect",
+		"down",
+		"  no session has written a receipt yet",
+		"  launch one: ccmorph run down",
+		"  gateway not reachable — spend from local receipts only",
+		"  check it: ccmorph doctor down",
+		"",
+	}, "\n")
+	if out != want {
+		t.Fatalf("\n got %q\nwant %q", out, want)
+	}
+	checkWidth(t, out)
 }
 
 // A response the store holds under two names (the flat copy and the day
@@ -1095,6 +1337,11 @@ func TestQuotaBalance(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	t.Setenv("XDG_STATE_HOME", filepath.Join(home, "xdg"))
+	// #1033: an empty receipts folder — these rows are about the balance
+	// beside a used-and-free month, not about the first-session state.
+	if err := os.MkdirAll(filepath.Join(home, "xdg", "ccmorph", "usage"), 0o700); err != nil {
+		t.Fatal(err)
+	}
 	replies := map[string]string{
 		"api.deepseek.com/user/balance":                                  `{"is_available":true,"balance_infos":[{"currency":"USD","total_balance":"0.00"},{"currency":"CNY","total_balance":"40.75"}]}`,
 		"openrouter.ai/api/v1/credits":                                   `{"data":{"total_credits":100,"total_usage":25.5}}`,
@@ -1208,7 +1455,14 @@ func TestQuotaBalance(t *testing.T) {
 // same difference through one field: checked.
 func TestQuotaUnreachableGatewayIsNotAZeroMonth(t *testing.T) {
 	useClock(t, time.Date(2026, 10, 20, 12, 0, 0, 0, time.UTC))
-	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	state := t.TempDir()
+	t.Setenv("XDG_STATE_HOME", state)
+	// #1033: an existing empty receipts folder — these rows contrast a
+	// reachable and an unreachable gateway over a used-and-free month, not
+	// over the never-launched store the fresh-install rows name.
+	if err := os.MkdirAll(filepath.Join(state, "ccmorph", "usage"), 0o700); err != nil {
+		t.Fatal(err)
+	}
 	useTransport(t, func(r *http.Request) (*http.Response, error) {
 		if r.URL.Host == "gw-down.example" {
 			return nil, fmt.Errorf("dial gw-down.example: no answer")

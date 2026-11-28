@@ -45,6 +45,12 @@ type Spend struct {
 	// run could not read: their cost and profile are unknown, so every total
 	// above leaves them out, and the entry's error names them (#654).
 	UnreadableReceipts int `json:"unreadable_receipts,omitempty"`
+	// NoReceiptsYet answers that no receipt has ever been written here: the
+	// receipts folder the reader resolves does not exist, so a zero above is
+	// a machine that never launched a session, not a month used for free
+	// (#1033). The text view says the cause and names the launch; every
+	// reading an absent store leaves — the zeros, the budget window — stands.
+	NoReceiptsYet bool `json:"no_receipts_yet,omitempty"`
 }
 
 // AllUnpriced reports whether the profile served turns this month and not one
