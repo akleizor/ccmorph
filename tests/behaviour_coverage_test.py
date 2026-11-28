@@ -150,6 +150,18 @@ def test_use_sets_the_default_and_bare_use_reports_it(box):
     assert box.run('use').stdout.strip() == 'tok'
 
 
+def test_use_on_the_default_profile_says_nothing_changed(box):
+    # GH-1041: re-setting the default said "Default set to <p>" as if the
+    # choice had just moved; the answer must admit nothing changed.
+    seed(box)
+    box.run('use', 'tok')
+    again = box.run('use', 'tok')
+    assert again.returncode == 0, again.stderr
+    assert 'Default set' not in again.stdout, again.stdout
+    assert again.stdout == 'tok is already the default — nothing changed\n', again.stdout
+    assert box.active == 'tok'
+
+
 def test_use_refuses_an_unknown_or_invalid_profile_and_keeps_the_default(box):
     seed(box)
     box.run('use', 'work')

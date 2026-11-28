@@ -453,6 +453,13 @@ func (l *launcher) use(args []string) int {
 	if !ok || !l.setupDir(name, f["type"], liveSilent) {
 		return 1
 	}
+	// GH-1041: naming the profile that is already the default changed nothing,
+	// so the answer says so — "Default set to" stood only where the default
+	// just moved. A default stored in another spelling is rewritten below.
+	if l.active() == name {
+		fmt.Println(l.bold + name + l.reset + " is already the default — nothing changed")
+		return 0
+	}
 	if err := atomicWrite(filepath.Join(l.dir, "active"), name+"\n"); err != nil {
 		l.err("could not set default profile")
 		return 1
