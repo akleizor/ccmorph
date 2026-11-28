@@ -406,6 +406,11 @@ func reachDial(p reachProbe, connect, window time.Duration, retryAfter bool, pro
 	if err := reachStart(cmd); err != nil {
 		return Reach{}, 0
 	}
+	// The probe's curl is this launch's child: a signal that ends the launch
+	// during the wait kills it too, so no probe outlives the line that said
+	// "Ctrl-C to cancel" (GH-1028).
+	release := TrackChild(cmd.Process)
+	defer release()
 	// The stop is the call's deadline, as it always was; requestStart is when
 	// the request could first run. cmd.Start blocks through the scheduler's
 	// fork/exec, and a starved host can hold it past the whole bound, leaving

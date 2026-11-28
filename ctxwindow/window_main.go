@@ -236,9 +236,17 @@ func runLocked(args []string, stderr io.Writer) (int, error) {
 		}
 		return 0, nil
 	case <-interrupts:
-		// KeyboardInterrupt: stop the child, let the locks go, report once.
-		cmd.Process.Kill()
-		<-exited
+		// KeyboardInterrupt: hand the signal to the verb, which knows the
+		// children it started and their own cancellation paths (a sign-in
+		// child, a probe). Killing it here would leave those children behind
+		// (GH-1028). A verb that does not answer is killed after the grace.
+		_ = cmd.Process.Signal(os.Interrupt)
+		select {
+		case <-exited:
+		case <-time.After(2 * time.Second):
+			cmd.Process.Kill()
+			<-exited
+		}
 		fmt.Fprintln(stderr, "Cancelled.")
 		return 130, nil
 	}

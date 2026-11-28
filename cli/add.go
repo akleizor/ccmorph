@@ -2,6 +2,7 @@ package cli
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -10,8 +11,10 @@ import (
 	"os/signal"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"unicode"
 
@@ -23,6 +26,7 @@ import (
 // add is `ccmorph add [name]`: a sign-in method, its credential, and a saved
 // profile, rolled back whole on any failure.
 func (l *launcher) add(args []string) int {
+	defer l.keepCtrlC()() // Ctrl-C cancels every prompt and wait this wizard advertises (GH-1028)
 	name := ""
 	if len(args) > 0 {
 		name = args[0]
@@ -267,19 +271,96 @@ var claudeStatusRE = regexp.MustCompile(`"loggedIn":\s*(true|false)`)
 // exits, the caller's failure path runs, and Ctrl-C cancels setup as the help
 // promises instead of leaving a half-made profile and its lock behind (GH-837).
 func handSignInSignals(child *os.Process) (release func()) {
+	release, _ = handSignInSignalsWait(child)
+	return release
+}
+
+// handSignInSignalsWait is handSignInSignals with the record of whether a
+// signal was forwarded: a child may catch it and exit 0, and that normal exit
+// is still the user cancelling, never permission to go on and save (GH-1028).
+func handSignInSignalsWait(child *os.Process) (release func(), interrupted *atomic.Bool) {
+	handoffs.Add(1) // the command-wide Ctrl-C owner stands down while this holds (GH-1028)
+	interrupted = &atomic.Bool{}
 	sigs := make(chan os.Signal, 1)
 	signal.Notify(sigs, syscall.SIGHUP, syscall.SIGTERM, syscall.SIGINT)
 	go func() {
 		for s := range sigs {
 			if sig, ok := s.(syscall.Signal); ok {
+				interrupted.Store(true)
 				_ = child.Signal(sig) // the child may already be gone
 			}
 		}
 	}()
 	return func() {
+		handoffs.Add(-1)
 		signal.Stop(sigs) // returns once no more signals can arrive
 		close(sigs)
+	}, interrupted
+}
+
+// runHanded runs cmd with the sign-in handoff active: while it waits, SIGHUP,
+// SIGTERM and SIGINT belong to the child, which dies of the signal and lets the
+// caller's failure path run (GH-649, GH-837) — for every child of the add and
+// login flows alike, so Ctrl-C cancels each wait these commands advertise
+// (GH-1028).
+func runHanded(cmd *exec.Cmd) error {
+	return runHandedThen(cmd, nil)
+}
+
+// runHandedThen runs cmd with the handoff active, and calls ready once the
+// handoff holds the signals. A line that promises "Ctrl-C to cancel" is printed
+// from ready: from the instant it is readable the signal belongs to the child,
+// so the advertised escape never lands in the unprotected start window
+// (GH-1028).
+func runHandedThen(cmd *exec.Cmd, ready func()) error {
+	if err := cmd.Start(); err != nil {
+		return err
 	}
+	// Between Start and the handoff there is a sliver in which the child exists
+	// but no forwarding does; the command-wide cancel must still stop it, or a
+	// signal at that instant would leave a sign-in child behind (GH-1028).
+	releaseChild := util.TrackChild(cmd.Process)
+	defer releaseChild()
+	release, interrupted := handSignInSignalsWait(cmd.Process)
+	defer release()
+	if ready != nil {
+		ready()
+	}
+	err := cmd.Wait()
+	if err == nil && interrupted.Load() {
+		// The child answered the signal by exiting normally. The user still
+		// cancelled; the caller's failure path, not its success path, runs.
+		return errSignInInterrupted
+	}
+	return err
+}
+
+// errSignInInterrupted is a wait the user cancelled even though the child
+// exited cleanly; callers only need "did not complete".
+var errSignInInterrupted = errors.New("sign-in interrupted")
+
+// runHandedRC is runHanded's exit status: a lock-wrapped verb is one process
+// between the command and the sign-in it runs, and Ctrl-C must reach it so it
+// releases the lock and stops its own child (GH-1028).
+func runHandedRC(cmd *exec.Cmd) int {
+	if err := runHanded(cmd); err != nil {
+		var ee *exec.ExitError
+		if errors.As(err, &ee) {
+			return ee.ExitCode()
+		}
+		return 127
+	}
+	return 0
+}
+
+// runHandedOutput is runHanded for a child whose output the caller reads: the
+// auth status readback blocks like any sign-in wait and must answer Ctrl-C the
+// same way (GH-1028).
+func runHandedOutput(cmd *exec.Cmd) ([]byte, error) {
+	var buf bytes.Buffer
+	cmd.Stdout, cmd.Stderr = &buf, &buf
+	err := runHanded(cmd)
+	return buf.Bytes(), err
 }
 
 // subBrowserLogin runs Claude Code's browser sign-in against the profile's
@@ -287,21 +368,16 @@ func handSignInSignals(child *os.Process) (release func()) {
 // account profile through it; the readback is what names the profile.
 func (l *launcher) subBrowserLogin(name string) (string, bool) {
 	dir := filepath.Join(l.profileDirs, name)
-	fmt.Println(l.dim + "Opening your browser to sign in — Ctrl-C to cancel." + l.reset)
 	login := l.claudeAuth(dir, "login")
 	login.Stdin, login.Stdout, login.Stderr = os.Stdin, os.Stdout, os.Stderr
-	if login.Start() != nil {
-		l.err("login failed")
-		return "", false
-	}
-	release := handSignInSignals(login.Process)
-	err := login.Wait()
-	release()
+	err := runHandedThen(login, func() {
+		fmt.Println(l.dim + "Opening your browser to sign in — Ctrl-C to cancel." + l.reset)
+	})
 	if err != nil {
 		l.err("login failed")
 		return "", false
 	}
-	out, err := l.claudeAuth(dir, "status").CombinedOutput()
+	out, err := runHandedOutput(l.claudeAuth(dir, "status"))
 	if err != nil {
 		l.err("could not read authentication status")
 		return "", false
@@ -335,8 +411,14 @@ func (l *launcher) addSub(name string) int {
 		l.rollback(name)
 		return 1
 	}
+	// From the first private file to the conf that makes the profile real, a
+	// signal that ends the command must take the half-made profile with it
+	// (GH-1028). The normal exits below already roll back; this covers the
+	// window where the command-wide owner exits before they run.
+	release := util.OnCancel(func() { l.rollback(name) })
+	defer release()
 	dir := filepath.Join(l.profileDirs, name)
-	if l.claudeAuth(dir, "logout").Run() != nil {
+	if runHanded(l.claudeAuth(dir, "logout")) != nil {
 		l.err("logout failed")
 		l.rollback(name)
 		return 1
@@ -711,8 +793,18 @@ func (l *launcher) checkKey(url, key string) bool {
 }
 
 func (l *launcher) addProvider(name, provider string) int {
+	// A fresh provider add never owns a credential until providerLogin
+	// succeeds: anything the sign-in staged is this add's to remove, conf or
+	// no conf (GH-1028). The existing-profile path is `login`, which does not
+	// come through here.
+	auth := filepath.Join(l.dir, "auth", name)
+	release := util.OnCancel(func() {
+		os.RemoveAll(auth)
+		l.rollback(name)
+	})
+	defer release()
 	if !l.providerLogin(name, provider) {
-		os.RemoveAll(filepath.Join(l.dir, "auth", name))
+		os.RemoveAll(auth)
 		return 1
 	}
 	if l.writeConf(name, "type=provider\nprovider="+provider+"\n") != nil {
@@ -758,9 +850,14 @@ func providerList() ([]string, bool) {
 	if err != nil {
 		return nil, false
 	}
-	out, _ := exec.Command(bin, "--help").CombinedOutput()
+	// The bridge's help is a wait before the first prompt; a command-wide
+	// cancel takes it down with the add (GH-1028).
+	cmd := exec.Command(bin, "--help")
+	var out strings.Builder
+	cmd.Stdout, cmd.Stderr = &out, &out
+	_ = util.RunTracked(cmd)
 	var list []string
-	for _, line := range strings.Split(string(out), "\n") {
+	for _, line := range strings.Split(out.String(), "\n") {
 		if !strings.Contains(line, "-login") {
 			continue
 		}
@@ -829,18 +926,28 @@ func (l *launcher) providerLogin(name, provider string) bool {
 		l.err("could not create auth directory")
 		return false
 	}
-	fmt.Println(l.dim + "Opening your browser to sign in to " + l.bold + providerLabel(provider) + l.reset + l.dim + " — Ctrl-C to cancel." + l.reset)
+	// What the profile already holds is not this attempt's to remove: a
+	// cancelled re-login keeps the stored credential and drops only what the
+	// attempt staged beside it (GH-1028).
+	before := authEntries(auth)
 	tmp, err := os.MkdirTemp(tmpDir(), fmt.Sprintf("ccmorph-login-%d-", os.Getuid()))
 	if err != nil {
 		return false
 	}
 	cred := ""
-	defer func() {
+	cleanup := func() {
 		os.RemoveAll(tmp)
 		if cred == "" {
-			os.Remove(auth) // only when empty: a real credential is never touched
+			removeNewAuthEntries(auth, before)
+			os.Remove(auth) // only when the attempt left it empty
 		}
-	}()
+	}
+	defer cleanup()
+	// A signal that ends the command during this window has no handoff yet to
+	// run the deferred cleanup above (os.Exit skips it); register the same
+	// cleanup for the command-wide owner (GH-1028).
+	release := util.OnCancel(cleanup)
+	defer release()
 	conf := filepath.Join(tmp, "config.yaml")
 	yaml := "host: \"127.0.0.1\"\nport: 0\nauth-dir: \"" + auth + "\"\napi-keys:\n  - \"unused\"\n"
 	if atomicWrite(conf, yaml) != nil {
@@ -848,7 +955,14 @@ func (l *launcher) providerLogin(name, provider string) bool {
 	}
 	cmd := exec.Command(bin, "-"+provider+"-login", "-config", conf)
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
-	if cmd.Run() != nil {
+	// The browser wait hands its signals to the bridge the way the Claude
+	// sign-in already does: the notice says "Ctrl-C to cancel", and it is
+	// printed only after the handoff holds the signals, so a signal sent the
+	// instant it appears reaches the bridge and ends the wait through this
+	// failure path — never the parent ahead of the cleanup (GH-1028).
+	if runHandedThen(cmd, func() {
+		fmt.Println(l.dim + "Opening your browser to sign in to " + l.bold + providerLabel(provider) + l.reset + l.dim + " — Ctrl-C to cancel." + l.reset)
+	}) != nil {
 		l.err(providerLabel(provider) + " login failed")
 		return false
 	}
@@ -875,10 +989,47 @@ func (l *launcher) providerLogin(name, provider string) bool {
 	return true
 }
 
+// authEntries is every path under the profile's auth dir before a sign-in
+// attempt, relative to it.
+func authEntries(dir string) map[string]bool {
+	entries := map[string]bool{}
+	_ = filepath.WalkDir(dir, func(path string, _ os.DirEntry, err error) error {
+		if err != nil || path == dir {
+			return nil
+		}
+		if rel, err := filepath.Rel(dir, path); err == nil {
+			entries[rel] = true
+		}
+		return nil
+	})
+	return entries
+}
+
+// removeNewAuthEntries removes what a sign-in attempt added under the auth dir,
+// leaving every entry that was there before it untouched.
+func removeNewAuthEntries(dir string, before map[string]bool) {
+	var added []string
+	_ = filepath.WalkDir(dir, func(path string, _ os.DirEntry, err error) error {
+		if err != nil || path == dir {
+			return nil
+		}
+		if rel, err := filepath.Rel(dir, path); err == nil && !before[rel] {
+			added = append(added, path)
+		}
+		return nil
+	})
+	// Deepest first, so a new directory's children are removed with it once.
+	sort.Slice(added, func(i, j int) bool { return len(added[i]) > len(added[j]) })
+	for _, path := range added {
+		os.RemoveAll(path)
+	}
+}
+
 // login is `ccmorph login [profile]`: sign a profile in again — a Claude
 // account profile with its browser login, a provider-backed profile with its
 // own, or an API-key profile by letting Claude Code use the key it refused.
 func (l *launcher) login(args []string) int {
+	defer l.keepCtrlC()() // the sign-in waits this verb prints all name Ctrl-C (GH-1028)
 	name := ""
 	if len(args) > 0 {
 		name = args[0]
