@@ -295,7 +295,7 @@ def test_rm_keeps_a_live_lock_a_running_launch_holds(tmp_path):
 
 
 HOLDER_GO = '''package main
-import ("fmt"; "os"; "github.com/akleizor/ccmorph/util/paths")
+import ("fmt"; "os"; "github.com/akleizor/ccmorph/util"; "github.com/akleizor/ccmorph/util/paths")
 func main() {
  p := os.Args[1]
  f, err := util.HoldLive(p,"p",nil)
