@@ -15715,6 +15715,168 @@ test_the_suite_reach_wait_follows_the_shared_hang_bound() {
 }
 run_test test_the_suite_reach_wait_follows_the_shared_hang_bound
 
+# #1026: the capture copies each stream, it never rewrites it. A launch whose
+# stdout a test captures with $(...) keeps the same value, a stream the test
+# silenced stays silent while the other still reaches the descriptor the test
+# gave it, and a file capture holds the exact bytes (tee is not a line filter).
+test_the_launch_capture_copies_a_stream_without_rewriting_it() {
+  local test_home err out wrapped plain rc=0 bytes
+  test_home=$(mktemp -d)
+  setup_home "$test_home"
+  source "$CCMORPH_SOURCE"
+  err="$test_home/err" out="$test_home/out"
+  local log="${CCMORPH_TEST_LAUNCH_LOG:-}"
+  [[ -n "$log" ]] || {
+    print -u2 -- 'run_test must name CCMORPH_TEST_LAUNCH_LOG for every test'
+    rm -rf "$test_home"
+    return 1
+  }
+  : > "$log"
+
+  _emit_both_streams() { print -r -- OUT; print -ru2 -- ERR }
+  # stdout captured by $(...) with stderr to a file: the value is the unwrapped
+  # command's, and both streams reach the log beside their own descriptors.
+  wrapped=$( _ccm_test_capture_launch _emit_both_streams 2>"$err" )
+  plain=$( _emit_both_streams 2>/dev/null )
+  [[ "$wrapped" == "$plain" ]] || {
+    print -u2 -- "the capture rewrote captured stdout: ${(qqq)wrapped} vs ${(qqq)plain}"
+    rc=1
+  }
+  [[ "$(<"$err")" == ERR ]] || {
+    print -u2 -- "stderr did not reach the file the test gave it: ${(qqq)"$(<"$err")"}"
+    rc=1
+  }
+  assert_contains "$(<"$log")" OUT 'the log must hold the launch stdout' || rc=1
+  assert_contains "$(<"$log")" ERR 'the log must hold the launch stderr' || rc=1
+
+  # Only stdout silenced and only stderr silenced: the other stream still
+  # reaches its own descriptor.
+  _ccm_test_capture_launch _emit_both_streams >/dev/null 2>"$err"
+  [[ "$(<"$err")" == ERR ]] || {
+    print -u2 -- "a stdout-silenced launch lost its stderr: ${(qqq)"$(<"$err")"}"
+    rc=1
+  }
+  _ccm_test_capture_launch _emit_both_streams >"$out" 2>/dev/null
+  [[ "$(<"$out")" == OUT ]] || {
+    print -u2 -- "a stderr-silenced launch lost its stdout: ${(qqq)"$(<"$out")"}"
+    rc=1
+  }
+  # No trailing newline added or removed: tee copies bytes.
+  _ccm_test_capture_launch print -rn -- tail >"$out" 2>/dev/null
+  bytes=$(command wc -c < "$out" | tr -d ' ')
+  [[ "$(<"$out")" == tail && "$bytes" == 4 ]] || {
+    print -u2 -- "the capture added or removed a trailing newline: ${bytes} bytes for a 4-byte word"
+    rc=1
+  }
+  rm -rf "$test_home"
+  return $rc
+}
+run_test test_the_launch_capture_copies_a_stream_without_rewriting_it
+
+# #1026: `ccmorph run <profile>` reaches the probe through _ccm_main_exec, the
+# third wrapped entry point, so a run that ends on its own route keeps the
+# sentence that says why even when the test silenced it.
+test_ccmorph_run_keeps_its_own_words_for_the_verdict() {
+  local test_home
+  test_home=$(mktemp -d)
+  setup_home "$test_home"
+  write_curl_mock 'exit 28'
+  write_apikey_conf gw 'api_key=sk_prod_test' 'base_url=https://gateway.invalid' 'adapter=true'
+  source "$CCMORPH_SOURCE"
+
+  local rc=0 log="${CCMORPH_TEST_LAUNCH_LOG:-}"
+  [[ -n "$log" ]] || {
+    print -u2 -- 'run_test must name CCMORPH_TEST_LAUNCH_LOG for every test'
+    rm -rf "$test_home"
+    return 1
+  }
+  : > "$log"
+
+  ccmorph run gw >/dev/null 2>&1 || :
+  assert_contains "$(<"$log")" "could not reach 'https://gateway.invalid'" \
+    'a silenced `ccmorph run` must keep its own words for the verdict' || rc=1
+  rm -rf "$test_home"
+  return $rc
+}
+run_test test_ccmorph_run_keeps_its_own_words_for_the_verdict
+
+# #1026: a stream that is a terminal is never wrapped -- tee would hand the
+# launcher a pipe where the test gave it a tty -- so the terminal tests keep
+# their tty while the other stream is still captured. A test cannot fake -t, so
+# this one runs under a pty with stderr sent to a file.
+test_the_capture_leaves_a_terminal_stream_unwrapped() {
+  local test_home rc=0 out log err
+  test_home=$(mktemp -d)
+  mkdir -p "$test_home/home" "$test_home/tmp"
+  out="$test_home/terminal.log" log="$test_home/launch.log" err="$test_home/err.log"
+  python3 -c 'import os, pty; m, s = pty.openpty(); os.close(m); os.close(s)' 2>/dev/null || {
+    print -u2 -- 'note: no pty here; skipping the terminal-only check'
+    rm -rf "$test_home"; return 0
+  }
+  # The library resolves from the file's own path unless an env override says
+  # otherwise; a sibling test's installed-copy override would name its scratch
+  # home here, so clear the three that redirect it.
+  run_under_a_terminal "$out" env -u CCMORPH_LIB_DIR -u CCMORPH_STATE_DIR -u XDG_CONFIG_HOME \
+    HOME="$test_home/home" TMPDIR="$test_home/tmp" \
+    zsh -c '
+      source "$1/tests/core_lib.zsh" || exit 1
+      export CCMORPH_TEST_LAUNCH_LOG="$2"
+      _emit_tty_check() {
+        if [[ -t 1 ]]; then print -r -- child-out-tty; else print -r -- child-out-pipe; fi
+        if [[ -t 2 ]]; then print -ru2 -- child-err-tty; else print -ru2 -- child-err-pipe; fi
+      }
+      _ccm_test_capture_launch _emit_tty_check 2>"$3"
+    ' ccmorph-capture "$REPO_ROOT" "$log" "$err" || rc=1
+
+  assert_contains "$(<"$out")" child-out-tty \
+    'a terminal stdout must not be replaced by a pipe' || rc=1
+  assert_contains "$(<"$err")" child-err-pipe \
+    'a non-terminal stderr must still reach the file the test gave it' || rc=1
+  assert_contains "$(<"$log")" child-err-pipe \
+    'a non-terminal stderr must still be captured' || rc=1
+  rm -rf "$test_home"
+  return $rc
+}
+run_test test_the_capture_leaves_a_terminal_stream_unwrapped
+
+# #1026: the per-test capture file outlives neither the verdict nor the scratch
+# home. A passing child suite leaves none in its own TMPDIR, and neither does
+# one whose test fails -- the failing run's log is the case the capture exists
+# for, and it must not become litter. The failing child is the gateway
+# regression with its hang bound at 1 s, which derives a zero seam (0/2), so
+# its seam arm fails exactly as the product does without a harness wait.
+test_a_suite_run_leaves_no_launch_capture_behind() {
+  local test_home rc=0 leftovers
+  test_home=$(mktemp -d)
+  mkdir -p "$test_home/tmp"
+
+  env TMPDIR="$test_home/tmp" CCMORPH_TEST_FILTER=the_suite_reach_wait_follows \
+    CCMORPH_TEST_SHARD=0/1 CCMORPH_TEST_JOBS=1 zsh "$SCRIPT_DIR/ccmorph_test.zsh" >/dev/null 2>&1 || rc=1
+  leftovers=( "$test_home/tmp"/ccmorph-launch.*(N) )
+  (( $#leftovers == 0 )) || {
+    print -u2 -- "a passing run left launch captures behind: ${leftovers[*]}"
+    rc=1
+  }
+
+  local failed="$test_home/failing.log"
+  env TMPDIR="$test_home/tmp" CCMORPH_TEST_HANG_TIMEOUT=1 \
+    CCMORPH_TEST_FILTER=waits_out_a_stub CCMORPH_TEST_SHARD=0/1 CCMORPH_TEST_JOBS=1 \
+    zsh "$SCRIPT_DIR/ccmorph_test.zsh" >"$failed" 2>&1 || :
+  grep -q '^FAIL: test_a_gateway_launch_waits_out_a_stub' "$failed" || {
+    print -u2 -- 'the failing child suite did not fail its named test; the cleanup case was not exercised:'
+    print -u2 -- "$(<"$failed")"
+    rc=1
+  }
+  leftovers=( "$test_home/tmp"/ccmorph-launch.*(N) )
+  (( $#leftovers == 0 )) || {
+    print -u2 -- "a failing run left launch captures behind: ${leftovers[*]}"
+    rc=1
+  }
+  rm -rf "$test_home"
+  return $rc
+}
+run_test test_a_suite_run_leaves_no_launch_capture_behind
+
 # libexec/ccmorph-core is build output, so a fresh worktree or checkout has
 # none, and the suite entered there used to fail through every launch test's
 # 120 s backstop: a healthy 40 s suite became six minutes of failing waits with
