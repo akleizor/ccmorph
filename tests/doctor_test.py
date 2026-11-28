@@ -925,6 +925,21 @@ def test_doctor_tolerates_a_conf_that_still_declares_removed_keys(tmp_path):
     assert "gateway: reachable" in result.stdout
 
 
+def test_doctor_reads_a_profile_whose_model_line_our_write_duplicated(tmp_path):
+    """GH-1031: a first launch left the same model line twice in the conf.
+
+    Our own write's damage is ours to heal: doctor must read the profile and
+    check the route, not answer "FAIL config: invalid profile schema" with a
+    hand-edit repair."""
+    curl = "#!/bin/sh\nprintf '%s\\n' '{\"data\":[{\"id\":\"m-1\"}]}'\nprintf '%s\\n' '__CCMORPH_STATUS__200'\n"
+    result, _, _ = run_doctor(
+        tmp_path,
+        "type=apikey\nbase_url=https://example.test\napi_key=fake\nmodel=m-1\nmodel=m-1\n",
+        curl)
+    assert "invalid profile schema" not in result.stdout, result.stdout
+    assert "gateway: reachable" in result.stdout, result.stdout
+
+
 def test_doctor_invalid_url_skips_request(tmp_path):
     curl = """#!/bin/sh
 printf '%s\n' called >> "$CURL_CALLED"

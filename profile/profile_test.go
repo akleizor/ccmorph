@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -187,6 +188,26 @@ func TestReadRefusesWithTheMessageZshPrinted(t *testing.T) {
 	} {
 		if _, _, err := read(t, conf); err == nil || !strings.Contains(err.Error(), want) {
 			t.Fatalf("%q: got %v, want %q", conf, err, want)
+		}
+	}
+}
+
+// GH-1031: a first launch left the same line twice in the conf — our own write
+// duplicating what it wrote. The same fact written twice is one fact: every
+// reader of that profile must keep working, and the next save rewrites the
+// file. A duplicate that disagrees (the table above) is still ambiguous.
+func TestReadHealsAKeyOurOwnWriteDuplicatedIssue1031(t *testing.T) {
+	for conf, want := range map[string][2]string{
+		"type=apikey\napi_key=k\nmodel=m\neffort=high\nmodel=m\n":      {"model", "m"},
+		"type=apikey\napi_key=k\napi_key=k\n":                          {"api_key", "k"},
+		"type=apikey\napi_key=k\nmodel_defaults=1\nmodel_defaults=1\n": {"model_defaults", "1"},
+	} {
+		f, _, err := read(t, conf)
+		if err != nil {
+			t.Fatalf("%q: an identical duplicate was refused: %v", conf, err)
+		}
+		if f[want[0]] != want[1] {
+			t.Fatalf("%q: %s=%q, want %q", conf, want[0], f[want[0]], want[1])
 		}
 	}
 }
@@ -413,5 +434,50 @@ func TestKindPhraseGivesEveryKindLabelItsArticle(t *testing.T) {
 		if got := KindPhrase(c.typ, c.provider); got != c.want {
 			t.Errorf("KindPhrase(%q, %q) = %q, want %q", c.typ, c.provider, got, c.want)
 		}
+	}
+}
+
+func TestReadHealsMoreRepeatShapesIssue1031(t *testing.T) {
+	base := "type=sub\nemail=a@b\n"
+	for _, c := range []struct{ once, twice string }{
+		{"type=provider\nprovider=codex\nenv.CCMORPH_MASK=1\n", "type=provider\nprovider=codex\nenv.CCMORPH_MASK=1\nenv.CCMORPH_MASK=1\n"},
+		{base + "model=m\n", base + "model=m\nmodel=m\nmodel=m\n"},
+		{base + "model=m\nusage_route=direct\n", base + "model=m\nusage_route=direct\nmodel=m\n"},
+		{base + "# n\nmodel=m\n", base + "# n\n# n\nmodel=m\n"},
+	} {
+		want, _, err := read(t, c.once)
+		if err != nil {
+			t.Fatal(err)
+		}
+		got, warned, err := read(t, c.twice)
+		if err != nil {
+			t.Fatalf("%q: refused: %v", c.twice, err)
+		}
+		if len(warned) != 0 || !reflect.DeepEqual(got, want) {
+			t.Fatalf("%q: got %v warned %v, want %v", c.twice, got, warned, want)
+		}
+	}
+}
+
+func TestReadStillRefusesADifferingRepeatIssue1031(t *testing.T) {
+	base := "type=sub\nemail=a@b\n"
+	for conf, want := range map[string]string{
+		base + "model=x\nmodel=y\n":          "duplicate key 'model'",
+		base + "model=a\nmodel=a\nmodel=b\n": "duplicate key 'model'",
+		base + "model=a\nmodel=b\nmodel=a\n": "duplicate key 'model'",
+		base + "model=a\nmodel=a \n":         "duplicate key 'model'",
+	} {
+		_, _, err := read(t, conf)
+		if err == nil || !strings.Contains(err.Error(), want) {
+			t.Fatalf("%q: err %v, want %q", conf, err, want)
+		}
+	}
+}
+
+func TestReadForSaveAcceptsAnIdenticalRepeatIssue1031(t *testing.T) {
+	dir := t.TempDir()
+	os.WriteFile(filepath.Join(dir, "p.conf"), []byte("type=sub\nemail=a@b\nmodel=m\nmodel=m\n"), 0o600)
+	if _, err := ReadForSave(dir, "p", true, lists, func(string) {}, map[string]string{"model": "z"}); err != nil {
+		t.Fatal(err)
 	}
 }

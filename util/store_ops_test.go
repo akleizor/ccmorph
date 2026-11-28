@@ -550,3 +550,61 @@ func TestStoreAProfileOwnedModelRecordsNoSourceIssue862(t *testing.T) {
 		}
 	})
 }
+
+func countLine(text, line string) int {
+	n := 0
+	for _, l := range strings.Split(text, "\n") {
+		if l == line {
+			n++
+		}
+	}
+	return n
+}
+
+func TestStoreSaveWritesARepeatedConfLineOnceIssue1031(t *testing.T) {
+	s := newStoreEnv(t)
+	s.write(s.conf, storeConf+"\nmodel=m\nmodel=m\ntag=t\ntag=t\n# note\n# note\n")
+	settings := s.read(s.settings)
+	if out := s.ok("seed-model-defaults", "model", StoreChange{}); out != "m\n" {
+		t.Fatalf("out %q", out)
+	}
+	got := s.read(s.conf)
+	for line, want := range map[string]int{"model=m": 1, "tag=t": 1, "model_defaults=1": 1, "# note": 2} {
+		if n := countLine(got, line); n != want {
+			t.Fatalf("%q x%d, want %d:\n%s", line, n, want, got)
+		}
+	}
+	if s.read(s.settings) != settings {
+		t.Fatal("settings changed")
+	}
+	if _, err := profile.Read(filepath.Dir(s.conf), "demo", false, profile.Defaults(), func(string) {}); err != nil {
+		t.Fatal(err)
+	}
+	// The canonical layout settles a comment once; after that a save is a no-op.
+	s.ok("seed-model-defaults", "model", StoreChange{})
+	settled := s.read(s.conf)
+	s.ok("seed-model-defaults", "model", StoreChange{})
+	if s.read(s.conf) != settled || countLine(settled, "model=m") != 1 {
+		t.Fatalf("a further save changed the conf:\n%s", settled)
+	}
+}
+
+func TestStoreSetOnARepeatedModelLeavesOneLineIssue1031(t *testing.T) {
+	s := newStoreEnv(t)
+	s.write(s.conf, storeConf+"\nmodel=m\nmodel=m\n")
+	s.ok("set", "", StoreChange{Model: "new"})
+	got := s.read(s.conf)
+	if countLine(got, "model=new") != 1 || strings.Contains(got, "model=m\n") {
+		t.Fatalf("conf:\n%s", got)
+	}
+}
+
+func TestStoreKeepsTwoDifferingLinesOfAKeyItDoesNotWriteIssue1031(t *testing.T) {
+	s := newStoreEnv(t)
+	s.write(s.conf, storeConf+"\nmodel=m\ntag=a\ntag=b\n")
+	s.ok("seed-model-defaults", "model", StoreChange{})
+	got := s.read(s.conf)
+	if countLine(got, "tag=a") != 1 || countLine(got, "tag=b") != 1 {
+		t.Fatalf("conf:\n%s", got)
+	}
+}
