@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 )
@@ -56,7 +57,40 @@ func adapterStart(args []string, _ io.Reader, out, errw io.Writer) int {
 		return 2
 	}
 	core, profile, model, parent, logPath := args[0], args[1], args[2], args[3], args[4]
-	return spawnAdapter(core, profile, model, []string{"--parent-pid", parent}, false, logPath, out, errw)
+	return spawnAdapter(core, profile, model, []string{"--parent-pid", parent}, false, logPath, out, errw, nil)
+}
+
+// startingAdapters are shared adapters this process started and has not yet
+// recorded and held. A signal that ends the launch while the adapter is still
+// coming up must not leave it running: spawnAdapter registers each one, and
+// acquireAdapter adopts it (drops the registration) once the record and hold
+// are in place, or after it has stopped the adapter itself (GH-1028).
+var (
+	startingAdaptersMu sync.Mutex
+	startingAdapters   = map[int]func(){}
+)
+
+// trackStartingAdapter registers pid as this launch's, and returns the release
+// that stops tracking it. The release is also the stop a cancelled launch runs:
+// an adapter that never made it into a record is nobody's.
+func trackStartingAdapter(pid int) func() {
+	release := OnCancel(func() { stopProcess(pid) })
+	startingAdaptersMu.Lock()
+	startingAdapters[pid] = release
+	startingAdaptersMu.Unlock()
+	return func() { adoptStartingAdapter(pid) }
+}
+
+// adoptStartingAdapter drops the cancel stop for an adapter this launch now
+// records and holds, or has stopped on its way out. Idempotent.
+func adoptStartingAdapter(pid int) {
+	startingAdaptersMu.Lock()
+	release := startingAdapters[pid]
+	delete(startingAdapters, pid)
+	startingAdaptersMu.Unlock()
+	if release != nil {
+		release()
+	}
 }
 
 // spawnAdapter starts `<core> adapter <profile> --auto [--model m] <lifetime>`
@@ -65,7 +99,7 @@ func adapterStart(args []string, _ io.Reader, out, errw io.Writer) int {
 // <base> for one every session of a key shares. A shared adapter gets a session
 // of its own, so a Ctrl-C or a hang-up on the terminal of the launch that
 // happened to start it never reaches the sessions that joined it.
-func spawnAdapter(core, profile, model string, lifetime []string, detach bool, logPath string, out, errw io.Writer) int {
+func spawnAdapter(core, profile, model string, lifetime []string, detach bool, logPath string, out, errw io.Writer, onStart func(pid int) func()) int {
 	// The bare id is the one the adapter is asked for and the one the
 	// progress line names: a trailing [1m] is ccmorph's own context-window
 	// marker, an internal that a person saw in "Starting adapter for
@@ -86,6 +120,10 @@ func spawnAdapter(core, profile, model string, lifetime []string, detach bool, l
 		return 1
 	}
 	defer os.Remove(ready.Name())
+	// os.Exit skips the defer above; the cancel handler removes the readiness
+	// file when a signal ends the launch mid-wait (GH-1028).
+	releaseReady := OnCancel(func() { os.Remove(ready.Name()) })
+	defer releaseReady()
 	defer ready.Close()
 	cmd := exec.Command(core, argv...)
 	devnull, _ := os.Open(os.DevNull)
@@ -97,6 +135,10 @@ func spawnAdapter(core, profile, model string, lifetime []string, detach bool, l
 	if cmd.Start() != nil {
 		fmt.Fprintf(errw, "ccmorph: '%s': adapter exited before readiness; session not started.\n", profile)
 		return 1
+	}
+	release := func() {}
+	if onStart != nil {
+		release = onStart(cmd.Process.Pid)
 	}
 	died := make(chan struct{})
 	go func() { _ = cmd.Wait(); close(died) }()
@@ -114,6 +156,7 @@ func spawnAdapter(core, profile, model string, lifetime []string, detach bool, l
 	tick, stopTick := adapterTicker()
 	defer stopTick()
 	fail := func(msg string) int {
+		release() // an adapter that never reached readiness is nobody's (GH-1028)
 		_ = syscall.Kill(cmd.Process.Pid, syscall.SIGTERM)
 		fmt.Fprintln(errw, "ccmorph: "+msg)
 		return 1

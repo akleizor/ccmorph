@@ -24,7 +24,7 @@ func (l *launcher) locked(key string, args []string) (int, bool) {
 	cmd := exec.Command(core, append([]string{"model-window", "--locked", key, core, "cli"}, args...)...)
 	cmd.Env = append(append(os.Environ(), l.handoff()...), "CCMORPH_STATE_DIR="+l.dir, "CCMORPH_CONTEXT_LOCKED="+key)
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
-	return runRC(cmd), true
+	return runHandedRC(cmd), true
 }
 
 // lockKey is the `--locked` operand for these profiles: each name escaped so a

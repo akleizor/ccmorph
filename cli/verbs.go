@@ -23,9 +23,9 @@ func Verb(args []string) int {
 		return 2
 	}
 	if args[0] == "main" {
-		return l.dispatch(args[1:])
+		return endedStatus(l.dispatch(args[1:]))
 	}
-	return l.verb(args)
+	return endedStatus(l.verb(args))
 }
 
 func (l *launcher) verb(args []string) int {

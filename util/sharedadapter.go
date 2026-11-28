@@ -295,7 +295,7 @@ func acquireAdapter(core, root, name, model, confPath string, role holdRole, err
 	}
 	os.Remove(a.Log) // one adapter's lifetime of log, never an ever-growing file
 	var out bytes.Buffer
-	code := spawnAdapter(core, name, model, []string{"--shared", base}, true, a.Log, &out, errw)
+	code := spawnAdapter(core, name, model, []string{"--shared", base}, true, a.Log, &out, errw, trackStartingAdapter)
 	for _, line := range strings.Split(out.String(), "\n") {
 		k, v, _ := strings.Cut(line, "=")
 		switch {
@@ -310,6 +310,7 @@ func acquireAdapter(core, root, name, model, confPath string, role holdRole, err
 		}
 	}
 	if code != 0 {
+		adoptStartingAdapter(a.PID)
 		users.Close()
 		return a, false
 	}
@@ -317,21 +318,35 @@ func acquireAdapter(core, root, name, model, confPath string, role holdRole, err
 		// The one this call just started, which nothing needs: no session joins a
 		// native profile's adapter, so nothing records it.
 		stopProcess(a.PID)
+		adoptStartingAdapter(a.PID)
 		users.Close()
 		return a, true
 	}
 	if err := os.WriteFile(base, []byte(fmt.Sprintf("%d %s", a.PID, a.Port)), 0o600); err != nil {
 		// An adapter nobody recorded would be started again by the next launch.
 		stopProcess(a.PID)
+		adoptStartingAdapter(a.PID)
 		users.Close()
 		fmt.Fprintf(errw, "ccmorph: could not record the adapter for '%s' in %s (%v); stopped it.\n", name, base, err)
 		return a, false
 	}
+	// A record that is not yet backed by a hold must not survive a cancel: the
+	// adapter it names is stopped by the same cancel, and a dead adapter's
+	// record makes the next launch clean up instead of start (GH-1028).
+	releaseRecord := OnCancel(func() {
+		if raw, err := os.ReadFile(base); err == nil {
+			if pid, _, ok := parseAdapterRecord(string(raw)); ok && pid == a.PID {
+				os.Remove(base)
+			}
+		}
+	})
 	a.users = users
 	if !a.holdSession(core, name, errw) {
 		// The mutex kept every other session out, so this one is the only user:
 		// the adapter it just started and recorded is nobody's.
 		stopProcess(a.PID)
+		adoptStartingAdapter(a.PID)
+		releaseRecord()
 		if raw, err := os.ReadFile(base); err == nil {
 			if pid, _, ok := parseAdapterRecord(string(raw)); ok && pid == a.PID {
 				os.Remove(base)
@@ -340,6 +355,7 @@ func acquireAdapter(core, root, name, model, confPath string, role holdRole, err
 		users.Close()
 		return a, false
 	}
+	adoptStartingAdapter(a.PID)
 	return a, true
 }
 
