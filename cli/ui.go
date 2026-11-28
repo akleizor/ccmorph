@@ -110,6 +110,49 @@ func rowID(row string) string {
 	return row
 }
 
+// rowLabel is a row's name column: the text between the id and its detail,
+// or everything after the id when the row carries no detail. It is the word
+// the list prints beside the row's number — the name a typed answer may
+// repeat (#1029).
+func rowLabel(row string) string {
+	rest := row
+	if i := strings.IndexByte(row, '\t'); i >= 0 {
+		rest = row[i+1:]
+	}
+	if i := strings.IndexByte(rest, '\t'); i >= 0 {
+		return rest[:i]
+	}
+	return rest
+}
+
+// namedRows is a piped menu's name half (#1029): the printed rows an answer
+// names — id or label column whole, case folded, first; failing that, the
+// rows whose id or label carries the answer as part of its name, which is
+// what "type the number or part of the name" promises. The detail column
+// says why a row exists, not what it is called, so it is no name: "gateway"
+// at the sign-in menu stays a wrong answer (#727's rule stands). An empty
+// answer names nothing.
+func namedRows(list []string, answer string) []string {
+	if answer == "" {
+		return nil
+	}
+	needle := strings.ToLower(answer)
+	var exact, part []string
+	for _, r := range list {
+		id, label := strings.ToLower(rowID(r)), strings.ToLower(rowLabel(r))
+		switch {
+		case id == needle || label == needle:
+			exact = append(exact, r)
+		case strings.Contains(id, needle) || strings.Contains(label, needle):
+			part = append(part, r)
+		}
+	}
+	if len(exact) > 0 {
+		return exact
+	}
+	return part
+}
+
 func labelWidth(rows []string, display string) int {
 	w := 0
 	for _, r := range rows {
