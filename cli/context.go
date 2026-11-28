@@ -330,7 +330,7 @@ func (l *launcher) contextEnv(name string, penv []string, explicit, defaultModel
 		l.err("warning: '" + name + "' starts with its previously generated settings")
 	}
 	if os.Getenv("CCMORPH_WITHHOLD_FATAL") == "1" {
-		gen := filepath.Join(l.profileDirs, name, "settings.json")
+		gen := filepath.Join(l.profileDirs, name, settingscompose.GeneratedFile)
 		if paths.IsFile(gen) {
 			if rows := l.hazardSet(name, pacw, pceil, gen, penv); len(rows) > 1 {
 				util.WithholdFatal(gen, rows[1:], pmodel)
@@ -442,7 +442,7 @@ func (l *launcher) awaitProbes() {
 // `<kind>\t<text>` records. The invariant half reads only a regular
 // settings.json beside an existing conf.
 func (l *launcher) diagnostics(name string, pctInEnv bool, pct, maxout, no1m, budget, policyPct, hdrKey string, hazard bool, ceiling string, routeKeys []string) []util.Record {
-	settings := filepath.Join(l.profileDirs, name, "settings.json")
+	settings := filepath.Join(l.profileDirs, name, settingscompose.GeneratedFile)
 	if fi, err := os.Lstat(settings); err != nil || !fi.Mode().IsRegular() || !paths.IsFile(l.conf(name)) {
 		settings = ""
 	}

@@ -139,10 +139,10 @@ type StoreArgs struct {
 // it derives the profile's live lock from this (#939).
 func layerProfileDir(path string) string {
 	switch filepath.Base(path) {
-	case "settings.json", "settings.profile.json":
+	case settingscompose.GeneratedFile, settingscompose.LayerFile:
 		return filepath.Dir(path)
-	case "settings.base.json":
-		if filepath.Base(filepath.Dir(path)) == "cache" {
+	case filepath.Base(settingscompose.BaseFile):
+		if filepath.Base(filepath.Dir(path)) == filepath.Dir(settingscompose.BaseFile) {
 			return filepath.Dir(filepath.Dir(path))
 		}
 	}

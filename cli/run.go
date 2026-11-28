@@ -1489,11 +1489,11 @@ func (l *launcher) prelaunch(name string) {
 // the last projection saved (content, not timestamps; a missing copy folds).
 func (l *launcher) foldSettings(name string) bool {
 	dir := filepath.Join(l.profileDirs, name)
-	s, err := os.ReadFile(filepath.Join(dir, "settings.json"))
+	s, err := os.ReadFile(filepath.Join(dir, settingscompose.GeneratedFile))
 	if err != nil {
 		return false
 	}
-	if base, err := os.ReadFile(filepath.Join(dir, "cache", "settings.base.json")); err == nil &&
+	if base, err := os.ReadFile(filepath.Join(dir, settingscompose.BaseFile)); err == nil &&
 		strings.TrimRight(string(s), "\n") == strings.TrimRight(string(base), "\n") {
 		return false
 	}
@@ -1565,7 +1565,7 @@ func (l *launcher) usageHookFor(name, typ, usageRoute string) string {
 // adds this command unchanged. A settings file that cannot be read or parsed
 // carries no hook to keep.
 func (l *launcher) currentUsageHook(name string) string {
-	b, err := os.ReadFile(filepath.Join(l.profileDirs, name, "settings.json"))
+	b, err := os.ReadFile(filepath.Join(l.profileDirs, name, settingscompose.GeneratedFile))
 	if err != nil {
 		return ""
 	}

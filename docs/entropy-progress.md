@@ -30,13 +30,11 @@ effect are recorded as ADRs in `docs/adr/`.
 | 5 | Pass-through layers: `util.GlobQuote`, `cli.globQuote` and a third copy in `agentproxy` (the same replacer, letter for letter) now call `paths.GlobQuote`; `HopTarget`, `SessionAdapter` and `ProcStartToken` are the implementations, not one-line forwarders; `ModelsAnswer` (one test caller) is gone; `ModelsListing`, `BridgeStop` and `ReadOwnedRegular` are unexported. `ProcessTable` stays: it is the boundary that hands out the named `ProcTable`. | dedup guard bans `globQuote`, `findHopTarget`, `findSessionAdapter`, `procStartToken` | done |
 | 6 | cli verb lists: `realVerbs` was a third hand-kept list beside `verbArity` and `ownVerbs`. It is now built from `verbArity` plus `unboundedVerbs`; the retired aliases are one `retiredVerbs` list. The lists keep different facts (word count, never-forwarded, retired), so they stay apart rather than merge. | `TestDispatchAnswersExactlyTheListedVerbs` parses `dispatch` and pins its cases to the lists (mutation-checked) | done |
 | 7 | `cmd/ccmorph-core`: the usage string named 7 of 13 commands. One `commands` table now holds them, and the usage line is built from its keys. | the usage line is derived, so it cannot drift | done |
+| 8 | Settings file names: `settings.profile.json`, `cache/settings.base.json` and `settings.json` were literals in `cli` and `util`, and `cli` decided on its own which file is the profile's layer. `settingscompose` exports `GeneratedFile`, `LayerFile`, `BaseFile` and `ProfileLayer`; every site uses them. | `TestProfileLayerFollowsTheComposedState`; dedup guard `test_the_settings_file_names_are_spelled_once` | done |
 
 ## Task pool (ranked by value and risk)
 
-1. **Settings file names:** `settings.profile.json` is a constant in
-   `settingscompose` but a literal in `cli/launch.go` and `util/store.go`.
-   `cli/launch.go:562-571` decides on its own which settings layer wins.
-2. **cli-only util files:** move into `cli` the files whose only caller is
+1. **cli-only util files:** move into `cli` the files whose only caller is
    `cli`: `compinit.go`, `claudehelp.go`, `launchargv.go`,
    `launchflags.go`, `doctor.go`.
 

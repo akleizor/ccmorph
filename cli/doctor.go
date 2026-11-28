@@ -18,6 +18,7 @@ import (
 	"github.com/akleizor/ccmorph/adapter"
 	"github.com/akleizor/ccmorph/ctxwindow"
 	"github.com/akleizor/ccmorph/profile"
+	"github.com/akleizor/ccmorph/settingscompose"
 	"github.com/akleizor/ccmorph/util"
 	"github.com/akleizor/ccmorph/util/modelid"
 	"github.com/akleizor/ccmorph/util/paths"
@@ -596,7 +597,7 @@ func (l *launcher) doctor(name string, verbose bool) int {
 		// Each file is judged on its own, so the line names the one that is
 		// actually broken: the shared canonical file and the profile's file are
 		// fixed in different places.
-		for _, p := range []string{filepath.Join(paths.ClaudeHome(), "settings.json"), settings} {
+		for _, p := range []string{filepath.Join(paths.ClaudeHome(), settingscompose.GeneratedFile), settings} {
 			if !util.SettingsValid(p) {
 				broken = p
 				break

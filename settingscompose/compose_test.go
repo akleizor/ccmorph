@@ -157,7 +157,7 @@ func TestACrashWhileDecidingTheFallbackRefuses(t *testing.T) {
 
 func TestMalformedTombstonesFailTheProjection(t *testing.T) {
 	f := newFixture(t)
-	write(t, filepath.Join(f.profile, layerFile), readFixture(t, "layer-null-tombstones.json"))
+	write(t, filepath.Join(f.profile, LayerFile), readFixture(t, "layer-null-tombstones.json"))
 	code, stderr := f.run("materialize")
 	if code != 1 || !strings.Contains(stderr, establishedTombstoneKey(t)) {
 		t.Fatalf("got %d %q", code, stderr)
@@ -201,7 +201,7 @@ func TestFoldKeepsClaudeEditsInTheLayer(t *testing.T) {
 	if code, stderr := f.run("fold"); code != 0 {
 		t.Fatal(code, stderr)
 	}
-	layer, _ := os.ReadFile(filepath.Join(f.profile, layerFile))
+	layer, _ := os.ReadFile(filepath.Join(f.profile, LayerFile))
 	// The rewritten settings lost the projection's status line (#275), so the
 	// fold records that deletion too: the next projection leaves it out.
 	want := readFixture(t, "fold-layer.json")
@@ -222,7 +222,7 @@ func TestAProfileLayerNeverOverridesTheBaseCleanupPeriod(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			f := newFixture(t)
 			write(t, f.canonical, tc.canonical)
-			write(t, filepath.Join(f.profile, layerFile), tc.layer)
+			write(t, filepath.Join(f.profile, LayerFile), tc.layer)
 			if code, stderr := f.run("materialize"); code != 0 {
 				t.Fatalf("materialize exited %d: %s", code, stderr)
 			}
@@ -296,7 +296,7 @@ func TestMaterializeAddsTheUsageHookOnceAfterTheUsers(t *testing.T) {
 	if code := Main([]string{"fold", f.profile, "--canonical", f.canonical}, &stderr); code != 0 {
 		t.Fatalf("fold: %d %s", code, stderr.String())
 	}
-	layer, err := os.ReadFile(filepath.Join(f.profile, layerFile))
+	layer, err := os.ReadFile(filepath.Join(f.profile, LayerFile))
 	if err != nil && !errors.Is(err, fs.ErrNotExist) {
 		t.Fatal(err)
 	}
@@ -341,7 +341,7 @@ func TestAQuotedCorePathIsStillTheLaunchsHook(t *testing.T) {
 			f.materialize(t, hook)
 			// The first-run capture is where a hook it cannot recognize lands in
 			// the user's layer; drop the cache so the next launch takes it.
-			for _, name := range []string{baseFile, layerFile} {
+			for _, name := range []string{BaseFile, LayerFile} {
 				if err := os.Remove(filepath.Join(f.profile, name)); err != nil && !errors.Is(err, fs.ErrNotExist) {
 					t.Fatal(err)
 				}
@@ -459,7 +459,7 @@ func TestAUsersHookEmbeddingTheUsageVerbSurvives(t *testing.T) {
 	if code, stderr := f.run("fold"); code != 0 {
 		t.Fatalf("fold: %d %s", code, stderr)
 	}
-	layer, err := os.ReadFile(filepath.Join(f.profile, layerFile))
+	layer, err := os.ReadFile(filepath.Join(f.profile, LayerFile))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -584,7 +584,7 @@ func TestMaterializeNamesTheProfileInTheStatusLine(t *testing.T) {
 	if code, stderr := f.run("fold"); code != 0 {
 		t.Fatalf("fold: %d %s", code, stderr)
 	}
-	layer, err := os.ReadFile(filepath.Join(f.profile, layerFile))
+	layer, err := os.ReadFile(filepath.Join(f.profile, LayerFile))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -604,7 +604,7 @@ func TestAUsersOwnStatusLineWins(t *testing.T) {
 			case "canonical":
 				write(t, f.canonical, `{"statusLine":`+mine+`}`)
 			case "layer":
-				write(t, filepath.Join(f.profile, layerFile), `{"statusLine":`+mine+`}`)
+				write(t, filepath.Join(f.profile, LayerFile), `{"statusLine":`+mine+`}`)
 			}
 			var stderr bytes.Buffer
 			args := []string{"materialize", f.profile, "--canonical", f.canonical, "--saved", "{}"}
@@ -630,7 +630,7 @@ func TestDeletingTheStatusLineSticks(t *testing.T) {
 	if code, stderr := f.run("fold"); code != 0 {
 		t.Fatalf("fold: %d %s", code, stderr)
 	}
-	layer, err := os.ReadFile(filepath.Join(f.profile, layerFile))
+	layer, err := os.ReadFile(filepath.Join(f.profile, LayerFile))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -658,7 +658,7 @@ func TestEditingTheProjectedStatusLineMakesItTheUsers(t *testing.T) {
 	if code, stderr := f.run("fold"); code != 0 {
 		t.Fatalf("fold: %d %s", code, stderr)
 	}
-	layer, err := os.ReadFile(filepath.Join(f.profile, layerFile))
+	layer, err := os.ReadFile(filepath.Join(f.profile, LayerFile))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -748,7 +748,7 @@ func TestAUsersOwnStatusLineStillHasTheProfileNamed(t *testing.T) {
 	if code, stderr := f.run("fold"); code != 0 {
 		t.Fatalf("fold: %d %s", code, stderr)
 	}
-	if layer, _ := os.ReadFile(filepath.Join(f.profile, layerFile)); strings.Contains(string(layer), "systemMessage") {
+	if layer, _ := os.ReadFile(filepath.Join(f.profile, LayerFile)); strings.Contains(string(layer), "systemMessage") {
 		t.Fatalf("a fold saved the notice into the layer: %s", layer)
 	}
 }
