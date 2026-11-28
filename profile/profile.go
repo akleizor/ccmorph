@@ -262,6 +262,9 @@ func readConf(state, name string, secure bool, lists Lists, warn func(string), c
 		return nil, fail("invalid profile file for '%s'", name)
 	}
 	fields := map[string]string{}
+	// A removed key is dropped, so it never reaches fields: its repeats are
+	// judged here, by the same rule, and its notice is said once (#1031).
+	dropped := map[string]string{}
 	text := strings.TrimSuffix(string(data), "\n")
 	for _, line := range strings.Split(text, "\n") {
 		if line == "" || line[0] == '#' {
@@ -282,6 +285,13 @@ func readConf(state, name string, secure bool, lists Lists, warn func(string), c
 			return nil, fail("duplicate key '%s' in '%s'", k, name)
 		}
 		if msg, ok := removed[k]; ok {
+			if prev, dup := dropped[k]; dup {
+				if prev == v {
+					continue
+				}
+				return nil, fail("duplicate key '%s' in '%s'", k, name)
+			}
+			dropped[k] = v
 			warn("ccmorph: " + msg)
 			continue
 		}

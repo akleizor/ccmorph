@@ -459,6 +459,36 @@ func TestReadHealsMoreRepeatShapesIssue1031(t *testing.T) {
 	}
 }
 
+// A removed key is discarded, so it never reaches fields and the duplicate
+// check above cannot see its repeat: an identical second line said the same one
+// thing and must not say it twice (#1031). A repeat that disagrees is still
+// ambiguous, exactly as for a key that loads.
+func TestReadWarnsOnceForAnIdenticalRemovedKeyRepeatIssue1031(t *testing.T) {
+	base := "type=sub\nemail=a@b\n"
+	for _, c := range []struct{ once, repeated string }{
+		{base + "transport=old\n", base + "transport=old\ntransport=old\n"},
+		{base + "model=m\nrole=r\n# n\n", base + "model=m\nrole=r\n# n\nrole=r\n"},
+		{base + "lean=1\n", base + "lean=1\nlean=1\nlean=1\n"},
+	} {
+		wantFields, wantWarned, err := read(t, c.once)
+		if err != nil || len(wantWarned) != 1 {
+			t.Fatalf("%q: %v %v", c.once, wantWarned, err)
+		}
+		got, warned, err := read(t, c.repeated)
+		if err != nil {
+			t.Fatalf("%q: refused: %v", c.repeated, err)
+		}
+		if !reflect.DeepEqual(warned, wantWarned) || !reflect.DeepEqual(got, wantFields) {
+			t.Fatalf("%q: warned %v fields %v, want %v / %v", c.repeated, warned, got, wantWarned, wantFields)
+		}
+	}
+	for _, conf := range []string{base + "transport=old\ntransport=new\n", base + "role=a\nrole=a\nrole=b\n"} {
+		if _, _, err := read(t, conf); err == nil || !strings.Contains(err.Error(), "duplicate key") {
+			t.Fatalf("%q: err %v, want the duplicate key refusal", conf, err)
+		}
+	}
+}
+
 func TestReadStillRefusesADifferingRepeatIssue1031(t *testing.T) {
 	base := "type=sub\nemail=a@b\n"
 	for conf, want := range map[string]string{
