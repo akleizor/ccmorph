@@ -17,8 +17,9 @@ import (
 // GCStale is `util gc-stale <state dir> <profiles dir> <tmp dir>`: best-effort reaping of
 // state a killed launch left behind. Relay signals go once their owning launcher is
 // dead and they are a minute old. Session env files carry credentials and live
-// milliseconds (their reader removes them on sight), so a minute-old one in TMPDIR
-// or the state run dir was orphaned by a killed launcher and goes (#142). A
+// until their reader gets its turn — under a fork/exec storm that can be past a
+// minute — so a minute-old one in TMPDIR or the state run dir goes only once the
+// launcher its name carries is gone (#142, #1047). A
 // session-end record — the id of a session that just ended, read once by its
 // launcher for the resume hint — goes the same way (#285). A
 // private session's view — its real transcripts, history and shell snapshots —
@@ -30,7 +31,9 @@ import (
 // claude.md and another Claude Code session that recycled the number all name
 // claude (#206). It is asked when it started. A relay's name carries the
 // launch's own clock, so a launcher that started more than a minute after it
-// is not the one it names. A view keeps the kernel's own mark of its claude's
+// is not the one it names; a session env file's name carries the launcher's
+// pid alone, so it is spared while that pid lives (#1047). A view keeps the
+// kernel's own mark of its claude's
 // start beside the record, so a holder whose mark differs is not that claude;
 // no wall-clock step or filesystem clock moves that mark, while a record's
 // mtime is a filesystem's clock read against the kernel's (#218). A time the
@@ -52,21 +55,32 @@ func GCStale(state, profiles, tmp string) {
 		return err == nil && fi.Mode()&os.ModeSymlink == 0 && now.Sub(fi.ModTime()) >= age
 	}
 
-	// holds reports whether pid still runs the process a record's time names:
-	// alive, and started no later than a minute after that time. A pid the
-	// table cannot place, or one whose start it cannot read, holds: the sweep
-	// never takes live state on a guess (#189).
+	// reap is the one stale-record decision both sweeps read (#1047): a
+	// regular file a minute old may go only once the holder its name carries
+	// is gone. Names with no pid keep age alone. A relay's launch clock can
+	// also prove a recycled pid by the start the table gives it (#189, #206).
 	var tab map[int]psRow
 	read := false
-	holds := func(pid int, since time.Time) bool {
-		if syscall.Kill(pid, 0) != nil {
+	reap := func(f string, pid int, hasPid bool, since time.Time) bool {
+		if !paths.IsFile(f) || !old(f, time.Minute) {
+			return false
+		}
+		if !hasPid {
+			return true
+		}
+		err := syscall.Kill(pid, 0)
+		if err == syscall.ESRCH {
+			return true
+		}
+		// EPERM and other probe failures are not proof the holder is gone.
+		if err != nil || since.IsZero() {
 			return false
 		}
 		if !read {
 			tab, read = processTable(), true
 		}
 		r, ok := tab[pid]
-		return !ok || r.start.IsZero() || !r.start.After(since.Add(time.Minute))
+		return ok && !r.start.IsZero() && r.start.After(since.Add(time.Minute))
 	}
 
 	relays, _ := filepath.Glob(filepath.Join(paths.GlobQuote(state), ".reswitch.*"))
@@ -77,6 +91,9 @@ func GCStale(state, profiles, tmp string) {
 		// build's, or a stray file — keeps the kill check alone.
 		owner, rest, _ := strings.Cut(strings.TrimPrefix(filepath.Base(f), ".reswitch."), ".")
 		pid, err := strconv.Atoi(owner)
+		if err != nil {
+			continue // no launcher pid: never age-only reaped
+		}
 		stamp, _, _ := strings.Cut(rest, ".")
 		secS, usecS, hasUsec := strings.Cut(stamp, "_")
 		sec, serr := strconv.ParseInt(secS, 10, 64)
@@ -84,17 +101,13 @@ func GCStale(state, profiles, tmp string) {
 		if hasUsec {
 			usec, _ = strconv.Atoi(usecS)
 		}
-		if err != nil || !paths.IsFile(f) || !old(f, time.Minute) {
-			continue
+		var since time.Time
+		if serr == nil {
+			since = time.Unix(sec, int64(usec)*1000)
 		}
-		if serr != nil {
-			if syscall.Kill(pid, 0) == nil {
-				continue
-			}
-		} else if holds(pid, time.Unix(sec, int64(usec)*1000)) {
-			continue
+		if reap(f, pid, true, since) {
+			_ = os.Remove(f)
 		}
-		_ = os.Remove(f)
 	}
 
 	overlays, _ := filepath.Glob(filepath.Join(paths.GlobQuote(profiles), "*", "cache", "launch-settings.*"))
@@ -130,8 +143,13 @@ func GCStale(state, profiles, tmp string) {
 			}
 		}
 	}
+	// An env file's name carries the launcher that wrote it (#1047): while that
+	// pid lives, the file is a launch whose helper has yet to get its turn, and
+	// stays however old it is. A name with no pid — an older build's, or a
+	// stray one — keeps age alone.
 	for _, f := range envs {
-		if paths.IsFile(f) && old(f, time.Minute) {
+		pid, hasPid := envHolder(filepath.Base(f))
+		if reap(f, pid, hasPid, time.Time{}) {
 			_ = os.Remove(f)
 		}
 	}
@@ -234,4 +252,24 @@ func GCStale(state, profiles, tmp string) {
 			_ = os.RemoveAll(d)
 		}
 	}
+}
+
+// envHolder reads the launcher pid a session env file's name carries: the
+// launcher writes ccmorph-session-env.<pid>.<random> (#1047). An older build's
+// name is ccmorph-session-env.<random>, with no pid, and a stray or planted
+// name may carry none either; those keep the age-only reaping they always had.
+func envHolder(name string) (int, bool) {
+	rest, ok := strings.CutPrefix(name, "ccmorph-session-env.")
+	if !ok {
+		return 0, false
+	}
+	owner, random, ok := strings.Cut(rest, ".")
+	if !ok || random == "" {
+		return 0, false
+	}
+	pid, err := strconv.Atoi(owner)
+	if err != nil || pid <= 0 {
+		return 0, false
+	}
+	return pid, true
 }
