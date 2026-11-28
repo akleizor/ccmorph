@@ -1873,18 +1873,24 @@ class PickerTTYTest(unittest.TestCase):
     def test_sign_in_digit_out_of_range_moves_nothing_issue_1029(self):
         """#1029: a digit no printed row wears leaves the picker exactly where
         it stood — an unanswerable key selects nothing, cancels nothing, and
-        signs no one in: Enter still takes the row the pointer stands on."""
+        signs no one in. Pressed after an in-range digit it must not undo that
+        jump either: '3' then '9' then Enter takes the row 3 named (API key),
+        while on the unfixed picker, which ignores both digits, the same keys
+        take the default row and its browser sign-in."""
         env = self.env()
         stub = self.tmp / 'bin' / 'claude'
         stub.write_text('#!/bin/sh\nexit 1\n')  # any account sign-in fails here
         stub.chmod(0o755)
-        rc, out, missed = run_pty('ccmorph add pick9', env, [(b'Sign-in method', b'9\r')])
+        rc, out, missed = run_pty('ccmorph add pick9', env, [
+            (b'Sign-in method', b'39\r'),  # 3 jumps to API key; 9 wears no row
+            (b'Select [1-', b'q\n'),       # stop here: reaching this prompt is the proof
+        ])
         self.assertIsNone(missed, out)
-        self.assertNotEqual(rc, 0)
-        # The receipt and the account path's own refusal: the untouched
-        # default row is what Enter took — the digit moved nothing.
-        self.assertIn('Sign-in method — pick9 › Claude account', '\n'.join(screen(out)))
-        self.assertIn('logout failed', out)
+        self.assertNotEqual(rc, 0)  # q cancelled the provider menu
+        # The receipt names the row 3 moved to, and no account sign-in ran:
+        # the out-of-range digit left the pointer where the jump put it.
+        self.assertIn('Sign-in method — pick9 › API key', '\n'.join(screen(out)))
+        self.assertNotIn('logout failed', out)
         self.assertFalse((self.state / 'pick9.conf').exists())
 
     def test_typing_anthropic_ranks_the_anthropic_row_first(self):
