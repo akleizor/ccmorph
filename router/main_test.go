@@ -105,6 +105,32 @@ func TestMainRefusedOnCreatesNoRouterConfig(t *testing.T) {
 	}
 }
 
+func TestRouterOnWithNoProfileSaysThereIsNothingToRoute(t *testing.T) {
+	t.Setenv("CCMORPH_STATE_DIR", t.TempDir())
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	var out bytes.Buffer
+	if code := Main([]string{"on"}, strings.NewReader(""), &out, io.Discard); code != 0 {
+		t.Fatalf("exit %d", code)
+	}
+	want := "Router on. New sessions route subagents; open sessions keep running as they started.\n" +
+		"Nothing to route yet: there are no profiles. Add one: ccmorph add <name>\n"
+	if out.String() != want {
+		t.Fatalf("stdout %q", out.String())
+	}
+}
+
+func TestRouterOnWithAProfileStaysOneLine(t *testing.T) {
+	oneProfile(t)
+	var out bytes.Buffer
+	if code := Main([]string{"on"}, strings.NewReader(""), &out, io.Discard); code != 0 {
+		t.Fatalf("exit %d", code)
+	}
+	want := "Router on. New sessions route subagents; open sessions keep running as they started.\n"
+	if out.String() != want {
+		t.Fatalf("stdout %q", out.String())
+	}
+}
+
 func TestMainOnOffAndStatusStillAct(t *testing.T) {
 	oneProfile(t)
 	for _, c := range []struct {

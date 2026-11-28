@@ -1005,7 +1005,7 @@ def test_the_summary_names_a_missing_ccusage_instead_of_printing_a_dead_command_
         assert any(l.startswith("CLAUDE_CONFIG_DIR=") for l in ran.stdout.splitlines())
     else:
         assert "ccusage is not installed" in ran.stdout
-        assert "README" in ran.stdout
+        assert "https://github.com/ccusage/ccusage" in ran.stdout
         assert "CLAUDE_CONFIG_DIR=" not in ran.stdout, "the summary still prints a dead command"
 
 
@@ -1128,8 +1128,8 @@ def test_the_summary_names_where_the_files_went_and_the_command_to_run_next_issu
         emptybin = tmp_path / "emptybin"  # a PATH nothing, least of all ccusage, is found on
         emptybin.mkdir()
         env = dict(os.environ, PATH=str(emptybin))
-        tail = ["ccusage is not installed: no ccmorph install provides it; see the "
-                "README's cost-reporting note, and --help prints the command to run"]
+        tail = ["ccusage is not installed: no ccmorph install provides it; get it from "
+                "https://github.com/ccusage/ccusage, and --help prints the command to run"]
     ran = subprocess.run(
         [sys.executable, str(EXPORTER), "--output", str(output), "--source", str(rows),
          "--since", "20261016"],
@@ -1205,6 +1205,7 @@ def test_help_prints_the_ccusage_command_that_reads_the_export():
     assert ran.returncode == 0, ran.stderr
     assert ("CLAUDE_CONFIG_DIR=ROOT ccusage claude daily --instances --config "
             "ROOT/ccusage.json") in ran.stdout.splitlines()
+    assert "https://github.com/ccusage/ccusage" in ran.stdout  # GH-1041
     for flag in ("--output", "--source", "--since"):
         line = next((l for l in ran.stdout.splitlines() if l.lstrip().startswith(flag)), "")
         assert len(line.split()) > 2, f"{flag} is missing or says nothing: {line!r}"

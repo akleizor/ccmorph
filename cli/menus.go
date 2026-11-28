@@ -147,7 +147,12 @@ func (l *launcher) menuProfile(types ...string) (string, bool) {
 		}
 		return "", false
 	}
-	v, rc := uiSelect("search", "Profile", strings.Join(rows, "\n"), "all")
+	example := ""
+	switch l.verbWord {
+	case "run", "inspect", "use", "login", "config", "doctor", "probe", "models":
+		example = "ccmorph " + l.verbWord + " " + rowID(rows[0])
+	}
+	v, rc := uiSelectHint(example, "search", "Profile", strings.Join(rows, "\n"), "all")
 	return v, rc == 0 && v != ""
 }
 

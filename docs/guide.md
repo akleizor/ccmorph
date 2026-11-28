@@ -360,9 +360,9 @@ stay explicit — destructive operations should not be a menu selection.
 `/effort` choices affect the current session, not the next ccmorph launch.
 It prints the bare value to stdout
 (so `m=$(ccmorph get gw model)` and existing scripts keep working) and confirms
-the save on stderr. On a terminal that shows both, the value line folds into that
-confirmation, so a person reads the save once; `TERM=dumb`, which cannot fold,
-shows only the confirmation. An unset setting reads back an empty stdout; the
+the save on stderr. On a terminal that shows both streams only the confirmation
+prints, so a person reads the save once; stdout carries the value whenever it is
+not that terminal (a pipe, `$(...)` or a file). An unset setting reads back an empty stdout; the
 explanation — no model saved, so Claude Code picks the model (a gateway is
 asked which model at each launch), or no effort saved, so the session starts
 at Claude Code's own default — goes to stderr. `inspect` reports the effective
@@ -772,6 +772,9 @@ never sent to any other host.
 `used` as a fraction and `resets_at` as a Unix second, `read_at`, `age_seconds`, `stale`,
 `error`, `spend`, `balance`, and, on a gateway row, `checked`: `false` when the endpoint
 answered nothing this run, so the spend beside it is local receipts only).
+`plan`, `error`, `spend` and `balance` are on every row, empty (`""`, and `null` for
+`spend`) when there is nothing to say; `checked` appears only on a gateway row with an
+endpoint.
 
 ## What is isolated, and what is shared
 

@@ -455,8 +455,9 @@ func (l *launcher) use(args []string) int {
 	}
 	// GH-1041: naming the profile that is already the default changed nothing,
 	// so the answer says so — "Default set to" stood only where the default
-	// just moved. A default stored in another spelling is rewritten below.
-	if l.active() == name {
+	// just moved. A legacy spelling (TOK for conf tok) is rewritten below and
+	// answers "Default set"; this early return is for a file holding the name.
+	if stored, _ := os.ReadFile(filepath.Join(l.dir, "active")); strings.TrimRight(string(stored), "\n") == name {
 		fmt.Println(l.bold + name + l.reset + " is already the default — nothing changed")
 		return 0
 	}

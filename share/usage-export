@@ -2,7 +2,7 @@
 """Export metadata-only ccmorph receipts for ccusage, one project per profile.
 
 Usage: usage-export --output ROOT [--since YYYYMMDD]
-Then, with ccusage installed:
+Then, with ccusage installed (https://github.com/ccusage/ccusage):
 CLAUDE_CONFIG_DIR=ROOT ccusage claude daily --instances --config ROOT/ccusage.json
 
 Before the first session there is no receipt to export: such a run exports
@@ -624,8 +624,8 @@ def report(stats, output, source, first_session=False):
     ccusage_cmd = (f"CLAUDE_CONFIG_DIR={shlex.quote(root)} ccusage claude daily --instances "
                    f"--config {shlex.quote(os.path.join(root, 'ccusage.json'))}")
     if shutil.which("ccusage") is None:
-        tail = ["ccusage is not installed: no ccmorph install provides it; see the "
-                "README's cost-reporting note, and --help prints the command to run"]
+        tail = ["ccusage is not installed: no ccmorph install provides it; get it from "
+                "https://github.com/ccusage/ccusage, and --help prints the command to run"]
     elif first_session:
         # The command is not dead — this run merely had nothing to give it,
         # and the tail says so (GH-1033): the sentence is scoped to what this

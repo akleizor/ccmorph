@@ -24,7 +24,12 @@ import (
 const uiMargin = "  "
 const uiGap = 4
 
-type uiTheme struct{ bold, dim, reset, accent, focus, gray, red string }
+type uiTheme struct {
+	bold, dim, reset, accent, focus, gray, red string
+	// example, when set, is a whole command the refusal without a terminal
+	// shows as what to type instead (GH-1041).
+	example string
+}
 
 var fzfTheme = "fg:-1,bg:-1,hl:#b1b9f9,fg+:#b1b9f9,bg+:-1,hl+:#b1b9f9,pointer:#b1b9f9,marker:#b1b9f9,prompt:#d77757,header:#999999,info:#999999,border:#888888"
 
@@ -40,7 +45,7 @@ func themeFor(fd int) uiTheme {
 	if !isTTY(fd) || os.Getenv("NO_COLOR") != "" || os.Getenv("TERM") == "dumb" {
 		return uiTheme{}
 	}
-	return uiTheme{"\033[1m", "\033[2m", "\033[0m", rgb("d77757"), rgb("b1b9f9"), rgb("999999"), rgb("ff6b80")}
+	return uiTheme{"\033[1m", "\033[2m", "\033[0m", rgb("d77757"), rgb("b1b9f9"), rgb("999999"), rgb("ff6b80"), ""}
 }
 
 func uiErr(t uiTheme, msg string) { fmt.Fprintf(os.Stderr, "%sccmorph:%s %s\n", t.red, t.reset, msg) }
@@ -700,10 +705,17 @@ func eraseLines(n int) {
 // uiSelect is ccm_ui_select: the chosen ID, or rc 1 cancelled, 2 invalid or no
 // terminal to pick with, 128+n signal.
 func uiSelect(mode, title, rows, display string) (string, int) {
+	return uiSelectHint("", mode, title, rows, display)
+}
+
+// uiSelectHint is uiSelect whose no-terminal refusal ends on example, a command
+// that would work, when one is given (GH-1041).
+func uiSelectHint(example, mode, title, rows, display string) (string, int) {
 	if display == "" {
 		display = "labels"
 	}
 	t := themeFor(2)
+	t.example = example
 	list := splitRows(rows)
 	for _, r := range list {
 		id := rowID(r)
@@ -1796,6 +1808,14 @@ func publicRows(rows []string) []string {
 func (t uiTheme) refuseNoTerminal(rows []string, fzfNamed bool) {
 	if rows := publicRows(rows); len(rows) > 0 {
 		fmt.Fprintln(os.Stderr, strings.Join(rows, "\n"))
+	}
+	if t.example != "" {
+		need := "selection needs a terminal"
+		if !fzfNamed {
+			need += " or fzf"
+		}
+		uiErr(t, need+"; pass the profile name directly, for example: "+t.example)
+		return
 	}
 	if fzfNamed {
 		uiErr(t, "selection needs a terminal; pass the value directly")

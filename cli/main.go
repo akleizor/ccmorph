@@ -81,6 +81,7 @@ func (l *launcher) dispatch(args []string) int {
 	if len(args) > 0 {
 		first = args[0]
 	}
+	l.verbWord = first
 	switch first {
 	case "", "-h", "--help", "help":
 		rest := args[min(1, len(args)):]
@@ -169,6 +170,14 @@ func (l *launcher) dispatch(args []string) int {
 			n++ // the slash command's marker is not a word the user typed
 		}
 		if len(words) > n {
+			if first == "add" && strings.HasPrefix(words[0], "-") {
+				if words[0] == "--" {
+					return l.extraArg(first, "--")
+				}
+				l.err("unknown option '" + words[0] + "'")
+				l.err("usage: " + usageLine(first))
+				return 2
+			}
 			return l.extraArg(first, words[n])
 		}
 	}
@@ -932,7 +941,7 @@ func (l *launcher) usageAt(topic string, width int) int {
 		default:
 			// readActiveFile, not active(): this page stays read-only.
 			def, _ := l.readActiveFile()
-			if def != "" {
+			if def != "" && profile.ValidName(def) && l.exists(def) {
 				fmt.Println("Start here: ccmorph run " + def)
 			} else {
 				fmt.Println("Start here: ccmorph use <profile>")
@@ -1165,9 +1174,9 @@ prefix, not in ~/.local/bin. Remove it with Homebrew instead:
 Needs the install.sh that sits beside the library.`},
 	"probe": {"ccmorph probe [profile] [options]", `Look up each model's context window size, the most tokens one session can hold,
 in what the gateway publishes and in the model catalogue, and save the sizes for
-new sessions. Omit the profile to look up every API-key, proxy and provider
-profile. A model with no size found still works, at Claude Code's 200,000-token
-default. No inference request is made unless --allow-inference.
+new sessions. Omit the profile to look up every
+API-key and provider profile. A model with no size found still works, at Claude
+Code's 200,000-token default. No inference request is made unless --allow-inference.
 
 Options:
   -i                         Choose the profile from a list

@@ -1315,6 +1315,29 @@ class PickerTTYTest(unittest.TestCase):
                     # it (#840).
                     self.assertIn('picker-alpha', result.stderr, result.stderr)
 
+    def test_a_headless_profile_refusal_shows_a_command_to_type_gh_1041(self):
+        self.profile()
+        self.profile('other')
+        for verb in ('run -i', 'inspect', 'use -i', 'login -i', 'config', 'doctor -i',
+                     'probe -i', 'models'):
+            with self.subTest(verb=verb):
+                result = subprocess.run(
+                    ['zsh', '-fc', 'source "$1"\nccmorph ' + verb, 'test', str(CCMORPH)],
+                    env=self.env(fzf=False), stdin=subprocess.DEVNULL, capture_output=True,
+                    text=True, timeout=HANG_TIMEOUT, start_new_session=True)
+                word = verb.split()[0]
+                lines = result.stderr.rstrip('\n').splitlines()
+                assert result.stdout == '', result.stdout
+                m = re.search(r'for example: ccmorph %s (\S+)$' % word, lines[-1])
+                assert m and m.group(1) in lines[:-1], result.stderr
+        for verb in ('get', 'set effort high', 'context'):
+            with self.subTest(verb=verb):
+                result = subprocess.run(
+                    ['zsh', '-fc', 'source "$1"\nccmorph ' + verb, 'test', str(CCMORPH)],
+                    env=self.env(fzf=False), stdin=subprocess.DEVNULL, capture_output=True,
+                    text=True, timeout=HANG_TIMEOUT, start_new_session=True)
+                assert 'pass the value directly' in result.stderr, result.stderr
+
     def test_a_headless_refusal_lists_the_bare_values_issue_971(self):
         """GH-971: `run -i` and `set <p> model` with no terminal dumped each
         menu's whole row — id, label, kind and endpoint, tab-separated — above
@@ -1346,7 +1369,8 @@ class PickerTTYTest(unittest.TestCase):
             assert result.returncode != 0
             # Rows follow the profile name here; one bare ID a line, no tab.
             assert sorted(listing(result, 'ccmorph: selection needs a terminal or fzf; '
-                                           'pass the value directly')) == demo_rows, result.stderr
+                                           'pass the profile name directly, for example: '
+                                           'ccmorph run demo')) == demo_rows, result.stderr
             assert '\t' not in result.stderr
         for curl in ('ok', 'fail'):
             with self.subTest(command='set demo model, catalogue ' + curl):
@@ -1364,7 +1388,8 @@ class PickerTTYTest(unittest.TestCase):
         with self.subTest(command='run -i, fzf on PATH'):
             result = headless('ccmorph run -i', self.env(fzf=True))
             assert sorted(listing(result, 'ccmorph: selection needs a terminal; '
-                                           'pass the value directly')) == demo_rows, result.stderr
+                                           'pass the profile name directly, for example: '
+                                           'ccmorph run demo')) == demo_rows, result.stderr
             assert '\t' not in result.stderr
         # The inline native menu refuses in the picker's words, not fzf's,
         # because it never wanted fzf: the same bare listing ends it.
@@ -1490,6 +1515,17 @@ class PickerTTYTest(unittest.TestCase):
             self.assertNotIn('\x1b[', out)
             self.assertEqual(screen(out), ['Saved demo effort = high (new sessions)'], out)
             self.assertNotIn('high', [line.strip() for line in out.splitlines()], out)
+        # GH-1041: on a terminal showing both streams the bare value is never
+        # printed (nor erased): no line of its own, no cursor codes.
+        with self.subTest(term='default', bare='absent'):
+            self.profile()
+            rc, out, missed = run_pty('ccmorph set demo effort high', env)
+            self.assertIsNone(missed, out)
+            self.assertEqual(rc, 0, out)
+            self.assertNotIn('high', [line.strip() for line in out.splitlines()], out)
+            self.assertNotIn('\x1b[1A', out)
+            self.assertNotIn('\x1b[J', out)
+            self.assertEqual(screen(out), ['Saved demo effort = high (new sessions)'], out)
         # A picked value folds the same way, under the picker's own receipt.
         env = self.env(fzf=True)
         with self.subTest(key='model', picked=True):
@@ -1567,7 +1603,8 @@ class PickerTTYTest(unittest.TestCase):
         self.assertIn('  Default model — demo › picker-beta', '\n'.join(screen(out)), out)
         # stdout carries the value alone on its own line; stderr's "Saved …" line
         # and whatever the shell prints after it share the pty.
-        self.assertIn('picker-beta', [line.strip() for line in out.splitlines()], out)
+        # GH-1041: the bare value line is no longer echoed on a terminal.
+        self.assertNotIn('picker-beta', [line.strip() for line in out.splitlines()], out)
 
     def test_one_long_model_id_leaves_the_names_readable_issue_385(self):
         """A search picker keeps every name in sight beside one very long model id.

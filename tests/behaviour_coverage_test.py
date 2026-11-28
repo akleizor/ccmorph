@@ -162,6 +162,15 @@ def test_use_on_the_default_profile_says_nothing_changed(box):
     assert box.active == 'tok'
 
 
+def test_use_rewrites_a_default_stored_in_another_case(box):
+    seed(box)
+    (box.state / 'active').write_text('TOK\n')
+    r = box.run('use', 'tok')
+    assert r.returncode == 0, r.stderr
+    assert 'Default set' in r.stdout, r.stdout
+    assert (box.state / 'active').read_text() == 'tok\n'
+
+
 def test_use_refuses_an_unknown_or_invalid_profile_and_keeps_the_default(box):
     seed(box)
     box.run('use', 'work')
@@ -1395,6 +1404,19 @@ def test_a_word_after_the_arguments_is_refused_with_the_help_pages_usage(box, ve
     assert 'usage: ' + usage[len('Usage: '):] in result.stderr
     assert state_files(box.state) == before
     assert box.active == 'tok'
+
+
+def test_add_names_the_misused_word_gh_1041(box):
+    seed(box)
+    before = state_files(box.state)
+    opt = box.run('add', '--type', 'apikey', 'fl10')
+    assert opt.returncode == 2 and "unknown option '--type'" in opt.stderr, opt.stderr
+    assert 'apikey' not in opt.stderr.split('usage:')[0]
+    dd = box.run('add', '--', 'fl16')
+    assert dd.returncode == 2 and "unexpected argument '--'" in dd.stderr, dd.stderr
+    two = box.run('add', 'a', 'b')
+    assert two.returncode == 2 and "unexpected argument 'b'" in two.stderr, two.stderr
+    assert state_files(box.state) == before
 
 
 WRONG_ARGUMENT = [

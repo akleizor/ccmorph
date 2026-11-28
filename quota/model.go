@@ -68,16 +68,16 @@ func (s *Spend) AllUnpriced() bool {
 type Entry struct {
 	Profile    string   `json:"profile"`
 	Kind       string   `json:"kind"`
-	Plan       string   `json:"plan,omitempty"`
+	Plan       string   `json:"plan"`
 	Windows    []Window `json:"windows"`
 	ReadAt     *int64   `json:"read_at"`
 	AgeSeconds *int64   `json:"age_seconds"`
 	Stale      bool     `json:"stale"`
-	Error      string   `json:"error,omitempty"`
-	Spend      *Spend   `json:"spend,omitempty"`
+	Error      string   `json:"error"`
+	Spend      *Spend   `json:"spend"`
 	// Balance is what is left on the account behind an API key, "¥40.75", where
 	// the provider publishes it (balance.go); empty otherwise.
-	Balance string `json:"balance,omitempty"`
+	Balance string `json:"balance"`
 	// Checked answers, for a gateway or budget row, whether the endpoint
 	// answered this run. false says it answered nothing: the spend beside it
 	// comes from local receipts alone, the text row says so, and `--json`

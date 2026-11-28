@@ -170,6 +170,13 @@ def test_help_is_concise_truthful_and_read_only(tmp_path):
         assert page.returncode == 0, page.stderr
         assert 'Start here: ccmorph run work' in page.stdout, args
         assert 'Start here: ccmorph use' not in page.stdout, args
+    for bad in ('ghost\n', '../x\n'):
+        (state / 'active').write_text(bad)
+        page = subprocess.run([cli, '--help'], env=env, capture_output=True,
+                              text=True, timeout=HANG_TIMEOUT)
+        assert 'Start here: ccmorph use <profile>' in page.stdout, bad
+        assert 'run ghost' not in page.stdout and 'run ../x' not in page.stdout
+    (state / 'active').write_text('work\n')
     for verb in ('help', 'version'):
         page = subprocess.run([cli, 'help', verb], env=env, capture_output=True,
                               text=True, timeout=HANG_TIMEOUT)
@@ -664,3 +671,12 @@ def test_run_without_claude_names_the_problem_and_the_path_it_searched(tmp_path)
     assert CLAUDE_MISSING in result.stderr, result.stderr
     assert f'PATH searched: {bindir}' in result.stderr, result.stderr
     assert 'command not found' not in result.stderr, result.stderr
+
+
+def test_help_probe_names_no_proxy_type_gh_1041(tmp_path):
+    out = subprocess.run([str(ROOT / "bin/ccmorph"), 'help', 'probe'],
+                         env={**os.environ, 'HOME': str(tmp_path / 'home'),
+                              'CCMORPH_LIB_DIR': str(ROOT / "lib"),
+                              'CCMORPH_STATE_DIR': str(tmp_path / 'state')},
+                         capture_output=True, text=True, timeout=HANG_TIMEOUT).stdout
+    assert 'API-key and provider profile' in out and 'proxy' not in out

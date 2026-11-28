@@ -9,6 +9,19 @@
 
 ### Fixed
 
+- `ccmorph use <profile>` on the profile that is already the default says nothing changed instead of `Default set to` (#1041).
+- `ccmorph doctor` gives each of the two zsh completion lines its own `completion:` subject (#1041).
+- `ccmorph run` against a dead endpoint states the reason once (#1041).
+- The bare `ccmorph` page keeps a `Start here:` line once profiles exist, and names a default only when it is a real profile (#1041).
+- `ccmorph login` on a key that was never refused no longer says it will use the key again (#1041).
+- `ccmorph inspect` explains the masking-off and protocol rows in plain words (#1041).
+- `ccmorph help probe` no longer names a proxy profile type no menu offers (#1041).
+- The usage exporter names where ccusage comes from when it is not installed (#1041).
+- `ccmorph router on` with no profile says there is nothing to route yet and how to add one (#1041).
+- `ccmorph add --type apikey x` blames the option `--type`, not the word after it (#1041).
+- `ccmorph quota --json` carries `plan`, `error`, `spend` and `balance` on every row, as the guide says (#1041).
+- `ccmorph set` on a terminal prints only the Saved line, not the bare value above it; pipes and `$(...)` still get the value (#1041).
+- The profile picker with no terminal ends with a command to type, for example `ccmorph run <name>` (#1041).
 - `ccmorph hop` in a session that joined a shared adapter names its profile again and answers `Already on … — nothing changed` (#1022), even when the profile sets `env.CLAUDE_CONFIG_DIR`, and a subagent pick's shared adapter never replaces the profile the session itself runs on.
 
 ## v0.5.42 — 2026-11-28

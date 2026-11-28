@@ -2901,3 +2901,49 @@ func TestQuotaCacheWriteKeepsTheTempsMode(t *testing.T) {
 		t.Fatalf("the cache must read back what was saved, got %+v, %v", r, ok)
 	}
 }
+
+func TestQuotaJSONRowsCarryTheDocumentedKeys(t *testing.T) {
+	useClock(t, time.Date(2026, 10, 20, 12, 0, 0, 0, time.UTC))
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	useTransport(t, func(r *http.Request) (*http.Response, error) {
+		if r.URL.Host == "gw-down.example" {
+			return nil, fmt.Errorf("dial gw-down.example: no answer")
+		}
+		return reply(200, `{"data":[]}`), nil
+	})
+	in := "gw-down\tgateway\thttps://gw-down.example\t\tk1\n" +
+		"gw-up\tgateway\thttps://gw-up.example\t\tk2\n" +
+		"gw-none\tgateway\t\t\tk3"
+	jout, errOut, code := run(t, []string{"--json"}, in)
+	if code != 0 {
+		t.Fatalf("exit %d: %s", code, errOut)
+	}
+	var doc struct {
+		Profiles []map[string]json.RawMessage `json:"profiles"`
+	}
+	if err := json.Unmarshal([]byte(jout), &doc); err != nil {
+		t.Fatalf("%v: %s", err, jout)
+	}
+	if len(doc.Profiles) != 3 {
+		t.Fatalf("rows %d: %s", len(doc.Profiles), jout)
+	}
+	for _, row := range doc.Profiles {
+		for _, k := range []string{"profile", "kind", "plan", "windows", "read_at", "age_seconds", "stale", "error", "spend", "balance"} {
+			if _, ok := row[k]; !ok {
+				t.Errorf("row %s lacks %q: %s", row["profile"], k, jout)
+			}
+		}
+		_, has := row["checked"]
+		if want := string(row["profile"]) != `"gw-none"`; has != want {
+			t.Errorf("row %s checked present=%v, want %v", row["profile"], has, want)
+		}
+	}
+	b, _ := json.Marshal(Entry{Profile: "p", Kind: "claude"})
+	var m map[string]json.RawMessage
+	_ = json.Unmarshal(b, &m)
+	for _, k := range []string{"plan", "error", "spend", "balance"} {
+		if _, ok := m[k]; !ok {
+			t.Errorf("Entry lacks %q: %s", k, b)
+		}
+	}
+}

@@ -24,12 +24,6 @@ func sameTerminal(a, b *os.File) bool {
 	return errA == nil && errB == nil && os.SameFile(sa, sb)
 }
 
-// valueRows is how many terminal rows a value line took, columns wide: a line
-// that exactly fills a row does not wrap, and the newline moves on (#361).
-func valueRows(value string, columns int) int {
-	return (max(cells(value), 1)-1)/columns + 1
-}
-
 // settingWord reports whether word is the model or effort setting, the two the
 // shorthand lets lead a command when the profile is left out (#788).
 func settingWord(word string) bool {
@@ -293,17 +287,11 @@ func (l *launcher) getSet(verb string, args []string) int {
 		return 1
 	}
 	// stdout carries the value alone on its own line, for a script to capture.
-	// On the terminal the Saved sentence goes to, that line is an echo: a full
-	// terminal folds it into the sentence, as every picker folds its answer
-	// (#361); a dumb one cannot erase, so there it is left out (#358).
-	shared := sameTerminal(os.Stdout, os.Stderr)
-	fold := shared && os.Getenv("TERM") != "dumb"
-	if !shared || fold {
+	// On the terminal the Saved sentence goes to, that line would read as
+	// unrelated output before the sentence (GH-1041), and a terminal stdout is
+	// never captured, so only the sentence prints there.
+	if !sameTerminal(os.Stdout, os.Stderr) {
 		fmt.Println(value)
-	}
-	if fold {
-		_, columns := termSize()
-		eraseLines(valueRows(value, columns))
 	}
 	if isTTY(2) {
 		fmt.Fprintf(os.Stderr, "%sSaved%s %s %s = %s%s%s %s(new sessions)%s\n",

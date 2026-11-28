@@ -34,6 +34,7 @@ type launcher struct {
 	tuning, profileEnv, launchEnv, backend, mapping    []string
 	logSet                                             bool
 	launcherPID                                        int
+	verbWord                                           string // the command word dispatch read (GH-1041)
 	liveProfile                                        string // whose live lock this process holds (#205)
 
 	red, yellow, bold, dim, accent, cyan, reset string
@@ -44,14 +45,14 @@ type launcher struct {
 	version, zshVersion string
 	migrated            bool
 
-	adapterPID              int
-	sharedAdapter           *util.SharedAdapter
-	adapterProfile          string
-	adapterPort             string
+	adapterPID     int
+	sharedAdapter  *util.SharedAdapter
+	adapterProfile string
+	adapterPort    string
 	// reachNamed is the route cause this launch's own reach check already put
 	// on the screen in its sentence (GH-1041); the adapter's death on the same
 	// route must not re-probe it and print the identical sentence a second time.
-	reachNamed string
+	reachNamed              string
 	providerPID, providerTD string
 	providerAuth            string
 	providerHolder          string
@@ -98,6 +99,7 @@ func Main(args []string) int {
 }
 
 func (l *launcher) launchMain(args []string) int {
+	l.verbWord = "run" // the profile picker names this verb in its no-terminal example (GH-1041)
 	sigs := make(chan os.Signal, 4)
 	signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP, syscall.SIGQUIT)
 	go l.signals(sigs)

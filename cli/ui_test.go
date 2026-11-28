@@ -1191,6 +1191,10 @@ func TestNoTerminalRefusalListsBareIDsOnly(t *testing.T) {
 			func() { uiTheme{}.refuseNoTerminal(rows, false) }},
 		{"search with fzf", "ccmorph: selection needs a terminal; pass the value directly",
 			func() { uiTheme{}.refuseNoTerminal(rows, true) }},
+		{"search with no fzf and an example", "ccmorph: selection needs a terminal or fzf; pass the profile name directly, for example: ccmorph run demo",
+			func() { uiTheme{example: "ccmorph run demo"}.refuseNoTerminal(rows, false) }},
+		{"search with fzf and an example", "ccmorph: selection needs a terminal; pass the profile name directly, for example: ccmorph run demo",
+			func() { uiTheme{example: "ccmorph run demo"}.refuseNoTerminal(rows, true) }},
 		{"native", "ccmorph: selection needs a terminal; pass the value directly",
 			func() {
 				old := isTTY

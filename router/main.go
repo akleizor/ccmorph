@@ -86,6 +86,9 @@ func Main(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		}
 		if verb == "on" {
 			fmt.Fprintln(stdout, "Router on. New sessions route subagents; open sessions keep running as they started.")
+			if len(profileNames()) == 0 {
+				fmt.Fprintln(stdout, "Nothing to route yet: there are no profiles. Add one: ccmorph add <name>")
+			}
 		} else {
 			fmt.Fprintln(stdout, "Router off. New sessions start without it.")
 		}
