@@ -693,7 +693,7 @@ func (l *launcher) runInstaller(verb string, rest []string) int {
 		if len(rest) == 1 {
 			ref := rest[0]
 			if !refName.MatchString(ref) || strings.Contains(ref, "..") {
-				l.err("invalid ref '" + ref + "' — use a branch or tag name such as main or v0.1.0")
+				l.err("invalid ref '" + ref + "' — use a branch or tag name such as main")
 				return 2
 			}
 		}
@@ -1131,14 +1131,22 @@ profile without a command, and a hop changes both.`},
 	"cred": {"ccmorph cred [profile]", `Print the stored API key or token to stdout. This reveals a secret.
 Only profiles with a stored key or token are offered. Name one in scripts.`},
 	"update": {"ccmorph update [ref]", `Download the latest release and run its installer, which updates this install
-in place. Give a branch or tag to install that instead: ccmorph update v0.1.0.
+in place. A branch or tag may be named instead (ccmorph update main), but that
+archive contains no ccmorph-core binary, so a plain branch update is refused
+before anything changes: ccmorph update with no name installs the latest
+release, which ships the binary for your platform.
 Profiles, credentials and local.sh are kept, and the installer names what it kept.
 A git checkout is refused: update it with git.
+A Homebrew install is refused: update it with Homebrew instead:
+  brew upgrade ccmorph
 Needs the install.sh that sits beside the library; without it, run the one-line
 install from the README once.`},
 	"uninstall": {"ccmorph uninstall", `Remove the ccmorph command from ~/.local/bin. Your profiles and credentials stay
 in ~/.config/ccmorph; it lists what it left (state, usage receipts, keychain
 items) with the commands that remove them, if you want them gone.
+A Homebrew install is not removed by this command: it lives under Homebrew's
+prefix, not in ~/.local/bin. Remove it with Homebrew instead:
+  brew uninstall ccmorph
 Needs the install.sh that sits beside the library.`},
 	"probe": {"ccmorph probe [profile] [options]", `Look up each model's context window size, the most tokens one session can hold,
 in what the gateway publishes and in the model catalogue, and save the sizes for

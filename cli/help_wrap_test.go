@@ -68,6 +68,28 @@ func TestEveryHelpPageFitsEightyColumnsWithoutCuttingAWord(t *testing.T) {
 	}
 }
 
+// GH-1035: the update and uninstall pages owe a brew user its command, and the
+// command must stay copyable. The guard above proves no word is cut, but it
+// would not notice "brew upgrade" ending a line and "ccmorph" opening the next
+// — words preserved, command uncopyable. The commands are authored as short
+// lines of their own, which the wrap never re-breaks; this proves it.
+func TestUpdateAndUninstallHelpPrintTheBrewCommandWholeAtEightyColumns(t *testing.T) {
+	for _, page := range []struct{ topic, command string }{
+		{"update", "brew upgrade ccmorph"},
+		{"uninstall", "brew uninstall ccmorph"},
+	} {
+		found := false
+		for _, line := range strings.Split(helpPage(t, page.topic, 80), "\n") {
+			if strings.Contains(line, page.command) {
+				found = true
+			}
+		}
+		if !found {
+			t.Errorf("help %q at 80 columns never prints %q on one line", page.topic, page.command)
+		}
+	}
+}
+
 // GH-364: with a bridge installed, help add carries its longest line — the
 // provider sentence. On an 80-column terminal it wraps as one list item, its
 // continuation under the item's own indent, while a pipe still receives the
