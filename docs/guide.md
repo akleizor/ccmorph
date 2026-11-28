@@ -191,8 +191,11 @@ whether it accepts the pasted key — in this step, not at first launch — and 
 refused key is asked for again rather than saved. A pasted Claude token is
 judged the same way: a paste without a token's shape is refused at the prompt,
 and a shaped one is offered to Anthropic — Bearer-only, like the launch that
-will spend it — before it is saved. Nothing is written outside
-`~/.config/ccmorph` and the profile directory.
+will spend it — before it is saved. Adding a profile also seeds the shared
+Claude Code home `~/.claude`: the harness layer and session history every
+profile links into, one set for the whole machine (see *What is isolated,
+and what is shared* below). `ccmorph uninstall` leaves that home alone and
+names the shared session history it keeps.
 
 A fresh install has **no profiles** — like a newly installed app. Nothing is
 carried over from the machine it was built on.

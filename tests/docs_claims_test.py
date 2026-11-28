@@ -15,6 +15,10 @@ committed to the repo, so every `scripts/` path the document names must exist.
 Issue #609: f6210cf moved pytest into pyproject.toml's default uv test group,
 and INTENT.md's Checks, the guide and ARCHITECTURE.md still taught
 `python3 -m pytest`, which no longer finds pytest.
+Issue #1037: the add section promised nothing is written outside the state
+root and the profile directory, while the first add seeds the shared harness
+layer and session history under `~/.claude` for every profile to link into —
+the add paragraph must name that shared home it writes.
 """
 import re
 from pathlib import Path
@@ -276,3 +280,46 @@ def test_docs_name_both_state_roots_issue_731():
             f"{name} no longer names the profile root's variable")
         assert re.search(r"CCMORPH_STATE_DIR[^.]*\bdoes not move\b", flat), (
             f"{name} does not say CCMORPH_STATE_DIR leaves the receipts where they are")
+
+
+# #1037: what the add paragraph is allowed to promise, and what it must name.
+ADD_PROMPT_MARKER = "asks which kind of profile"
+# The exclusive shape of the old promise ("Nothing is written outside the
+# state root and the profile directory"): any sentence that bounds ALL of
+# add's writes to a named set of roots, whatever set it names.
+EXCLUSIVE_WRITE_PROMISE = re.compile(r"nothing (?:else )?is written outside", re.I)
+# `~/.claude` as its own path token. `~/.claude.json` — the settings file,
+# not the home — is excluded by the lookahead: the token may be followed only
+# by something that is neither a path segment nor a name character. A deeper
+# path under the home (`~/.claude/projects`) still names the home.
+SHARED_HOME = re.compile(r"~/\.claude(?![\w.])")
+
+
+def _add_paragraph(text):
+    """The paragraph that walks a person through `ccmorph add`: the blank-line
+    block carrying the add prompt flow. Paragraph-scoped, so a `~/.claude`
+    mention elsewhere in the guide — the uninstall passage, the sharing
+    section — cannot stand in for what the add promise itself says."""
+    for para in re.split(r"\n[ \t]*\n", text):
+        if ADD_PROMPT_MARKER in para:
+            return _flatten(para)
+    raise AssertionError(f"docs/guide.md has no paragraph containing {ADD_PROMPT_MARKER!r}")
+
+
+def test_guide_add_names_the_shared_home_issue_1037():
+    """#1037: the add section promised "Nothing is written outside
+    ~/.config/ccmorph and the profile directory" while the first add creates
+    the shared harness layer and session history under ~/.claude that every
+    profile links into (util/setup.go). The paragraph must both drop the
+    exclusive promise and name the shared home — each half on its own: a
+    paragraph that names ~/.claude beside the old promise fails as surely as
+    one that drops the promise while naming only ~/.claude.json, another
+    path that native claude shares but that is not the home."""
+    para = _add_paragraph(GUIDE.read_text(encoding="utf-8"))
+    assert not EXCLUSIVE_WRITE_PROMISE.search(para), (
+        "docs/guide.md's add paragraph still bounds all of add's writes to a "
+        "named set of roots, while the first add seeds the shared Claude Code "
+        "home ~/.claude")
+    assert SHARED_HOME.search(para), (
+        "docs/guide.md's add paragraph names no shared Claude Code home; the "
+        "first add creates the shared layer and session history under ~/.claude")
