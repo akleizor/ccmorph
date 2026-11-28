@@ -446,15 +446,10 @@ def test_the_window_marker_is_spelled_once_issue_544():
 # paths.ClaudeHome: a raw $HOME join made it relative to the cwd when HOME
 # was unset (#138), and each copy was one more place to change.
 #
-# Issue #1065: the one-line call shape was not the whole class, and neither was
-# the exact string ".claude". A `home := os.Getenv("HOME")` two lines above the
-# join left three sites invisible to the pattern, so #1062's all-sites claim went
-# through with them in the tree; with HOME unset they migrated a planted
-# .claude-profiles out of the launch cwd and rewrote a planted plugin index there,
-# absolute installLocation turned into a path relative to the cwd. And a
-# `".claude-profiles"` operand matched nothing, because the pattern demanded the
-# closing quote: a fourth site (doctor's legacy root) sat in plain sight on one
-# line. Both shapes are named now, on the ".claude prefix.
+# Issue #1065: raw HOME can arrive in an earlier assignment or, for
+# NormalizePluginIndex, as install.sh's "$HOME" argument. Joining either when
+# HOME is unset can touch the caller's cwd. The prefix matches both ".claude"
+# and ".claude-profiles".
 RAW_CLAUDE_HOME = re.compile(r'Join\(.*"\.claude')
 GETENV_HOME = re.compile(r'os\.Getenv\("HOME"\)')
 # One name on the left of an assignment: the home a $HOME read can flow into.
@@ -465,8 +460,7 @@ def home_names(line):
     """Names line assigned the result of a raw $HOME read, index-matched.
 
     `home, profiles := filepath.Clean(os.Getenv("HOME")), dir` binds home and not
-    profiles, and a read wrapped in a call binds too — a guard that only saw a
-    bare `home := os.Getenv("HOME")` is what let #1065's third site stay plain."""
+    profiles, and a read wrapped in a call binds too."""
     m = re.search(r'([\w.,\s]+?)\s*:?=(?!=)\s*(.+)', line)
     if not m or not GETENV_HOME.search(m.group(2)):
         return []
@@ -476,14 +470,35 @@ def home_names(line):
             and ONE_NAME.fullmatch(names[i])]
 
 
-def raw_home_claude_joins(text):
-    """Line numbers of text where a raw $HOME names a .claude path.
+def installer_home_names(lines):
+    """Track the installer-supplied home in NormalizePluginIndex's prologue.
 
-    Either shape: the join reading $HOME on its own line, or a name that read
-    $HOME joined with ".claude…" or ".claude-profiles…" later in the file
-    (#1065). A comment line never counts."""
+    install.sh forwards "$HOME" as homeDir; filepath.Clean alone turns an
+    empty argument into '.', not an absolute path. Recognize the fallback
+    before any join, rather than looking for a Go Getenv the caller never made.
+    This is a check of the repair's prologue, not general Go dataflow analysis.
+    """
+    in_repair = False
+    for n, line in enumerate(lines):
+        if line.startswith("func NormalizePluginIndex("):
+            in_repair = True
+        elif line == "}":
+            in_repair = False
+        if not in_repair:
+            continue
+        bind = re.match(r'\s*(\w+)\s*,\s*\w+\s*:=\s*filepath\.Clean\(homeDir\)\s*,', line)
+        if not bind:
+            continue
+        home = bind.group(1)
+        fallback = [f"if !filepath.IsAbs({home}) {{", f"{home} = filepath.Clean(paths.Home())", "}"]
+        if [line.strip() for line in lines[n + 1:n + 4]] != fallback:
+            yield n, home
+
+
+def raw_home_claude_joins(text):
+    """Line numbers of .claude joins on raw HOME reads or installer input."""
     lines = text.splitlines()
-    hits, assigned = set(), []
+    hits, assigned = set(), list(installer_home_names(lines))
     for n, line in enumerate(lines):
         if line.lstrip().startswith("//"):
             continue
@@ -493,46 +508,76 @@ def raw_home_claude_joins(text):
     for n, name in assigned:
         joined = re.compile(r'Join\(\s*' + re.escape(name) + r'\s*,\s*"\.claude')
         for later in range(n + 1, len(lines)):
+            if lines[later] == "}":  # End of the gofmt-formatted function.
+                break
             if lines[later].lstrip().startswith("//"):
                 continue
             if joined.search(lines[later]):
                 hits.add(later + 1)
-                break
     return sorted(hits)
 
 
-# util/paths owns Home and ClaudeHome: it is where the join is allowed to be.
-PATHS_HOME = ROOT / "util" / "paths"
-
-
-def test_claude_home_is_built_once():
-    offenders = [f"{path.relative_to(ROOT)}:{n}"
-                 for path in go_sources()
-                 if not path.name.endswith("_test.go") and PATHS_HOME not in path.parents
+def assert_claude_home_is_built_once(root, sources):
+    # util/paths owns Home and ClaudeHome: it is where the join is allowed.
+    offenders = [f"{path.relative_to(root)}:{n}"
+                 for path in sources
+                 if not path.name.endswith("_test.go") and root / "util" / "paths" not in path.parents
                  for n in raw_home_claude_joins(path.read_text())]
     assert not offenders, (
         "~/.claude is joined on a raw $HOME instead of paths.ClaudeHome: "
         + "; ".join(offenders))
 
 
-# The four sites #1062 left in the tree, each in the shape it had, as it read
-# with HOME unset. Re-introducing any of them fails the guard; the shapes below
-# it — the helper's own definition, a raw read that never names a .claude path,
-# a display path, and a home resolved through the helper — are what the guard
-# must leave alone, or it would refuse the code that fixes the bug.
+def test_claude_home_is_built_once():
+    assert_claude_home_is_built_once(ROOT, go_sources())
+
+
+# Revert one fix at a time in copies of the real sources. In particular, the
+# installer mutation deletes only the fallback: there is no Getenv to restore.
+@pytest.mark.parametrize("path, fixed, original", [
+    pytest.param("cli/main.go",
+                 '\tlegacyHome := filepath.Join(paths.Home(), ".claude-profiles")',
+                 '\thome := os.Getenv("HOME")\n'
+                 '\tlegacyHome := filepath.Join(home, ".claude-profiles")',
+                 id="legacy-profile-home"),
+    pytest.param("cli/main.go",
+                 '\thome := paths.Home()\n'
+                 '\tfor _, name := range []string{"known_marketplaces.json", "installed_plugins.json"} {\n'
+                 '\t\tb, err := os.ReadFile(filepath.Join(paths.ClaudeHome(), "plugins", name))',
+                 '\thome := os.Getenv("HOME")\n'
+                 '\tfor _, name := range []string{"known_marketplaces.json", "installed_plugins.json"} {\n'
+                 '\t\tb, err := os.ReadFile(filepath.Join(home, ".claude", "plugins", name))',
+                 id="launch-plugin-index"),
+    pytest.param("util/misc.go",
+                 '\tif !filepath.IsAbs(home) {\n\t\thome = filepath.Clean(paths.Home())\n\t}\n',
+                 '', id="installer-plugin-index"),
+    pytest.param("cli/doctor.go",
+                 '\tlegacy := filepath.Join(paths.Home(), ".claude-profiles")',
+                 '\tlegacy := filepath.Join(os.Getenv("HOME"), ".claude-profiles")',
+                 id="doctor-legacy-home"),
+])
+def test_claude_home_guard_rejects_source_reversion_issue_1065(tmp_path, path, fixed, original):
+    source = (ROOT / path).read_text()
+    assert source.count(fixed) == 1, f"update the reversion for {path}"
+    candidate = tmp_path / path
+    candidate.parent.mkdir(parents=True)
+    candidate.write_text(source)
+    assert_claude_home_is_built_once(tmp_path, [candidate])
+    candidate.write_text(source.replace(fixed, original, 1))
+    with pytest.raises(AssertionError, match=re.escape(path) + r":\d+") as caught:
+        assert_claude_home_is_built_once(tmp_path, [candidate])
+    print(caught.value.args[0])
+
+
 RAW_HOME_SITES = {
-    "secureDirs' legacy profile home": '''
-	home := os.Getenv("HOME")
-	legacyHome := filepath.Join(home, ".claude-profiles")
-''',
-    "launch's plugin index read": '''
-	home := os.Getenv("HOME")
-	for _, name := range names {
-		b, err := os.ReadFile(filepath.Join(home, ".claude", "plugins", name))
-''',
-    "the repair's join on a $HOME it was handed empty": '''
-	home := os.Getenv("HOME")
+    "installer repair with the fallback after the join": '''
+func NormalizePluginIndex(homeDir, profileDir string) bool {
+	home, profileRoot := filepath.Clean(homeDir), filepath.Clean(profileDir)
 	plugins := filepath.Join(home, ".claude", "plugins")
+	if !filepath.IsAbs(home) {
+		home = filepath.Clean(paths.Home())
+	}
+}
 ''',
     "the same read cleaned where it is read": '''
 	home, profileRoot := filepath.Clean(os.Getenv("HOME")), filepath.Clean(profileDir)
