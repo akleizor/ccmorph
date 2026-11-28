@@ -127,6 +127,43 @@ jobs:
           # shows where it stopped; --durations names the slow ones on a full run.
           CCMORPH_LIB_DIR="$PWD/lib" python -m pytest tests/ -v --durations=25  # as gate-py, CONTRIBUTING and INTENT run it
 
+  util-linux:
+    # #1051: a Linux without GNU ps is part of CI's green. The util suite runs
+    # in golang:1.27 (GNU ps) and golang:1.27-alpine (BusyBox ps, which rejects
+    # -ax), as the runner's own uid, since root writes through the 0o500 and
+    # 0o555 dirs the refusal tests rely on, under --init so orphans are reaped
+    # as on a real host, on the runner the test job pins for the same kernel.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - image: 'golang:1.27'
+            ps: gnu
+          - image: 'golang:1.27-alpine'
+            ps: busybox
+    steps:
+      - uses: actions/checkout@v4
+      - name: the image's ps is the kind this leg tests
+        env:
+          GO_IMAGE: ${{ matrix.image }}
+          PS_KIND: ${{ matrix.ps }}
+        run: |
+          if docker run --rm "$GO_IMAGE" ps -axo pid= >/dev/null 2>&1; then got=gnu; else got=busybox; fi
+          if [ "$got" != "$PS_KIND" ]; then
+            echo "$GO_IMAGE: this leg tests a $PS_KIND ps, the image has a $got one"
+            exit 1
+          fi
+      - name: go test ./util/ in ${{ matrix.image }}
+        env:
+          GO_IMAGE: ${{ matrix.image }}
+        run: |
+          docker run --rm --init --user "$(id -u):$(id -g)" \
+            -e HOME=/tmp -e GOPATH=/tmp/go -e GOCACHE=/tmp/go-cache \
+            --mount "type=bind,source=$GITHUB_WORKSPACE,target=/src,readonly" \
+            --workdir /src "$GO_IMAGE" go test -count=1 ./util/
+
   python-floor:
     timeout-minutes: 20
     # The floor is 3.8, and only the Remote Control launcher (addons/remote-control) and
