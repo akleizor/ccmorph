@@ -1867,8 +1867,36 @@ class PickerTTYTest(unittest.TestCase):
         self.assertEqual(self.field('pick3', 'type'), 'apikey')
         self.assertNotIn('sk-digit-not-real', out)
         # The footer names the keys the picker answers, with the digit range
-        # this list actually has (no bridge: four rows).
-        self.assertRegex(out, r'1-4 Jump · Enter Select')
+        # this list actually has (no bridge: four rows) — and Home/End beside
+        # the digits, because they reach rows past nine (#1029).
+        self.assertRegex(out, r'1-4 Jump · Home/End Jump · Enter Select')
+
+    def test_sign_in_picker_footer_names_home_and_end_issue_1029(self):
+        """#1029: a list longer than nine rows outruns the digit keys, so the
+        footer must keep naming Home/End beside them; End still reaches the
+        last row, and the footer line names every key the picker answers.
+
+        The provider bridge gives the sign-in menu thirteen rows: the three
+        fixed methods plus ten browser logins. Digits reach only the first
+        nine, so dropping the Home/End hint would leave the last rows'
+        navigation undiscoverable."""
+        env = self.env()
+        env['NO_COLOR'] = '1'  # the pointer and its label are one raw run
+        self.bridge(*(f'p{i}' for i in range(10)))
+        rc, out, missed = run_pty('ccmorph add many', env, [
+            (b'Sign-in method', b'\x1b[F'),   # End: the last row, past the digits
+            ('❯ P9'.encode(), b'\x03'),       # stop with the pointer proved there
+        ])
+        self.assertIsNone(missed, out)
+        self.assertNotEqual(rc, 0)
+        self.assertIn('❯ P9', '\n'.join(screen(out)))
+        footers = [line for line in out.splitlines() if 'Move' in line and 'Jump' in line]
+        self.assertTrue(footers, out)
+        foot = footers[-1]
+        self.assertIn('1-9 Jump', foot)
+        self.assertIn('Home/End Jump', foot)
+        self.assertIn('Enter Select', foot)
+        self.assertIn('Esc Cancel', foot)
 
     def test_sign_in_digit_out_of_range_moves_nothing_issue_1029(self):
         """#1029: a digit no printed row wears leaves the picker exactly where

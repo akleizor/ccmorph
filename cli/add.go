@@ -10,7 +10,6 @@ import (
 	"os/signal"
 	"path/filepath"
 	"regexp"
-	"strconv"
 	"strings"
 	"syscall"
 	"unicode"
@@ -70,8 +69,12 @@ func (l *launcher) add(args []string) int {
 		// names the machine's own install step.
 		rows += "\nmore\tMore sign-ins\t" + browserLogins + " (cliproxyapi)"
 	}
-	choice, ok := l.menu("native", "Sign-in method — "+name, rows, func(v string, _ []string) (string, string, bool) {
-		if _, _, ok := methodAction(v, providers, haveBridge); !ok {
+	choice, ok := l.menu("native", "Sign-in method — "+name, rows, func(v string, list []string) (string, string, bool) {
+		kind, provider, ok := methodAction(v, providers, haveBridge)
+		if !ok || !rowPrinted(list, signInRow(kind, provider)) {
+			// A name the widened menu printed is no answer once a narrowing
+			// has taken its row off the screen: the answer must be the row
+			// the person can see (#1029).
 			return "", "not a sign-in method — enter a number from the list or a name", false
 		}
 		return v, "", true
@@ -145,11 +148,11 @@ func (l *launcher) menu(mode, title, rows string, match func(string, []string) (
 			return "", false
 		}
 		answer, hint, ok := "", "", false
-		if n, err := strconv.Atoi(v); err == nil && v == strconv.Itoa(n) && n >= 1 && n <= len(list) {
+		if n, numbered := menuNumber(v, list); numbered {
 			// A number is the row it stands beside on the printed list —
 			// before and after a narrowing, so renumbering can never make
 			// a number answer a row it does not name.
-			answer, hint, ok = match(rowID(list[n-1]), list)
+			answer, hint, ok = match(rowID(list[n]), list)
 		}
 		if !ok {
 			answer, hint, ok = match(v, list)
@@ -178,8 +181,22 @@ func (l *launcher) menu(mode, title, rows string, match func(string, []string) (
 		if hint == "" {
 			hint = "not a menu answer — enter a number from the list or a name"
 		}
-		l.err(fmt.Sprintf("%s (wrong answer %d of %d)", hint, wrong, menuTryLimit))
+		left := menuTryLimit - wrong
+		plural := "answers remain"
+		if left == 1 {
+			plural = "answer remains"
+		}
+		l.err(fmt.Sprintf("%s (wrong answer; %d more wrong %s)", hint, left, plural))
 	}
+}
+
+// signInRow is the id of the row a method answer names: the fixed rows carry
+// their kind as the id, a browser login carries its provider's (#1029).
+func signInRow(kind, provider string) string {
+	if kind == "provider" {
+		return provider
+	}
+	return kind
 }
 
 // methodAction is what a sign-in menu answer chooses: the row's kind and, for
@@ -553,14 +570,19 @@ func (l *launcher) addAPIKey(name string) int {
 	}
 	rows = append(rows, "custom\tCustom endpoint\tAnthropic or any gateway URL")
 	pick, ok := l.menu("search", "Provider — "+name, strings.Join(rows, "\n"), func(v string, list []string) (string, string, bool) {
-		p := v
-		if p == "anthropic" || p == "custom" {
-			return p, "", true
-		}
-		for _, pr := range presets {
-			if pr[0] == p {
-				return p, "", true
+		p := ""
+		switch v {
+		case "anthropic", "custom":
+			p = v
+		default:
+			for _, pr := range presets {
+				if pr[0] == v {
+					p = v
+				}
 			}
+		}
+		if p != "" && rowPrinted(list, p) {
+			return p, "", true
 		}
 		hint := "not a provider — enter a number from the list or a name"
 		if looksLikeURL(v) {

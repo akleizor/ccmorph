@@ -1215,3 +1215,142 @@ func TestNoTerminalRefusalListsBareIDsOnly(t *testing.T) {
 		})
 	}
 }
+
+// rowLabel is the column a person reads beside the row's number; a row with
+// no detail still has a name, and a detail is never part of it (#1029).
+func TestRowLabelIsTheNameColumn(t *testing.T) {
+	for _, tc := range []struct {
+		row, want string
+	}{
+		{"apikey\tAPI key\tAnthropic or a gateway", "API key"},
+		{"sub\tClaude account\tSign in with your browser", "Claude account"},
+		{"onlyid", "onlyid"},
+		{"id\tlabel", "label"},
+		{"id\tlabel\tdetail\tstill-not-the-label", "label"},
+	} {
+		if got := rowLabel(tc.row); got != tc.want {
+			t.Errorf("rowLabel(%q) = %q, want %q", tc.row, got, tc.want)
+		}
+	}
+}
+
+// namedRows is the shared name half of a piped menu (#1029): the label the
+// list prints answers whole and case-folded, part of a name answers when one
+// row carries it, an ambiguous part names every carrier (the loop narrows
+// rather than guesses), and the grey detail column is not a name (#727).
+func TestNamedRowsAnswersTheNameTheListPrintsIssue1029(t *testing.T) {
+	rows := splitRows("sub\tClaude account\tSign in with your browser\n" +
+		"token\tClaude token\tFor scripts/CI\n" +
+		"apikey\tAPI key\tAnthropic or a gateway\n" +
+		"more\tMore sign-ins\tAntigravity (cliproxyapi)")
+	ids := func(rows []string) []string {
+		out := make([]string, len(rows))
+		for i, r := range rows {
+			out[i] = rowID(r)
+		}
+		return out
+	}
+	for _, tc := range []struct {
+		name, answer string
+		want         []string
+	}{
+		{"label", "API key", []string{"apikey"}},
+		{"label other case", "api KEY", []string{"apikey"}},
+		{"id", "apikey", []string{"apikey"}},
+		{"id other case", "APIKEY", []string{"apikey"}},
+		{"another row's label", "Claude token", []string{"token"}},
+		{"unique part", "api", []string{"apikey"}},
+		{"unique part of a label", "sign-ins", []string{"more"}},
+		{"ambiguous part names every carrier", "claude", []string{"sub", "token"}},
+		{"detail is not a name", "gateway", nil},
+		{"empty names nothing", "", nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := ids(namedRows(rows, tc.answer)); strings.Join(got, ",") != strings.Join(tc.want, ",") {
+				t.Fatalf("namedRows(%q) = %q, want %q", tc.answer, got, tc.want)
+			}
+		})
+	}
+	// A whole name wins over the same text as part of another row's name: a
+	// row called "token" and one labelled "Claude token" answer with "token"
+	// alone, never both (#1029's "a full label that is also another row's id
+	// selects one row").
+	two := splitRows("token\tClaude token\tFor scripts/CI\nmytoken\tOther\tx")
+	if got := ids(namedRows(two, "token")); strings.Join(got, ",") != "token" {
+		t.Fatalf("a whole name must beat a part: %q", got)
+	}
+}
+
+// menuNumber keeps every number spelling the piped loop always took — "01"
+// named row 1 on main — while refusing a position the printed list does not
+// have (#1029).
+func TestMenuNumberNamesTheRowTheListPrintsIssue1029(t *testing.T) {
+	rows := splitRows("a\tA\nb\tB\nc\tC")
+	for _, tc := range []struct {
+		answer string
+		index  int
+		ok     bool
+	}{
+		{"1", 0, true},
+		{"01", 0, true},
+		{"001", 0, true},
+		{"2", 1, true},
+		{"+3", 2, true},
+		{"3", 2, true},
+		{"0", 0, false},
+		{"4", 0, false},
+		{"-1", 0, false},
+		{"", 0, false},
+		{"one", 0, false},
+		{"1.0", 0, false},
+	} {
+		if index, ok := menuNumber(tc.answer, rows); ok != tc.ok || index != tc.index {
+			t.Errorf("menuNumber(%q) = %d, %v; want %d, %v", tc.answer, index, ok, tc.index, tc.ok)
+		}
+	}
+}
+
+// digitJump is the native picker's digit half (#1029, folding #1036): a digit
+// names the row the piped list prints beside it, one-based; a digit no row
+// wears — including one past the last row — moves nothing, so the pointer a
+// previous key put in place stands and Enter still takes that row.
+func TestDigitJumpNamesThePrintedRowIssue1029(t *testing.T) {
+	for _, tc := range []struct {
+		key, rows, selected, want int
+	}{
+		{'3', 4, 0, 2}, // the issue's '3' at a four-row sign-in menu
+		{'3', 4, 1, 2}, // the same jump from anywhere the pointer stood
+		{'1', 4, 2, 0},
+		{'9', 4, 0, 0},   // no fourth row: nothing moves
+		{'9', 4, 2, 2},   // ... and a previous jump is not undone
+		{'3', 13, 12, 2}, // long lists still answer the first nine
+		{'9', 13, 0, 8},
+		{'0', 4, 2, 2}, // not a digit row
+	} {
+		if got := digitJump(tc.key, tc.rows, tc.selected); got != tc.want {
+			t.Errorf("digitJump(%c, %d rows, pointer %d) = %d, want %d", tc.key, tc.rows, tc.selected, got, tc.want)
+		}
+	}
+}
+
+// pickerFooter names the keys the native loop answers, and only those: the
+// digit range the printed list can take, Home/End for the rows past nine, and
+// the deciding keys. A footer that dropped Home/End left a thirteen-row list's
+// last rows undiscoverable (#1029, folding #1036).
+func TestPickerFooterNamesHomeEndAndTheDigitRangeIssue1029(t *testing.T) {
+	four := pickerFooter(4)
+	for _, want := range []string{"↑/↓ Move", "1-4 Jump", "Home/End Jump", "Enter Select", "Esc Cancel"} {
+		if !strings.Contains(four, want) {
+			t.Errorf("four-row footer %q does not name %q", four, want)
+		}
+	}
+	if strings.Contains(four, "1-9") {
+		t.Errorf("four-row footer promises a digit no row wears: %q", four)
+	}
+	thirteen := pickerFooter(13)
+	for _, want := range []string{"1-9 Jump", "Home/End Jump", "Enter Select", "Esc Cancel"} {
+		if !strings.Contains(thirteen, want) {
+			t.Errorf("thirteen-row footer %q does not name %q", thirteen, want)
+		}
+	}
+}
