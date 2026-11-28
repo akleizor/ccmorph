@@ -85,8 +85,8 @@ func TestNoProxyExemptsATargetAndAFailureIsAnAPIError(t *testing.T) {
 	}
 }
 
-// A body that cannot be read answers 400 and is never sent on.
-func TestAnUnreadableBodyOnAPickedAgentAnswers400(t *testing.T) {
+// A body that cannot be read answers 502 (retried) and is never sent on.
+func TestAnUnreadableBodyOnAPickedAgentAnswers502(t *testing.T) {
 	hits := make(chan string, 4)
 	gw := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { hits <- r.URL.Path }))
 	t.Cleanup(gw.Close)
@@ -104,7 +104,7 @@ func TestAnUnreadableBodyOnAPickedAgentAnswers400(t *testing.T) {
 		t.Fatal(err)
 	}
 	resp.Body.Close()
-	if resp.StatusCode != http.StatusBadRequest {
+	if resp.StatusCode != http.StatusBadGateway {
 		t.Fatalf("status %d", resp.StatusCode)
 	}
 	select {
@@ -142,13 +142,36 @@ func TestDialTunnelSpeaksTLSToAnHTTPSUpstream(t *testing.T) {
 	via, _ := url.Parse(s.URL)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	_, err := dialTunnel(ctx, "example.test:443", via)
+	_, err := dialTunnel(ctx, "example.test:443", via, nil)
 	var ua x509.UnknownAuthorityError
 	var ci x509.CertificateInvalidError
 	var he x509.HostnameError
 	if err == nil || !(asErr(err, &ua) || asErr(err, &ci) || asErr(err, &he) || strings.Contains(err.Error(), "certificate")) {
 		t.Fatalf("expected a TLS certificate error, got %v", err)
 	}
+}
+
+// The proxy hop trusts the session's extra CAs, as the transport does: an
+// https:// upstream signed by such a CA carries the CONNECT.
+func TestDialTunnelTrustsTheSessionsCAsForAnHTTPSUpstream(t *testing.T) {
+	s := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodConnect {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(s.Close)
+	via, _ := url.Parse(s.URL)
+	pool := x509.NewCertPool()
+	pool.AddCert(s.Certificate())
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	c, err := dialTunnel(ctx, "example.test:443", via, &tls.Config{RootCAs: pool})
+	if err != nil {
+		t.Fatalf("a proxy signed by a trusted session CA was refused: %v", err)
+	}
+	c.Close()
 }
 
 func asErr[T error](err error, target *T) bool {
@@ -178,7 +201,7 @@ func TestDialTunnelDialsANoProxyHostDirect(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	// 127.0.0.1 is loopback, therefore exempt as well.
-	c, err := dialTunnel(ctx, ln.Addr().String(), via)
+	c, err := dialTunnel(ctx, ln.Addr().String(), via, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

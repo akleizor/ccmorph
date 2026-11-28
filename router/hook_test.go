@@ -627,6 +627,12 @@ func TestARefusalOnAnUnservedEdgeOrProxyRowPausesNothing(t *testing.T) {
 			t.Fatalf("the %s row's outcome is still recorded", via)
 		}
 	}
+	// A timeout is the picked model's own failure, so it still backs that model off.
+	ledgerAppend(Row{"id": "slow", "profile": "there", "model": "claude-opus-5-5", "proxy": "there"})
+	complete(c, "slow", "", "timeout")
+	if unavailableUntil("there/claude-opus-5-5") == 0 {
+		t.Fatal("a proxy row that timed out must back its picked model off")
+	}
 }
 
 func TestRCHoldAsksCCMorphRCToStopWithTermAtTheDeadline(t *testing.T) {

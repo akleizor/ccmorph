@@ -286,7 +286,7 @@ func (p *Proxy) forward(w http.ResponseWriter, r *http.Request, u *url.URL) {
 		if ok {
 			if err := p.route(r, d, pick); err != nil {
 				p.Logf("agent proxy: %s %s: %v", r.Method, u.Path, err)
-				writeAPIError(w, http.StatusBadRequest, "agent proxy: the request body cannot be read: "+err.Error())
+				writeAPIError(w, http.StatusBadGateway, "agent proxy: the request body cannot be read: "+err.Error())
 				return
 			}
 		}
@@ -334,7 +334,8 @@ func (d *decision) read(r *http.Request) error {
 }
 
 // route points the request at pick's target. An error means the body could not
-// be read: the request is answered 400, never sent on with its body consumed.
+// be read or decoded: the request is answered 502, as an unread pending pick is,
+// never sent to the session's route with a bound agent's history.
 func (p *Proxy) route(r *http.Request, d *decision, pick Pick) error {
 	t, err := p.Resolve(pick)
 	if err != nil {
@@ -418,7 +419,7 @@ func (p *Proxy) connect(w http.ResponseWriter, r *http.Request) {
 		p.serveTLS(conn)
 		return
 	}
-	up, err := dialTunnel(r.Context(), r.Host, p.Upstream)
+	up, err := dialTunnel(r.Context(), r.Host, p.Upstream, p.TLS)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadGateway)
 		return
@@ -511,7 +512,7 @@ func (c *closeConn) Close() error {
 
 // dialTunnel reaches addr for a tunnel, through via when the session was
 // given a proxy.
-func dialTunnel(ctx context.Context, addr string, via *url.URL) (net.Conn, error) {
+func dialTunnel(ctx context.Context, addr string, via *url.URL, trust *tls.Config) (net.Conn, error) {
 	var d net.Dialer
 	if via != nil && netroute.Exempt(&url.URL{Scheme: "https", Host: addr}) {
 		via = nil // NO_PROXY and loopback dial direct, as the transport does
@@ -528,7 +529,14 @@ func dialTunnel(ctx context.Context, addr string, via *url.URL) (net.Conn, error
 		return nil, err
 	}
 	if secure {
-		tc := tls.Client(c, &tls.Config{ServerName: via.Hostname()})
+		// The proxy hop trusts what the transport's does: the system's roots
+		// plus the session's extra CAs.
+		cfg := &tls.Config{}
+		if trust != nil {
+			cfg = trust.Clone()
+		}
+		cfg.ServerName = via.Hostname()
+		tc := tls.Client(c, cfg)
 		if err := tc.HandshakeContext(ctx); err != nil {
 			c.Close()
 			return nil, err

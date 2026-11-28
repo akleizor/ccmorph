@@ -50,13 +50,15 @@ type target struct {
 	t    agentproxy.Target
 	err  error
 	at   time.Time
-	sub  bool // a subscription token, which its own sessions refresh in place
-	pid  int  // its adapter's pid: a dead one evicts the cached target
+	sub  bool                // a subscription token, which its own sessions refresh in place
+	sa   *util.SharedAdapter // its gateway adapter: a dead one evicts the cached target
 }
 
 // adapterGone: the adapter a cached target names has exited, so the target is
 // resolved again (a new adapter) instead of failing every later request.
-func adapterGone(pid int) bool { return pid > 0 && syscall.Kill(pid, 0) == syscall.ESRCH }
+func adapterGone(sa *util.SharedAdapter) bool {
+	return sa != nil && sa.PID > 0 && syscall.Kill(sa.PID, 0) == syscall.ESRCH
+}
 
 const failureKept = time.Minute
 
@@ -70,7 +72,7 @@ var anthropicURL = &url.URL{Scheme: "https", Host: "api.anthropic.com"}
 // sessionKeys are what the proxy changes in the session's env. Claude Code's
 // Bash children get them back as they were (CLAUDE_ENV_FILE), so curl or
 // Python in a session never meets the proxy or its CA.
-var sessionKeys = []string{"HTTPS_PROXY", "https_proxy", "NODE_EXTRA_CA_CERTS", "ANTHROPIC_BASE_URL", agentproxy.DirEnv}
+var sessionKeys = []string{"HTTPS_PROXY", "https_proxy", "NODE_EXTRA_CA_CERTS", "ANTHROPIC_BASE_URL", "CLAUDE_CODE_TETHER_LIVE", agentproxy.DirEnv}
 
 // agentProxyEnv starts this run's agent proxy when the router is on and puts
 // the session behind it. A session on Anthropic's own endpoint keeps it as
@@ -256,7 +258,7 @@ func agentProxyServes(typ string) bool {
 // read, never a method that changes it: this runs on the proxy's goroutines.
 func (h *agentHop) resolver(l *launcher) func(agentproxy.Pick) (agentproxy.Target, error) {
 	dir, profiles, core, logPath := l.dir, l.profileDirs, filepath.Join(l.libexec, "ccmorph-core"), l.logOrNull()
-	resolve := func(pick agentproxy.Pick, pid *int) (agentproxy.Target, error) {
+	resolve := func(pick agentproxy.Pick, held **util.SharedAdapter) (agentproxy.Target, error) {
 		typ, env, err := util.ProfileEnv(dir, profiles, pick.Word, func(string) {})
 		if err != nil {
 			return agentproxy.Target{}, err
@@ -324,7 +326,7 @@ func (h *agentHop) resolver(l *launcher) func(agentproxy.Pick) (agentproxy.Targe
 			h.mu.Lock()
 			h.adapters = append(h.adapters, sa)
 			h.mu.Unlock()
-			*pid = sa.PID
+			*held = sa
 		}
 		if port != "" { // else the endpoint serves this model as it is
 			t.Base = &url.URL{Scheme: "http", Host: "127.0.0.1:" + port}
@@ -335,18 +337,24 @@ func (h *agentHop) resolver(l *launcher) func(agentproxy.Pick) (agentproxy.Targe
 		// A gateway's adapter is started for one model (its translator is the
 		// model's), so a target is one profile and model.
 		id := pick.Word + "\x00" + pick.Model
+		var dead *util.SharedAdapter
 		h.mu.Lock()
 		e := h.targets[id]
-		if e == nil || (e.err != nil && time.Since(e.at) > failureKept) || (e.sub && time.Since(e.at) > subTokenKept) || adapterGone(e.pid) {
+		if e == nil || (e.err != nil && time.Since(e.at) > failureKept) || (e.sub && time.Since(e.at) > subTokenKept) || adapterGone(e.sa) {
+			if e != nil && e.sa != nil { // the dead adapter's use and hold go with it
+				dead = e.sa
+				h.adapters = slices.DeleteFunc(h.adapters, func(a *util.SharedAdapter) bool { return a == dead })
+			}
 			e = &target{}
 			h.targets[id] = e
 		}
 		h.mu.Unlock()
+		dead.Release() // outside h.mu: it takes the adapter's file locks
 		e.once.Do(func() {
-			var pid int
-			t, err := resolve(pick, &pid)
+			var sa *util.SharedAdapter
+			t, err := resolve(pick, &sa)
 			h.mu.Lock()
-			e.t, e.err, e.at, e.sub, e.pid = t, err, time.Now(), t.OAuth != "", pid
+			e.t, e.err, e.at, e.sub, e.sa = t, err, time.Now(), t.OAuth != "", sa
 			h.mu.Unlock()
 		})
 		h.mu.Lock()

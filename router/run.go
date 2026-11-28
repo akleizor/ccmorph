@@ -508,9 +508,10 @@ func complete(c Config, id, text, hard string) string {
 	// Only a subscription's refusal is the account's: a gateway's 403 or 429 names
 	// the one upstream behind that model, and its other models still answer.
 	// A row sent through the edge or the agent proxy records the pick before anything
-	// served it: the refusal may be the session's own account's, so no pause lands
-	// on the picked profile.
-	if hard != "" && (row["edge"] != nil || row["proxy"] != nil) {
+	// served it: a quota or auth refusal may be the session's own account's, so no
+	// pause lands on the picked profile. A timeout or empty answer is still the
+	// picked model's and backs it off below.
+	if accountRefusal(hard) && (row["edge"] != nil || row["proxy"] != nil) {
 		ledgerUpdate(id, Row{"outcome": hard, "finished": now})
 		return fmt.Sprintf("router: %s/%s failed after %s; retry the same brief at the same tier.", profile, model, hard)
 	}

@@ -5841,6 +5841,27 @@ def test_a_word_whose_rehand_fails_then_succeeds_is_held_and_forgets_its_mark(tm
     assert m.INFERENCE.read_text() == "route\n"
 
 
+def test_a_rehand_of_a_word_with_its_own_edge_sets_no_backoff(tmp_path, monkeypatch):
+    """A re-hand that exits REHAND_NOT_HELD (the word has its own live edge) is not
+    a failed bring-up: it sets no backoff, so the next word is tried on the next tick."""
+    m = load()
+    w = _switcher(m, monkeypatch, tmp_path)
+    w.edge("gateway", 500)
+    m.INFERENCE.write_text("route\n")
+    m.WANTED.write_text("\n")
+    m.SESSION_WORDS.mkdir(parents=True, exist_ok=True)
+    (m.SESSION_WORDS / "cse_a").write_text("gone\n")
+    (m.SESSION_WORDS / "cse_b").write_text("kimi\n")
+    sw = m.Switcher()
+    sw.reload("")
+    sw.tend(0)
+    assert [c.word for c in w.children] == ["gone"]
+    w.finish(w.children[0], rc_=m.REHAND_NOT_HELD)
+    sw.tend(1)
+    assert sw.failed == {"gone": 1} and sw.backoff == m.BACKOFF_MIN
+    assert [c.word for c in w.children] == ["gone", "kimi"]   # no wait behind a backoff
+
+
 def test_a_word_whose_rehand_fails_and_is_named_no_more_forgets_its_mark(tmp_path, monkeypatch):
     """GH-977 edge: when a session's file is gone, no word names that profile any
     more; its failure mark must not outlive it and order a later word behind a

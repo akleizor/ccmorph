@@ -20,6 +20,7 @@ func TestBashChildrenGetTheSessionsOwnEnvBack(t *testing.T) {
 	t.Setenv("HTTPS_PROXY", "http://corp:3128")
 	t.Setenv("CCMORPH_AGENT_PROXY", "/outer/agents")
 	t.Setenv("ANTHROPIC_BASE_URL", "https://api.person.example")
+	t.Setenv("CLAUDE_CODE_TETHER_LIVE", "1")
 	// The person never set https_proxy: t.Setenv first so cleanup puts back
 	// whatever the machine had, then unset it so the absent branch is the
 	// one under test rather than whatever the operator exported.
@@ -31,8 +32,8 @@ func TestBashChildrenGetTheSessionsOwnEnvBack(t *testing.T) {
 		t.Fatal(err)
 	}
 	out, err := exec.Command("/bin/sh", "-c", `
-export HTTPS_PROXY=http://127.0.0.1:1 https_proxy=http://127.0.0.1:1 NODE_EXTRA_CA_CERTS=/bundle ANTHROPIC_BASE_URL=x CCMORPH_AGENT_PROXY=/d
-. "$1"; echo "$THEIRS|$HTTPS_PROXY|${https_proxy-unset}|$NODE_EXTRA_CA_CERTS|${ANTHROPIC_BASE_URL-unset}|${CCMORPH_AGENT_PROXY-unset}"`, "sh", path).Output()
+export HTTPS_PROXY=http://127.0.0.1:1 https_proxy=http://127.0.0.1:1 NODE_EXTRA_CA_CERTS=/bundle ANTHROPIC_BASE_URL=x CCMORPH_AGENT_PROXY=/d CLAUDE_CODE_TETHER_LIVE=0
+. "$1"; echo "$THEIRS|$HTTPS_PROXY|${https_proxy-unset}|$NODE_EXTRA_CA_CERTS|${ANTHROPIC_BASE_URL-unset}|${CCMORPH_AGENT_PROXY-unset}|${CLAUDE_CODE_TETHER_LIVE-unset}"`, "sh", path).Output()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -43,8 +44,9 @@ export HTTPS_PROXY=http://127.0.0.1:1 https_proxy=http://127.0.0.1:1 NODE_EXTRA_
 	// https_proxy is dropped because neither the session env nor the
 	// process env has it (unset-when-absent); NODE_EXTRA_CA_CERTS comes
 	// from the passed session env list; CCMORPH_AGENT_PROXY is the dir key,
-	// which bashEnv never restores even though the process env has it.
-	if got := strings.TrimSpace(string(out)); got != "kept|http://corp:3128|unset|/corp/ca's.pem|unset|unset" {
+	// which bashEnv never restores even though the process env has it;
+	// CLAUDE_CODE_TETHER_LIVE gets back the person's own value.
+	if got := strings.TrimSpace(string(out)); got != "kept|http://corp:3128|unset|/corp/ca's.pem|unset|unset|1" {
 		t.Fatalf("Bash env: %s", got)
 	}
 }

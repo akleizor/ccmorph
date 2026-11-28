@@ -61,8 +61,8 @@ var rcHold = func(ctx context.Context, profile, account string) error {
 	return cmd.Run()
 }
 
-// rcWaitDelay is how long ccmorph-rc may finish after TERM: hookBudget plus this
-// stays under hooks.json's 20 s timeout.
+// rcWaitDelay is how long ccmorph-rc may finish after TERM. edgeWord sends TERM
+// this long before the hook's deadline, so the wait fits inside hookBudget.
 const rcWaitDelay = 3 * time.Second
 
 // edgeWord is the switch word under which this edge session's proxy serves
@@ -80,7 +80,7 @@ func edgeWord(profile string, deadline time.Time) (string, bool) {
 	case edgeRoute(rcBridge(), port):
 		return "route", true
 	}
-	ctx, cancel := context.WithDeadline(context.Background(), deadline)
+	ctx, cancel := context.WithDeadline(context.Background(), deadline.Add(-rcWaitDelay))
 	defer cancel()
 	if rcHold(ctx, profile, account) != nil {
 		return "", false

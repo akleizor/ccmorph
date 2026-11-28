@@ -10,6 +10,7 @@ import (
 
 	"github.com/akleizor/ccmorph/agentproxy"
 	"github.com/akleizor/ccmorph/router"
+	"github.com/akleizor/ccmorph/util"
 )
 
 // The proxy turns the tether off for a routed session as the edge path does,
@@ -101,7 +102,7 @@ func TestATargetWhoseAdapterDiedIsResolvedAgain(t *testing.T) {
 		t.Fatal(err)
 	}
 	id := "gw\x00m1"
-	stale := &target{t: agentproxy.Target{Base: &url.URL{Scheme: "http", Host: "127.0.0.1:1"}}, pid: dead.Process.Pid}
+	stale := &target{t: agentproxy.Target{Base: &url.URL{Scheme: "http", Host: "127.0.0.1:1"}}, sa: &util.SharedAdapter{PID: dead.Process.Pid}}
 	stale.once.Do(func() {})
 	h.targets[id] = stale
 	tg, err := h.resolver(l)(agentproxy.Pick{Word: "gw", Model: "m1"})
