@@ -363,6 +363,10 @@ func (l *launcher) doctorCompletion() zshCompletion {
 		l.status("INFO", "completion: add to "+c.rcName+", above compinit (or Oh My Zsh):")
 		l.status("INFO", "  fpath=("+c.fpathWord()+" $fpath)")
 	default:
+		// GH-1041: neither half is in place, and the two lines sat bare under
+		// whatever row ran before them — under a gateway WARN they read as part
+		// of that fix. Every state of the hint now opens with its own subject.
+		l.status("INFO", "completion: add both lines to "+c.rcName+":")
 		l.status("INFO", "  fpath=("+c.fpathWord()+" $fpath)")
 	}
 	return c
@@ -380,7 +384,9 @@ func (l *launcher) doctorCompinit(c zshCompletion) {
 		l.status("INFO", "completion: nothing in "+c.rcName+" runs compinit — add:")
 		l.status("INFO", "  autoload -Uz compinit && compinit")
 	default:
-		l.status("INFO", "  autoload -Uz compinit && compinit # add both lines to "+c.rcName)
+		// GH-1041: doctorCompletion already named both lines under a subject,
+		// so the lead no longer rides here as a comment on the second line.
+		l.status("INFO", "  autoload -Uz compinit && compinit")
 	}
 }
 

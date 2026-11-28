@@ -1890,9 +1890,13 @@ def test_doctor_on_a_fresh_install_reports_the_environment(tmp_path):
 def test_bare_doctor_names_both_completion_lines_gh363(tmp_path):
     # Issue #363: a fresh home runs neither the fpath line nor compinit, so the
     # no-profile doctor must print both halves of the completion hint.
+    # GH-1041: the two lines sit under their own "completion:" subject, so they
+    # cannot read as part of the row above them.
     result, _ = run_bare_doctor(tmp_path)
+    assert "INFO completion: add both lines to ~/.zshrc:" in result.stdout, result.stdout
     assert "INFO   fpath=(" in result.stdout, result.stdout
-    assert "INFO   autoload -Uz compinit && compinit # add both lines to ~/.zshrc" in result.stdout, result.stdout
+    assert "INFO   autoload -Uz compinit && compinit" in result.stdout, result.stdout
+    assert "# add both lines to" not in result.stdout, result.stdout
 
 
 @pytest.mark.parametrize("rc", [

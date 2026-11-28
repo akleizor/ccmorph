@@ -204,8 +204,11 @@ func TestDoctorCompletionSaysOnlyWhatANewZshStillMisses(t *testing.T) {
 	}{
 		{
 			// A brand-new home: zsh runs neither an fpath line nor compinit.
+			// GH-1041: both lines sit under their own subject, so they cannot
+			// read as part of the row printed above them.
 			id:   "empty-home-gh363",
-			want: []string{fpathLine, compinitLine},
+			want: []string{"completion: add both lines to ~/.zshrc:", fpathLine, compinitLine},
+			notWant: []string{"# add both lines to ~/.zshrc"},
 		},
 		{
 			// The issue's report: the row used to vanish once the fpath line
@@ -413,12 +416,20 @@ func TestDoctorCompletionHintFitsInTwoShortLines(t *testing.T) {
 	dir := filepath.Join(root, "share", "zsh", "site-functions")
 	fpathLine := "fpath=(" + dir + " $fpath)"
 	compinitLine := "autoload -Uz compinit && compinit"
-	for _, rc := range []string{
-		"",                                     // nothing set up: both halves missing
-		fpathLine + "\n",                       // the directory, no compinit
-		compinitLine + "\n",                    // compinit, no directory
-		compinitLine + "\n" + fpathLine + "\n", // the fpath line below compinit
+	// maxRows is the hint's row budget for each state: one subject plus the
+	// lines still missing. GH-1041 gives the both-missing state its own
+	// subject, so it runs one row over the old two; every other state keeps
+	// the two-row shape.
+	for _, c := range []struct {
+		rc      string
+		maxRows int
+	}{
+		{"", 3},                                 // nothing set up: subject plus both halves
+		{fpathLine + "\n", 2},                   // the directory, no compinit
+		{compinitLine + "\n", 2},                // compinit, no directory
+		{compinitLine + "\n" + fpathLine + "\n", 2}, // the fpath line below compinit
 	} {
+		rc := c.rc
 		home := t.TempDir()
 		if rc != "" {
 			if err := os.WriteFile(filepath.Join(home, ".zshrc"), []byte(rc), 0o644); err != nil {
@@ -434,8 +445,8 @@ func TestDoctorCompletionHintFitsInTwoShortLines(t *testing.T) {
 		if got != "" {
 			rows = strings.Split(strings.TrimRight(got, "\n"), "\n")
 		}
-		if len(rows) > 2 {
-			t.Errorf("rc %q: doctor hint is %d rows, want at most two:\n%s", rc, len(rows), got)
+		if len(rows) > c.maxRows {
+			t.Errorf("rc %q: doctor hint is %d rows, want at most %d:\n%s", rc, len(rows), c.maxRows, got)
 		}
 		for _, row := range rows {
 			if n := utf8.RuneCountInString(row); n > 80 {
