@@ -430,11 +430,11 @@ func (l *launcher) config(args []string) int {
 	if section != "connection" {
 		preview := []string{endpoint, credential}
 		if model, modelKept, ok = l.promptDefault("model", name, model, typ, endpoint, preview); !ok {
-			l.configInputEnded()
+			l.inputEnded()
 			return 1
 		}
 		if effort, _, ok = l.promptDefault("effort", name, effort, typ, endpoint, preview); !ok {
-			l.configInputEnded()
+			l.inputEnded()
 			return 1
 		}
 	}
@@ -482,17 +482,20 @@ func (l *launcher) promptDefault(slot, name, current, typ, base string, preview 
 	return l.valueMenu(slot, name, current, typ, base, l.defaultRows(slot, name, typ, preview...), true)
 }
 
-// configNeedsTerminal is the one sentence a config run ends with when its
-// stdin closes before every prompt is answered (GH-971). The prompts are a
-// sequence — an endpoint, a credential, a model, an effort — so a person who
-// pipes fewer answers than there are questions gets the rest of the questions
-// unanswered; the run then used to stop on a bare prompt with no word about
-// why, leaving a shell that looked like it had hung and then exited.
+// configNeedsTerminal is the one sentence a wizard run ends with when its stdin
+// closes before every prompt is answered (GH-971): config's, and add's too
+// (GH-1030). The prompts are a sequence — an endpoint, a credential, a model,
+// an effort — so a person who pipes fewer answers than there are questions gets
+// the rest of the questions unanswered; the run then used to stop on a bare
+// prompt with no word about why, leaving a shell that looked like it had hung
+// and then exited. Both wizards end on this same sentence, so one line names
+// the cause wherever a piped answer runs out.
 const configNeedsTerminal = "config needs a terminal, or one answer per prompt on stdin; input ended, nothing saved"
 
-// configInputEnded names the cause when no terminal will answer and stdin ran
-// out. A terminal's own Esc is a cancel with its picker's line, never this.
-func (l *launcher) configInputEnded() {
+// inputEnded names the cause when no terminal will answer and stdin ran out,
+// in either wizard. A terminal's own Esc is a cancel with its picker's line,
+// never this.
+func (l *launcher) inputEnded() {
 	if !isTTY(0) {
 		l.err(configNeedsTerminal)
 	}
@@ -504,7 +507,7 @@ func (l *launcher) configInputEnded() {
 func (l *launcher) configAsk(prompt string, secret bool) (string, bool) {
 	answer, rc := uiInput(prompt, secret)
 	if rc != 0 {
-		l.configInputEnded()
+		l.inputEnded()
 		return "", false
 	}
 	return answer, true
@@ -519,6 +522,6 @@ func (l *launcher) configConfirm(prompt string) (bool, bool) {
 	case 1:
 		return false, true
 	}
-	l.configInputEnded()
+	l.inputEnded()
 	return false, false
 }
