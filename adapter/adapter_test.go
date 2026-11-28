@@ -77,6 +77,31 @@ func row(dialect string) Row {
 	return Row{Model: "m", Dialect: dialect, Status: 200}
 }
 
+// TestParseArgsAcceptsTheSubagentMarker pins #1043's runtime half: a pick's
+// started adapter carries --subagent in its argv as a process-table fact, so
+// the parser must accept it and change nothing. The parse runs in a child: a
+// rejection is os.Exit(2), which would end this suite instead of failing one
+// test.
+func TestParseArgsAcceptsTheSubagentMarker(t *testing.T) {
+	if os.Getenv("CCMORPH_TEST_PARSE_SUBAGENT") != "" {
+		a := parseArgs([]string{"gw", "--auto", "--shared", "/r/.gw.adapter.k", "--subagent"})
+		fmt.Printf("profile=%s shared=%s auto=%v\n", a.profile, a.shared, a.auto)
+		os.Exit(0)
+	}
+	cmd := exec.Command(os.Args[0], "-test.run=^TestParseArgsAcceptsTheSubagentMarker$")
+	cmd.Env = append(os.Environ(), "CCMORPH_TEST_PARSE_SUBAGENT=1")
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("the adapter rejected --subagent: %v\n%s", err, out)
+	}
+	if !strings.Contains(string(out), "profile=gw shared=/r/.gw.adapter.k auto=true") {
+		t.Fatalf("the marker changed what was parsed: %q", out)
+	}
+	if !strings.Contains(usage, "[--subagent]") {
+		t.Fatal("adapter usage must list --subagent")
+	}
+}
+
 func writeFile(t *testing.T, path, text string, mode os.FileMode) {
 	t.Helper()
 	if err := os.WriteFile(path, []byte(text), mode); err != nil {

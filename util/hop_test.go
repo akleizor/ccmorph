@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"syscall"
@@ -108,26 +109,44 @@ func TestSessionAdapterFindsAReparentedAdapter(t *testing.T) {
 	}
 }
 
-func TestSessionAdapterFindsAReparentedProcessInTheRealTable(t *testing.T) {
-	// adapter-start exits at readiness, so a running adapter's ppid is not the
-	// launcher's: only its --parent-pid argument can name it. A real process with
-	// that argv, read back through the real process table, whose parent is this
-	// test and not the launcher it names.
-	const launcher = 424242
-	cmd := exec.Command("/bin/sleep", "30")
-	cmd.Args = []string{"/x/libexec/ccmorph-core adapter gw --auto --parent-pid 424242", "30"}
-	if err := cmd.Start(); err != nil {
-		t.Fatal(err)
-	}
-	defer func() { cmd.Process.Kill(); cmd.Wait() }()
-
-	tab := processTable()
-	r, ok := tab[cmd.Process.Pid]
-	if !ok || r.ppid == launcher {
-		t.Fatalf("the process must be in the table under a parent that is not the launcher, got %+v", r)
-	}
-	if got := findSessionAdapter(tab, launcher); got != "gw" {
-		t.Fatalf("a reparented adapter must be found by its --parent-pid, got %q (row %+v)", got, r)
+func TestHopUnmarkedLegacyAdapterWithMarkerText(t *testing.T) {
+	// adapter-start exits at readiness: the adapter's ppid isn't the launcher's
+	// and only its --parent-pid can name it. Neither the path to the core nor a
+	// model value containing the marker is a subagent flag.
+	for _, tc := range []struct{ name, bin, model string }{
+		{"core path", "bin --subagent tools", "m"},
+		{"model with spaces", "bin", "m --subagent tools"},
+		{"model equal to the marker", "bin", "--subagent"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := filepath.Join(t.TempDir(), tc.bin)
+			if err := os.Mkdir(dir, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			core := filepath.Join(dir, "ccmorph-core")
+			body := "#!/bin/sh\ntrap 'kill $!; exit 0' TERM\nprintf 'PORT=12345\\n'\n/bin/sleep 30 & wait\n"
+			if err := os.WriteFile(core, []byte(body), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			const launcher = 1 << 30
+			var out, errw strings.Builder
+			if rc := adapterStart([]string{core, "gw", tc.model, strconv.Itoa(launcher), os.DevNull}, nil, &out, &errw); rc != 0 {
+				t.Fatalf("adapter-start returned %d: %s", rc, errw.String())
+			}
+			var pid int
+			if _, err := fmt.Sscanf(out.String(), "PID=%d", &pid); err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = syscall.Kill(pid, syscall.SIGTERM) })
+			tab := processTable()
+			row, ok := tab[pid]
+			if !ok || row.ppid == launcher || !adapterArgv.MatchString(row.args) || !strings.Contains(row.args, "--subagent") {
+				t.Fatalf("PROBE BLIND: no reparented adapter row with marker text: %+v", row)
+			}
+			if got := findSessionAdapter(tab, launcher); got != "gw" {
+				t.Fatalf("unmarked --parent-pid adapter named %q; want gw", got)
+			}
+		})
 	}
 }
 
@@ -174,7 +193,7 @@ func TestASubagentHoldNamesNoProfile(t *testing.T) {
 	gw := AdapterBase(dir, "gw", "0123456789abcdef") + ".users"
 	eq := AdapterBase(dir, "eq", "fedcba9876543210") + ".users"
 	// The subagent's hold is the older child: the ascending walk meets it first.
-	holdProc(t, core, eq, core, "util", "route-hold", eq, routeHoldExitStdin, routeHoldSubagent)
+	holdProc(t, core, eq, core, "util", "route-hold", eq, routeHoldExitStdin, "--subagent")
 	if got := findSessionAdapter(processTable(), os.Getpid()); got != "" {
 		t.Fatalf("a subagent pick's hold must name no session profile, got %q", got)
 	}
@@ -203,7 +222,7 @@ func TestARouteHoldIsNotASessionMarker(t *testing.T) {
 	// A subagent's flagged hold on an adapter-shaped path is still not this
 	// session's profile.
 	agent := AdapterBase(dir, "eq", "0123456789abcdef") + ".users"
-	holdProc(t, core, agent, core, "util", "route-hold", agent, routeHoldExitStdin, routeHoldSubagent)
+	holdProc(t, core, agent, core, "util", "route-hold", agent, routeHoldExitStdin, "--subagent")
 	if got := findSessionAdapter(processTable(), os.Getpid()); got != "" {
 		t.Fatalf("a subagent's hold is not a session marker, got %q", got)
 	}
@@ -213,8 +232,10 @@ func TestARouteHoldIsNotASessionMarker(t *testing.T) {
 // tests below: it takes this session's use of the shared adapter for gw,
 // reports the adapter it got, and waits until the parent closes its stdin. A
 // launcher is a real process there because the hop reads the process table —
-// the joiner's own children are the whole evidence. Run on its own it does
-// nothing.
+// the joiner's own children are the whole evidence. With
+// CCMORPH_TEST_ADAPTER_SUBAGENT it takes a pick's use instead, so the adapter
+// it starts is the launcher's child for a subagent (#1043). Run on its own it
+// does nothing.
 func TestSharedAdapterLauncherChild(t *testing.T) {
 	core := os.Getenv("CCMORPH_TEST_ADAPTER_CORE")
 	if core == "" {
@@ -224,7 +245,11 @@ func TestSharedAdapterLauncherChild(t *testing.T) {
 	if name == "" {
 		name = "gw"
 	}
-	a, ok := AcquireAdapter(core, os.Getenv("CCMORPH_TEST_ADAPTER_ROOT"), name, "m",
+	acquire := AcquireAdapter
+	if os.Getenv("CCMORPH_TEST_ADAPTER_SUBAGENT") != "" {
+		acquire = AcquireAdapterForSubagent
+	}
+	a, ok := acquire(core, os.Getenv("CCMORPH_TEST_ADAPTER_ROOT"), name, "m",
 		os.Getenv("CCMORPH_TEST_ADAPTER_CONF"), io.Discard)
 	if !ok {
 		fmt.Println("FAILED")
@@ -289,6 +314,19 @@ func launcherLine(t *testing.T, r *os.File) string {
 // name adapter and returns once it has acquired its use.
 func startAdapterLauncher(t *testing.T, core, root, name, conf string) *adapterLauncher {
 	t.Helper()
+	return startAdapterLauncherAs(t, core, root, name, conf, false)
+}
+
+// startSubagentAdapterLauncher runs one launcher that acquires the adapter for
+// a subagent pick: on a root with no record its start is the launcher's child,
+// which is the shape #1043 is about.
+func startSubagentAdapterLauncher(t *testing.T, core, root, name, conf string) *adapterLauncher {
+	t.Helper()
+	return startAdapterLauncherAs(t, core, root, name, conf, true)
+}
+
+func startAdapterLauncherAs(t *testing.T, core, root, name, conf string, subagent bool) *adapterLauncher {
+	t.Helper()
 	inR, inW, err := os.Pipe()
 	if err != nil {
 		t.Fatal(err)
@@ -303,6 +341,9 @@ func startAdapterLauncher(t *testing.T, core, root, name, conf string) *adapterL
 		"CCMORPH_TEST_ADAPTER_ROOT="+root,
 		"CCMORPH_TEST_ADAPTER_NAME="+name,
 		"CCMORPH_TEST_ADAPTER_CONF="+conf)
+	if subagent {
+		cmd.Env = append(cmd.Env, "CCMORPH_TEST_ADAPTER_SUBAGENT=1")
+	}
 	cmd.Stdin, cmd.Stdout = inR, outW
 	if err := cmd.Start(); err != nil {
 		t.Fatal(err)
@@ -324,13 +365,94 @@ func startAdapterLauncher(t *testing.T, core, root, name, conf string) *adapterL
 	return l
 }
 
+// startedAdapterCore is sharedCore's stub under the name an adapter's argv
+// carries: the process table names a started adapter `ccmorph-core adapter
+// <profile>`, and a stub named `core` matches no adapter row — a probe built on
+// one would be blind (#1043).
+func startedAdapterCore(t *testing.T) string {
+	t.Helper()
+	core := coreCopy(t)
+	return fakeCoreNamed(t, "ccmorph-core", `if [ "$1" = util ]; then exec '`+core+`' "$@"; fi
+trap 'kill $!; exit 0' TERM; echo PORT=$$; sleep 60 & wait`)
+}
+
+// TestAStartedSubagentAdapterNamesNoProfile is #1043's regression. A pick on a
+// gateway profile no session had started makes the router's acquireAdapter take
+// the start path, so the adapter is the launcher's own child for the pick's
+// lifetime. Its profile must not answer for the session: with no session hold
+// and no adapter of its own, the hop's answer stays empty. The blind guard
+// fails the test when the fixture started nothing adapter-shaped, so a probe
+// that sees no row can never pass for the right answer.
+func TestAStartedSubagentAdapterNamesNoProfile(t *testing.T) {
+	core, root := startedAdapterCore(t), t.TempDir()
+	conf := filepath.Join(t.TempDir(), "gw.conf")
+	if err := os.WriteFile(conf, []byte("base_url=x\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	l := startSubagentAdapterLauncher(t, core, root, "gw", conf)
+	defer l.end()
+
+	tab := ProcessTable()
+	launcher := l.cmd.Process.Pid
+	row, ok := tab[l.adapter]
+	if !ok || row.ppid != launcher || !adapterArgv.MatchString(row.args) {
+		t.Fatalf("PROBE BLIND: launcher %d has no adapter-shaped child, so its answer proves nothing (%+v)", launcher, row)
+	}
+	for pid, child := range tab {
+		if child.ppid != launcher || pid == l.adapter {
+			continue
+		}
+		if adapterArgv.MatchString(child.args) || sessionHoldProfile(pid) != "" {
+			t.Fatalf("PROBE BLIND: launcher has another candidate for its session: %+v", child)
+		}
+	}
+	if got := SessionAdapter(tab, launcher); got != "" {
+		t.Fatalf("the launcher started only a subagent's adapter, yet the hop names %q", got)
+	}
+	argv, ok := argvOf(l.adapter)
+	if !ok || len(argv) == 0 || argv[len(argv)-1] != "--subagent" {
+		t.Fatalf("the pick's started adapter must carry the role flag in its argv, got %q", argv)
+	}
+}
+
+// TestTheMarkerDecidesWhichAdapterAnswers reads both marked and unmarked
+// children from the real process table; the older pick cannot mask a session
+// hold or the adapter the session started for itself (#1043).
+func TestTheMarkerDecidesWhichAdapterAnswers(t *testing.T) {
+	const core = "/x/libexec/ccmorph-core"
+	launcher := os.Getpid()
+	pick := holdProc(t, os.Args[0], filepath.Join(t.TempDir(), "pick.users"),
+		core, "adapter", "pick", "--auto", "--model=m", "--shared", "/r/.pick.adapter.k", "--subagent")
+	tab := processTable()
+	row, ok := tab[pick.Process.Pid]
+	if !ok || row.ppid != launcher || !adapterArgv.MatchString(row.args) {
+		t.Fatalf("PROBE BLIND: no adapter row for the pick: %+v", row)
+	}
+	if got := findSessionAdapter(tab, launcher); got != "" {
+		t.Fatalf("a launcher whose only adapter is a pick's must name no profile, got %q", got)
+	}
+
+	holdCore := coreCopy(t)
+	users := AdapterBase(t.TempDir(), "joined", "0123456789abcdef") + ".users"
+	holdProc(t, holdCore, users, holdCore, "util", "route-hold", users, routeHoldExitStdin)
+	if got := findSessionAdapter(processTable(), launcher); got != "joined" {
+		t.Fatalf("the session's hold must win over a marked adapter, got %q", got)
+	}
+
+	holdProc(t, os.Args[0], filepath.Join(t.TempDir(), "own.users"),
+		core, "adapter", "own", "--auto", "--shared", "/r/.own.adapter.k")
+	if got := findSessionAdapter(processTable(), launcher); got != "own" {
+		t.Fatalf("the session's own adapter must win over a marked adapter and a hold, got %q", got)
+	}
+}
+
 // TestAJoiningLauncherCanNameItsSharedAdapter is #1022's regression: two
 // launchers acquire the same key, one starts the adapter and one joins it, and
 // the joining launcher's SessionAdapter names the profile. Before the session
 // hold, the joiner started no process of its own and answered "" — which is how
 // `ccmorph hop` lost the `now on` mark and the #257 no-change guard.
 func TestAJoiningLauncherCanNameItsSharedAdapter(t *testing.T) {
-	core, root := sharedCore(t), t.TempDir()
+	core, root := startedAdapterCore(t), t.TempDir()
 	conf := filepath.Join(t.TempDir(), "gw.conf")
 	if err := os.WriteFile(conf, []byte("base_url=x\n"), 0o600); err != nil {
 		t.Fatal(err)
@@ -350,6 +472,13 @@ func TestAJoiningLauncherCanNameItsSharedAdapter(t *testing.T) {
 	}
 	if got := SessionAdapter(tab, first.cmd.Process.Pid); got != "gw" {
 		t.Fatalf("the starting launcher's session must name its profile, got %q", got)
+	}
+	// The session's own start is unmarked: the marker belongs to a pick alone.
+	if row, ok := tab[first.adapter]; !ok || row.ppid != first.cmd.Process.Pid || !adapterArgv.MatchString(row.args) {
+		t.Fatalf("PROBE BLIND: no adapter row for the starter's own child: %+v", row)
+	}
+	if argv, ok := argvOf(first.adapter); !ok || slices.Contains(argv, "--subagent") {
+		t.Fatalf("the starter's adapter must have readable, unmarked argv, got %q", argv)
 	}
 	if got := SessionAdapter(tab, os.Getpid()); got != "" {
 		t.Fatalf("this test process holds no session use of the adapter, got %q", got)

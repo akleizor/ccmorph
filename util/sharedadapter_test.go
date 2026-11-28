@@ -236,7 +236,7 @@ func TestEndSessionHoldSignalsOnlyTheSessionsHold(t *testing.T) {
 	t.Run("the subagent's own hold", func(t *testing.T) {
 		// A subagent pick's hold is the same session's to end: it keeps an
 		// adapter alive, and the hop's silence about it is not doubt of its pid.
-		h := holdProc(t, core, users, core, "util", "route-hold", users, routeHoldExitStdin, routeHoldSubagent)
+		h := holdProc(t, core, users, core, "util", "route-hold", users, routeHoldExitStdin, "--subagent")
 		endSessionHold(h.Process.Pid, users)
 		if !waitGone(h.Process.Pid, 3e9) {
 			t.Fatal("the subagent's own hold must still be ended")
