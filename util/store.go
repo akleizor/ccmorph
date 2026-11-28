@@ -527,9 +527,27 @@ func configStoreRun(a StoreArgs, layerWrite bool, out, errw io.Writer) (int, str
 		kept = append(kept, line)
 	}
 	for _, name := range changes.Keys() {
-		if v, _ := changes.Get(name); ordjson.Truthy(v) {
-			kept = append(kept, fmt.Sprintf("%s=%v", name, v))
+		v, _ := changes.Get(name)
+		if !ordjson.Truthy(v) {
+			continue
 		}
+		line := fmt.Sprintf("%s=%v", name, v)
+		// Land the line where the canonical layout puts it, not at the end: a
+		// comment above a retained line travels with the next key=value line,
+		// so appending past that key's neighbours moves the comment on this
+		// save and back on the next one. The first save is the last one (#1031).
+		at := len(kept)
+		for i := len(kept) - 1; i >= 0; i-- {
+			k, _, ok := strings.Cut(kept[i], "=")
+			if !ok || strings.HasPrefix(kept[i], "#") {
+				continue // a comment or a blank line rides with the key below it
+			}
+			if !ctxwindow.ConfLineBefore(name, k) {
+				break
+			}
+			at = i
+		}
+		kept = slices.Insert(kept, at, line)
 	}
 	proposed := []byte(ctxwindow.CanonicalConf(strings.Join(kept, "\n")))
 
