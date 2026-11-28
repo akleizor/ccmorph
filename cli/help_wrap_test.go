@@ -308,6 +308,23 @@ func TestHelpRouterNamesTheSettingsFileAsTheRouterDoes(t *testing.T) {
 	}
 }
 
+// GH-1032: accept appeared on help router only in the usage line — what ID
+// it takes, what pass and fail record, and what --by SIGNAL is were on no
+// screen, and no screen printed the route ID accept needs. The page now
+// explains accept, and says report lists the ids; report and the router's
+// own screens carry the rest (see router/main_test.go).
+func TestHelpRouterExplainsAccept(t *testing.T) {
+	t.Setenv("PATH", t.TempDir()) // no bridge on PATH: the plain page
+	for _, width := range []int{0, 80} {
+		flat := strings.Join(strings.Fields(helpPage(t, "router", width)), " ")
+		for _, want := range []string{"accept ID pass|fail", "--by SIGNAL", "report", "route ids"} {
+			if !strings.Contains(flat, want) {
+				t.Errorf("help router at %d columns never explains %q:\n%s", width, want, flat)
+			}
+		}
+	}
+}
+
 // GH-730, second refusal: a reader took the closing delimiter of the router
 // page's raw string for a backtick printed after the path. The template
 // itself holds no backtick at all, and ends with the settings path alone on
