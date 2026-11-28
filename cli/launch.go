@@ -755,7 +755,7 @@ func (l *launcher) claudeHelp() string {
 }
 
 // claudeArity is the option arity table the argv walkers read, from claudeHelp.
-func (l *launcher) claudeArity() map[string]string { return util.ClaudeOptArities(l.claudeHelp()) }
+func (l *launcher) claudeArity() map[string]string { return claudeOptArities(l.claudeHelp()) }
 
 // isTTY is whether fd is a terminal; a package var so a test can run the
 // terminal launch's branch without one. The probe is util's, the one the

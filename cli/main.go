@@ -564,7 +564,7 @@ func (l *launcher) isClaudeSubcommand(word string) bool {
 	if word == "" || ownVerbs[word] {
 		return false
 	}
-	return slices.Contains(util.ClaudeVerbs(l.claudeHelp()), word)
+	return slices.Contains(claudeVerbs(l.claudeHelp()), word)
 }
 
 // hasClaudeSubcommand is _ccm_launch_has_claude_subcommand: does the first

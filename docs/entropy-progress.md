@@ -31,12 +31,11 @@ effect are recorded as ADRs in `docs/adr/`.
 | 6 | cli verb lists: `realVerbs` was a third hand-kept list beside `verbArity` and `ownVerbs`. It is now built from `verbArity` plus `unboundedVerbs`; the retired aliases are one `retiredVerbs` list. The lists keep different facts (word count, never-forwarded, retired), so they stay apart rather than merge. | `TestDispatchAnswersExactlyTheListedVerbs` parses `dispatch` and pins its cases to the lists (mutation-checked) | done |
 | 7 | `cmd/ccmorph-core`: the usage string named 7 of 13 commands. One `commands` table now holds them, and the usage line is built from its keys. | the usage line is derived, so it cannot drift | done |
 | 8 | Settings file names: `settings.profile.json`, `cache/settings.base.json` and `settings.json` were literals in `cli` and `util`, and `cli` decided on its own which file is the profile's layer. `settingscompose` exports `GeneratedFile`, `LayerFile`, `BaseFile` and `ProfileLayer`; every site uses them. | `TestProfileLayerFollowsTheComposedState`; dedup guard `test_the_settings_file_names_are_spelled_once` | done |
+| 9 | cli-only util files: `claudehelp.go`, `launchargv.go` and `launchflags.go` (and their tests) had no caller but `cli` and called nothing else in `util`; they now live in `cli`, unexported. `compinit.go` stays (zsh calls its verbs through `ccmorph-core util`), and so does `doctor.go` (`util/masking.go` calls `NativeBase`). | the moved tests run in `cli` | done |
 
 ## Task pool (ranked by value and risk)
 
-1. **cli-only util files:** move into `cli` the files whose only caller is
-   `cli`: `compinit.go`, `claudehelp.go`, `launchargv.go`,
-   `launchflags.go`, `doctor.go`.
+The pool has no open high-value item; see the pending decisions below.
 
 ## Pending a maintainer's decision
 
