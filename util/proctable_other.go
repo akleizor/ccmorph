@@ -50,9 +50,9 @@ func procStartToken(pid int) (string, bool) {
 }
 
 // userHZ is the unit of /proc/<pid>/stat's start field: the kernel's USER_HZ,
-// 100 on every Linux this ships (linux/amd64 and linux/arm64). A kernel with a
-// larger rate would make the derived start earlier than the true one, which
-// keeps the sweep rather than reaping on it.
+// which is 100 on every Linux architecture Go builds for. A different real
+// rate would shift every derived start (later for a larger one, which could
+// reap), so the constant is safe only because no such architecture ships.
 const userHZ = 100
 
 // procfsProcessTable is processTable from /proc alone: every visible pid's
@@ -67,11 +67,13 @@ func procfsProcessTable() (map[int]psRow, bool) {
 	if err != nil {
 		return nil, false
 	}
+	// Sample wall time first: if the read is delayed, the derived starts
+	// skew earlier, which can only make the sweep keep a relay.
+	now := time.Now()
 	up, ok := procUptime()
 	if !ok {
 		return nil, false
 	}
-	now := time.Now()
 	rows := make(map[int]psRow, len(ents))
 	for _, e := range ents {
 		pid, err := strconv.Atoi(e.Name())
