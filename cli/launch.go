@@ -90,7 +90,7 @@ type relayNext struct {
 func Main(args []string) int {
 	l := fromEnv()
 	l.theme()
-	return l.launchMain(args)
+	return endedStatus(l.launchMain(args))
 }
 
 func (l *launcher) launchMain(args []string) int {

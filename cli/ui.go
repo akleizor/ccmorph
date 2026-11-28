@@ -1149,6 +1149,9 @@ func (t uiTheme) numberedKeys(prompt string, rows []string, display string, dumb
 			continue
 		}
 		if s != nil || !ok {
+			if s != nil {
+				signalAnsweredByPicker()
+			}
 			// A signal or a closed terminal leaves as Esc does: one Cancelled
 			// line and status 1, the answer the line loop gave.
 			return leave()
@@ -1192,10 +1195,14 @@ func (t uiTheme) numberedKeys(prompt string, rows []string, display string, dumb
 			// them (#278, #388).
 			n, s, ok := k.next(80*time.Millisecond, sigs, nil)
 			if s != nil || !ok || (n != '[' && n != 'O') {
+				if s != nil {
+					signalAnsweredByPicker()
+				}
 				return leave()
 			}
 			tail, done, s := k.seqTail(sigs)
 			if s != nil {
+				signalAnsweredByPicker()
 				return leave()
 			}
 			if !done && tail == "" {
@@ -1474,6 +1481,7 @@ func (t uiTheme) native(prompt string, rows []string, display string) (string, i
 				continue
 			}
 			if s != nil {
+				signalAnsweredByPicker()
 				rc = sigRC(s)
 				return
 			}
@@ -1485,7 +1493,7 @@ func (t uiTheme) native(prompt string, rows []string, display string) (string, i
 				result = 0
 				return
 			case 3:
-				rc = 130
+				rc = 130 // the native picker's pinned Ctrl-C result: no value
 				return
 			case 4:
 				return
@@ -1495,6 +1503,7 @@ func (t uiTheme) native(prompt string, rows []string, display string) (string, i
 				// same answer the wait at the top of the loop would give.
 				n, s, ok := k.next(80*time.Millisecond, sigs, nil)
 				if s != nil {
+					signalAnsweredByPicker()
 					rc = sigRC(s)
 					return
 				}
@@ -1503,6 +1512,7 @@ func (t uiTheme) native(prompt string, rows []string, display string) (string, i
 				}
 				tail, done, s := k.seqTail(sigs)
 				if s != nil {
+					signalAnsweredByPicker()
 					rc = sigRC(s)
 					return
 				}
@@ -1722,6 +1732,7 @@ func (t uiTheme) search(prompt string, rows []string) (string, int) {
 		}
 		args := fzfArgs(fzfVersion(fzf), len(rows), lines, prompt, theme)
 		cmd := exec.Command(fzf, args...)
+		var stdout bytes.Buffer
 		cmd.Env = append(os.Environ(), "FZF_DEFAULT_OPTS=", "FZF_DEFAULT_OPTS_FILE=")
 		cmd.Stdin = strings.NewReader(strings.Join(rendered, "\n") + "\n")
 		if !pickerHasTerminal() {
@@ -1738,9 +1749,35 @@ func (t uiTheme) search(prompt string, rows []string) (string, int) {
 		// so the person's picker runs exactly as ever, bound by no clock: a
 		// key may take as long as the hand reading the list.
 		defer keysHeld()() // fzf holds the terminal's keys for this wait (GH-1028)
-		cmd.Stderr = os.Stderr
-		out, err := cmd.Output()
-		choice := strings.TrimRight(string(out), "\n")
+		cmd.Stdout, cmd.Stderr = &stdout, os.Stderr
+		sigs := make(chan os.Signal, 1)
+		signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP)
+		defer signal.Stop(sigs)
+		if err := cmd.Start(); err != nil {
+			t.cancelled()
+			return "", 1
+		}
+		waited := make(chan error, 1)
+		go func() { waited <- cmd.Wait() }()
+		var err error
+		signalled := false
+		select {
+		case err = <-waited:
+		case <-sigs:
+			signalled = true
+			_ = cmd.Process.Kill()
+			err = <-waited
+		}
+		if ws, ok := cmd.ProcessState.Sys().(syscall.WaitStatus); ok && ws.Signaled() && ws.Signal() == syscall.SIGINT {
+			signalled = true // the group's Ctrl-C killed fzf before its own wait saw the signal
+		}
+		if signalled {
+			// Ctrl-C belongs to the picker while fzf holds the keys: leave
+			// through the cancelled path, never by killing the command under
+			// the terminal (GH-1028).
+			signalAnsweredByPicker()
+		}
+		choice := strings.TrimRight(stdout.String(), "\n")
 		if err != nil || choice == "" {
 			// fzf answers Esc with exit 130 and no choice: a leave, like any picker.
 			t.cancelled()
@@ -1904,6 +1941,7 @@ func readKeyLine(k *keys, sigs <-chan os.Signal, secret bool, w *os.File) (strin
 	for {
 		c, s, ok := k.next(0, sigs, nil)
 		if s != nil {
+			signalAnsweredByPicker()
 			return string(value), sigRC(s)
 		}
 		if !ok {

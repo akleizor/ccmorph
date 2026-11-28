@@ -3,9 +3,11 @@ package cli
 import (
 	"os"
 	"os/signal"
+	"sync"
 	"sync/atomic"
 	"syscall"
-	"time"
+
+	"github.com/akleizor/ccmorph/util"
 )
 
 // GH-1028: `help add` says "Ctrl-C cancels setup", docs/guide.md promises
@@ -45,20 +47,48 @@ func keysHeld() func() {
 // run the caller's failure path (GH-649, GH-837).
 var handoffs atomic.Int32
 
-// endCommand ends this command the way the signal's own default disposition
-// would have: the helpers stop first, then the process dies of the signal, so
-// the caller sees 128+signal and no traceback is printed. Reset comes first, so
-// a signal Go was holding can still land as a death; where Reset cannot undo a
-// started-ignored disposition (the signal then re-ignores), a brief wait and an
-// equal exit code keep the promise anyway. A package var so the tests of who
-// owns a signal can watch it end without ending the test binary.
-var endCommand = func(l *launcher, sig syscall.Signal) {
-	l.stopHelpers()
-	signal.Reset(sig)
-	syscall.Kill(os.Getpid(), sig)
-	time.Sleep(time.Second)
-	os.Exit(128 + int(sig))
+// endCommand ends this command as the signal's own default disposition would:
+// the helpers and interrupted waits stop first, then the process exits 128+
+// signal. The ending signal is published before cleanup, so a wait that
+// observes the cleanup (a killed adapter, a killed probe) cannot return its own
+// status over the signal's; its entry point waits for endDone and answers with
+// the signal's code. A package var so the tests of who owns a signal can watch
+// it end without ending the test binary.
+var (
+	endSignal atomic.Int32
+	endDone   = make(chan struct{})
+	endOnce   sync.Once
+)
+
+// endedStatus answers a command's own status unless a signal ended it: then it
+// is the signal's, once the signal owner has finished the cleanup it promised.
+func endedStatus(rc int) int {
+	sig := endSignal.Load()
+	if sig == 0 {
+		return rc
+	}
+	<-endDone
+	return 128 + int(sig)
 }
+
+var endCommand = func(l *launcher, sig syscall.Signal) {
+	endOnce.Do(func() {
+		endSignal.Store(int32(sig))
+		l.stopHelpers()
+		util.RunCancelHandlers() // children and half-made state the interrupted waits own
+		close(endDone)
+		os.Exit(128 + int(sig))
+	})
+}
+
+// pickerSignalled counts signals a picker answered itself. The command-wide
+// owner consults it too: a signal delivered while the picker held the keys can
+// reach this owner's channel after the picker has released them and returned,
+// and that late look must not kill a command the picker already cancelled
+// (GH-1028).
+var pickerSignalled atomic.Int32
+
+func signalAnsweredByPicker() { pickerSignalled.Add(1) }
 
 // ctrlCSwallowed reports each signal a command-wide owner declined because a
 // picker or a handed-off child holds it. The send never blocks and drops when
@@ -87,6 +117,11 @@ func (l *launcher) keepCtrlC() (release func()) {
 		for s := range sigs {
 			if keysReading() || handoffs.Load() > 0 {
 				swallowed(s) // a picker or the child it waits on owns this one
+				continue
+			}
+			if pickerSignalled.Load() > 0 {
+				pickerSignalled.Add(-1) // the picker answered this one as it left
+				swallowed(s)
 				continue
 			}
 			if sig, ok := s.(syscall.Signal); ok {
