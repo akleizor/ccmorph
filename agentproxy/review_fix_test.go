@@ -137,6 +137,11 @@ func TestHopDefaultsThePortFromTheScheme(t *testing.T) {
 // (the test server's certificate is not trusted, so it fails as a certificate
 // error, not as a plaintext CONNECT written into a TLS port).
 func TestDialTunnelSpeaksTLSToAnHTTPSUpstream(t *testing.T) {
+	// dialTunnel consults NO_PROXY (netroute.Exempt) before honoring `via`, so
+	// the gate's hostile NO_PROXY='*' would dial example.test direct and the
+	// TLS handshake under test would never happen; the test pins its env (#774).
+	t.Setenv("NO_PROXY", "")
+	t.Setenv("no_proxy", "")
 	s := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
 	t.Cleanup(s.Close)
 	via, _ := url.Parse(s.URL)
@@ -154,6 +159,10 @@ func TestDialTunnelSpeaksTLSToAnHTTPSUpstream(t *testing.T) {
 // The proxy hop trusts the session's extra CAs, as the transport does: an
 // https:// upstream signed by such a CA carries the CONNECT.
 func TestDialTunnelTrustsTheSessionsCAsForAnHTTPSUpstream(t *testing.T) {
+	// Same pin as the TLS test above: NO_PROXY='*' would dial direct past the
+	// trusted-CA handshake this test is about (#774).
+	t.Setenv("NO_PROXY", "")
+	t.Setenv("no_proxy", "")
 	s := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodConnect {
 			w.WriteHeader(http.StatusMethodNotAllowed)

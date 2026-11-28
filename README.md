@@ -84,9 +84,11 @@ ccmorph doctor
 ```
 
 The one-liner installs the latest release: it downloads that release's
-`ccmorph.tar.gz` and runs its installer. `CCMORPH_REF` (a branch or tag)
-installs unreleased code from the GitHub archive of that ref — `CCMORPH_REF=main`
-for the bleeding edge — and `CCMORPH_INSTALL_URL` replaces the whole tarball URL.
+`ccmorph.tar.gz` and runs its installer. `CCMORPH_REF` (a branch or tag) selects
+the GitHub archive of that ref instead — `CCMORPH_REF=main` for the bleeding edge
+— but a ref archive contains no ccmorph-core binary, so the installer refuses the
+download before anything changes: nothing was changed. For unreleased code, clone
+and build (`make shim`). `CCMORPH_INSTALL_URL` replaces the whole tarball URL.
 `curl -fsSL ... | sh` also works, but it has no terminal to ask on, so it declines
 the optional installs and prints the commands instead.
 
@@ -94,9 +96,13 @@ The installer (clone or one-liner) copies the runtime (`lib/`, `libexec/`, `shar
 command into `~/.local/bin`. It never edits shell startup files; if
 `~/.local/bin` is not on your `PATH`, it prints the line to add, for your shell.
 
-For a clone or one-liner install, update with `ccmorph update` (the latest release; `ccmorph update <branch-or-tag>`
-for another), or run the same install again; profiles, credentials, and `local.sh`
-are preserved. A git clone is updated with git instead. `ccmorph uninstall` removes the command and
+For a clone or one-liner install, update with `ccmorph update` (the latest release; a branch or tag
+may be named — `ccmorph update <branch-or-tag>` — but its archive contains no
+ccmorph-core binary, so the update is refused before anything changes: nothing was
+changed), or run the same install again; profiles, credentials, and `local.sh`
+are preserved. A git clone is updated with git, rebuilt with `make shim` and
+reinstalled from the clone — that is also the way to unreleased code.
+`ccmorph uninstall` removes the command and
 leaves your profiles alone; it lists what it left and the commands that remove it.
 
 ## Quick start
