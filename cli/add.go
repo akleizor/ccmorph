@@ -23,6 +23,7 @@ import (
 // add is `ccmorph add [name]`: a sign-in method, its credential, and a saved
 // profile, rolled back whole on any failure.
 func (l *launcher) add(args []string) int {
+	defer l.keepCtrlC()() // Ctrl-C cancels every prompt and wait this wizard advertises (GH-1028)
 	name := ""
 	if len(args) > 0 {
 		name = args[0]
@@ -267,6 +268,7 @@ var claudeStatusRE = regexp.MustCompile(`"loggedIn":\s*(true|false)`)
 // exits, the caller's failure path runs, and Ctrl-C cancels setup as the help
 // promises instead of leaving a half-made profile and its lock behind (GH-837).
 func handSignInSignals(child *os.Process) (release func()) {
+	handoffs.Add(1) // the command-wide Ctrl-C owner stands down while this holds (GH-1028)
 	sigs := make(chan os.Signal, 1)
 	signal.Notify(sigs, syscall.SIGHUP, syscall.SIGTERM, syscall.SIGINT)
 	go func() {
@@ -277,9 +279,25 @@ func handSignInSignals(child *os.Process) (release func()) {
 		}
 	}()
 	return func() {
+		handoffs.Add(-1)
 		signal.Stop(sigs) // returns once no more signals can arrive
 		close(sigs)
 	}
+}
+
+// runHanded runs cmd with the sign-in handoff active: while it waits, SIGHUP,
+// SIGTERM and SIGINT belong to the child, which dies of the signal and lets the
+// caller's failure path run (GH-649, GH-837) — for every child of the add and
+// login flows alike, so Ctrl-C cancels each wait these commands advertise
+// (GH-1028).
+func runHanded(cmd *exec.Cmd) error {
+	if err := cmd.Start(); err != nil {
+		return err
+	}
+	release := handSignInSignals(cmd.Process)
+	err := cmd.Wait()
+	release()
+	return err
 }
 
 // subBrowserLogin runs Claude Code's browser sign-in against the profile's
@@ -290,13 +308,7 @@ func (l *launcher) subBrowserLogin(name string) (string, bool) {
 	fmt.Println(l.dim + "Opening your browser to sign in — Ctrl-C to cancel." + l.reset)
 	login := l.claudeAuth(dir, "login")
 	login.Stdin, login.Stdout, login.Stderr = os.Stdin, os.Stdout, os.Stderr
-	if login.Start() != nil {
-		l.err("login failed")
-		return "", false
-	}
-	release := handSignInSignals(login.Process)
-	err := login.Wait()
-	release()
+	err := runHanded(login)
 	if err != nil {
 		l.err("login failed")
 		return "", false
@@ -336,7 +348,7 @@ func (l *launcher) addSub(name string) int {
 		return 1
 	}
 	dir := filepath.Join(l.profileDirs, name)
-	if l.claudeAuth(dir, "logout").Run() != nil {
+	if runHanded(l.claudeAuth(dir, "logout")) != nil {
 		l.err("logout failed")
 		l.rollback(name)
 		return 1
@@ -848,7 +860,12 @@ func (l *launcher) providerLogin(name, provider string) bool {
 	}
 	cmd := exec.Command(bin, "-"+provider+"-login", "-config", conf)
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
-	if cmd.Run() != nil {
+	// The browser wait hands its signals to the bridge the way the Claude
+	// sign-in already does: the line above says "Ctrl-C to cancel", and a
+	// signal sent to this process alone must reach the bridge and end the wait
+	// through this failure path, not wait out the bridge's own timeout and not
+	// kill the parent ahead of the deferred cleanup (GH-1028).
+	if runHanded(cmd) != nil {
 		l.err(providerLabel(provider) + " login failed")
 		return false
 	}
@@ -879,6 +896,7 @@ func (l *launcher) providerLogin(name, provider string) bool {
 // account profile with its browser login, a provider-backed profile with its
 // own, or an API-key profile by letting Claude Code use the key it refused.
 func (l *launcher) login(args []string) int {
+	defer l.keepCtrlC()() // the sign-in waits this verb prints all name Ctrl-C (GH-1028)
 	name := ""
 	if len(args) > 0 {
 		name = args[0]
