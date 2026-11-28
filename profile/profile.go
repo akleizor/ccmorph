@@ -17,6 +17,7 @@ import (
 	"unicode"
 
 	"github.com/akleizor/ccmorph/ordjson"
+	"github.com/akleizor/ccmorph/util/modelid"
 )
 
 // Lists are the env-key allowlists a conf is checked against; Defaults() builds
@@ -432,7 +433,7 @@ func ValidModelMap(s string) bool {
 	for _, k := range obj.Keys() {
 		val, _ := obj.Get(k)
 		t, ok := val.(string)
-		if !ok || !modelID.MatchString(k) || !modelID.MatchString(t) || strings.HasSuffix(strings.ToLower(k), "[1m]") {
+		if !ok || !modelID.MatchString(k) || !modelID.MatchString(t) || modelid.HasWindowMarker(k) {
 			return false
 		}
 	}

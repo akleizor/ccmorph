@@ -19,6 +19,7 @@ import (
 
 	"github.com/akleizor/ccmorph/ctxwindow"
 	"github.com/akleizor/ccmorph/ordjson"
+	"github.com/akleizor/ccmorph/util/modelid"
 	"github.com/akleizor/ccmorph/util/paths"
 )
 
@@ -741,7 +742,7 @@ func modelInListingDoc(payload any, want, mapJSON string) int {
 		if !ok {
 			return 1
 		}
-		want = TrimWindowMarker(s)
+		want = modelid.TrimWindowMarker(s)
 	}
 	uncertain := false
 	// A listing that does not list cannot prove a model absent: keep the carried
@@ -807,14 +808,14 @@ func servedRefusalDoc(payload any, want, mapJSON, who string) (string, bool) {
 		return "", false
 	}
 	orig := want
-	// The word is TierWord's and the strip TrimWindowMarker's — the one answer
+	// The word is modelid.TierWord's and the strip modelid.TrimWindowMarker's — the one answer
 	// each gives everywhere a model is named — so a tier word in either case,
 	// with or without its marker, declines here exactly as it resolves
 	// elsewhere (#539).
-	if word := TierWord(want); word == "" || IsTier(word) {
+	if word := modelid.TierWord(want); word == "" || modelid.IsTier(word) {
 		return "", false
 	}
-	want = TrimWindowMarker(want)
+	want = modelid.TrimWindowMarker(want)
 	// A readable, complete listing proves absence even when it serves nothing; a
 	// malformed or paged one cannot (modelInListing answers 2 for those).
 	if _, ok := modelsCountDoc(payload); !ok {

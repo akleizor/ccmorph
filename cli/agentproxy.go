@@ -23,6 +23,7 @@ import (
 	"github.com/akleizor/ccmorph/quota"
 	"github.com/akleizor/ccmorph/router"
 	"github.com/akleizor/ccmorph/util"
+	"github.com/akleizor/ccmorph/util/modelid"
 )
 
 // agentHop is one session's agent proxy (package agentproxy): started for one
@@ -267,8 +268,8 @@ func (h *agentHop) resolver(l *launcher) func(agentproxy.Pick) (agentproxy.Targe
 			return agentproxy.Target{}, errNotServed
 		}
 		t := agentproxy.Target{Base: anthropicURL, Tiers: map[string]string{}}
-		for _, tier := range util.TierWords {
-			if v, ok := envGet(env, util.TierEnvKey(tier)); ok && v != "" {
+		for _, tier := range modelid.TierWords {
+			if v, ok := envGet(env, modelid.TierEnvKey(tier)); ok && v != "" {
 				t.Tiers[tier] = v
 			}
 		}

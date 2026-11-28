@@ -1,16 +1,24 @@
 package profile
 
+import "github.com/akleizor/ccmorph/util/modelid"
+
 // The env-key lists every launch, read and sweep uses. One copy, here.
 
-var MappingEnv = []string{
-	"ANTHROPIC_DEFAULT_FABLE_MODEL",
-	"ANTHROPIC_DEFAULT_OPUS_MODEL",
-	"ANTHROPIC_DEFAULT_OPUS_MODEL_NAME",
-	"ANTHROPIC_DEFAULT_OPUS_MODEL_DESCRIPTION",
-	"ANTHROPIC_DEFAULT_SONNET_MODEL",
-	"ANTHROPIC_DEFAULT_HAIKU_MODEL",
-	"ANTHROPIC_SMALL_FAST_MODEL",
-	"CLAUDE_CODE_SUBAGENT_MODEL",
+// MappingEnv is every model-choice key: each tier word's default (opus also
+// carries its display name and description), then the small-fast and subagent
+// models. The tier keys come from modelid.TierEnvKey, their one spelling.
+var MappingEnv = append(tierEnv(), "ANTHROPIC_SMALL_FAST_MODEL", "CLAUDE_CODE_SUBAGENT_MODEL")
+
+func tierEnv() []string {
+	var keys []string
+	for _, w := range modelid.TierWords {
+		k := modelid.TierEnvKey(w)
+		keys = append(keys, k)
+		if w == "opus" {
+			keys = append(keys, k+"_NAME", k+"_DESCRIPTION")
+		}
+	}
+	return keys
 }
 
 var TuningEnv = []string{

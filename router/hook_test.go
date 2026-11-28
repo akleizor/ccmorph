@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"github.com/akleizor/ccmorph/agentproxy"
+	"github.com/akleizor/ccmorph/util/modelid"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -19,7 +20,6 @@ import (
 	"time"
 
 	"github.com/akleizor/ccmorph/quota"
-	"github.com/akleizor/ccmorph/util"
 )
 
 func TestTheMCPServerListsDelegateAndRefusesAnEmptyPrompt(t *testing.T) {
@@ -103,7 +103,7 @@ func hookEnv(t *testing.T, enabled bool) string {
 	t.Setenv("https_proxy", "")
 	t.Setenv(agentproxy.DirEnv, "") // or inside a session behind the agent proxy
 	for _, a := range []string{"OPUS", "SONNET", "HAIKU"} {
-		t.Setenv(util.TierEnvKey(a), "")
+		t.Setenv(modelid.TierEnvKey(a), "")
 	}
 	for _, n := range []string{"here", "there"} {
 		if err := os.WriteFile(filepath.Join(root, n+".conf"), []byte("type=sub\n"), 0o600); err != nil {
@@ -359,16 +359,16 @@ func TestPreToolUseDecidesAgainAmongNativeAliasesWhenThePickHasNone(t *testing.T
 	root := hookEnv(t, true)
 	gateProfile(t, root)
 	t.Setenv("CLAUDE_CONFIG_DIR", filepath.Join(root, "profiles", "gate"))
-	t.Setenv(util.TierEnvKey("sonnet"), "claude-sonnet-5-5")
+	t.Setenv(modelid.TierEnvKey("sonnet"), "claude-sonnet-5-5")
 	var out bytes.Buffer
 	PreToolUse(strings.NewReader(agentCall), &out)
 	if !strings.Contains(out.String(), `"model":"sonnet"`) {
 		t.Fatalf("the native sonnet runs the call: %q", out.String())
 	}
 	// With no native alias at all, the call is still left as written.
-	t.Setenv(util.TierEnvKey("sonnet"), "gpt-x")
-	t.Setenv(util.TierEnvKey("haiku"), "gpt-y")
-	t.Setenv(util.TierEnvKey("opus"), "gpt-z")
+	t.Setenv(modelid.TierEnvKey("sonnet"), "gpt-x")
+	t.Setenv(modelid.TierEnvKey("haiku"), "gpt-y")
+	t.Setenv(modelid.TierEnvKey("opus"), "gpt-z")
 	out.Reset()
 	PreToolUse(strings.NewReader(agentCall), &out)
 	if out.Len() != 0 {
@@ -386,7 +386,7 @@ func TestPreToolUseHandsBothRoutesOneBudget(t *testing.T) {
 	root := hookEnv(t, true)
 	gateProfile(t, root)
 	t.Setenv("CLAUDE_CONFIG_DIR", filepath.Join(root, "profiles", "gate"))
-	t.Setenv(util.TierEnvKey("sonnet"), "claude-sonnet-5-5")
+	t.Setenv(modelid.TierEnvKey("sonnet"), "claude-sonnet-5-5")
 	quotaSnapshot(t, map[string]float64{"here": 0.5, "there": 0.5})
 	// The stub decider call is the first route's measurable cost. At its first
 	// arrival the first Decide has armed its budget, so the value stored then

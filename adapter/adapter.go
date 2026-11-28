@@ -49,6 +49,7 @@ import (
 	"github.com/akleizor/ccmorph/profile"
 	"github.com/akleizor/ccmorph/shim"
 	"github.com/akleizor/ccmorph/util"
+	"github.com/akleizor/ccmorph/util/modelid"
 	"github.com/akleizor/ccmorph/util/paths"
 )
 
@@ -155,7 +156,7 @@ func TranslatorVerdict(base, cacheDir, model, listing string) (needed, known boo
 		}
 		return false
 	}
-	model = strings.TrimSuffix(strings.TrimSpace(model), "[1m]")
+	model = modelid.TrimWindowMarker(strings.TrimSpace(model))
 	undecided := false
 	if model != "" {
 		if !cached(model) {
@@ -654,14 +655,14 @@ func newToken() string {
 // asks its translator verdict about this same id, so the row it prints is the
 // one a launch would reach (#412).
 func LaunchModel(model string, modelMap map[string]any) string {
-	required := strings.TrimSuffix(strings.TrimSpace(model), "[1m]")
+	required := modelid.TrimWindowMarker(strings.TrimSpace(model))
 	if model == "" {
 		return required
 	}
 	if mapped, ok := modelMap[required]; ok {
 		required, _ = mapped.(string)
 	}
-	return strings.TrimSuffix(required, "[1m]")
+	return modelid.TrimWindowMarker(required)
 }
 
 // Main runs the adapter and returns its exit status.
@@ -692,7 +693,7 @@ func Main(argv []string) int {
 
 	// ccmorph's own [1m] marker (a context-window variant, not a distinct model id
 	// on the gateway) is the shell layer's concern; strip only that exact suffix.
-	required := strings.TrimSuffix(strings.TrimSpace(a.model), "[1m]")
+	required := modelid.TrimWindowMarker(strings.TrimSpace(a.model))
 
 	// Detach stdin from whatever the launcher handed us: it is inherited straight
 	// from Claude Code's tty, and a foreground process that merely holds the tty

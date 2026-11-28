@@ -8,6 +8,8 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"github.com/akleizor/ccmorph/util/modelid"
 )
 
 // Refused is the line adapter-start prints on its stdout when the adapter
@@ -70,7 +72,7 @@ func spawnAdapter(core, profile, model string, lifetime []string, detach bool, l
 	// progress line names: a trailing [1m] is ccmorph's own context-window
 	// marker, an internal that a person saw in "Starting adapter for
 	// 'work (claude-sonnet-5-5[1m])'" and in no other screen (#971).
-	bare := strings.SplitN(model, "[", 2)[0]
+	bare := modelid.TrimWindowMarker(model)
 	argv := []string{"adapter", profile, "--auto"}
 	if bare != "" {
 		argv = append(argv, "--model", bare)

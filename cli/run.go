@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"github.com/akleizor/ccmorph/router"
+	"github.com/akleizor/ccmorph/util/modelid"
 	"io"
 	"math/rand/v2"
 	"os"
@@ -299,7 +300,7 @@ func (l *launcher) resolveLaunch(name string, interactive, native bool, argv []s
 	}
 	if needsAdapter && askMissing && !subcommand && explicit == "" && (defaultModel == "" || unserved != "") && reachWhy == "" && !keyRefused && isTTY(0) && isTTY(2) {
 		if unserved != "" {
-			l.err(util.UnservedTier(name, util.TierWord(unserved), l.modelOrigin(name), nil))
+			l.err(util.UnservedTier(name, modelid.TierWord(unserved), l.modelOrigin(name), nil))
 		}
 		interactive = true
 	}
@@ -1199,7 +1200,7 @@ func (l *launcher) launchWindow(name, model string) []string {
 }
 
 func (l *launcher) tierAlias(name, tier string) (string, bool) {
-	v, rc := l.configStore("get", name, "env."+util.TierEnvKey(tier))
+	v, rc := l.configStore("get", name, "env."+modelid.TierEnvKey(tier))
 	return v, rc == 0 && v != ""
 }
 
@@ -1926,7 +1927,7 @@ func (l *launcher) adapterModel(name string, penv []string, explicit, defaultMod
 			origin = "given with --model"
 		}
 		base, _ := envGet(penv, "ANTHROPIC_BASE_URL")
-		l.err(util.UnservedTier(name, util.TierWord(model), origin, util.ServedSample(l.conf(name), l.listed(base, authKey(penv)))))
+		l.err(util.UnservedTier(name, modelid.TierWord(model), origin, util.ServedSample(l.conf(name), l.listed(base, authKey(penv)))))
 		return "", false
 	}
 	return resolved, true

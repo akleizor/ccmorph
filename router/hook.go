@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"github.com/akleizor/ccmorph/agentproxy"
+	"github.com/akleizor/ccmorph/util/modelid"
 	"io"
 	"os"
 	"path/filepath"
@@ -15,7 +16,6 @@ import (
 
 	"github.com/akleizor/ccmorph/ctxwindow"
 	"github.com/akleizor/ccmorph/ordjson"
-	"github.com/akleizor/ccmorph/util"
 )
 
 // The Claude Code hooks. Each reads one event on stdin and never fails the
@@ -48,11 +48,11 @@ func portableAgent(agent string) bool {
 // aliases through as real Claude ids.
 func aliasFor(profile, model string) string {
 	for _, a := range []string{"haiku", "sonnet", "opus"} {
-		v := os.Getenv(util.TierEnvKey(a))
+		v := os.Getenv(modelid.TierEnvKey(a))
 		if v == "" {
 			v = profileTier(profile, a)
 		}
-		if v != "" && strings.TrimSuffix(v, "[1m]") == model || v == "" && model == a {
+		if v != "" && modelid.TrimWindowMarker(v) == model || v == "" && model == a {
 			return a
 		}
 	}
@@ -68,7 +68,7 @@ func profileTier(profile, tier string) string {
 	if err != nil {
 		return ""
 	}
-	return f["env."+util.TierEnvKey(tier)]
+	return f["env."+modelid.TierEnvKey(tier)]
 }
 
 // hookBudget is PreToolUse's deadline for the route and its ledger write, under

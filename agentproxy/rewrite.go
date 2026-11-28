@@ -2,12 +2,11 @@ package agentproxy
 
 import (
 	"github.com/akleizor/ccmorph/ordjson"
+	"github.com/akleizor/ccmorph/util/modelid"
 	"net/http"
 	"net/url"
 	"regexp"
 	"strings"
-
-	"github.com/akleizor/ccmorph/util"
 )
 
 // Target is the endpoint and credential a picked profile serves on.
@@ -66,15 +65,15 @@ func servedModel(pick string, asked string, tiers map[string]string) string {
 	if pick == "" {
 		return asked
 	}
-	if util.IsTier(pick) {
-		if m := strings.TrimSuffix(tiers[pick], "[1m]"); m != "" {
+	if modelid.IsTier(pick) {
+		if m := modelid.TrimWindowMarker(tiers[pick]); m != "" {
 			return m
 		}
-		if strings.HasPrefix(util.TierWord(asked), "claude-"+pick+"-") {
+		if strings.HasPrefix(modelid.TierWord(asked), "claude-"+pick+"-") {
 			return asked
 		}
 	}
-	return strings.TrimSuffix(pick, "[1m]")
+	return modelid.TrimWindowMarker(pick)
 }
 
 // The session believes it talks to api.anthropic.com, so it sends request

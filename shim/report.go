@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/akleizor/ccmorph/util"
+	"github.com/akleizor/ccmorph/util/modelid"
 	"github.com/akleizor/ccmorph/util/paths"
 )
 
@@ -63,9 +64,9 @@ func printable(s string) bool {
 }
 
 // modelID is the row's model for the report's by-model column: the served id
-// without its window marker — the one strip, util.TrimWindowMarker, every
+// without its window marker — the one strip, modelid.TrimWindowMarker, every
 // surface that names a model gives it, in either marker case (#539).
-func modelID(raw string) string { return util.TrimWindowMarker(raw) }
+func modelID(raw string) string { return modelid.TrimWindowMarker(raw) }
 
 type taskVerdict struct {
 	outcome string

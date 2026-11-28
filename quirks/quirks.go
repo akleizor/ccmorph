@@ -28,6 +28,7 @@ import (
 	"time"
 
 	"github.com/akleizor/ccmorph/shim"
+	"github.com/akleizor/ccmorph/util/modelid"
 )
 
 var (
@@ -300,7 +301,7 @@ func stripThinking(request []byte, chat map[string]bool) []byte {
 	keepCarrier := false
 	if sp, ok := member(top, "model"); ok {
 		if m, isString := strOf(request, sp); isString {
-			keepCarrier = chat[strings.TrimSuffix(m, "[1m]")]
+			keepCarrier = chat[modelid.TrimWindowMarker(m)]
 		}
 	}
 	var edits []shim.Edit

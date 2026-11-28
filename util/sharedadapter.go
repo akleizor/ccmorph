@@ -13,6 +13,8 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"github.com/akleizor/ccmorph/util/modelid"
 )
 
 // A gateway profile's adapter is shared by every session that asks for the same
@@ -187,7 +189,7 @@ func AdapterKey(name, model, confPath, core string) string {
 	if fi, err := os.Stat(core); err == nil {
 		identity += fmt.Sprintf(" %d %d", fi.ModTime().UnixNano(), fi.Size())
 	}
-	for _, part := range []string{name, strings.SplitN(model, "[", 2)[0], string(conf), identity} {
+	for _, part := range []string{name, modelid.TrimWindowMarker(model), string(conf), identity} {
 		fmt.Fprintf(h, "%d:%s\n", len(part), part)
 	}
 	return hex.EncodeToString(h.Sum(nil))[:16]

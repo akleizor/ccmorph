@@ -140,7 +140,7 @@ CONSOLIDATED = {
     "acwValid": "settingscompose.ACWValid",
     "resolveLink": "paths.Resolve",
     "resolvePath": "paths.Resolve",
-    "isTier": "util.IsTier",
+    "isTier": "modelid.IsTier",
     "endHold": "util.EndRouteHold",
     "apiURL": "ctxwindow.APIURL",
 }
@@ -362,11 +362,12 @@ def test_contextenv_does_not_spell_authkeys_precedence():
 # allowlists spelled the uppercase keys; both are built from the word list now
 # — the picker's rows and the wizard's env keys from util.TierWords and
 # util.TierEnvKey — so the guard counts those spellings too: a word
-# hand-spelled in either form fails it. profile and ctxwindow cannot import
-# util (#423), so their env-key allowlists stay hand-spelled and are the key
-# form's allowed homes beside the builder's own file.
-TIER_DEFINITION = ROOT / "util" / "tier.go"
-TIER_KEY_HOMES = {ROOT / "profile" / "envkeys.go", ROOT / "ctxwindow" / "conf.go"}
+# hand-spelled in either form fails it.
+#
+# #544: the words, the marker and the key builder moved to the leaf package
+# util/modelid, so profile's and ctxwindow's env-key allowlists are built from
+# modelid.TierEnvKey too and no file is an allowed home beside the builder.
+TIER_DEFINITION = ROOT / "util" / "modelid" / "modelid.go"
 # The picker-row spelling: a tier word and the tab that follows it.
 TIER_ROWS = ("fable\\t", "opus\\t", "sonnet\\t", "haiku\\t")
 # The env-key spelling: the prefix of every ANTHROPIC_DEFAULT_<word>_MODEL key,
@@ -384,23 +385,49 @@ def test_the_tier_words_are_spelled_once():
             words.append(f"{path.relative_to(ROOT)} spells the word")
         if any(row in text for row in TIER_ROWS):
             rows.append(f"{path.relative_to(ROOT)} spells a picker row")
-        if TIER_KEY in text and path != TIER_DEFINITION and path not in TIER_KEY_HOMES:
+        if TIER_KEY in text and path != TIER_DEFINITION:
             keys.append(f"{path.relative_to(ROOT)} spells the env key")
     assert not words, (
-        "the tier-word set is hand-spelled outside util/tier.go (#520): "
+        "the tier-word set is hand-spelled outside util/modelid (#520): "
         + "; ".join(words))
     assert not rows, (
         "a picker alias row is hand-spelled instead of built from "
-        "util.TierWords (#539): " + "; ".join(rows))
+        "modelid.TierWords (#539): " + "; ".join(rows))
     assert not keys, (
-        "the tier env key is hand-spelled outside util.TierEnvKey and the "
-        "allowlists that cannot import it (#539): " + "; ".join(keys))
+        "the tier env key is hand-spelled outside modelid.TierEnvKey "
+        "(#539, #544): " + "; ".join(keys))
     text = TIER_DEFINITION.read_text()
     assert text.count('"fable"') == 1, (
         "the tier-word set's one definition is no longer spelled once in "
         f"{TIER_DEFINITION.relative_to(ROOT)} (#520)")
     assert TIER_KEY in text, (
         f"the tier env key's builder is no longer in {TIER_DEFINITION.relative_to(ROOT)} (#539)")
+
+
+# #544: the context-window marker had one strip, TrimWindowMarker, and
+# fourteen hand-written ones beside it, case-sensitive, plus first-'[' cuts that
+# truncated an id's own brackets (vendor[beta] -> vendor). Every surface now
+# names modelid.TrimWindowMarker (or modelid.WindowMarker to append it); this
+# guard fails on the quoted marker, its regexp spelling or the first-'[' cut anywhere else outside
+# tests and comment lines.
+MARKER_SPELLINGS = ('"[1m]"', '"[1M]"', '"[", 2)', '\\[1m\\]')
+
+
+def test_the_window_marker_is_spelled_once_issue_544():
+    offenders = []
+    for path in go_sources():
+        if path.name.endswith("_test.go") or path == TIER_DEFINITION:
+            continue
+        for n, line in enumerate(path.read_text().splitlines(), 1):
+            if line.lstrip().startswith("//"):
+                continue
+            if any(m in line for m in MARKER_SPELLINGS):
+                offenders.append(f"{path.relative_to(ROOT)}:{n}")
+    assert not offenders, (
+        "the window marker is stripped or cut by hand instead of through "
+        "modelid.TrimWindowMarker (#544): " + "; ".join(offenders))
+    assert '"[1m]"' in TIER_DEFINITION.read_text(), (
+        "the window marker's one spelling left util/modelid (#544)")
 
 
 # #539: the response-identity Key — id, stamp and turn joined on NULs — was

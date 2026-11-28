@@ -13,6 +13,7 @@ import (
 	"github.com/akleizor/ccmorph/ctxwindow"
 	"github.com/akleizor/ccmorph/ordjson"
 	"github.com/akleizor/ccmorph/settingscompose"
+	"github.com/akleizor/ccmorph/util/modelid"
 )
 
 // jsWS is the ECMAScript WhiteSpace + LineTerminator set, one rune each.
@@ -143,7 +144,7 @@ var modelOut = []struct {
 
 // engineReserve is RL(): min(effective max-output-tokens, 20000), resolved per model.
 func engineReserve(modelID string, pinned int64) int64 {
-	bare := strings.ToLower(strings.SplitN(modelID, "[", 2)[0])
+	bare := strings.ToLower(modelid.CutWindowMarker(modelID))
 	def, upper := int64(20_000), int64(20_000)
 	for _, e := range modelOut {
 		if strings.Contains(bare, e.key) {
@@ -206,14 +207,12 @@ func walls(profile, conf string) map[string]int64 {
 	return w
 }
 
-var oneMTag = regexp.MustCompile(`(?i)\[1m\]`)
-
 // bareID is the id the window registry knows an offered model by: the disguise
 // undone, the [1m] marker stripped. The registry holds real, bare ids (the
 // listing writes them undisguised), so every wall lookup — and every consumer of
 // the names those lookups produce — derives it this one way.
 func bareID(modelID string) string {
-	return strings.SplitN(ctxwindow.RealID(modelID), "[", 2)[0]
+	return modelid.CutWindowMarker(ctxwindow.RealID(modelID))
 }
 
 // modelSizing is the readings one offered model is sized from: the profile's
@@ -253,7 +252,7 @@ func engineModel(sz modelSizing, entry string) (bare string, wall, trigger int64
 	}
 	var ceil int64
 	switch {
-	case !sz.no1m && oneMTag.MatchString(entry):
+	case !sz.no1m && modelid.CutWindowMarker(entry) != entry:
 		ceil, considered = 1_000_000, true
 	case strings.HasPrefix(entry, "claude-"):
 		ceil, considered = 200_000, true
@@ -345,7 +344,7 @@ func hazardRows(in HazardIn) ([]string, error) {
 			continue
 		}
 		bare, wall, triggerM, _ := engineModel(sz, m)
-		if IsTier(bare) {
+		if modelid.IsTier(bare) {
 			continue
 		}
 		if wall == 0 {
