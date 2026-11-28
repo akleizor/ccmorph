@@ -2,6 +2,7 @@ package cli
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -697,8 +698,47 @@ func eraseLines(n int) {
 	}
 }
 
+// uiInputEnded is the status uiSelect and uiInput answer when the input itself
+// ended — the terminal closed or its read failed — not when a person left with
+// Esc, q or ^C. Every other status is unchanged, so a caller that only asks
+// "was there an answer" treats it as the cancel it used to be; a wizard that
+// names the cause reads it apart from a deliberate leave (#1030).
+const uiInputEnded = 3
+
+// ttyGone reports a terminal whose other end has closed. A pty in that state
+// answers a read with the same zero length an idle raw read does — Go reports
+// either as io.EOF — so the read result cannot say which happened; the
+// terminal's own termios can, because a closed one answers no ioctl (EIO) and
+// an idle one still does (#1030, #1042). A stream that is no terminal at all
+// answers ENOTTY, which says nothing about a terminal closing: tests hand the
+// key reader their own stream, and a pipe feeding fzf is not the closed pty.
+func ttyGone(r io.Reader) bool {
+	f, ok := r.(*os.File)
+	if !ok {
+		return false
+	}
+	fd := int(f.Fd())
+	for {
+		_, err := ioctlTermios(fd)
+		switch {
+		case err == nil:
+			return false
+		case errors.Is(err, syscall.EINTR):
+			continue
+		case errors.Is(err, syscall.ENOTTY):
+			return false
+		default:
+			return true
+		}
+	}
+}
+
+// gone is ttyGone for this key reader's own stream.
+func (k *keys) gone() bool { return ttyGone(k.in) }
+
 // uiSelect is ccm_ui_select: the chosen ID, or rc 1 cancelled, 2 invalid or no
-// terminal to pick with, 128+n signal.
+// terminal to pick with, uiInputEnded when the terminal's input ended, 128+n
+// signal.
 func uiSelect(mode, title, rows, display string) (string, int) {
 	if display == "" {
 		display = "labels"
@@ -1131,6 +1171,16 @@ func (t uiTheme) numberedKeys(prompt string, rows []string, display string, dumb
 		t.cancelled()
 		return "", 1, true
 	}
+	// ended is the input itself ending: the terminal closed (or its read
+	// failed) with no answer in. The screen keeps the one line every leave
+	// prints; the status carries the input-ended result to the wizard, which
+	// names the cause (#1030).
+	ended := func() (string, int, bool) {
+		closeEcho()
+		fold()
+		t.cancelled()
+		return "", uiInputEnded, true
+	}
 	pick := func(r string) (string, int, bool) {
 		closeEcho()
 		fold()
@@ -1147,10 +1197,14 @@ func (t uiTheme) numberedKeys(prompt string, rows []string, display string, dumb
 			paint()
 			continue
 		}
-		if s != nil || !ok {
-			// A signal or a closed terminal leaves as Esc does: one Cancelled
-			// line and status 1, the answer the line loop gave.
+		if s != nil {
+			// A signal leaves as Esc does: one Cancelled line and its status.
 			return leave()
+		}
+		if !ok {
+			// A closed terminal is not a person's leave: same screen, but the
+			// status says the input ended so the wizard can name it (#1030).
+			return ended()
 		}
 		// Only another j/k extends the run and only a printable key takes it
 		// into a name; any other key ends it (#840).
@@ -1190,7 +1244,18 @@ func (t uiTheme) numberedKeys(prompt string, rows []string, display string, dumb
 			// pointer — every terminal's spelling, as the native menu reads
 			// them (#278, #388).
 			n, s, ok := k.next(80*time.Millisecond, sigs, nil)
-			if s != nil || !ok || (n != '[' && n != 'O') {
+			if s != nil {
+				return leave()
+			}
+			if !ok {
+				// A terminal that closed inside Esc's window is the input
+				// ending, not the bare Esc it looks like (#1030).
+				if k.gone() {
+					return ended()
+				}
+				return leave()
+			}
+			if n != '[' && n != 'O' {
 				return leave()
 			}
 			tail, done, s := k.seqTail(sigs)
@@ -1198,6 +1263,9 @@ func (t uiTheme) numberedKeys(prompt string, rows []string, display string, dumb
 				return leave()
 			}
 			if !done && tail == "" {
+				if k.gone() {
+					return ended()
+				}
 				return leave()
 			}
 			if len(buf) > 0 {
@@ -1306,8 +1374,15 @@ func readKeys() *keys { return &keys{in: os.Stdin} }
 
 const keyResize = -2
 
-// next waits for one key; timeout 0 waits forever. ok false is EOF or timeout;
-// a resize answers keyResize.
+// ttyIdleWindow is rawTTY's VTIME: a zero-length read that waited out this
+// window is the terminal's idle tick, and one that came back at once is the
+// stream ending. Go reports both as io.EOF, so the wait is what tells them
+// apart when there is no termios to ask (#1030, #1042). A test shortens it;
+// nothing else does.
+var ttyIdleWindow = 100 * time.Millisecond
+
+// next waits for one key; timeout 0 waits forever. ok false is the input
+// ending (EOF or a closed terminal) or a timeout; a resize answers keyResize.
 func (k *keys) next(timeout time.Duration, stop, winch <-chan os.Signal) (int, os.Signal, bool) {
 	start := time.Now()
 	b := make([]byte, 1)
@@ -1319,11 +1394,16 @@ func (k *keys) next(timeout time.Duration, stop, winch <-chan os.Signal) (int, o
 			return keyResize, nil, true
 		default:
 		}
+		readStart := time.Now()
 		n, err := k.in.Read(b)
 		if n == 1 {
 			return int(b[0]), nil, true
 		}
-		if err != nil && err != io.EOF {
+		if err != nil && (k.gone() || time.Since(readStart) < ttyIdleWindow/2) {
+			// A terminal that closed answers no ioctl, and a zero-length read
+			// that came back before the VTIME window is no idle tick: either
+			// way the input ended. An idle one has answered here and the wait
+			// goes on (#1030, #1042).
 			return 0, nil, false
 		}
 		if timeout > 0 && time.Since(start) >= timeout {
@@ -1476,6 +1556,10 @@ func (t uiTheme) native(prompt string, rows []string, display string) (string, i
 				return
 			}
 			if !ok {
+				// The terminal's input ended: the cancel line stays, and the
+				// status carries the result to a wizard that names the cause
+				// (#1030).
+				result = uiInputEnded
 				return
 			}
 			switch c {
@@ -1496,7 +1580,15 @@ func (t uiTheme) native(prompt string, rows []string, display string) (string, i
 					rc = sigRC(s)
 					return
 				}
-				if !ok || (n != '[' && n != 'O') {
+				if !ok {
+					// A bare Esc leaves; a terminal that closed inside the
+					// window is the input ending (#1030).
+					if k.gone() {
+						result = uiInputEnded
+					}
+					return
+				}
+				if n != '[' && n != 'O' {
 					return
 				}
 				tail, done, s := k.seqTail(sigs)
@@ -1505,6 +1597,12 @@ func (t uiTheme) native(prompt string, rows []string, display string) (string, i
 					return
 				}
 				if !done && tail == "" {
+					// An unfinished sequence on an open terminal is the bare
+					// Esc it began as; on a terminal that closed mid-way it is
+					// the input ending (#1030).
+					if k.gone() {
+						result = uiInputEnded
+					}
 					return
 				}
 				// ↑/↓ stop at the ends as they always did; Home/End put either
@@ -1529,7 +1627,7 @@ func (t uiTheme) native(prompt string, rows []string, display string) (string, i
 	}
 	if result != 0 {
 		t.cancelled()
-		return "", 1
+		return "", result
 	}
 	t.receipt(prompt, rowID(visible(rows[selected], display)))
 	return rowID(rows[selected]), 0
@@ -1739,8 +1837,13 @@ func (t uiTheme) search(prompt string, rows []string) (string, int) {
 		out, err := cmd.Output()
 		choice := strings.TrimRight(string(out), "\n")
 		if err != nil || choice == "" {
-			// fzf answers Esc with exit 130 and no choice: a leave, like any picker.
+			// fzf answers Esc with exit 130 and no choice: a leave, like any
+			// picker. A terminal that closed under it is not that leave: the
+			// terminal is gone, so the input ended (#1030).
 			t.cancelled()
+			if ttyGone(os.Stdin) {
+				return "", uiInputEnded
+			}
 			return "", 1
 		}
 		if i := strings.IndexByte(choice, '\n'); i >= 0 {
@@ -1804,7 +1907,9 @@ func (t uiTheme) refuseNoTerminal(rows []string, fzfNamed bool) {
 	}
 }
 
-// uiInput is ccm_ui_input: one line, hidden when secret. rc 1 cancelled or EOF.
+// uiInput is ccm_ui_input: one line, hidden when secret. rc 0 answered, rc 1
+// cancelled, uiInputEnded when a terminal's input ended, 128+n signal; a pipe
+// that runs out answers rc 1, the cancel every piped prompt reports.
 func uiInput(prompt string, secret bool) (string, int) {
 	t := themeFor(2)
 	w := os.Stderr
@@ -1903,7 +2008,10 @@ func readKeyLine(k *keys, sigs <-chan os.Signal, secret bool, w *os.File) (strin
 			return string(value), sigRC(s)
 		}
 		if !ok {
-			return string(value), 1
+			// The terminal's input ended, which is not the leave Esc and ^D
+			// ask for: the status says so and the caller names the cause
+			// (#1030).
+			return string(value), uiInputEnded
 		}
 		switch {
 		case c == '\r' || c == '\n':
@@ -1914,7 +2022,15 @@ func readKeyLine(k *keys, sigs <-chan os.Signal, secret bool, w *os.File) (strin
 			return string(value), 1
 		case c == 27:
 			n, _, ok := k.next(80*time.Millisecond, sigs, nil)
-			if !ok || (n != '[' && n != 'O') {
+			if !ok {
+				// Esc's window closing with nothing is a bare Esc; a terminal
+				// that closed inside it is the input ending (#1030).
+				if k.gone() {
+					return string(value), uiInputEnded
+				}
+				return string(value), 1
+			}
+			if n != '[' && n != 'O' {
 				return string(value), 1
 			}
 			for {

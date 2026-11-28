@@ -10606,15 +10606,30 @@ exit 1'
   [[ "$(<"$HOME/.config/ccmorph/pwurl.conf")" == *'base_url=http://user:pw-canary835@gateway.invalid'* ]] \
     || { print -u2 -- 'the saved endpoint must keep the password the endpoint needs'; rc=1 }
   # A credential in the endpoint is judged on its own text, so a leak that drops
-  # the host is still caught. Typed without a scheme the save refuses it, but
-  # only after the check has named it.
-  for url in "http://user:$canary@$host" "http://$host/v1?key=$canary" "user:$canary@$host" "$host/v1?key=$canary"; do
+  # the host is still caught. Typed without a scheme a dotted host now takes the
+  # scheme the prompt shows and reaches the same check, named as redacted as
+  # ever (#1030 moved the refusal to the endpoint prompt, before any key).
+  for url in "http://user:$canary@$host" "http://$host/v1?key=$canary" "$host/v1?key=$canary"; do
     (( ++n ))
     out=$(print -l apikey custom "$url" sk-urlleg-not-real | ccmorph add "canary$n" 2>/dev/null)
     assert_contains "$out" 'listing not allowed (HTTP 403) — the key was not checked' \
       'the check must have run before its output is judged' || rc=1
     assert_not_contains "$out" "$canary" 'no part of a URL credential may reach stdout' || rc=1
   done
+  # Text that is neither a URL nor a host never reaches the key prompt at all:
+  # the endpoint question refuses it, and the refusal names it without its
+  # login (promise 5) — the check's redaction guard is the prompt's too.
+  (( ++n ))
+  out=$(print -l apikey custom "user:$canary@$host" | ccmorph add "canary$n" 2>&1)
+  rc_die=$?
+  (( rc_die != 0 )) || { print -u2 -- 'a non-endpoint must stop the add at its prompt'; rc=1; }
+  assert_contains "$out" '<redacted> is not an endpoint' \
+    'the refusal must name the answer without its login part' || rc=1
+  assert_not_contains "$out" 'API key for' \
+    'the refused endpoint must never reach the key prompt' || rc=1
+  assert_not_contains "$out" "$canary" 'no part of a URL credential may reach stdout' || rc=1
+  [[ ! -e "$HOME/.config/ccmorph/canary$n.conf" ]] \
+    || { print -u2 -- 'a refused endpoint must save nothing'; rc=1; }
   # The blank endpoint is Anthropic's own; a 403 on its listing is the same answer.
   out=$(print -l apikey custom '' sk-native-not-real | ccmorph add natforbid 2>&1)
   assert_contains "$out" 'api.anthropic.com: listing not allowed (HTTP 403) — the key was not checked' \
@@ -10738,13 +10753,81 @@ test_add_wrong_menu_answer_reasks_instead_of_exiting_issue_727() {
   st=$?
   (( st != 0 )) || { print -u2 -- 'q at the provider menu must cancel'; rc=1; }
   assert_contains "$out" 'cancelled' 'the deliberate cancel still says cancelled' || rc=1
+  assert_not_contains "$out" 'input ended' \
+    'a typed cancel is not an ended stdin and must not claim to be' || rc=1
   [[ ! -e "$HOME/.config/ccmorph/quit.conf" ]] \
     || { print -u2 -- 'a cancelled provider menu must save nothing'; rc=1; }
+  # Issue #1030: an EOF still cancels, but it says so — the same sentence config
+  # ends with — so the person can tell input ended and nothing was saved, at
+  # every question the wizard asks.
   out=$(print -l apikey custom | ccmorph add eof 2>&1)
   st=$?
   (( st != 0 )) || { print -u2 -- 'EOF at the endpoint question must cancel'; rc=1; }
+  assert_contains "$out" 'config needs a terminal, or one answer per prompt on stdin; input ended, nothing saved' \
+    'EOF at the endpoint question must name its cause with the config sentence' || rc=1
   [[ ! -e "$HOME/.config/ccmorph/eof.conf" ]] \
     || { print -u2 -- 'a cancelled add must save nothing'; rc=1; }
+  out=$(print -l apikey | ccmorph add eofp 2>&1)
+  st=$?
+  (( st != 0 )) || { print -u2 -- 'EOF at the provider menu must cancel'; rc=1; }
+  assert_contains "$out" 'input ended, nothing saved' \
+    'EOF at the provider menu must name its cause too' || rc=1
+  [[ ! -e "$HOME/.config/ccmorph/eofp.conf" ]] \
+    || { print -u2 -- 'an ended provider menu must save nothing'; rc=1; }
+  out=$(print -l apikey custom http://gw.invalid | ccmorph add eofkey 2>&1)
+  st=$?
+  (( st != 0 )) || { print -u2 -- 'EOF at the key question must cancel'; rc=1; }
+  assert_contains "$out" 'input ended, nothing saved' \
+    'EOF at the hidden key question must name its cause too' || rc=1
+  [[ ! -e "$HOME/.config/ccmorph/eofkey.conf" ]] \
+    || { print -u2 -- 'an ended key question must save nothing'; rc=1; }
+  out=$(ccmorph add eofm </dev/null 2>&1)
+  st=$?
+  (( st != 0 )) || { print -u2 -- 'EOF at the sign-in menu must cancel'; rc=1; }
+  assert_contains "$out" 'input ended, nothing saved' \
+    'EOF at the very first question must name its cause too' || rc=1
+  [[ ! -e "$HOME/.config/ccmorph/eofm.conf" ]] \
+    || { print -u2 -- 'an ended sign-in menu must save nothing'; rc=1; }
+  # The same cause at the hidden token prompt, and after a re-ask the wizard
+  # already gave: a refused Endpoint answer, and a key the endpoint rejected.
+  out=$(print -l token | ccmorph add eoftok 2>&1)
+  st=$?
+  (( st != 0 )) || { print -u2 -- 'EOF at the token question must cancel'; rc=1; }
+  assert_contains "$out" 'input ended, nothing saved' \
+    'EOF at the hidden token question must name its cause' || rc=1
+  [[ ! -e "$HOME/.config/ccmorph/eoftok.conf" ]] \
+    || { print -u2 -- 'an ended token question must save nothing'; rc=1; }
+  out=$(print -l apikey custom 'not a url' | ccmorph add eofref 2>&1)
+  st=$?
+  (( st != 0 )) || { print -u2 -- 'EOF after a refused endpoint must cancel'; rc=1; }
+  assert_contains "$out" 'not a url is not an endpoint' \
+    'the refusal must still come before the ended input' || rc=1
+  assert_contains "$out" 'input ended, nothing saved' \
+    'EOF at the endpoint re-ask must name its cause' || rc=1
+  [[ ! -e "$HOME/.config/ccmorph/eofref.conf" ]] \
+    || { print -u2 -- 'an ended endpoint re-ask must save nothing'; rc=1; }
+  write_curl_mock 'print -- "__CCMORPH_STATUS__401"'
+  out=$(print -l apikey custom http://gw.invalid sk-rejected-not-real \
+    | ccmorph add eof401 2>&1)
+  st=$?
+  (( st != 0 )) || { print -u2 -- 'EOF after a rejected key must cancel'; rc=1; }
+  assert_contains "$out" 'rejected the API key (HTTP 401)' \
+    'the 401 must still be named before the ended input' || rc=1
+  assert_contains "$out" 'input ended, nothing saved' \
+    'EOF at the key re-ask must name its cause' || rc=1
+  [[ ! -e "$HOME/.config/ccmorph/eof401.conf" ]] \
+    || { print -u2 -- 'an ended key re-ask must save nothing'; rc=1; }
+  # A last answer without a trailing newline is still an answer: the stdin
+  # ending right after it is not an unanswered prompt.
+  write_curl_mock 'print -- "{\"object\":\"list\",\"data\":[]}"; print -- "__CCMORPH_STATUS__200"'
+  out=$(printf 'apikey\ncustom\nhttp://gw.invalid\nsk-final-not-real' \
+    | ccmorph add eoflast 2>&1)
+  st=$?
+  (( st == 0 )) || { print -u2 -- "a final answer without its newline must complete the add: $out"; rc=1; }
+  assert_contains "$out" 'Added eoflast' \
+    'a final line without a newline must still save the profile' || rc=1
+  [[ "$(<"$HOME/.config/ccmorph/eoflast.conf")" == *'api_key=sk-final-not-real'* ]] \
+    || { print -u2 -- 'the final line must be saved as the key'; rc=1; }
   # Without the bridge the fourth row is More sign-ins, and choosing it still
   # names the install step and saves nothing — the gate follows the printed
   # row, not the word.
@@ -10771,6 +10854,497 @@ test_add_wrong_menu_answer_reasks_instead_of_exiting_issue_727() {
     'the unprinted More row must not send a bridged machine to an install step' || rc=1
   assert_contains "$out" 'Added bridged' \
     'the method menu must carry on after the unprinted answer' || rc=1
+  rm -rf "$test_home"
+  return $rc
+}
+
+test_add_endpoint_reasks_at_its_own_prompt_issue_1030() {
+  # Issue #1030 (recurs after #836): the Endpoint question took any text and the
+  # hidden key was pasted for it; only then the doomed endpoint spoke — "did not
+  # answer, so the API key was not checked" over the save's scheme refusal — and
+  # the whole flow was lost after the secret had been typed. The prompt now
+  # judges its own answer: a refusal names it (redacted, as every endpoint line
+  # is), the same question re-asks, and the key is asked once, for the endpoint
+  # that survived.
+  local test_home rc=0 out st
+  test_home=$(mktemp -d)
+  setup_home "$test_home"
+  export _CCMORPH_PROFILE_DIRS="$HOME/.config/ccmorph/profiles"
+  source "$CCMORPH_SOURCE"
+  # The surviving endpoint answers the listing with 200, so the completed add
+  # has no "not checked" line left: one would mean a doomed endpoint reached it.
+  write_curl_mock 'print -- "{\"object\":\"list\",\"data\":[]}"; print -- "__CCMORPH_STATUS__200"'
+  # The issue's three doomed answers, then the dotted host the provider rows
+  # themselves display without a scheme: every refusal re-asks, every answer
+  # given stands, and the wizard finishes.
+  out=$(print -l apikey custom 'not a url' 'ftp://example.invalid' 'javascript:alert(1)' \
+    api.example.invalid sk-gw-not-real | ccmorph add ok1030 2>&1) \
+    || { print -u2 -- 're-asked endpoint answers must not lose the wizard: '"$out"; rc=1; }
+  assert_contains "$out" 'not a url is not an endpoint' \
+    'the first doomed answer must be named at the endpoint prompt' || rc=1
+  assert_contains "$out" 'ftp://example.invalid is not an endpoint' \
+    'a wrong scheme must be named and sent back to the same question' || rc=1
+  assert_contains "$out" 'javascript:alert(1) is not an endpoint' \
+    'a scheme that is no address must be refused the same way' || rc=1
+  assert_contains "$out" 'use http:// or https://' \
+    'the refusal must name the only schemes an endpoint can use' || rc=1
+  assert_not_contains "$out" 'did not answer, so the API key was not checked' \
+    'a doomed endpoint must never reach the key check' || rc=1
+  assert_not_contains "$out" 'endpoint must use http:// or https://' \
+    'the save scheme refusal must never be reached from add' || rc=1
+  # The key is asked once, for the endpoint that survived — and the scheme-less
+  # host carries the scheme the prompt shows: key question and save name the
+  # same endpoint.
+  [[ $(print -r -- "$out" | grep -c 'API key for') -eq 1 ]] \
+    || { print -u2 -- 'the hidden key prompt must be asked exactly once: '"$out"; rc=1; }
+  assert_contains "$out" 'Added ok1030 (API key → https://api.example.invalid)' \
+    'a dotted host takes the scheme the prompt rows show' || rc=1
+  [[ "$(<"$HOME/.config/ccmorph/ok1030.conf")" == *'base_url=https://api.example.invalid'* ]] \
+    || { print -u2 -- 'the saved endpoint must be the host with its scheme'; rc=1; }
+  # Whitespace inside an endpoint refuses the same way, and the halves are not
+  # echoed back: an endpoint can carry a login (promise 5).
+  out=$(print -l apikey custom 'http://gw .invalid' | ccmorph add wsurl 2>&1)
+  st=$?
+  (( st != 0 )) || { print -u2 -- 'EOF after a refused endpoint must still end the add'; rc=1; }
+  assert_contains "$out" 'endpoint contains whitespace' \
+    'a split endpoint must be named as split' || rc=1
+  assert_not_contains "$out" 'API key for' \
+    'the doomed endpoint must not reach the key prompt' || rc=1
+  [[ ! -e "$HOME/.config/ccmorph/wsurl.conf" ]] \
+    || { print -u2 -- 'a refused endpoint that ends in EOF must save nothing'; rc=1; }
+  # The same answer, judged after the scheme is inferred: a host-only endpoint
+  # whose path holds a Unicode space (U+00A0) passed urlHostShape's ASCII \S,
+  # so add used to take the next line as the key and refuse only at the save.
+  # The check runs on the normalized URL, so both spellings re-ask in place.
+  out=$(print -l apikey custom "api.example.invalid/a"$' '"b" https://api.example.invalid sk-nbsp-not-real \
+    | ccmorph add nbsp 2>&1) \
+    || { print -u2 -- 'an inferred-scheme space must not lose the wizard: '"$out"; rc=1; }
+  assert_contains "$out" 'endpoint contains whitespace' \
+    'a Unicode space inside an inferred-scheme endpoint must be named at its prompt' || rc=1
+  assert_contains "$out" 'API key for nbsp — https://api.example.invalid (hidden)' \
+    'the key must be asked for the corrected endpoint, not the doomed one' || rc=1
+  assert_contains "$out" 'Added nbsp (API key → https://api.example.invalid)' \
+    'the corrected endpoint must complete the add' || rc=1
+  [[ "$(<"$HOME/.config/ccmorph/nbsp.conf")" == *'base_url=https://api.example.invalid'* ]] \
+    || { print -u2 -- 'the saved endpoint must be the corrected one'; rc=1; }
+  out=$(print -l apikey custom "https://api.example.invalid/a"$' '"b" https://api.example.invalid sk-nbsp2-not-real \
+    | ccmorph add nbsp2 2>&1) \
+    || { print -u2 -- 'an explicit-scheme space must not lose the wizard: '"$out"; rc=1; }
+  assert_contains "$out" 'endpoint contains whitespace' \
+    'a Unicode space inside an explicit http(s) endpoint must be named too' || rc=1
+  assert_contains "$out" 'Added nbsp2' 'the explicit-scheme re-ask must complete the add' || rc=1
+  # A scheme with no host is no endpoint either: the store would save a
+  # base_url nothing can dial, and the failure would surface only after the
+  # key. It re-asks here, and the parser decides what a host is.
+  out=$(print -l apikey custom 'https://' 'https:///v1' https://api.example.invalid sk-nohost-not-real \
+    | ccmorph add nohost 2>&1) \
+    || { print -u2 -- 'a hostless endpoint must not lose the wizard: '"$out"; rc=1; }
+  [[ $(print -r -- "$out" | grep -c 'an endpoint needs a host') -eq 2 ]] \
+    || { print -u2 -- 'each hostless answer must be named and re-asked: '"$out"; rc=1; }
+  assert_contains "$out" 'API key for nohost — https://api.example.invalid (hidden)' \
+    'the key must be asked only for an endpoint with a host' || rc=1
+  assert_contains "$out" 'Added nohost' 'the corrected endpoint must complete the add' || rc=1
+  [[ ! -e "$HOME/.config/ccmorph/nohost.conf" || "$(<"$HOME/.config/ccmorph/nohost.conf")" == *'base_url=https://api.example.invalid'* ]] \
+    || { print -u2 -- 'the saved endpoint must be the corrected one'; rc=1; }
+  # A scheme with no valid URL behind it is no endpoint either: a port that is
+  # no number, an escape that is no escape, and an authority with a port but no
+  # hostname all re-ask before the key, then the corrected one completes.
+  out=$(print -l apikey custom 'https://gateway.invalid:nope/v1' 'https://gateway.invalid/%zz' \
+    'https://:8443/v1' https://api.example.invalid sk-badurl-not-real \
+    | ccmorph add badurl 2>&1) \
+    || { print -u2 -- 'refused URL syntax must not lose the wizard: '"$out"; rc=1; }
+  [[ $(print -r -- "$out" | grep -c 'is not an endpoint') -eq 2 ]] \
+    || { print -u2 -- 'both invalid URLs must be named and re-asked: '"$out"; rc=1; }
+  [[ $(print -r -- "$out" | grep -c 'an endpoint needs a host') -eq 1 ]] \
+    || { print -u2 -- 'a port with no hostname must be named and re-asked: '"$out"; rc=1; }
+  assert_contains "$out" 'API key for badurl — https://api.example.invalid (hidden)' \
+    'the key must be asked only for a URL that parsed with a host' || rc=1
+  assert_contains "$out" 'Added badurl' 'the corrected endpoint must complete the add' || rc=1
+  # A scheme-less gateway keeps its port and path when the scheme is inferred,
+  # and an explicit http:// keeps the scheme it was given; the key prompt, the
+  # probe and the conf all name the corrected endpoint. The mock records argv
+  # so the probe's own URL can be read back.
+  write_curl_mock 'for a do printf "%s\n" "$a" >> "$HOME/curl.argv"; done
+print -- "{\"object\":\"list\",\"data\":[]}"; print -- "__CCMORPH_STATUS__200"'
+  out=$(print -l apikey custom 'gateway.invalid:8443/v1' sk-port-not-real \
+    | ccmorph add port 2>&1) \
+    || { print -u2 -- 'a scheme-less gateway with a port must complete: '"$out"; rc=1; }
+  assert_contains "$out" 'API key for port — https://gateway.invalid:8443/v1 (hidden)' \
+    'the key prompt must name the inferred endpoint whole' || rc=1
+  assert_contains "$out" 'Added port (API key → https://gateway.invalid:8443/v1)' \
+    'the Added line must name the inferred endpoint whole' || rc=1
+  [[ "$(<"$HOME/.config/ccmorph/port.conf")" == *'base_url=https://gateway.invalid:8443/v1'* ]] \
+    || { print -u2 -- 'the conf must keep the inferred endpoint port and path'; rc=1; }
+  assert_contains "$(<"$HOME/curl.argv")" 'https://gateway.invalid:8443/v1/models?limit=1000' \
+    'the probe must use the inferred endpoint, port and path included' || rc=1
+  out=$(print -l apikey custom 'http://plain.invalid' sk-http-not-real \
+    | ccmorph add plain 2>&1) \
+    || { print -u2 -- 'an explicit http:// endpoint must complete: '"$out"; rc=1; }
+  [[ "$(<"$HOME/.config/ccmorph/plain.conf")" == *'base_url=http://plain.invalid'* ]] \
+    || { print -u2 -- 'an explicit http:// endpoint must keep its scheme'; rc=1; }
+  # A refusal never echoes what a rejected URL carries: neither a login nor a
+  # query secret reaches the output (INTENT promise 5).
+  local canary=canary1030secret
+  for url in "ftp://user:${canary}@gateway.invalid/v1" "ftp://gateway.invalid/v1?token=${canary}"; do
+    out=$(print -l apikey custom "$url" | ccmorph add "rej$((++st))" 2>&1)
+    assert_contains "$out" 'is not an endpoint' \
+      'the wrong-scheme URL must be refused at the prompt' || rc=1
+    assert_not_contains "$out" "$canary" 'a refused URL must not echo its secret' || rc=1
+    [[ ! -e "$HOME/.config/ccmorph/rej$st.conf" ]] \
+      || { print -u2 -- 'a refused URL must save nothing'; rc=1; }
+  done
+  # An accepted scheme-less gateway keeps a query secret in the saved endpoint
+  # but never prints it: the key prompt and every status line go through
+  # shownEndpoint.
+  out=$(print -l apikey custom "gateway.invalid/v1?token=${canary}" sk-query-not-real \
+    | ccmorph add query 2>&1) \
+    || { print -u2 -- 'a scheme-less gateway with a query must complete: '"$out"; rc=1; }
+  [[ "$(<"$HOME/.config/ccmorph/query.conf")" == *"base_url=https://gateway.invalid/v1?token=${canary}"* ]] \
+    || { print -u2 -- 'the conf must keep the query the endpoint was given'; rc=1; }
+  assert_not_contains "$out" "$canary" 'the wizard must not print the query secret' || rc=1
+  rm -rf "$test_home"
+  return $rc
+}
+
+test_add_endpoint_reasks_under_a_terminal_issue_1030() {
+  # Issue #1030 on a real terminal: an endpoint split by a space re-asks the
+  # Endpoint question itself — the sign-in method and provider are not asked
+  # again — and the corrected endpoint then advances to the hidden key prompt
+  # and saves.
+  local test_home rc=0 out st
+  test_home=$(mktemp -d)
+  setup_home "$test_home"
+  export _CCMORPH_PROFILE_DIRS="$HOME/.config/ccmorph/profiles"
+  source "$CCMORPH_SOURCE"
+  write_curl_mock 'print -- "{\"object\":\"list\",\"data\":[]}"; print -- "__CCMORPH_STATUS__200"'
+  run_under_a_terminal "$HOME/space-fix.log" \
+    --answer 'Sign-in method' '3\n' \
+    --answer 'Provider —' 'custom\n' \
+    --answer 'Endpoint (blank' 'https://gw .invalid\n' \
+    --answer 'endpoint contains whitespace' 'https://api.example.invalid\n' \
+    --answer 'API key for' 'sk-space-not-real\n' \
+    env TERM=dumb zsh -c 'source "$1"; ccmorph add "$2"' _ "$CCMORPH_SOURCE" spacefix
+  st=$?
+  (( st == 0 )) || { print -u2 -- "a split endpoint must re-ask and complete (status $st)"; rc=1; }
+  out=$(<"$HOME/space-fix.log")
+  assert_contains "$out" 'endpoint contains whitespace' \
+    'the split endpoint must be named at the Endpoint question' || rc=1
+  [[ $(print -r -- "$out" | grep -c 'Endpoint (blank') -eq 2 ]] \
+    || { print -u2 -- 'the Endpoint question must be re-asked, not skipped: '"$out"; rc=1; }
+  [[ $(print -r -- "$out" | grep -c 'Sign-in method') -eq 1 ]] \
+    || { print -u2 -- 'the sign-in method must not be asked again'; rc=1; }
+  [[ $(print -r -- "$out" | grep -c 'Provider —') -eq 1 ]] \
+    || { print -u2 -- 'the provider must not be asked again'; rc=1; }
+  assert_contains "$out" 'Added spacefix (API key → https://api.example.invalid)' \
+    'the corrected endpoint must advance to the key and save' || rc=1
+  [[ "$(<"$HOME/.config/ccmorph/spacefix.conf")" == *'base_url=https://api.example.invalid'* ]] \
+    || { print -u2 -- 'the corrected endpoint must be the one saved'; rc=1; }
+  assert_not_contains "$out" 'sk-space-not-real' \
+    'the hidden key must never be printed' || rc=1
+  rm -rf "$test_home"
+  return $rc
+}
+
+test_add_hidden_prompt_reasks_under_a_terminal_issue_1030() {
+  # Issue #1030 on a real terminal: a stray Enter, and then a spaces-only
+  # answer, at the hidden API key prompt each re-ask that same prompt — no
+  # return to Endpoint, no probe for either blank — and the key after them is
+  # probed once and saved without appearing in the terminal output.
+  local test_home rc=0 out st
+  test_home=$(mktemp -d)
+  setup_home "$test_home"
+  export _CCMORPH_PROFILE_DIRS="$HOME/.config/ccmorph/profiles"
+  source "$CCMORPH_SOURCE"
+  write_curl_mock 'printf "called\n" >> "$HOME/curl.calls"
+print -- "{\"object\":\"list\",\"data\":[]}"; print -- "__CCMORPH_STATUS__200"'
+  run_under_a_terminal "$HOME/key-reask.log" \
+    --answer 'Sign-in method' '3\n' \
+    --answer 'Provider —' 'custom\n' \
+    --answer 'Endpoint (blank' '\n' \
+    --answer 'API key for' '\n' \
+    --answer 'empty api key' '   \n' \
+    --answer 'empty api key' 'sk-pty-key-not-real\n' \
+    env TERM=dumb zsh -c 'source "$1"; ccmorph add "$2"' _ "$CCMORPH_SOURCE" keylazy
+  st=$?
+  (( st == 0 )) || { print -u2 -- "blank hidden answers must not lose the add (status $st)"; rc=1; }
+  out=$(<"$HOME/key-reask.log")
+  [[ $(print -r -- "$out" | grep -c 'empty api key') -eq 2 ]] \
+    || { print -u2 -- 'both blank hidden answers must be named and re-asked: '"$out"; rc=1; }
+  [[ $(print -r -- "$out" | grep -c 'Endpoint (blank') -eq 1 ]] \
+    || { print -u2 -- 'a blank key must not send the wizard back to Endpoint'; rc=1; }
+  assert_contains "$out" 'Added keylazy (API key → api.anthropic.com)' \
+    'the key after the blanks must save the profile' || rc=1
+  assert_not_contains "$out" 'sk-pty-key-not-real' \
+    'the hidden key must never be printed' || rc=1
+  [[ "$(<"$HOME/.config/ccmorph/keylazy.conf")" == *'api_key=sk-pty-key-not-real'* ]] \
+    || { print -u2 -- 'the saved key must be the one typed after the blanks'; rc=1; }
+  [[ $(grep -c called "$HOME/curl.calls") -eq 1 ]] \
+    || { print -u2 -- 'neither blank may be probed, and the good key exactly once'; rc=1; }
+  rm -rf "$test_home"
+  return $rc
+}
+
+test_add_an_idle_terminal_keeps_waiting_issue_1042() {
+  # The five red CI jobs on PR #1042: keys.next read an idle raw terminal's
+  # zero-length read (io.EOF) as the input ending, so a person who paused was
+  # cancelled. A pause longer than several raw read windows must leave the
+  # prompt waiting: a partly typed endpoint keeps its prefix, and an arrow
+  # sequence typed after one still selects the row it points at.
+  local test_home rc=0 out st
+  test_home=$(mktemp -d)
+  setup_home "$test_home"
+  export _CCMORPH_PROFILE_DIRS="$HOME/.config/ccmorph/profiles"
+  source "$CCMORPH_SOURCE"
+  write_curl_mock 'print -- "{\"object\":\"list\",\"data\":[]}"; print -- "__CCMORPH_STATUS__200"'
+  run_under_a_terminal "$HOME/idle-line.log" \
+    --answer 'Sign-in method' '3\n' \
+    --answer 'Provider —' 'custom\n' \
+    --answer 'Endpoint (blank' 'https://api.example.invalid' \
+    --pause 0.5 --write '\n' \
+    --answer 'API key for' 'sk-idle-not-real\n' \
+    env TERM=dumb zsh -c 'source "$1"; ccmorph add "$2"' _ "$CCMORPH_SOURCE" idle
+  st=$?
+  (( st == 0 )) || { print -u2 -- "an idle pause must not end the add (status $st)"; rc=1; }
+  out=$(<"$HOME/idle-line.log")
+  assert_contains "$out" 'Added idle (API key → https://api.example.invalid)' \
+    'the endpoint typed around a pause must keep its prefix and submit' || rc=1
+  assert_not_contains "$out" 'Cancelled' 'an idle pause must not cancel the prompt' || rc=1
+  assert_not_contains "$out" 'input ended' 'an idle pause must not claim the input ended' || rc=1
+  run_under_a_terminal "$HOME/idle-arrows.log" \
+    --wait-for 'Sign-in method' --pause 0.5 --write '\x1b[B\x1b[B\r' \
+    --answer 'Provider —' 'custom\n' \
+    --answer 'Endpoint (blank' '\n' \
+    --answer 'API key for' 'sk-idle2-not-real\n' \
+    env TERM=xterm zsh -c 'source "$1"; ccmorph add "$2"' _ "$CCMORPH_SOURCE" idle2
+  st=$?
+  (( st == 0 )) || { print -u2 -- "arrow keys after an idle pause must still answer (status $st)"; rc=1; }
+  out=$(<"$HOME/idle-arrows.log")
+  # The ANSI reset sits between "Added" and the name on a colour terminal, so
+  # the receipt is matched from the name on.
+  assert_contains "$out" 'idle2 (API key → api.anthropic.com)' \
+    'a Down-arrow sequence after an idle pause must select the row it points at' || rc=1
+  assert_not_contains "$out" 'Cancelled' 'an arrow sequence after a pause must not cancel' || rc=1
+  rm -rf "$test_home"
+  return $rc
+}
+
+test_add_empty_credential_reasks_at_the_prompt_issue_1030() {
+  # Issue #1030: a stray Enter at the hidden prompt printed "empty api key" and
+  # ended the whole wizard — while a key the endpoint rejects with 401 is simply
+  # asked for again. A blank answer is just as correctable, so its prompt
+  # re-asks too; EOF after one still cancels (the #254 die test keeps that).
+  local test_home rc=0 out
+  test_home=$(mktemp -d)
+  setup_home "$test_home"
+  export _CCMORPH_PROFILE_DIRS="$HOME/.config/ccmorph/profiles"
+  source "$CCMORPH_SOURCE"
+  write_curl_mock 'print -- "{\"object\":\"list\",\"data\":[]}"; print -- "__CCMORPH_STATUS__200"'
+  # A blank line and a whitespace-only line are named and re-asked; the key
+  # typed after them is the one that saves.
+  out=$(print -l apikey custom http://gw.invalid '' '   ' sk-good-1030 | ccmorph add emp 2>&1) \
+    || { print -u2 -- 'a stray Enter must not lose the wizard: '"$out"; rc=1; }
+  [[ $(print -r -- "$out" | grep -c 'empty api key') -eq 2 ]] \
+    || { print -u2 -- 'both blank answers must be named and re-asked: '"$out"; rc=1; }
+  assert_contains "$out" 'paste it again' \
+    'the re-ask must name the fix, the way a 401 re-ask does' || rc=1
+  assert_contains "$out" 'Added emp' 'the re-entered key must complete the add' || rc=1
+  [[ "$(<"$HOME/.config/ccmorph/emp.conf")" == *'api_key=sk-good-1030'* ]] \
+    || { print -u2 -- 'the saved key must be the one typed after the blanks'; rc=1; }
+  # The token prompt shares the answer rule: a stray Enter re-asks there too.
+  out=$(print -l token '' sk-ant-oat01-wrong-not-real-not-real | ccmorph add emptok 2>&1) \
+    || { print -u2 -- 'a stray Enter at the token prompt must not lose the wizard: '"$out"; rc=1; }
+  assert_contains "$out" 'empty token — paste it again' \
+    'the blank token must be named and re-asked' || rc=1
+  assert_contains "$out" 'Added emptok' 'the re-entered token must complete the add' || rc=1
+  # A paste of only quotes cleans to nothing, and so does one of spaces inside
+  # quotes: both re-ask as empty and the key after them saves (#1030).
+  out=$(print -l apikey custom http://gw.invalid '""' '  ""  ' sk-quoted-not-real \
+    | ccmorph add quoted 2>&1) \
+    || { print -u2 -- 'a quoted-empty paste must not lose the wizard: '"$out"; rc=1; }
+  [[ $(print -r -- "$out" | grep -c 'empty api key') -eq 2 ]] \
+    || { print -u2 -- 'both quoted-empty answers must be named and re-asked: '"$out"; rc=1; }
+  assert_contains "$out" 'Added quoted' 'the key after the quoted blanks must save' || rc=1
+  [[ "$(<"$HOME/.config/ccmorph/quoted.conf")" == *'api_key=sk-quoted-not-real'* ]] \
+    || { print -u2 -- 'the quoted-empty blanks must not be saved as a key'; rc=1; }
+  # A whitespace-only token re-asks too, and a shaped one after it saves.
+  out=$(print -l token '   ' sk-ant-oat01-0000000000000000000000 | ccmorph add wtok 2>&1) \
+    || { print -u2 -- 'a whitespace-only token must not lose the wizard: '"$out"; rc=1; }
+  assert_contains "$out" 'empty token — paste it again' \
+    'the whitespace-only token must be named and re-asked' || rc=1
+  assert_contains "$out" 'Added wtok' 'the shaped token after it must save' || rc=1
+  rm -rf "$test_home"
+  return $rc
+}
+
+test_add_names_eof_at_a_terminal_prompt_issue_1030() {
+  # Issue #1030, third leg: a terminal that closed while add waited answered
+  # with the picker's own "Cancelled" — the receipt Esc gets — so the person
+  # could not tell input ended and nothing was saved. A closed terminal now
+  # answers with config's sentence beside that line, at the menu and at the
+  # endpoint question; a deliberate Esc still gets only its own line.
+  local test_home rc=0 out st
+  test_home=$(mktemp -d)
+  setup_home "$test_home"
+  export _CCMORPH_PROFILE_DIRS="$HOME/.config/ccmorph/profiles"
+  source "$CCMORPH_SOURCE"
+  # A terminal on both streams, as a person has. The shared pty runner gives
+  # stdin its own pty and stdout/stderr theirs, answers the menus and ends the
+  # input where this test says, so the close is a real terminal close while the
+  # output is still read. TERM=dumb keeps the numbered picker (keys, not
+  # arrows) and keeps fzf out of it.
+  local add_terminal=(env TERM=dumb zsh -c 'source "$1"; ccmorph add "$2"' _ "$CCMORPH_SOURCE")
+  # The provider menu: closing the terminal's input is not Esc, and the cause
+  # is named with the sentence add shares with config.
+  run_under_a_terminal "$HOME/eof-menu.log" \
+    --answer 'Sign-in method' '3\n' --end-input-at 'Provider —' \
+    $add_terminal termm
+  st=$?
+  (( st == 1 )) || { print -u2 -- "a closed terminal at the provider menu must end the add (status $st)"; rc=1; }
+  out=$(<"$HOME/eof-menu.log")
+  assert_contains "$out" 'config needs a terminal, or one answer per prompt on stdin; input ended, nothing saved' \
+    'a closed terminal at the provider menu must name the cause' || rc=1
+  assert_contains "$out" 'Cancelled' \
+    'the picker keeps its own line beside the named cause' || rc=1
+  [[ ! -e "$HOME/.config/ccmorph/termm.conf" ]] \
+    || { print -u2 -- 'a closed terminal must save nothing'; rc=1; }
+  # The endpoint question: same cause, same sentence.
+  run_under_a_terminal "$HOME/eof-endpoint.log" \
+    --answer 'Sign-in method' '3\n' --answer 'Provider —' 'custom\n' \
+    --end-input-at 'Endpoint (blank = api.anthropic.com):' \
+    $add_terminal terme
+  st=$?
+  (( st == 1 )) || { print -u2 -- "a closed terminal at the endpoint question must end the add (status $st)"; rc=1; }
+  out=$(<"$HOME/eof-endpoint.log")
+  assert_contains "$out" 'input ended, nothing saved' \
+    'a closed terminal at the endpoint question must name the cause' || rc=1
+  [[ ! -e "$HOME/.config/ccmorph/terme.conf" ]] \
+    || { print -u2 -- 'a closed terminal at the endpoint must save nothing'; rc=1; }
+  # A deliberate Esc is not an ended input: its own line and nothing more.
+  run_under_a_terminal "$HOME/esc.log" \
+    --answer 'Sign-in method' '3\n' --answer 'Provider —' '\x1b' \
+    $add_terminal termq
+  st=$?
+  (( st == 1 )) || { print -u2 -- "Esc at the provider menu must still leave (status $st)"; rc=1; }
+  out=$(<"$HOME/esc.log")
+  assert_contains "$out" 'Cancelled' 'a deliberate leave keeps its line' || rc=1
+  assert_not_contains "$out" 'input ended' \
+    'a deliberate Esc must not claim the input ended' || rc=1
+  [[ ! -e "$HOME/.config/ccmorph/termq.conf" ]] \
+    || { print -u2 -- 'a deliberate leave must save nothing'; rc=1; }
+  # The optional name prompt, asked only when no name was given.
+  run_under_a_terminal "$HOME/eof-name.log" \
+    --end-input-at 'New profile name' \
+    env TERM=dumb zsh -c 'source "$1"; ccmorph add' _ "$CCMORPH_SOURCE"
+  st=$?
+  (( st == 1 )) || { print -u2 -- "a closed terminal at the name prompt must end the add (status $st)"; rc=1; }
+  out=$(<"$HOME/eof-name.log")
+  assert_contains "$out" 'input ended, nothing saved' \
+    'a closed terminal at the name prompt must name the cause' || rc=1
+  # The native sign-in menu (a real arrow menu, not the numbered fallback): a
+  # closed terminal inside it is the input ending, while a bare Esc in that
+  # same menu stays the deliberate leave it was.
+  run_under_a_terminal "$HOME/eof-native.log" \
+    --end-input-at 'Sign-in method' \
+    env TERM=xterm zsh -c 'source "$1"; ccmorph add "$2"' _ "$CCMORPH_SOURCE" termn
+  st=$?
+  (( st == 1 )) || { print -u2 -- "a closed terminal at the native menu must end the add (status $st)"; rc=1; }
+  out=$(<"$HOME/eof-native.log")
+  assert_contains "$out" 'input ended, nothing saved' \
+    'a closed terminal at the native menu must name the cause' || rc=1
+  run_under_a_terminal "$HOME/esc-native.log" \
+    --answer 'Sign-in method' '\x1b' \
+    env TERM=xterm zsh -c 'source "$1"; ccmorph add "$2"' _ "$CCMORPH_SOURCE" termne
+  st=$?
+  (( st == 1 )) || { print -u2 -- "Esc at the native menu must still leave (status $st)"; rc=1; }
+  out=$(<"$HOME/esc-native.log")
+  assert_contains "$out" 'Cancelled' 'a native-menu Esc keeps its own line' || rc=1
+  assert_not_contains "$out" 'input ended' 'a native-menu Esc must not claim the input ended' || rc=1
+  # A terminal closing inside an arrow sequence is the input ending, not the
+  # bare Esc an unfinished sequence otherwise looks like.
+  run_under_a_terminal "$HOME/eof-arrow.log" \
+    --answer 'Sign-in method' '\x1b[' --end-input-at 'Sign-in method' \
+    env TERM=xterm zsh -c 'source "$1"; ccmorph add "$2"' _ "$CCMORPH_SOURCE" termna
+  st=$?
+  (( st == 1 )) || { print -u2 -- "a terminal closing mid-arrow must end the add (status $st)"; rc=1; }
+  out=$(<"$HOME/eof-arrow.log")
+  assert_contains "$out" 'input ended, nothing saved' \
+    'a terminal closing inside an arrow sequence must name the cause' || rc=1
+  # Part of a hidden credential typed, then the terminal closes: those bytes
+  # are never probed, printed or saved. The recording mock is what proves no
+  # probe happened, so a real curl on PATH cannot stand in for one.
+  write_curl_mock 'printf "called\n" >> "$HOME/curl.calls"
+exit 1'
+  run_under_a_terminal "$HOME/eof-partial.log" \
+    --answer 'Sign-in method' '3\n' --answer 'Provider —' 'custom\n' \
+    --answer 'Endpoint (blank' '\n' --answer 'API key for' 'sk-partial-not-real' \
+    --pause 0.3 --end-input-at 'API key for' \
+    env TERM=dumb zsh -c 'source "$1"; ccmorph add "$2"' _ "$CCMORPH_SOURCE" termp
+  st=$?
+  (( st == 1 )) || { print -u2 -- "a closed terminal at the hidden prompt must end the add (status $st)"; rc=1; }
+  out=$(<"$HOME/eof-partial.log")
+  assert_contains "$out" 'input ended, nothing saved' \
+    'a closed terminal with a partial credential must name the cause' || rc=1
+  assert_not_contains "$out" 'sk-partial-not-real' \
+    'a partial credential must never be printed' || rc=1
+  [[ ! -e "$HOME/curl.calls" ]] \
+    || { print -u2 -- 'a partial credential must never be probed'; rc=1; }
+  [[ ! -e "$HOME/.config/ccmorph/termp.conf" ]] \
+    || { print -u2 -- 'a partial credential must save nothing'; rc=1; }
+  # With fzf selected for the provider menu, a closed terminal under it names
+  # the cause; fzf's own Esc is a cancellation only.
+  printf '%s\n' '#!/bin/sh' 'printf "FAKE_FZF_READY" >&2' 'sleep 0.3' \
+    '[ "$FAKE_FZF" = esc ] && exit 130' 'exit 0' > "$HOME/bin/fzf"
+  chmod +x "$HOME/bin/fzf"
+  run_under_a_terminal "$HOME/eof-fzf.log" \
+    --answer 'Sign-in method' '\x1b[B\x1b[B\r' --end-input-at 'FAKE_FZF_READY' \
+    env TERM=xterm FAKE_FZF=close zsh -c 'source "$1"; ccmorph add "$2"' _ "$CCMORPH_SOURCE" termf
+  st=$?
+  (( st == 1 )) || { print -u2 -- "a closed terminal under fzf must end the add (status $st)"; rc=1; }
+  out=$(<"$HOME/eof-fzf.log")
+  assert_contains "$out" 'Cancelled' 'the fzf path keeps its own line' || rc=1
+  assert_contains "$out" 'input ended, nothing saved' \
+    'a closed terminal under fzf must name the cause' || rc=1
+  run_under_a_terminal "$HOME/esc-fzf.log" \
+    --answer 'Sign-in method' '\x1b[B\x1b[B\r' \
+    env TERM=xterm FAKE_FZF=esc zsh -c 'source "$1"; ccmorph add "$2"' _ "$CCMORPH_SOURCE" termfe
+  st=$?
+  (( st == 1 )) || { print -u2 -- "fzf's own Esc must still leave (status $st)"; rc=1; }
+  out=$(<"$HOME/esc-fzf.log")
+  assert_contains "$out" 'Cancelled' 'fzf Esc keeps its cancellation' || rc=1
+  assert_not_contains "$out" 'input ended' 'fzf Esc must not claim the input ended' || rc=1
+  # A typed q at the numbered provider menu is still the deliberate leave.
+  run_under_a_terminal "$HOME/q-numbered.log" \
+    --answer 'Sign-in method' '3\n' --answer 'Provider —' 'q' \
+    env TERM=dumb zsh -c 'source "$1"; ccmorph add "$2"' _ "$CCMORPH_SOURCE" termqq
+  st=$?
+  (( st == 1 )) || { print -u2 -- "q at the numbered provider menu must still leave (status $st)"; rc=1; }
+  out=$(<"$HOME/q-numbered.log")
+  assert_contains "$out" 'Cancelled' 'a typed q keeps its cancellation' || rc=1
+  assert_not_contains "$out" 'input ended' 'a typed q must not claim the input ended' || rc=1
+  # A hangup carrying SIGHUP while the output is still readable names the cause
+  # too. The core runs directly, so the signal reaches it alone.
+  run_under_a_terminal "$HOME/hup.log" \
+    --answer 'Sign-in method' '3\n' --answer 'Provider —' 'custom\n' \
+    --wait-for 'Endpoint (blank' --signal HUP \
+    env TERM=dumb "$REPO_ROOT/libexec/ccmorph-core" cli main add termh
+  st=$?
+  (( st == 1 )) || { print -u2 -- "a SIGHUP hangup must end the add (status $st)"; rc=1; }
+  out=$(<"$HOME/hup.log")
+  assert_contains "$out" 'input ended, nothing saved' \
+    'a SIGHUP hangup must name the cause while output is readable' || rc=1
+  [[ ! -e "$HOME/.config/ccmorph/termh.conf" ]] \
+    || { print -u2 -- 'a SIGHUP hangup must save nothing'; rc=1; }
+  # config keeps its own answers: a deliberate terminal Esc cancels without the
+  # shared sentence (its piped EOF sentence is pinned by cli_configure_test).
+  write_apikey_conf cfg1030 'api_key=sk-config-not-real' 'base_url=https://gw.invalid'
+  run_under_a_terminal "$HOME/config-esc.log" \
+    --answer 'Settings —' '\x1b' \
+    env TERM=dumb "$REPO_ROOT/libexec/ccmorph-core" cli main config cfg1030
+  st=$?
+  (( st == 1 )) || { print -u2 -- "Esc at config's menu must still leave (status $st)"; rc=1; }
+  out=$(<"$HOME/config-esc.log")
+  assert_contains "$out" 'Cancelled' 'config keeps its own cancellation line' || rc=1
+  assert_not_contains "$out" 'input ended' 'config Esc must not gain the shared sentence' || rc=1
   rm -rf "$test_home"
   return $rc
 }
@@ -13153,6 +13727,12 @@ run_test test_add_cleans_a_pasted_credential_issue_254
 run_test test_add_reports_a_rejected_key_in_the_same_step_issue_254
 run_test test_add_flags_a_malformed_token_and_checks_a_shaped_one_issue_254
 run_test test_add_wrong_menu_answer_reasks_instead_of_exiting_issue_727
+run_test test_add_endpoint_reasks_at_its_own_prompt_issue_1030
+run_test test_add_empty_credential_reasks_at_the_prompt_issue_1030
+run_test test_add_names_eof_at_a_terminal_prompt_issue_1030
+run_test test_add_endpoint_reasks_under_a_terminal_issue_1030
+run_test test_add_hidden_prompt_reasks_under_a_terminal_issue_1030
+run_test test_add_an_idle_terminal_keeps_waiting_issue_1042
 run_test test_launch_refuses_a_key_claude_code_was_told_to_refuse
 run_test test_launch_carries_the_persons_answers_to_the_next_profile
 run_test test_hop_lands_on_the_resumed_conversation_not_the_questions

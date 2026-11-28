@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -30,6 +31,9 @@ func (l *launcher) add(args []string) int {
 	if name == "" && isTTY(0) {
 		v, rc := uiInput("New profile name: ", false)
 		if rc != 0 {
+			if addInputEnded(rc) {
+				l.inputEndedAtATerminal()
+			}
 			return 1
 		}
 		name = v
@@ -124,12 +128,18 @@ const menuTryLimit = 3
 func (l *launcher) menu(mode, title, rows string, match func(string) (string, string, bool)) (string, bool) {
 	if isTTY(0) {
 		v, rc := uiSelect(mode, title, rows, "")
+		if addInputEnded(rc) {
+			// A closed terminal is not the Esc/q leave beside it: the picker's
+			// own line stays, and the cause is named after it (#1030).
+			l.inputEndedAtATerminal()
+		}
 		return v, rc == 0
 	}
 	themeFor(2).list(title, splitRows(rows), "labels")
 	for wrong := 1; ; wrong++ {
 		v, rc := uiInput("> ", false)
 		if rc != 0 {
+			l.inputEnded()
 			return "", false
 		}
 		if v == "q" || v == "Q" {
@@ -199,6 +209,55 @@ var urlHostShape = regexp.MustCompile(`^[a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?(\
 // give: it carries a scheme, or it reads as a dotted host (#727).
 func looksLikeURL(s string) bool {
 	return strings.Contains(s, "://") || urlHostShape.MatchString(s)
+}
+
+// endpointRefusal names an answer that is no endpoint, so the question can be
+// asked again. The answer goes through shownEndpoint: an endpoint can carry a
+// login, and a refusal that echoes one back is a credential in the output
+// (INTENT promise 5).
+func endpointRefusal(v string) string {
+	return fmt.Sprintf("%s is not an endpoint — use http:// or https://, or blank for api.anthropic.com",
+		shownEndpoint(v))
+}
+
+// endpointAnswer is the Endpoint prompt's own verdict on its answer, given
+// before the hidden key is asked for (#1030) so a malformed endpoint re-asks
+// its own question instead of surfacing after the secret was typed for it.
+// Blank is the default the prompt names. A dotted host typed without a scheme —
+// the way the prompt itself shows "api.anthropic.com" and every provider row
+// displays its host, port and path included — takes the https scheme those
+// rows imply, so what the person sees typed and what is probed and saved are
+// one endpoint, spelled in the only form the store accepts. The answer is
+// judged after that normalization, once: whitespace anywhere inside it, a URL
+// the parser refuses, and an authority with no hostname all re-ask here,
+// whether the scheme was typed or inferred. The host is the parser's answer,
+// so `https://:8443/v1` — a port with no host — is refused like the empty
+// authority it is, and a gateway address keeps its port and path whole.
+func endpointAnswer(v string) (endpoint, hint string, ok bool) {
+	switch {
+	case v == "":
+		return "", "", true
+	case strings.HasPrefix(v, "http://"), strings.HasPrefix(v, "https://"):
+		endpoint = v
+	case urlHostShape.MatchString(v):
+		endpoint = "https://" + v
+	default:
+		return "", endpointRefusal(v), false
+	}
+	if credentialSpace(endpoint) {
+		return "", "endpoint contains whitespace — copy it again as one piece", false
+	}
+	u, err := url.Parse(endpoint)
+	if err != nil {
+		// A scheme is not a URL: a port that is no number, an escape that is
+		// no escape — the store would save text nothing can dial, and the
+		// failure would surface only after the key.
+		return "", endpointRefusal(v), false
+	}
+	if u.Hostname() == "" {
+		return "", "an endpoint needs a host — e.g. https://api.example.com, or blank for api.anthropic.com", false
+	}
+	return endpoint, "", true
 }
 
 // rollback removes a half-made profile: private state, its live lock and conf.
@@ -372,18 +431,45 @@ func credentialSpace(s string) bool {
 	return strings.IndexFunc(s, unicode.IsSpace) >= 0
 }
 
+// addInputEnded reports the statuses that mean the input itself ended rather
+// than a deliberate leave: the closed-terminal result, and SIGHUP — the hangup
+// a terminal sends when it closes while our output still reaches a reader
+// (#1030). SIGINT and SIGTERM stay the deliberate ends they were.
+func addInputEnded(rc int) bool {
+	return rc == uiInputEnded || rc == sigRC(syscall.SIGHUP)
+}
+
+// addAsk is one add-wizard prompt whose answer a stdin that ended cannot give:
+// the ended input is named with the config sentence, never a bare prompt
+// (#1030). On a pipe every cancel is an ended stdin; at a terminal only a
+// closed input is — Esc keeps the picker's own line and nothing more.
+func (l *launcher) addAsk(prompt string, secret bool) (string, bool) {
+	answer, rc := uiInput(prompt, secret)
+	if rc != 0 {
+		if addInputEnded(rc) {
+			l.inputEndedAtATerminal()
+		} else {
+			l.inputEnded()
+		}
+		return "", false
+	}
+	return answer, true
+}
+
 // askCredential reads one credential at prompt, cleaning paste artifacts and
 // refusing what cannot be cleaned at the prompt itself — never after later
-// questions. An empty answer or EOF cancels the whole add.
+// questions. A blank answer is named and asked for again: a stray Enter is as
+// correctable as a key the endpoint rejects with 401, and must lose no more of
+// the wizard than that does (#1030). EOF is the deliberate end, named as such.
 func (l *launcher) askCredential(prompt, what string) (string, bool) {
 	for {
-		v, rc := uiInput(prompt, true)
-		if rc != 0 {
+		v, ok := l.addAsk(prompt, true)
+		if !ok {
 			return "", false
 		}
 		if v = cleanCredential(v); v == "" {
-			l.err("empty " + what)
-			return "", false
+			l.err("empty " + what + " — paste it again")
+			continue
 		}
 		if credentialSpace(v) {
 			l.err(what + " contains whitespace — copy it again as one piece")
@@ -572,21 +658,32 @@ func (l *launcher) addAPIKey(name string) int {
 		// Custom endpoint names its address before the key, so the key prompt
 		// can name the service the key is for (#278). The dash, not brackets:
 		// labels like "Qwen (Alibaba Cloud, China)" bring their own (#361).
-		v, rc := uiInput("Endpoint (blank = api.anthropic.com): ", false)
-		if rc != 0 {
-			return 1
+		// The answer is judged here, before the hidden key is asked for: a
+		// doomed endpoint re-asks its own question instead of speaking only
+		// after the secret was typed for it (#1030).
+		for {
+			v, ok := l.addAsk("Endpoint (blank = api.anthropic.com): ", false)
+			if !ok {
+				return 1
+			}
+			var hint string
+			url, hint, ok = endpointAnswer(cleanCredential(v))
+			if ok {
+				break
+			}
+			l.err(hint)
 		}
-		url = cleanCredential(v)
-		service := url
-		if service == "" {
-			service = "api.anthropic.com"
-		}
-		prompt += " — " + service
+		// The key prompt names the service through shownEndpoint, as every
+		// status line does: a gateway URL can carry a login or a query secret,
+		// and the endpoint keeps it while the text never shows it (#1030,
+		// INTENT promise 5).
+		prompt += " — " + shownEndpoint(url)
 	}
 	// The endpoint is asked the listing question doctor asks, in this step: a
 	// key it refuses is named here and asked for again, not saved as Added and
-	// discovered at launch. The endpoint was answered once, before the key; a
-	// re-entered key is checked against the same endpoint.
+	// discovered at launch. The endpoint was answered once its format was
+	// accepted, before the key; a re-entered key is checked against the same
+	// endpoint.
 	var key string
 	for {
 		var ok bool
@@ -651,10 +748,10 @@ func (l *launcher) addAPIKey(name string) int {
 
 // shownEndpoint is an endpoint as add prints it: never with the login or the
 // query a URL can carry (INTENT promise 5). A URL with a scheme is RedactURL's
-// to answer. One typed without a scheme is refused by the save, but only after
-// the key check has named it, so it names no host once it holds an @, a ? or a
-// #; a bare host or host:port is shown as typed. Blank is the default endpoint,
-// spelled the way the endpoint question spells it.
+// to answer. Text the endpoint prompt has not accepted — its refusal names the
+// answer back (#1030) — gets the same guard: text holding an @, a ? or a #
+// names no host at all, a bare host or host:port is shown as typed. Blank is
+// the default endpoint, spelled the way the endpoint question spells it.
 func shownEndpoint(url string) string {
 	switch {
 	case url == "":
