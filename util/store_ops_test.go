@@ -673,3 +673,49 @@ func TestStoreHealsAnIdenticalBaseUrlRepeatAndKeepsADifferingOneIssue1031(t *tes
 		t.Fatalf("the reader accepted two endpoints: %v", err)
 	}
 }
+
+// A save writes each key it writes on that key's own line, so a comment above
+// any line stays above it and a comment that ends the file stays at the end;
+// the first save's layout is the one every later save leaves alone (#1031).
+func TestStoreSaveKeepsEachCommentWithItsLineIssue1031(t *testing.T) {
+	head := "type=provider\nprovider=codex\n"
+	gate := head + "context_window.m=10000\nmodel=m\nmodel=m\ntag=t\ntag=t\n# note\n# note\n"
+	settled := head + "tag=t\n\nmodel=m\n\ncontext_window.m=10000\n\nmodel_defaults=1\n\n# note\n# note\n"
+	for _, c := range []struct {
+		name, conf, op, key string
+		ch                  StoreChange
+		want                string
+	}{
+		{"a comment above the model line the save writes", head + "# my model\nmodel=m\ncontext_window.m=1\n",
+			"seed-model-defaults", "model", StoreChange{},
+			head + "\n# my model\nmodel=m\n\ncontext_window.m=1\n\nmodel_defaults=1\n"},
+		{"a comment above a line the save does not write", head + "# window note\ncontext_window.m=10000\n",
+			"set", "", StoreChange{Model: "x"},
+			head + "\nmodel=x\n\n# window note\ncontext_window.m=10000\n\nmodel_defaults=1\n"},
+		{"comments that end the file", head + "context_window.m=10000\nmodel=m\ntag=t\n# note\n# note\n",
+			"seed-model-defaults", "model", StoreChange{}, settled},
+		{"the gate's conf, seed", gate, "seed-model-defaults", "model", StoreChange{}, settled},
+		{"the gate's conf, set", gate, "set", "", StoreChange{Model: "m"}, settled},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			s := newStoreEnv(t)
+			s.write(s.conf, c.conf)
+			settings := s.read(s.settings)
+			s.ok(c.op, c.key, c.ch)
+			first := s.read(s.conf)
+			if first != c.want {
+				t.Fatalf("first save:\n%s\nwant:\n%s", first, c.want)
+			}
+			if _, err := profile.Read(filepath.Dir(s.conf), "demo", false, profile.Defaults(), func(string) {}); err != nil {
+				t.Fatal(err)
+			}
+			s.ok(c.op, c.key, c.ch)
+			if got := s.read(s.conf); got != first {
+				t.Fatalf("the second save moved lines:\n%s\nwant:\n%s", got, first)
+			}
+			if s.read(s.settings) != settings {
+				t.Fatal("settings changed")
+			}
+		})
+	}
+}
