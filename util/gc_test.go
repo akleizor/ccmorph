@@ -29,29 +29,16 @@ func TestGCReapsWhatAKilledLaunchLeaves(t *testing.T) {
 	// The recycled pid is a live same-user process that now holds the dead
 	// claude's number, and its command line names claude: the #189 check
 	// spared every such process, so the stand-in is the one that fooled it —
-	// a grep over notes, with sleep reading only its count from argv (#206).
-	recycled := exec.Command("/bin/sleep", "30")
-	recycled.Args = []string{"grep -r claude /Users/someone/notes", "30"}
-	if recycled.Start() != nil {
-		t.Fatal("could not start the recycled-pid stand-in")
-	}
-	defer func() { recycled.Process.Kill(); recycled.Wait() }()
-	claude := exec.Command("/bin/sleep", "30")
-	claude.Args[0] = "claude"
-	if claude.Start() != nil {
-		t.Fatal("could not start the claude stand-in")
-	}
-	defer func() { claude.Process.Kill(); claude.Wait() }()
+	// a grep over notes (#206). Use the test holder so the fixtures can choose
+	// argv[0] on BusyBox systems, where sleep uses it to select the applet.
+	users := t.TempDir()
+	recycled := holdProc(t, os.Args[0], filepath.Join(users, "recycled"), "grep", "-r", "claude", "/notes")
+	claude := holdProc(t, os.Args[0], filepath.Join(users, "claude"), "claude")
 	// A living claude the sweep must not know by its command line: the launch
 	// resolves claude by a path and argv may spell it any way, so this one
 	// names no claude at all. Only the record, written the moment it started,
 	// says it is the claude that runs from its view (#206).
-	script := exec.Command("/bin/sleep", "30")
-	script.Args = []string{"node /opt/tools/cc/cli.js", "30"}
-	if script.Start() != nil {
-		t.Fatal("could not start the script-claude stand-in")
-	}
-	defer func() { script.Process.Kill(); script.Wait() }()
+	script := holdProc(t, os.Args[0], filepath.Join(users, "script"), "node", "/opt/tools/cc/cli.js")
 	// A view's record is joined by the kernel's mark of when its claude
 	// started (#218): a mark that is not the holder's stands in for the dead
 	// claude's. Two processes started in one kernel tick (10ms on Linux) carry
@@ -190,7 +177,6 @@ func TestGCReapsAStaleSessionEndRecord(t *testing.T) {
 	// the OS recycled the ended claude's pid — so a sweep that asked it would
 	// keep the record forever.
 	recycled := exec.Command("/bin/sleep", "30")
-	recycled.Args = []string{"grep -r claude /Users/someone/notes", "30"}
 	if recycled.Start() != nil {
 		t.Fatal("could not start the recycled-pid stand-in")
 	}

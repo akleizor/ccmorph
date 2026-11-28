@@ -14,21 +14,21 @@ import (
 	"time"
 )
 
-// bridgeProc starts a stand-in for a bridge: a sleeper whose argv carries the
-// rendered config path, as cliproxyapi's -config argument does, so the
-// ownership check reads it as ours.
-func bridgeProc(t *testing.T, tmp string) *exec.Cmd {
+// startBridgeFixture starts a stand-in whose argv carries the rendered config
+// path like cliproxyapi's -config argument. BusyBox sleep cannot be used with a
+// fake argv[0]: it uses that argument to select the applet.
+func startBridgeFixture(t *testing.T, tmp string) *exec.Cmd {
 	t.Helper()
 	if err := os.MkdirAll(tmp, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	cmd := exec.Command("sleep", "60")
-	cmd.Args[0] = filepath.Join(tmp, "config.yaml")
-	if err := cmd.Start(); err != nil {
-		t.Fatal(err)
-	}
-	go cmd.Wait()
-	t.Cleanup(func() { cmd.Process.Kill() })
+	return holdProc(t, os.Args[0], filepath.Join(t.TempDir(), "users"),
+		"cliproxyapi", "-config", filepath.Join(tmp, "config.yaml"))
+}
+
+func bridgeProc(t *testing.T, tmp string) *exec.Cmd {
+	t.Helper()
+	cmd := startBridgeFixture(t, tmp)
 	// The kernel read can answer two transient ways for the pid just started,
 	// and production treats both as alive and retries: doubt — the read could
 	// not answer at all, which answers() reads as alive (#409) — and the
@@ -164,16 +164,7 @@ func TestTwoSessionsShareOneBridge(t *testing.T) {
 func TestAnswersDoesNotWalkTheWholeProcessTable(t *testing.T) {
 	root := t.TempDir()
 	tmp := filepath.Join(root, "ccmorph-bridge-1")
-	if err := os.MkdirAll(tmp, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	cmd := exec.Command("sleep", "60")
-	cmd.Args[0] = filepath.Join(tmp, "config.yaml")
-	if err := cmd.Start(); err != nil {
-		t.Fatal(err)
-	}
-	go cmd.Wait()
-	t.Cleanup(func() { cmd.Process.Kill() })
+	cmd := startBridgeFixture(t, tmp)
 
 	probes := 0
 	stubProbe(t, func(port, key string) bool { probes++; return false })
@@ -472,7 +463,12 @@ func TestMain(m *testing.M) {
 // as util.test, never as the core (#408).
 func coreCopy(t *testing.T) string {
 	t.Helper()
-	core := filepath.Join(t.TempDir(), "ccmorph-core")
+	return namedCopy(t, "ccmorph-core")
+}
+
+func namedCopy(t *testing.T, name string) string {
+	t.Helper()
+	core := filepath.Join(t.TempDir(), name)
 	if os.Link(os.Args[0], core) == nil {
 		return core
 	}

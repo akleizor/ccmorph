@@ -114,12 +114,8 @@ func TestSessionAdapterFindsAReparentedProcessInTheRealTable(t *testing.T) {
 	// that argv, read back through the real process table, whose parent is this
 	// test and not the launcher it names.
 	const launcher = 424242
-	cmd := exec.Command("/bin/sleep", "30")
-	cmd.Args = []string{"/x/libexec/ccmorph-core adapter gw --auto --parent-pid 424242", "30"}
-	if err := cmd.Start(); err != nil {
-		t.Fatal(err)
-	}
-	defer func() { cmd.Process.Kill(); cmd.Wait() }()
+	cmd := holdProc(t, os.Args[0], filepath.Join(t.TempDir(), "users"),
+		"/x/libexec/ccmorph-core", "adapter", "gw", "--auto", "--parent-pid", "424242")
 
 	tab := processTable()
 	r, ok := tab[cmd.Process.Pid]
@@ -483,13 +479,12 @@ func TestFindAdapterMatchesTheKernelArgvNotTheJoinedLine(t *testing.T) {
 }
 
 func TestPsProcessTableReadsStartTimes(t *testing.T) {
-	// The ps path is the whole table off darwin, and on darwin the fallback, so
-	// its start times are what the stale sweep reads there. lstart carries whole
-	// seconds, and on Linux it is boot time plus clock ticks, which can read a
-	// second early: the floor is two seconds under the test's own clock, far
-	// inside the minute the sweep allows.
-	if err := exec.Command("ps", "-o", "pid=", "-p", "1").Run(); err != nil {
-		t.Skipf("ps cannot run here: %v", err)
+	// The fallback reads whole seconds from lstart. On Linux, ps can read a
+	// second early: the floor is two seconds under the test's clock, far
+	// inside the minute the sweep allows. Probe the actual flags, not a
+	// different mode of ps that a limited implementation might support.
+	if err := exec.Command("ps", "-axo", "pid=,lstart=").Run(); err != nil {
+		t.Skipf("ps does not support -axo with lstart: %v", err)
 	}
 	before := time.Now().Add(-2 * time.Second)
 	cmd := exec.Command("/bin/sleep", "30")
