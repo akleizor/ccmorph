@@ -38,12 +38,13 @@ export HTTPS_PROXY=http://127.0.0.1:1 https_proxy=http://127.0.0.1:1 NODE_EXTRA_
 	}
 	// One field per line bashEnv writes, naming the branch it pins: THEIRS
 	// comes from sourcing the person's own env file; HTTPS_PROXY and
-	// ANTHROPIC_BASE_URL come from os.LookupEnv (restore-when-present);
+	// comes from os.LookupEnv (restore-when-present); ANTHROPIC_BASE_URL is a
+	// backend key claude-session clears, so it is unset though the process has it;
 	// https_proxy is dropped because neither the session env nor the
 	// process env has it (unset-when-absent); NODE_EXTRA_CA_CERTS comes
 	// from the passed session env list; CCMORPH_AGENT_PROXY is the dir key,
 	// which bashEnv never restores even though the process env has it.
-	if got := strings.TrimSpace(string(out)); got != "kept|http://corp:3128|unset|/corp/ca's.pem|https://api.person.example|unset" {
+	if got := strings.TrimSpace(string(out)); got != "kept|http://corp:3128|unset|/corp/ca's.pem|unset|unset" {
 		t.Fatalf("Bash env: %s", got)
 	}
 }

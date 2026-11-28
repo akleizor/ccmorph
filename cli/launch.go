@@ -269,8 +269,17 @@ func (l *launcher) signals(ch chan os.Signal) {
 func (l *launcher) stopHelpers() {
 	l.providerStop()
 	l.adapterStop()
-	l.agents.stop()
-	l.agents = nil
+	l.swapAgents(nil).stop()
+}
+
+// swapAgents sets the agent proxy under the lock (the signal goroutine stops it
+// too) and returns the one it replaced.
+func (l *launcher) swapAgents(h *agentHop) *agentHop {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	old := l.agents
+	l.agents = h
+	return old
 }
 
 // core runs a ccmorph-core verb as the zsh did: stdout with trailing newlines

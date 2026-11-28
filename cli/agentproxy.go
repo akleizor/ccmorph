@@ -11,12 +11,15 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/akleizor/ccmorph/agentproxy"
+	"github.com/akleizor/ccmorph/profile"
 	"github.com/akleizor/ccmorph/quota"
 	"github.com/akleizor/ccmorph/router"
 	"github.com/akleizor/ccmorph/util"
@@ -36,6 +39,7 @@ type agentHop struct {
 	bridges  []*util.SharedBridge  // provider bridges this session holds a use of
 	auth     []string              // each one's auth dir, for its release
 	adapters []*util.SharedAdapter // gateway adapters this session holds a use of
+	pids     map[string]int        // each target's adapter pid: a dead one evicts the cached target
 	logMu    sync.Mutex
 }
 
@@ -49,6 +53,10 @@ type target struct {
 	at   time.Time
 	sub  bool // a subscription token, which its own sessions refresh in place
 }
+
+// adapterGone: the adapter a cached target names has exited, so the target is
+// resolved again (a new adapter) instead of failing every later request.
+func adapterGone(pid int) bool { return pid > 0 && syscall.Kill(pid, 0) == syscall.ESRCH }
 
 const failureKept = time.Minute
 
@@ -72,8 +80,7 @@ var sessionKeys = []string{"HTTPS_PROXY", "https_proxy", "NODE_EXTRA_CA_CERTS", 
 // agents instead. The run before it, if any, has already ended: its proxy is
 // stopped here.
 func (l *launcher) agentProxyEnv(env []string) []string {
-	l.agents.stop()
-	l.agents = nil
+	l.swapAgents(nil).stop()
 	if !router.Enabled() || l.inEdge() {
 		return env
 	}
@@ -107,12 +114,10 @@ func (l *launcher) agentProxyEnv(env []string) []string {
 		l.log("agent proxy not started: " + err.Error())
 		return env
 	}
-	l.agents = h
 	restore, err := h.bashEnv(env, get("CLAUDE_ENV_FILE"))
 	if err != nil {
 		l.log("agent proxy not started: " + err.Error())
-		h.stop()
-		l.agents = nil
+		l.swapAgents(nil).stop()
 		return env
 	}
 	addr := "http://127.0.0.1:" + strconv.Itoa(h.p.Port())
@@ -123,6 +128,9 @@ func (l *launcher) agentProxyEnv(env []string) []string {
 	} else {
 		env = setEnv(env, "ANTHROPIC_BASE_URL", addr)
 	}
+	// The proxy cannot serve a tether `thread: continue` request on a routed agent,
+	// so the session turns it off as the edge path does (edgeEnv).
+	env = setEnv(env, "CLAUDE_CODE_TETHER_LIVE", "0")
 	env = setEnv(env, "CLAUDE_ENV_FILE", restore)
 	return setEnv(env, agentproxy.DirEnv, h.p.Dir)
 }
@@ -148,6 +156,8 @@ func (l *launcher) startAgentHop(o agentproxy.Options, extra string) (*agentHop,
 	if err := os.MkdirAll(h.run, 0o700); err != nil {
 		return nil, "", err
 	}
+	// Registered before the proxy starts, so a TERM mid-start still removes the run dir.
+	l.swapAgents(h)
 	bundle := append([]byte{}, ca.PEM...)
 	if extra != "" {
 		if b, err := os.ReadFile(extra); err == nil {
@@ -159,6 +169,7 @@ func (l *launcher) startAgentHop(o agentproxy.Options, extra string) (*agentHop,
 	}
 	bundlePath := filepath.Join(h.run, "ca-bundle.pem")
 	if err := os.WriteFile(bundlePath, bundle, 0o600); err != nil {
+		l.swapAgents(nil)
 		os.RemoveAll(h.run)
 		return nil, "", err
 	}
@@ -169,10 +180,15 @@ func (l *launcher) startAgentHop(o agentproxy.Options, extra string) (*agentHop,
 		defer h.logMu.Unlock()
 		l.log(fmt.Sprintf(format, args...))
 	}
-	if h.p, err = agentproxy.Start(ca, o); err != nil {
+	p, err := agentproxy.Start(ca, o)
+	if err != nil {
+		l.swapAgents(nil)
 		os.RemoveAll(h.run)
 		return nil, "", err
 	}
+	h.mu.Lock()
+	h.p = p
+	h.mu.Unlock()
 	o.Logf("agent proxy listening on 127.0.0.1:%d", h.p.Port())
 	return h, bundlePath, nil
 }
@@ -188,7 +204,9 @@ func (h *agentHop) bashEnv(env []string, theirs string) (string, error) {
 	for _, k := range sessionKeys {
 		if v, ok := envGet(env, k); ok {
 			fmt.Fprintf(&b, "export %s=%s\n", k, shellQuote(v))
-		} else if v, ok := os.LookupEnv(k); ok && k != agentproxy.DirEnv {
+		} else if v, ok := os.LookupEnv(k); ok && k != agentproxy.DirEnv && !slices.Contains(profile.BackendEnv, k) {
+			// A backend key absent from the launch env is one `util claude-session`
+			// cleared before exec: the session never had the launcher's value.
 			fmt.Fprintf(&b, "export %s=%s\n", k, shellQuote(v))
 		} else {
 			fmt.Fprintf(&b, "unset %s\n", k)
@@ -206,12 +224,15 @@ func (h *agentHop) stop() {
 	if h == nil {
 		return
 	}
-	h.p.Close()
 	h.mu.Lock()
+	p := h.p
 	bridges, auth := h.bridges, h.auth
 	adapters := h.adapters
 	h.bridges, h.auth, h.adapters = nil, nil, nil
 	h.mu.Unlock()
+	if p != nil {
+		p.Close()
+	}
 	for _, a := range adapters {
 		a.Release()
 	}
@@ -302,6 +323,10 @@ func (h *agentHop) resolver(l *launcher) func(agentproxy.Pick) (agentproxy.Targe
 		} else {
 			h.mu.Lock()
 			h.adapters = append(h.adapters, sa)
+			if h.pids == nil {
+				h.pids = map[string]int{}
+			}
+			h.pids[pick.Word+"\x00"+pick.Model] = sa.PID
 			h.mu.Unlock()
 		}
 		if port != "" { // else the endpoint serves this model as it is
@@ -315,18 +340,22 @@ func (h *agentHop) resolver(l *launcher) func(agentproxy.Pick) (agentproxy.Targe
 		id := pick.Word + "\x00" + pick.Model
 		h.mu.Lock()
 		e := h.targets[id]
-		if e == nil || (e.err != nil && time.Since(e.at) > failureKept) || (e.sub && time.Since(e.at) > subTokenKept) {
+		if e == nil || (e.err != nil && time.Since(e.at) > failureKept) || (e.sub && time.Since(e.at) > subTokenKept) || adapterGone(h.pids[id]) {
+			delete(h.pids, id)
 			e = &target{}
 			h.targets[id] = e
 		}
 		h.mu.Unlock()
 		e.once.Do(func() {
-			e.t, e.err = resolve(pick)
+			t, err := resolve(pick)
 			h.mu.Lock()
-			e.at, e.sub = time.Now(), e.t.OAuth != ""
+			e.t, e.err, e.at, e.sub = t, err, time.Now(), t.OAuth != ""
 			h.mu.Unlock()
 		})
-		return e.t, e.err
+		h.mu.Lock()
+		t, err := e.t, e.err
+		h.mu.Unlock()
+		return t, err
 	}
 }
 
