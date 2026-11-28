@@ -10809,9 +10809,18 @@ test_add_menus_answer_with_the_names_they_print_issue_1029() {
     || { print -u2 -- 'a label must be accepted whatever its case: '"$out"; rc=1; }
   assert_contains "$out" 'Added lab3' 'the case-typed labels must complete' || rc=1
   # Part of the name, as the help promises: one printed row carries it.
-  out=$(print -l api 'ANTHROPIC' sk-p-not-real | ccmorph add lab4 2>&1) \
-    || { print -u2 -- 'part of a name must answer the menu: '"$out"; rc=1; }
+  out=$(printf '%s\n' api EnDpOiNt https://example.invalid sk-p-not-real | ccmorph add lab4 2>&1) \
+    || { print -u2 -- 'part of a name must answer both menus: '"$out"; rc=1; }
   assert_contains "$out" 'Added lab4' 'the part-of-name wizard must complete' || rc=1
+  [[ "$(<"$HOME/.config/ccmorph/lab4.conf")" == *'base_url=https://example.invalid'* ]] \
+    || { print -u2 -- 'endpoint must select the Custom endpoint row'; rc=1; }
+  out=$(printf '%s\n' apikey 'KIMI (MOONSHOT, CHINA)' sk-k-not-real | ccmorph add lab5 2>&1) \
+    || { print -u2 -- 'the preset label must be an answer: '"$out"; rc=1; }
+  [[ "$(<"$HOME/.config/ccmorph/lab5.conf")" == *'base_url=https://api.moonshot.cn/anthropic'* ]] \
+    || { print -u2 -- 'the preset label must select the China endpoint'; rc=1; }
+  out=$(printf 'Claude token\n' | ccmorph add lab6 2>&1)
+  assert_contains "$out" 'Paste token for lab6' 'the printed token label must reach its prompt' || rc=1
+  assert_not_contains "$out" 'not a sign-in method' 'the printed token label must not re-ask' || rc=1
   # Several printed rows carry the fragment: the list narrows to them and
   # renumbers, no row is guessed, and the narrowing costs no try — then the
   # shortened list's own numbers answer.
@@ -10907,12 +10916,16 @@ test_add_menus_answer_with_the_names_they_print_issue_1029() {
     'the printed More row by its label must still name the bridge' || rc=1
   [[ ! -e "$HOME/.config/ccmorph/morelbl.conf" ]] \
     || { print -u2 -- 'the More label must save nothing'; rc=1; }
-  # With the bridge on PATH that row is not printed, so its label is no more
-  # an answer than the bare word was: it re-asks like any unlisted word.
+  # A bridge label that is not its id must select the right login. The
+  # stub records the selected flag and stops before opening a browser.
   printf '%s\n' '#!/bin/sh' \
-    'if [ "$1" = --help ]; then print -- "  -codex-login"; exit 0; fi' \
-    'exit 1' > "$HOME/bin/cliproxyapi"
+    'if [ "$1" = --help ]; then printf "  -kimi-ai-login\n  -kimi-login\n"; exit 0; fi' \
+    'printf "bridge called: %s\n" "$1"; exit 1' > "$HOME/bin/cliproxyapi"
   chmod +x "$HOME/bin/cliproxyapi"
+  out=$(printf 'Kimi For Coding (China)\n' | ccmorph add bridgelbl 2>&1)
+  assert_contains "$out" 'bridge called: -kimi-login' \
+    'the printed browser login label must reach its provider' || rc=1
+  # With the bridge on PATH the More row is not printed, so its label re-asks.
   out=$(print -l 'More sign-ins' q | ccmorph add morebridge 2>&1)
   st=$?
   (( st != 0 )) || { print -u2 -- 'the unprinted More label must re-ask, not exit'; rc=1; }
