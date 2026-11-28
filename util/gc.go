@@ -80,24 +80,6 @@ func GCStale(state, profiles, tmp string) {
 		r, ok := tab[pid]
 		return ok && !r.start.IsZero() && r.start.After(since.Add(time.Minute))
 	}
-	// reap is the one stale-record decision both sweeps read (#1047): a
-	// regular file a minute old may go only once the holder its name carries
-	// is gone. hasPid false is a name from a build that wrote none — age alone,
-	// as before. since is the launch clock a relay's name carries; zero keeps
-	// the kill check alone, and a clock proves a recycled pid by the start the
-	// table gives it (#189, #206).
-	reap := func(f string, pid int, hasPid bool, since time.Time) bool {
-		if !paths.IsFile(f) || !old(f, time.Minute) {
-			return false
-		}
-		if !hasPid {
-			return true
-		}
-		if since.IsZero() {
-			return syscall.Kill(pid, 0) != nil
-		}
-		return !holds(pid, since)
-	}
 
 	relays, _ := filepath.Glob(filepath.Join(paths.GlobQuote(state), ".reswitch.*"))
 	for _, f := range relays {

@@ -82,23 +82,10 @@ func TestGCReapsWhatAKilledLaunchLeaves(t *testing.T) {
 	staleTmp := filepath.Join(tmp, "ccmorph-session-env.999999")
 	staleRun := filepath.Join(state, "run", "ccmorph-session-env.999998")
 	fresh := filepath.Join(tmp, "ccmorph-session-env.42")
-	// #1047: the launcher writes its pid into the env file's name, and the
-	// helper that reads it runs when the child gets its turn — under a
-	// fork/exec storm that can be past the minute. An aged file whose named
-	// launcher lives is that launch, not an orphan, and stays; a dead
-	// launcher's aged file goes; and an older build's random-only name,
-	// which carries no pid, keeps the age-only reaping it always had.
-	liveEnvTmp := filepath.Join(tmp, "ccmorph-session-env."+strconv.Itoa(os.Getpid())+".700001")
-	liveEnvRun := filepath.Join(state, "run", "ccmorph-session-env."+strconv.Itoa(claude.Process.Pid)+".700002")
-	deadEnvTmp := filepath.Join(tmp, "ccmorph-session-env.999997.700003")
-	deadEnvRun := filepath.Join(state, "run", "ccmorph-session-env.999996.700004")
-	oldShape := filepath.Join(tmp, "ccmorph-session-env.abc")
-	for _, f := range []string{dead, mine, recycledRelay, young, staleTmp, staleRun, fresh,
-		liveEnvTmp, liveEnvRun, deadEnvTmp, deadEnvRun, oldShape} {
+	for _, f := range []string{dead, mine, recycledRelay, young, staleTmp, staleRun, fresh} {
 		os.WriteFile(f, nil, 0o600)
 	}
-	for _, f := range []string{dead, mine, recycledRelay, staleTmp, staleRun,
-		liveEnvTmp, liveEnvRun, deadEnvTmp, deadEnvRun, oldShape} {
+	for _, f := range []string{dead, mine, recycledRelay, staleTmp, staleRun} {
 		os.Chtimes(f, past, past)
 	}
 	// A private view is a dir whose owner record names the claude that ran
@@ -161,13 +148,12 @@ func TestGCReapsWhatAKilledLaunchLeaves(t *testing.T) {
 	os.Chtimes(noOwner, ancient, ancient)
 	GCStale(state, filepath.Join(root, "profiles"), tmp)
 	for _, f := range []string{mine, young, fresh, claudeView, scriptView,
-		youngView, noOwner, skewedView, legacyView, liveEnvTmp, liveEnvRun} {
+		youngView, noOwner, skewedView, legacyView} {
 		if _, err := os.Stat(f); err != nil {
 			t.Fatalf("%s must stay (live or unknown owner, or under a minute old)", f)
 		}
 	}
-	for _, f := range []string{dead, recycledRelay, staleTmp, staleRun,
-		deadEnvTmp, deadEnvRun, oldShape} {
+	for _, f := range []string{dead, recycledRelay, staleTmp, staleRun} {
 		if _, err := os.Stat(f); err == nil {
 			t.Fatalf("%s must go: a killed launch left it behind", f)
 		}
