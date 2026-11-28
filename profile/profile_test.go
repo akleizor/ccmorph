@@ -511,3 +511,18 @@ func TestReadForSaveAcceptsAnIdenticalRepeatIssue1031(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+// Healing a repeat must not smuggle in a value the key refuses: an off-list
+// effort written twice is still named by its own sentence, not accepted as one
+// fact and not reported as a duplicate (#1031).
+func TestReadRefusesAnOffListValueWrittenTwiceIssue1031(t *testing.T) {
+	for _, conf := range []string{
+		"type=sub\nemail=a@b\neffort=ultra\n",
+		"type=sub\nemail=a@b\neffort=ultra\neffort=ultra\n",
+	} {
+		_, _, err := read(t, conf)
+		if err == nil || !strings.Contains(err.Error(), "invalid effort 'ultra'") || strings.Contains(err.Error(), "duplicate key") {
+			t.Fatalf("%q: err %v, want the effort's own refusal", conf, err)
+		}
+	}
+}
