@@ -33,10 +33,14 @@ the launch ends before the behaviour the test asserts — the class behind #875,
 backstop for it: it moves only the probe's own stop, far past any healthy start,
 and a launch that does not set it is untouched. The promise to people does not
 move — `CCMORPH_REACH_BOUND` still cannot advertise or wait longer than five
-seconds, and a stub that truly never answers is still named silent. Only
-`tests/ccmorph_test.zsh` sets `CCMORPH_TEST_REACH_WAIT`; never a profile's
-`env.` lines, a user's shell, or another harness that can answer the probe
-without a child.
+seconds, and a stub that truly never answers is still named silent. Only the
+zsh launch suite, `tests/ccmorph_test.zsh`, exports `CCMORPH_TEST_REACH_WAIT`,
+and it derives the value from its own hang bound (half of
+`CCMORPH_TEST_HANG_TIMEOUT`). Go unit tests set it only through `t.Setenv` in
+the probe's own tests, and each Go package's `TestMain` clears an exported one
+so it cannot stand in for the five-second promise. Never a profile's `env.`
+lines, a user's shell, or another harness that can answer the probe without a
+child.
 
 ## Rules
 
