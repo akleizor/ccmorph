@@ -522,7 +522,12 @@ ccmorph's whole duty is to pass that ambient value through **unchanged** —
 `ccmorph-core adapter`'s cliproxyapi, model listing, and `ccmorph-core context-probe`
 exactly as exported. `HTTPS_PROXY` is deliberately absent from
 `ProfileEnv`, so [the launch sweep](#the-env-lists-and-the-sweep)
-never clears it, and no launch path sets or blanks it.
+never clears it. Nothing sets or blanks it for the adapter, the bridge or a
+probe. The one launch that sets it is a native session with the router on: it
+gets `HTTPS_PROXY`, `https_proxy` and `NODE_EXTRA_CA_CERTS` for its own per-run
+agent proxy (see [the agent proxy](#6b-subagent-router)); the
+person's own `HTTPS_PROXY` then becomes that proxy's upstream, not the
+session's.
 
 The one exception is a probe of ccmorph's own loopback services — adapter and
 provider-bridge readiness on `127.0.0.1`. Those carry `--noproxy '*'`, because an
@@ -631,7 +636,8 @@ for one process per profile.
   the profile and therefore the required instance.
 - **The adapter always runs locally**, in the launcher's own process tree, so it
   inherits the launcher's environment — including any ambient proxy. Nothing on the
-  launch path sets or clears `HTTPS_PROXY` for it **[test]**.
+  launch path sets or clears `HTTPS_PROXY` for it; only the Claude child of a native
+  router-on launch gets a different one (the agent proxy's) **[test]**.
 - **A subprocess that must REACH the endpoint asks for the route, not just the
   environment.** `ccmorph _env` answers "what does this account launch as", which
   for every type but `provider` is also enough to dial it. A `provider` has no
@@ -1024,7 +1030,7 @@ per-launch CA fails its handshake, a nested `ccmorph run` would inherit the prox
 and attribute its rows to the outer profile, and a background job outlives
 the launcher holding a dead address.
 
-So these launches change no network path at all. Claude Code already records
+So the usage hook changes no network path. (With the router on, a native launch is separately put behind the per-run agent proxy; see [the subagent router](#6b-subagent-router).) Claude Code already records
 what each response spent in the session transcript, and its `Stop` hook is
 handed that transcript's path. The settings composed for the session carry one
 extra owned entry in `hooks.Stop`:
@@ -2097,9 +2103,18 @@ decrypts only `api.anthropic.com`, with a leaf from ccmorph's own CA
 (`agent-proxy/ca.pem`, key 0600, generated on first use), which only that
 Claude Code trusts through `NODE_EXTRA_CA_CERTS` (a bundle of the CA and any
 the session already trusted; the session's own `HTTPS_PROXY` becomes the
-proxy's upstream). Bash commands get the session's own values back through a
-`CLAUDE_ENV_FILE` the launcher writes (after the person's own, if set), so
-curl or Python in a session never meet the proxy. Every other host is a CONNECT tunnel the proxy
+proxy's upstream). This changes the session's network path: the session gets
+`HTTPS_PROXY`, `https_proxy` and `NODE_EXTRA_CA_CERTS`, and `CLAUDE_CODE_TETHER_LIVE=0`
+(the proxy cannot serve a tether `thread: continue` request on a routed agent, as
+the edge's session env also sets). Only Bash commands get the session's own values
+back, through a `CLAUDE_ENV_FILE` the launcher writes (after the person's own, if
+set), so curl or Python run by Bash never meet the proxy. Hooks, stdio MCP servers
+and the statusline inherit the proxy: Node clients and clients built on
+`netroute.ExtraCAs` trust the CA, other TLS stacks do not and fail their handshake
+to `api.anthropic.com`. A backend key the session never had (such as
+`ANTHROPIC_BASE_URL`) is unset in that file, not restored from the launcher. The
+run dir `run/agent-proxy.<launcher pid>/` is removed when the run ends, and
+`gc-stale` removes one whose launcher died. Every other host is a CONNECT tunnel the proxy
 never reads. A session on any other endpoint gets the proxy as its base URL,
 and the proxy sends everything on to that endpoint. Only a request whose agent
 holds a pick changes: it leaves for the picked profile with that profile's

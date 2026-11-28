@@ -943,7 +943,12 @@ HTTPS_PROXY=http://127.0.0.1:<port> ccmorph run <profile>
 ccmorph passes `HTTPS_PROXY`, `https_proxy` and `NO_PROXY` through unchanged to
 every network consumer — the Claude child, the adapter, model listing and
 metadata discovery. Its own loopback health checks never go through a proxy.
-No launch sets or clears them: a usage receipt is read from the session's own
+No launch clears them, and none sets them except one: with the router on, a
+native Claude Code session is started behind a per-run local proxy, so it gets
+`HTTPS_PROXY`, `https_proxy` and `NODE_EXTRA_CA_CERTS` for that proxy (yours
+becomes the proxy's upstream). Bash commands get your own values back; hooks,
+stdio MCP servers and the statusline inherit the proxy, which Node clients trust
+and other TLS stacks do not. A usage receipt is read from the session's own
 transcript instead. `ARCHITECTURE.md` has the detail.
 
 `env.CCMORPH_UPSTREAM_PROXY` is narrower than this ambient contract: it names

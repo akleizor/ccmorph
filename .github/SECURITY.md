@@ -32,6 +32,8 @@ tags; update rather than patch in place.
 | `${XDG_STATE_HOME:-~/.local/state}/ccmorph/usage/` | one metadata receipt per response: profile, model, token counts, cost; no prompt, header or credential | `600` |
 | `${XDG_STATE_HOME:-~/.local/state}/ccmorph/usage-cursors/` | one session transcript's read position for the usage hook; a path digest and an offset, no credential | `600` |
 | `<profile>/adapter/` | a rendered translator config, created per session | `700`, removed on exit |
+| `<state>/agent-proxy/ca.key` (and `ca.pem`) | the router's agent-proxy CA: the key signs leaf certificates for `api.anthropic.com` (certificate is public) | `600`; the directory `700` |
+| `<state>/run/agent-proxy.<pid>/` | one run's trust bundle, Bash env file and pick files, written while the router is on | `700`, files `600`; removed on exit, swept by `gc-stale` if the launcher is killed |
 
 Every `*.conf` is gitignored, including the manual `context_window.<model>`
 overrides it holds. No
@@ -43,7 +45,8 @@ credential has ever been tracked in this repository.
   adds one `Stop` hook that reads the session's own transcript after a stored
   offset. It reads only each assistant entry's id, model, timestamp and token
   counts: no prompt, header, cookie or credential is copied into a receipt, and
-  the launch changes no network path, proxy or certificate. The hook command is
+  the hook changes no network path, proxy or certificate (the router's agent
+  proxy, below, is separate and off by default). The hook command is
   a path and a profile name; the credential never appears on it.
 
 - **Atomic writes.** A profile is written to a `mktemp` file and renamed into
