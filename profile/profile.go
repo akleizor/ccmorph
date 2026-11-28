@@ -274,7 +274,11 @@ func readConf(state, name string, secure bool, lists Lists, warn func(string), c
 		if k == "" || strings.ContainsAny(k, " \t\v\f") {
 			return nil, fail("invalid key in '%s'", name)
 		}
-		if _, dup := fields[k]; dup {
+		// The same line twice says one thing; a repeat that differs is still ambiguous (GH-839).
+		if prev, dup := fields[k]; dup {
+			if prev == v {
+				continue
+			}
 			return nil, fail("duplicate key '%s' in '%s'", k, name)
 		}
 		if msg, ok := removed[k]; ok {

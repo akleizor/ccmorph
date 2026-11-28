@@ -511,11 +511,20 @@ func configStoreRun(a StoreArgs, layerWrite bool, out, errw io.Writer) (int, str
 		}
 	}
 	var kept []string
+	seen := map[string]bool{}
 	for _, line := range lines {
 		k, _, _ := strings.Cut(line, "=")
-		if !changes.Has(k) {
-			kept = append(kept, line)
+		if changes.Has(k) {
+			continue
 		}
+		// The same key=value line twice is one fact (GH-1031); comments and differing lines stay.
+		if strings.Contains(line, "=") && !strings.HasPrefix(line, "#") {
+			if seen[line] {
+				continue
+			}
+			seen[line] = true
+		}
+		kept = append(kept, line)
 	}
 	for _, name := range changes.Keys() {
 		if v, _ := changes.Get(name); ordjson.Truthy(v) {
