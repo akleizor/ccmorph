@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/akleizor/ccmorph/ordjson"
+	"github.com/akleizor/ccmorph/util/paths"
 )
 
 // holdLiveLock takes the profile's live lock the way a whole-file writer or a
@@ -18,7 +19,7 @@ import (
 // probe held its lock in the same process for this reason.
 func holdLiveLock(t *testing.T, profiles, name string, how int) func() {
 	t.Helper()
-	lock := LiveLockPath(profiles, name)
+	lock := paths.LiveLockPath(profiles, name)
 	if err := os.MkdirAll(filepath.Dir(lock), 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -107,7 +108,7 @@ func TestProvisionProfileRespectsTheLiveLock(t *testing.T) {
 				}
 			}
 			release := holdLiveLock(t, profiles, "probe", tc.how)
-			restore := SetLockWait(0)
+			restore := paths.SetLockWait(0)
 			defer restore()
 
 			err := provisionProfile(dir+tc.trailer, "gateway")
@@ -174,7 +175,7 @@ func TestProvisionProfileHoldsTheLiveLockAcrossReadAndRename(t *testing.T) {
 	var seen []string
 	profileJSONRead = func(path string) {
 		seen = append(seen, filepath.Base(path))
-		probe, err := os.OpenFile(LiveLockPath(profiles, "probe"), os.O_RDWR, 0)
+		probe, err := os.OpenFile(paths.LiveLockPath(profiles, "probe"), os.O_RDWR, 0)
 		if err != nil {
 			t.Fatalf("the live lock must exist at the seam for %s: %v", path, err)
 		}
@@ -239,7 +240,7 @@ func TestSetupProfileKeepsExclusiveLiveLockAcrossProvisioning(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { ReleaseLive(profiles, "p") })
-	restore := SetLockWait(0)
+	restore := paths.SetLockWait(0)
 	defer restore()
 
 	checked := false
@@ -249,7 +250,7 @@ func TestSetupProfileKeepsExclusiveLiveLockAcrossProvisioning(t *testing.T) {
 				return
 			}
 			checked = true
-			probe, err := os.OpenFile(LiveLockPath(profiles, "p"), os.O_RDWR, 0)
+			probe, err := os.OpenFile(paths.LiveLockPath(profiles, "p"), os.O_RDWR, 0)
 			if err != nil {
 				t.Fatalf("the live lock must exist before the merge: %v", err)
 			}
@@ -288,7 +289,7 @@ func TestSetupProfileSkipsProvisioningWhileTheLiveLockIsHeld(t *testing.T) {
 		}
 	}
 	release := holdLiveLock(t, profiles, "p", syscall.LOCK_EX)
-	restore := SetLockWait(0)
+	restore := paths.SetLockWait(0)
 	defer restore()
 
 	var logs, errs []string
@@ -430,7 +431,7 @@ func TestSetupProfileRefusesInvalidAuthFilesWhileTheLiveLockIsHeld(t *testing.T)
 			}
 			tc.invalid(t, home, dir)
 			release := holdLiveLock(t, profiles, "p", syscall.LOCK_SH)
-			restore := SetLockWait(0)
+			restore := paths.SetLockWait(0)
 			defer restore()
 
 			err := provisionProfile(dir, "gateway")
@@ -471,7 +472,7 @@ func TestProvisionOKSeesAuthFilesStillNeedingProvisioning(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { ReleaseLive(profiles, "p") })
-	restore := SetLockWait(0)
+	restore := paths.SetLockWait(0)
 	defer restore()
 
 	var logs, errs []string
@@ -534,14 +535,14 @@ func TestProvisionOKSeesAuthFilesStillNeedingProvisioning(t *testing.T) {
 	}
 }
 
-// blockLiveLockDir puts a regular file where LiveLockPath's .locks directory
+// blockLiveLockDir puts a regular file where paths.LiveLockPath's .locks directory
 // goes, so the profile's live lock cannot be made. It checks the path first:
 // the refusal's repro blocked <profiles>/.locks, which no lock uses.
 func blockLiveLockDir(t *testing.T, profiles string) {
 	t.Helper()
 	locks := filepath.Join(filepath.Dir(profiles), ".locks")
-	if filepath.Dir(LiveLockPath(profiles, "p")) != locks {
-		t.Fatalf("the fixture must block the directory LiveLockPath names: %s", LiveLockPath(profiles, "p"))
+	if filepath.Dir(paths.LiveLockPath(profiles, "p")) != locks {
+		t.Fatalf("the fixture must block the directory paths.LiveLockPath names: %s", paths.LiveLockPath(profiles, "p"))
 	}
 	if err := os.WriteFile(locks, []byte("not a directory\n"), 0o600); err != nil {
 		t.Fatal(err)
@@ -559,7 +560,7 @@ func provisionFixture(t *testing.T) (home, profiles, dir string) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { ReleaseLive(profiles, "p") })
-	t.Cleanup(SetLockWait(0))
+	t.Cleanup(paths.SetLockWait(0))
 	return home, profiles, dir
 }
 

@@ -23,33 +23,31 @@ effect are recorded as ADRs in `docs/adr/`.
 
 | # | Change | Guard | Status |
 |---|---|---|---|
-| 1 | #544: `util/modelid` leaf package. 30 hand-written marker strips and first-`[` cuts now call `modelid.TrimWindowMarker`. Tier env keys are built from `TierEnvKey`. | `test_the_window_marker_is_spelled_once_issue_544`, tier guard without exemptions | done |
+| 1 | #544: `util/modelid` leaf package. 30 hand-written marker strips and first-`[` cuts now call `modelid.TrimWindowMarker`. Tier env keys are built from `TierEnvKey`. | `test_the_window_marker_is_spelled_once_issue_544`, tier guard without exemptions | done (#1059) |
+| 2 | The profile live-lock protocol had two copies, in `util/setup.go` and `settingscompose/compose.go`: path, bounded wait, inode recheck, open loop and errors. It is now one `util/paths/livelock.go`, and `util` and `settingscompose` call it. Review fix to round 1: the launch window probe cuts the marker where the engine does (`CutWindowMarker`); the adapter and doctor keep `TrimWindowMarker`, as the adapter does. | `paths` `TakeLive` tests; the dedup guard bans `flockWithin`, `lockWithin`, `sameLockInode` and `lockNamesFile`; zsh `test_the_window_probe_cuts_the_marker_where_the_engine_does` | done |
 
 ## Task pool (ranked by value and risk)
 
-1. **Live-lock poll loops:** `util/setup.go flockWithin` and
-   `settingscompose/compose.go lockWithin` have the same body. Make one
-   `paths` helper and migrate both.
-2. **`~/.claude` path:** about 10 sites build `$HOME/.claude…` with
+1. **`~/.claude` path:** about 10 sites build `$HOME/.claude…` with
    `os.Getenv("HOME")` and get a cwd-relative path when HOME is unset (#138).
    Seven more sites call `os.UserHomeDir()` and drop its error. Move all of
    them to `paths`.
-3. **Unbounded `ps`:** `util/gc.go` runs `ps -axo command` with no context
+2. **Unbounded `ps`:** `util/gc.go` runs `ps -axo command` with no context
    and no `WaitDelay`. That is REVIEW.md kind 16. Route it through `psCmd`.
-4. **Forwarding layers:** `util.GlobQuote` and `cli.globQuote` only forward
+3. **Forwarding layers:** `util.GlobQuote` and `cli.globQuote` only forward
    to `paths.GlobQuote`. The hop wrappers (`ProcessTable`, `HopTarget`,
    `SessionAdapter`, `ProcStartToken`) only forward too. Several exports
    are used only inside `util` (`ModelsListing`, `ModelsAnswer`,
    `BridgeStop`, `ReadOwnedRegular`).
-5. **cli verb lists:** the same verbs are listed in `cli/main.go:27`,
+4. **cli verb lists:** the same verbs are listed in `cli/main.go:27`,
    `:41`, `:65`, the `Main` switch, the `cli/verbs.go` `Verb` switch and the
    help text. Replace them with one table.
-6. **`cmd/ccmorph-core` usage string:** it omits `edge-proxy`, `tether`,
+5. **`cmd/ccmorph-core` usage string:** it omits `edge-proxy`, `tether`,
    `launch`, `cli`, `util` and `usage-compact`.
-7. **Settings file names:** `settings.profile.json` is a constant in
+6. **Settings file names:** `settings.profile.json` is a constant in
    `settingscompose` but a literal in `cli/launch.go` and `util/store.go`.
    `cli/launch.go:562-571` decides on its own which settings layer wins.
-8. **cli-only util files:** move into `cli` the files whose only caller is
+7. **cli-only util files:** move into `cli` the files whose only caller is
    `cli`: `compinit.go`, `claudehelp.go`, `launchargv.go`,
    `launchflags.go`, `doctor.go`.
 

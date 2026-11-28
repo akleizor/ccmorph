@@ -295,14 +295,14 @@ def test_rm_keeps_a_live_lock_a_running_launch_holds(tmp_path):
 
 
 HOLDER_GO = '''package main
-import ("fmt"; "os"; "github.com/akleizor/ccmorph/util")
+import ("fmt"; "os"; "github.com/akleizor/ccmorph/util"; "github.com/akleizor/ccmorph/util/paths")
 func main() {
  p := os.Args[1]
  f, err := util.HoldLive(p,"p",nil)
  if err != nil { panic(err) }
  fmt.Println("held")
  _, _ = os.Stdin.Read(make([]byte,1))
- a, ea := f.Stat(); b, eb := os.Lstat(util.LiveLockPath(p,"p"))
+ a, ea := f.Stat(); b, eb := os.Lstat(paths.LiveLockPath(p,"p"))
  if ea != nil || eb != nil || !os.SameFile(a,b) { fmt.Fprintln(os.Stderr,"first rm detached the replacement live lock"); os.Exit(1) }
 }'''
 

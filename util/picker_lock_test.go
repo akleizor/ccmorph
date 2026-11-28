@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/akleizor/ccmorph/ordjson"
+	"github.com/akleizor/ccmorph/util/paths"
 )
 
 // pickerLockFixture is profile gw's home under a fresh profiles dir, with a
@@ -21,7 +22,7 @@ func pickerLockFixture(t *testing.T) (in PickerIn, profiles, state, layer string
 	if err := os.MkdirAll(home, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.MkdirAll(filepath.Dir(LiveLockPath(profiles, "gw")), 0o700); err != nil {
+	if err := os.MkdirAll(filepath.Dir(paths.LiveLockPath(profiles, "gw")), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	conf := filepath.Join(root, "gw.conf")
@@ -43,7 +44,7 @@ func pickerLockFixture(t *testing.T) (in PickerIn, profiles, state, layer string
 
 func takeLive(t *testing.T, profiles, name string, how int) bool {
 	t.Helper()
-	f, err := os.OpenFile(LiveLockPath(profiles, name), os.O_CREATE|os.O_RDWR, 0o600)
+	f, err := os.OpenFile(paths.LiveLockPath(profiles, name), os.O_CREATE|os.O_RDWR, 0o600)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -54,7 +55,7 @@ func takeLive(t *testing.T, profiles, name string, how int) bool {
 func TestProjectPickerKeepsAWriteMadeBetweenItsReadAndItsRename(t *testing.T) {
 	in, profiles, state, layer := pickerLockFixture(t)
 	otherWriter := func(path string) bool {
-		f, err := os.OpenFile(LiveLockPath(profiles, "gw"), os.O_CREATE|os.O_RDWR, 0o600)
+		f, err := os.OpenFile(paths.LiveLockPath(profiles, "gw"), os.O_CREATE|os.O_RDWR, 0o600)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -139,7 +140,7 @@ func TestProjectPickerHoldsTheLiveLockAloneWhileItRewrites(t *testing.T) {
 
 func TestProjectPickerUnderALiveSessionLeavesBothFilesAlone(t *testing.T) {
 	in, profiles, state, layer := pickerLockFixture(t)
-	f, err := os.OpenFile(LiveLockPath(profiles, "gw"), os.O_CREATE|os.O_RDWR, 0o600)
+	f, err := os.OpenFile(paths.LiveLockPath(profiles, "gw"), os.O_CREATE|os.O_RDWR, 0o600)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -147,7 +148,7 @@ func TestProjectPickerUnderALiveSessionLeavesBothFilesAlone(t *testing.T) {
 	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_SH); err != nil {
 		t.Fatal(err)
 	}
-	restore := SetLockWait(0)
+	restore := paths.SetLockWait(0)
 	defer restore()
 	var errw bytes.Buffer
 	if got := ProjectPicker(in, &errw); got != PickerDone || errw.Len() != 0 {

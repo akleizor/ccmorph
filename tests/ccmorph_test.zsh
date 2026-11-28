@@ -9077,6 +9077,30 @@ test_no_launch_advisory_relies_on_pre_exec_stderr() {
 
 # An unprobed routed model is the other launch-time advisory and had the same
 # flaw. Same channel, so that it is seen at all.
+test_the_window_probe_cuts_the_marker_where_the_engine_does() {
+  local test_home
+  test_home=$(mktemp -d)
+  setup_home "$test_home"
+  printf '%s\n' '#!/bin/sh' 'cat <<JSON' '{"data":[]}' 'JSON' > "$HOME/bin/curl"
+  chmod +x "$HOME/bin/curl"
+  make_fake_curl_probe_aware
+  : > "$HOME/registry.conf"
+  printf '%s\n' \
+    'type=proxy' 'base_url=http://gw.invalid' 'api_key=test-key' 'model=unprobed[1m]-eu' \
+    > "$HOME/.config/ccmorph/blank.conf"
+  source "$CCMORPH_SOURCE"
+
+  local _CCMORPH_LOG="$HOME/ccmorph.log"
+  local rc=0
+  _ccm_launch -a blank prompt >/dev/null 2>&1 || {
+    rm -rf "$test_home"; return 1
+  }
+  assert_contains "$(<"$_CCMORPH_LOG")" 'window unknown profile=blank model=unprobed fallback' \
+    'the launch probe sizes the id the engine sizes: cut at a mid-id marker (#544)' || rc=1
+  rm -rf "$test_home"
+  return $rc
+}
+
 test_the_unprobed_model_advisory_persists_in_the_tui() {
   local test_home
   test_home=$(mktemp -d)
@@ -13557,6 +13581,7 @@ run_test test_a_valid_saved_budget_still_beats_the_derivation
 run_test test_a_conf_pinned_ceiling_still_gets_hazard_analysis
 run_test test_the_trigger_follows_a_non_default_percentage
 run_test test_no_launch_advisory_relies_on_pre_exec_stderr
+run_test test_the_window_probe_cuts_the_marker_where_the_engine_does
 run_test test_the_unprobed_model_advisory_persists_in_the_tui
 run_test test_the_switch_warning_caps_the_names_it_lists
 run_test test_the_launch_hazard_advisory_matches_switch_hazard_warn

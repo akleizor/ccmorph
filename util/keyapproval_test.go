@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/akleizor/ccmorph/ordjson"
+	"github.com/akleizor/ccmorph/util/paths"
 )
 
 func writeClaudeJSON(t *testing.T, home, body string) string {
@@ -124,7 +125,7 @@ func TestApproveKeyKeepsAWriteMadeBetweenItsReadAndItsRename(t *testing.T) {
 	const key = "sk-issue-236-test-key"
 	const tail = "k-issue-236-test-key"
 	profiles := filepath.Join(t.TempDir(), "profiles")
-	if err := os.MkdirAll(filepath.Dir(LiveLockPath(profiles, "p")), 0o700); err != nil {
+	if err := os.MkdirAll(filepath.Dir(paths.LiveLockPath(profiles, "p")), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	path := writeClaudeJSON(t, filepath.Join(profiles, "p"), `{"numStartups":3}`)
@@ -132,7 +133,7 @@ func TestApproveKeyKeepsAWriteMadeBetweenItsReadAndItsRename(t *testing.T) {
 	// otherWriter behaves like every sibling writer: it rewrites the file only
 	// while it holds the live lock exclusively, and reports whether it did.
 	otherWriter := func() bool {
-		f, err := os.OpenFile(LiveLockPath(profiles, "p"), os.O_CREATE|os.O_RDWR, 0o600)
+		f, err := os.OpenFile(paths.LiveLockPath(profiles, "p"), os.O_CREATE|os.O_RDWR, 0o600)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -177,11 +178,11 @@ func TestApproveKeyKeepsAWriteMadeBetweenItsReadAndItsRename(t *testing.T) {
 func TestApproveKeyHoldsTheLiveLockAloneBetweenItsReadAndItsRename(t *testing.T) {
 	profiles := filepath.Join(t.TempDir(), "profiles")
 	writeClaudeJSON(t, filepath.Join(profiles, "p"), `{"numStartups":3}`)
-	if err := os.MkdirAll(filepath.Dir(LiveLockPath(profiles, "p")), 0o700); err != nil {
+	if err := os.MkdirAll(filepath.Dir(paths.LiveLockPath(profiles, "p")), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	take := func(how int) bool {
-		f, err := os.OpenFile(LiveLockPath(profiles, "p"), os.O_CREATE|os.O_RDWR, 0o600)
+		f, err := os.OpenFile(paths.LiveLockPath(profiles, "p"), os.O_CREATE|os.O_RDWR, 0o600)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -215,10 +216,10 @@ func TestApproveKeyUnderALiveSessionKeepsTheSessionsSaveAndLandsWhenItEnds(t *te
 	profiles := filepath.Join(t.TempDir(), "profiles")
 	body := `{"numStartups":3}`
 	path := writeClaudeJSON(t, filepath.Join(profiles, "p"), body)
-	if err := os.MkdirAll(filepath.Dir(LiveLockPath(profiles, "p")), 0o700); err != nil {
+	if err := os.MkdirAll(filepath.Dir(paths.LiveLockPath(profiles, "p")), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	f, err := os.OpenFile(LiveLockPath(profiles, "p"), os.O_CREATE|os.O_RDWR, 0o600)
+	f, err := os.OpenFile(paths.LiveLockPath(profiles, "p"), os.O_CREATE|os.O_RDWR, 0o600)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -226,7 +227,7 @@ func TestApproveKeyUnderALiveSessionKeepsTheSessionsSaveAndLandsWhenItEnds(t *te
 	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_SH); err != nil {
 		t.Fatal(err)
 	}
-	restore := SetLockWait(0)
+	restore := paths.SetLockWait(0)
 	defer restore()
 
 	if err := ApproveKey(profiles, "p", key); !errors.Is(err, ErrProfileInUse) {
@@ -261,7 +262,7 @@ func TestHelperApproveKeyProcess(t *testing.T) {
 	if os.Getenv("CCMORPH_TEST_APPROVE_CHILD") != "1" {
 		return
 	}
-	restore := SetLockWait(0)
+	restore := paths.SetLockWait(0)
 	defer restore()
 	err := ApproveKey(os.Getenv("CCMORPH_TEST_PROFILES"), "p", os.Getenv("CCMORPH_TEST_KEY"))
 	switch {
@@ -304,7 +305,7 @@ func TestTwoApprovalsAtOnceBothLand(t *testing.T) {
 	const other = "sk-issue-299-second-key-0002"
 	profiles := filepath.Join(t.TempDir(), "profiles")
 	path := writeClaudeJSON(t, filepath.Join(profiles, "p"), `{"numStartups":3}`)
-	if err := os.MkdirAll(filepath.Dir(LiveLockPath(profiles, "p")), 0o700); err != nil {
+	if err := os.MkdirAll(filepath.Dir(paths.LiveLockPath(profiles, "p")), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	old := profileJSONRead
@@ -329,15 +330,15 @@ func TestTwoApprovalsAtOnceBothLand(t *testing.T) {
 }
 
 // The repo's whole-file writers take the live lock exclusively; the approval
-// waits for one within lockWait and writes nothing if it outlasts the wait.
+// waits for one within paths.LockWait and writes nothing if it outlasts the wait.
 func TestApproveKeyWaitsOutAnExclusiveHolder(t *testing.T) {
 	profiles := filepath.Join(t.TempDir(), "profiles")
 	body := `{"numStartups":3}`
 	path := writeClaudeJSON(t, filepath.Join(profiles, "p"), body)
-	if err := os.MkdirAll(filepath.Dir(LiveLockPath(profiles, "p")), 0o700); err != nil {
+	if err := os.MkdirAll(filepath.Dir(paths.LiveLockPath(profiles, "p")), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	f, err := os.OpenFile(LiveLockPath(profiles, "p"), os.O_CREATE|os.O_RDWR, 0o600)
+	f, err := os.OpenFile(paths.LiveLockPath(profiles, "p"), os.O_CREATE|os.O_RDWR, 0o600)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -346,7 +347,7 @@ func TestApproveKeyWaitsOutAnExclusiveHolder(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
-	restore := SetLockWait(0)
+	restore := paths.SetLockWait(0)
 	defer restore()
 
 	err = ApproveKey(profiles, "p", "sk-issue-236-test-key")
@@ -374,7 +375,7 @@ func TestSavedApprovalIsOwnerOnlyAndNamesNoKey(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(profiles, "p"), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	locks := filepath.Dir(LiveLockPath(profiles, "p"))
+	locks := filepath.Dir(paths.LiveLockPath(profiles, "p"))
 	saved := func() bool { return ApprovalSaved(profiles, "p", key) }
 	if saved() {
 		t.Fatal("nothing is saved yet")
