@@ -108,6 +108,11 @@ func TestRunClaudeKeepsTheLaunchEnvironmentOffTheCommandLine(t *testing.T) {
 		t.Fatalf("argv %q", seen)
 	}
 	envFile := fields[6]
+	// The name carries this launcher's pid so gc-stale can spare a live
+	// launch's file while an orphan's is reaped (#1047).
+	if base := filepath.Base(envFile); !strings.HasPrefix(base, "ccmorph-session-env."+strconv.Itoa(os.Getpid())+".") {
+		t.Fatalf("session env name %q does not carry the launcher pid", base)
+	}
 	copied, err := os.Stat(filepath.Join(dir, "file.log"))
 	if err != nil {
 		t.Fatalf("the stub did not see the session env file: %v", err)
