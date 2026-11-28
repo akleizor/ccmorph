@@ -12,7 +12,7 @@ import (
 // GH-321: a launch with nothing old to reap must not scan the host's processes.
 // Launch-settings overlays and provider bridge dirs go after 12h unless a live
 // process still names them; a young one stays; a failed scan names nothing, so the
-// old ones go; and an old neighbour that is neither overlay nor bridge is spared.
+// old ones go; a stalled scan cannot tell, so they stay and the launch goes on; and an old neighbour that is neither overlay nor bridge is spared.
 func TestGCOverlaysAndBridgesScanProcessesOnlyWhenSomethingIsOld(t *testing.T) {
 	for _, c := range []struct {
 		name        string
@@ -20,12 +20,14 @@ func TestGCOverlaysAndBridgesScanProcessesOnlyWhenSomethingIsOld(t *testing.T) {
 		psStatus    int
 		wantPresent bool
 		wantScans   int
+		psStalls    bool
 	}{
-		{"nothing to reap", "empty", 0, false, 0},
-		{"young stays without a scan", "young", 0, true, 0},
-		{"abandoned goes", "old", 0, false, 1},
-		{"live stays", "live", 0, true, 1},
-		{"a failed process scan reaps", "live", 1, false, 1},
+		{"nothing to reap", "empty", 0, false, 0, false},
+		{"young stays without a scan", "young", 0, true, 0, false},
+		{"abandoned goes", "old", 0, false, 1, false},
+		{"live stays", "live", 0, true, 1, false},
+		{"a failed process scan reaps", "live", 1, false, 1, false},
+		{"a stalled process scan keeps them and returns", "old", 0, true, 1, true},
 	} {
 		root := t.TempDir()
 		// A tmp dir whose own path looks like a bridge must not make its neighbours one.
@@ -38,7 +40,11 @@ func TestGCOverlaysAndBridgesScanProcessesOnlyWhenSomethingIsOld(t *testing.T) {
 		scans := filepath.Join(root, "ps-scans")
 		os.WriteFile(live, nil, 0o600)
 		os.WriteFile(scans, nil, 0o600)
-		os.WriteFile(filepath.Join(root, "bin", "ps"), []byte("#!/bin/sh\nprintf 'scan\\n' >> '"+scans+"'\ncat '"+live+"'\nexit "+strconv.Itoa(c.psStatus)+"\n"), 0o755)
+		stall := ""
+		if c.psStalls {
+			stall = "exec sleep 30\n"
+		}
+		os.WriteFile(filepath.Join(root, "bin", "ps"), []byte("#!/bin/sh\nprintf 'scan\\n' >> '"+scans+"'\ncat '"+live+"'\n"+stall+"exit "+strconv.Itoa(c.psStatus)+"\n"), 0o755)
 		t.Setenv("PATH", filepath.Join(root, "bin")+":"+os.Getenv("PATH"))
 
 		ancient := time.Date(2000, 1, 1, 0, 0, 0, 0, time.UTC)
@@ -65,7 +71,11 @@ func TestGCOverlaysAndBridgesScanProcessesOnlyWhenSomethingIsOld(t *testing.T) {
 			}
 		}
 
+		began := time.Now()
 		GCStale(filepath.Join(root, "state"), profiles, tmp)
+		if took := time.Since(began); took > 5*gcScanLimit {
+			t.Errorf("%s: GCStale took %v behind a stalled ps", c.name, took)
+		}
 
 		b, _ := os.ReadFile(scans)
 		if n := len(strings.Fields(string(b))); n != c.wantScans {

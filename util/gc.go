@@ -1,8 +1,8 @@
 package util
 
 import (
+	"context"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -39,6 +39,10 @@ import (
 // credentials, so they go after 12h unless a live process still names them;
 // the process table is read only when something is old, at most once for the
 // view and relay sweeps and once for the overlays' and bridges' scan.
+// gcScanLimit bounds the process scan GCStale makes on the launch path, the
+// bound runningAdapter's table read has (GH-467).
+const gcScanLimit = time.Second
+
 func GCStale(state, profiles, tmp string) {
 	now := time.Now()
 	old := func(p string, age time.Duration) bool {
@@ -188,11 +192,24 @@ func GCStale(state, profiles, tmp string) {
 		}
 	}
 	var live *string
+	unknown := false // the one scan stalled: nothing can be told apart
 	alive := func(needle string) bool {
+		if unknown {
+			return true
+		}
 		if live == nil {
 			// A failed scan names nothing, so every old candidate is reaped.
+			// A scan past gcScanLimit cannot tell, so it keeps them all for
+			// the next launch: the launch never waits on a stalled ps (#185).
+			ctx, cancel := context.WithTimeout(context.Background(), gcScanLimit)
+			raw, err := psCmd(ctx, "-axo", "command").Output()
+			unknown = ctx.Err() != nil
+			cancel()
+			if unknown {
+				return true
+			}
 			s := ""
-			if raw, err := exec.Command("ps", "-axo", "command").Output(); err == nil {
+			if err == nil {
 				s = string(raw)
 			}
 			live = &s

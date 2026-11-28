@@ -452,6 +452,23 @@ def test_claude_home_is_built_once():
         + "; ".join(offenders))
 
 
+# Every ps pass goes through util.psCmd, which runs it under a deadline with
+# a WaitDelay (REVIEW.md kind 16): a bare exec of ps can hang the launch on a
+# stalled table read, as util/gc.go's overlay scan could.
+BARE_PS = re.compile(r'exec\.Command(?:Context)?\([^)]*"ps"')
+PS_HOME = ROOT / "util" / "hop.go"
+
+
+def test_ps_runs_only_through_ps_cmd():
+    offenders = [f"{path.relative_to(ROOT)}:{n}"
+                 for path in go_sources()
+                 if not path.name.endswith("_test.go") and path != PS_HOME
+                 for n, line in enumerate(path.read_text().splitlines(), 1)
+                 if BARE_PS.search(line)]
+    assert not offenders, "ps is run outside util.psCmd: " + "; ".join(offenders)
+    assert BARE_PS.search(PS_HOME.read_text()), "psCmd left util/hop.go"
+
+
 # #539: the response-identity Key — id, stamp and turn joined on NULs — was
 # spelled twice, writer and reader (shim's rowIdentity, quota's readRow),
 # both citing #298 and flagged in #514's handoff as belonging to that fix.
