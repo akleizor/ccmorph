@@ -5,6 +5,8 @@ import (
 	"bytes"
 	"context"
 	"crypto/tls"
+	"encoding/json"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -17,6 +19,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/akleizor/ccmorph/netroute"
 )
 
 // Options is one session's proxy: fixed for its life, so a session that
@@ -51,11 +55,12 @@ type Options struct {
 type Proxy struct {
 	Options
 
-	ca   *CA
-	leaf *tls.Certificate
-	ln   net.Listener
-	srv  *http.Server
-	rp   *httputil.ReverseProxy
+	ca     *CA
+	leafMu sync.Mutex
+	leaf   *tls.Certificate
+	ln     net.Listener
+	srv    *http.Server
+	rp     *httputil.ReverseProxy
 }
 
 // firstParty is where a decrypted api.anthropic.com request goes; a test
@@ -124,10 +129,10 @@ func Start(ca *CA, o Options) (*Proxy, error) {
 	p := &Proxy{Options: o, ca: ca, leaf: leaf, ln: ln}
 	tr := http.DefaultTransport.(*http.Transport).Clone()
 	tr.Proxy = func(r *http.Request) (*url.URL, error) {
-		if isLoopbackHost(r.URL.Hostname()) {
+		if o.Upstream == nil {
 			return nil, nil
 		}
-		return o.Upstream, nil
+		return netroute.Proxy(o.Upstream, r)
 	}
 	tr.TLSClientConfig = o.TLS
 	tr.ForceAttemptHTTP2 = true
@@ -178,12 +183,38 @@ func Start(ca *CA, o Options) (*Proxy, error) {
 		},
 		ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
 			p.Logf("agent proxy: %s %s: %v", r.Method, r.URL.Host, err)
-			w.WriteHeader(http.StatusBadGateway)
+			writeAPIError(w, http.StatusBadGateway, "agent proxy: "+r.URL.Host+": "+err.Error())
 		},
 	}
 	p.srv = &http.Server{Handler: p, ReadHeaderTimeout: 30 * time.Second}
 	go p.srv.Serve(ln)
 	return p, nil
+}
+
+// writeAPIError answers in the shape Anthropic's API does, so the client shows
+// the cause instead of a bare status.
+func writeAPIError(w http.ResponseWriter, status int, msg string) {
+	b, _ := json.Marshal(map[string]any{"type": "error", "error": map[string]string{"type": "api_error", "message": msg}})
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	w.Write(b)
+}
+
+// leafFor is the certificate served for api.anthropic.com: minted on first use
+// and again when it is within a day of expiring, so a long run never serves a
+// stale one.
+func (p *Proxy) leafFor(*tls.ClientHelloInfo) (*tls.Certificate, error) {
+	p.leafMu.Lock()
+	defer p.leafMu.Unlock()
+	if p.leaf != nil && p.leaf.Leaf != nil && time.Until(p.leaf.Leaf.NotAfter) > 24*time.Hour {
+		return p.leaf, nil
+	}
+	leaf, err := p.ca.Leaf(anthropicHost)
+	if err != nil {
+		return nil, err
+	}
+	p.leaf = leaf
+	return leaf, nil
 }
 
 // Port is the loopback port the proxy listens on.
@@ -247,15 +278,24 @@ func (p *Proxy) forward(w http.ResponseWriter, r *http.Request, u *url.URL) {
 			}
 			pick, ok = Claim(p.Dir, session, agent, d.plain, time.Now())
 		}
+		if !ok {
+			// A parallel first request of this agent may have claimed the pick
+			// between the check above and the claim.
+			pick, ok = Bound(p.Dir, agent)
+		}
 		if ok {
-			p.route(r, d, pick)
+			if err := p.route(r, d, pick); err != nil {
+				p.Logf("agent proxy: %s %s: %v", r.Method, u.Path, err)
+				writeAPIError(w, http.StatusBadRequest, "agent proxy: the request body cannot be read: "+err.Error())
+				return
+			}
 		}
 	}
 	ctx := context.WithValue(r.Context(), ctxKey{}, d)
 	if d.edge != nil {
 		// Through the session's own proxy the connection is the proxy's, which
 		// proves nothing about the endpoint: no evidence is recorded then.
-		direct := p.Upstream == nil || isLoopbackHost(d.url.Hostname())
+		direct := p.Upstream == nil || netroute.Exempt(d.url)
 		ctx = httptrace.WithClientTrace(ctx, &httptrace.ClientTrace{
 			GotConn: func(i httptrace.GotConnInfo) {
 				if direct {
@@ -293,16 +333,17 @@ func (d *decision) read(r *http.Request) error {
 	return err
 }
 
-func (p *Proxy) route(r *http.Request, d *decision, pick Pick) {
+// route points the request at pick's target. An error means the body could not
+// be read: the request is answered 400, never sent on with its body consumed.
+func (p *Proxy) route(r *http.Request, d *decision, pick Pick) error {
 	t, err := p.Resolve(pick)
 	if err != nil {
 		p.Logf("agent proxy: %s cannot be served (%v); the agent stays on the session's route", pick.Word, err)
-		return
+		return nil
 	}
 	if d.plain == nil {
 		if err := d.read(r); err != nil {
-			p.Logf("agent proxy: %s cannot be read (%v); the agent stays on the session's route", pick.Word, err)
-			return
+			return err
 		}
 	}
 	// The body is read decoded and goes on in the coding it came in: byte for
@@ -313,6 +354,7 @@ func (p *Proxy) route(r *http.Request, d *decision, pick Pick) {
 	out := join(t.Base, &url.URL{Path: strings.TrimPrefix(d.url.Path, originPath(p.Origin)), RawQuery: d.url.RawQuery})
 	d.url, d.target, d.pick = out, &t, pick
 	p.Logf("agent proxy: route %s %s via %s", r.Method, out.Path, pick.Word)
+	return nil
 }
 
 // join is the request's path and query under base: a base with a path
@@ -364,11 +406,15 @@ func (p *Proxy) connect(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if strings.EqualFold(strings.TrimSuffix(host, "."), anthropicHost) && port == "443" {
-		conn, _, err := hj.Hijack()
+		conn, buf, err := hj.Hijack()
 		if err != nil {
 			return
 		}
 		conn.Write([]byte("HTTP/1.1 200 Connection Established\r\n\r\n"))
+		// Bytes the client sent behind the CONNECT are in buf, not the socket.
+		if buf.Reader.Buffered() > 0 {
+			conn = &bufConn{Conn: conn, r: buf.Reader}
+		}
 		p.serveTLS(conn)
 		return
 	}
@@ -406,11 +452,13 @@ func closeWrite(c net.Conn) {
 // serveTLS serves the HTTP requests a client sends inside one decrypted
 // CONNECT to api.anthropic.com.
 func (p *Proxy) serveTLS(raw net.Conn) {
-	conn := tls.Server(raw, &tls.Config{Certificates: []tls.Certificate{*p.leaf}, NextProtos: []string{"http/1.1"}})
+	conn := tls.Server(raw, &tls.Config{GetCertificate: p.leafFor, NextProtos: []string{"http/1.1"}})
+	raw.SetDeadline(time.Now().Add(30 * time.Second))
 	if conn.Handshake() != nil {
 		conn.Close()
 		return
 	}
+	raw.SetDeadline(time.Time{})
 	srv := &http.Server{
 		Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			u := *r.URL
@@ -465,12 +513,27 @@ func (c *closeConn) Close() error {
 // given a proxy.
 func dialTunnel(ctx context.Context, addr string, via *url.URL) (net.Conn, error) {
 	var d net.Dialer
+	if via != nil && netroute.Exempt(&url.URL{Scheme: "https", Host: addr}) {
+		via = nil // NO_PROXY and loopback dial direct, as the transport does
+	}
 	if via == nil {
 		return d.DialContext(ctx, "tcp", addr)
 	}
-	c, err := d.DialContext(ctx, "tcp", via.Host)
+	hostport, secure, err := hop(via)
 	if err != nil {
 		return nil, err
+	}
+	c, err := d.DialContext(ctx, "tcp", hostport)
+	if err != nil {
+		return nil, err
+	}
+	if secure {
+		tc := tls.Client(c, &tls.Config{ServerName: via.Hostname()})
+		if err := tc.HandshakeContext(ctx); err != nil {
+			c.Close()
+			return nil, err
+		}
+		c = tc
 	}
 	req := &http.Request{Method: http.MethodConnect, URL: &url.URL{Opaque: addr}, Host: addr, Header: http.Header{}}
 	if u := via.User; u != nil {
@@ -497,6 +560,25 @@ func dialTunnel(ctx context.Context, addr string, via *url.URL) (net.Conn, error
 		return &bufConn{Conn: c, r: br}, nil
 	}
 	return c, nil
+}
+
+// hop is where a tunnel's upstream proxy is dialled: its address with the
+// scheme's default port when the URL names none, and whether it speaks TLS.
+func hop(via *url.URL) (hostport string, secure bool, err error) {
+	hostport = via.Host
+	port := ""
+	switch strings.ToLower(via.Scheme) {
+	case "http":
+		port = "80"
+	case "https":
+		secure, port = true, "443"
+	default:
+		return "", false, fmt.Errorf("upstream proxy scheme %q is not supported (http or https)", via.Scheme)
+	}
+	if via.Port() == "" {
+		hostport = net.JoinHostPort(via.Hostname(), port)
+	}
+	return hostport, secure, nil
 }
 
 type bufConn struct {

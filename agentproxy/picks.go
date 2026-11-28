@@ -117,7 +117,7 @@ func HasPending(dir, session string) bool {
 	if !ok {
 		return false
 	}
-	names, _ := filepath.Glob(filepath.Join(folder, "*.json"))
+	names, _ := filepath.Glob(filepath.Join(paths.GlobQuote(folder), "*.json"))
 	return len(names) > 0
 }
 
@@ -188,7 +188,7 @@ func sweepPending(pending string, before time.Time) {
 }
 
 func sweep(dir string, before time.Time) {
-	names, _ := filepath.Glob(filepath.Join(dir, "*.json"))
+	names, _ := filepath.Glob(filepath.Join(paths.GlobQuote(dir), "*.json"))
 	for _, n := range names {
 		if fi, err := os.Stat(n); err == nil && fi.ModTime().Before(before) {
 			os.Remove(n)

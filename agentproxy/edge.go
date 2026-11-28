@@ -476,6 +476,9 @@ func (e *Edge) decide(r *http.Request, u *url.URL, d *decision) error {
 				return e.route(r, u, d, pick.Word, " (agent)", pick.Model)
 			}
 		}
+		if pick, ok := Bound(agents, agent); ok { // a parallel first request claimed it
+			return e.route(r, u, d, pick.Word, " (agent)", pick.Model)
+		}
 	}
 	return e.route(r, u, d, "", "", "")
 }
@@ -533,6 +536,7 @@ func (e *Edge) route(r *http.Request, u *url.URL, d *decision, word, via, model 
 		es.asked, es.via, es.account = "account", "account", true
 		e.logf("account   %s %s%s", r.Method, u.Path, via)
 		rule := modelRule{tiers: e.accountTiers(), routeTiers: e.Tiers}
+		model = pickModel(model, rule.tiers)
 		if len(rule.tiers) == 0 && model == "" {
 			return nil
 		}
@@ -558,9 +562,12 @@ func (e *Edge) route(r *http.Request, u *url.URL, d *decision, word, via, model 
 				}
 				e.logf("%s", lostEndpointNote(target, e.bridge(), e.Parent, session, e.ParentStarted))
 			}
-			target = "route"
+			// The pick named an endpoint this proxy does not hold: the request
+			// takes the route as it is, not the pick's model for another backend.
+			target, model = "route", ""
 		}
 	}
+	model = pickModel(model, tiers)
 	if up == nil || (up.Scheme != "http" && up.Scheme != "https") || up.Hostname() == "" {
 		return fmt.Errorf("route upstream is not an http(s) URL: %v", up)
 	}
@@ -606,6 +613,19 @@ func (e *Edge) pinned(r *http.Request, d *decision, target, via string) (string,
 	}
 	e.pins.set(key, target, via, now)
 	return target, via
+}
+
+// pickModel is the model an agent's pick forces under tiers: the tier's own
+// model when one pins it (so a bare opus/sonnet/haiku alias never goes out
+// where a pin exists), without Claude Code's `[1m]` context marker.
+func pickModel(model string, tiers map[string]string) string {
+	if model == "" {
+		return ""
+	}
+	if own := pinnedModel(model, tiers); own != "" {
+		return own
+	}
+	return strings.TrimSuffix(model, "[1m]")
 }
 
 // setPick names the model outright when an agent's pick does.

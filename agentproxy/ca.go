@@ -256,7 +256,11 @@ func (ca *CA) Leaf(host string) (*tls.Certificate, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &tls.Certificate{Certificate: [][]byte{der, ca.cert.Raw}, PrivateKey: key}, nil
+	parsed, err := x509.ParseCertificate(der)
+	if err != nil {
+		return nil, err
+	}
+	return &tls.Certificate{Certificate: [][]byte{der, ca.cert.Raw}, PrivateKey: key, Leaf: parsed}, nil
 }
 
 func serial() *big.Int {
