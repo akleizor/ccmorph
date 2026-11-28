@@ -996,6 +996,19 @@ func TestReachHarnessWaitMovesOnlyTheStop(t *testing.T) {
 	}
 }
 
+// #1026: the seam exists for a harness that answers the probe with a child it
+// installs, never for the Go suite: an exported one must not stand in for the
+// five-second promise a product test reads. TestMain clears it, and a probe
+// test that wants the seam sets it itself with t.Setenv.
+func TestReachSeamIsNotInheritedFromTheEnvironment(t *testing.T) {
+	if v := os.Getenv("CCMORPH_TEST_REACH_WAIT"); v != "" {
+		t.Fatalf("CCMORPH_TEST_REACH_WAIT=%q leaked into the Go suite; TestMain must clear an exported seam", v)
+	}
+	if stop, bound := reachStopBound(), reachBound(); stop != bound {
+		t.Fatalf("the probe's stop is %v while the advertised bound is %v; an inherited seam must not move it", stop, bound)
+	}
+}
+
 // #1026: with the harness wait, a stub that answers after the advertised bound
 // but before the stop is an answer: the launch goes on instead of the probe
 // naming a gateway silent because the scheduler had not run its child yet.
