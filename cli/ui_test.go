@@ -862,6 +862,124 @@ func TestSeqTailHandsBackASignalMidSequenceIssue388(t *testing.T) {
 	}
 }
 
+// eofReader answers each read with io.EOF (as a raw terminal's zero-length
+// VTIME read reaches Go), waiting `wait` first, until it hands out its bytes.
+// A read that waited the window is the idle tick; one that came back at once
+// is the stream ending.
+type eofReader struct {
+	data  []byte
+	eofs  int
+	wait  time.Duration
+	reads int
+}
+
+func (r *eofReader) Read(p []byte) (int, error) {
+	r.reads++
+	if r.eofs > 0 || len(r.data) == 0 {
+		r.eofs--
+		time.Sleep(r.wait)
+		return 0, io.EOF
+	}
+	p[0], r.data = r.data[0], r.data[1:]
+	return 1, nil
+}
+
+// waitsReader answers every read with io.EOF after that read's own wait, the
+// last one repeating: idle windows and a final immediate close in one stream.
+type waitsReader struct {
+	waits []time.Duration
+	at    int
+}
+
+func (r *waitsReader) Read(p []byte) (int, error) {
+	w := r.waits[len(r.waits)-1]
+	if r.at < len(r.waits) {
+		w = r.waits[r.at]
+		r.at++
+	}
+	time.Sleep(w)
+	return 0, io.EOF
+}
+
+type errReader struct{ err error }
+
+func (r errReader) Read(p []byte) (int, error) { return 0, r.err }
+
+// idleWindowTest shortens rawTTY's VTIME so the window tests do not sit in a
+// real terminal's clock: the idle reader then waits longer than the window and
+// the closed one comes back at once.
+func idleWindowTest(t *testing.T) {
+	t.Helper()
+	old := ttyIdleWindow
+	ttyIdleWindow = 50 * time.Millisecond
+	t.Cleanup(func() { ttyIdleWindow = old })
+}
+
+func TestAnIdleTerminalIsNotAClosedOneIssue1030(t *testing.T) {
+	// The nine red CI jobs and the five red jobs on PR #1042 were this: the
+	// idle VTIME read and a closed pty both reach the reader as io.EOF, and
+	// treating the EOF itself as the input ending cancelled a person who
+	// paused. A read that waited out the window is the idle tick; the key
+	// after several of them still arrives (#1030).
+	idleWindowTest(t)
+	k := &keys{in: &eofReader{data: []byte("x"), eofs: 3, wait: 60 * time.Millisecond}}
+	c, s, ok := k.next(0, make(chan os.Signal, 1), nil)
+	if !ok || s != nil || c != 'x' {
+		t.Fatalf("next through idle reads = %d, %v, %v; want 'x', nil, true", c, s, ok)
+	}
+}
+
+func TestAClosedTerminalEndsAtOnceIssue1030(t *testing.T) {
+	// A zero-length read that came back before the window is the stream
+	// ending, not an idle tick: it ends the wait at once, without spinning
+	// through the reads a still-open stream would have answered with a key.
+	idleWindowTest(t)
+	r := &eofReader{data: []byte("x"), eofs: 10000}
+	k := &keys{in: r}
+	c, s, ok := k.next(0, make(chan os.Signal, 1), nil)
+	if ok || s != nil || c != 0 {
+		t.Fatalf("next on an immediately ended stream = %d, %v, %v; want 0, nil, false", c, s, ok)
+	}
+	if r.reads > 1 {
+		t.Fatalf("an ended stream was read %d times; want the wait to end at once", r.reads)
+	}
+}
+
+func TestANonEOFTerminalErrorEndsTheWait(t *testing.T) {
+	// EIO from a pty whose other end closed is the input ending, as before.
+	k := &keys{in: errReader{err: syscall.EIO}}
+	c, s, ok := k.next(0, make(chan os.Signal, 1), nil)
+	if ok || s != nil || c != 0 {
+		t.Fatalf("next on EIO = %d, %v, %v; want 0, nil, false", c, s, ok)
+	}
+}
+
+func TestIdleReadsThenACloseEndsTheWaitIssue1030(t *testing.T) {
+	// A person waits a few idle windows and then the terminal closes: the idle
+	// reads keep the prompt open and the immediate EOF ends it.
+	idleWindowTest(t)
+	k := &keys{in: &waitsReader{waits: []time.Duration{
+		60 * time.Millisecond, 60 * time.Millisecond, 0,
+	}}}
+	c, s, ok := k.next(0, make(chan os.Signal, 1), nil)
+	if ok || s != nil || c != 0 {
+		t.Fatalf("next through idle reads then a close = %d, %v, %v; want 0, nil, false", c, s, ok)
+	}
+}
+
+func TestAnEscWindowStillEndsAfterIdleReads(t *testing.T) {
+	// The 80 ms Esc window (shorter than the VTIME read) still ends at its
+	// timeout when every read inside it is an idle tick: an unfinished
+	// sequence is answered as the bare Esc it began as, never by waiting
+	// forever.
+	idleWindowTest(t)
+	k := &keys{in: &waitsReader{waits: []time.Duration{60 * time.Millisecond}}}
+	c, s, ok := k.next(80*time.Millisecond, make(chan os.Signal, 1), nil)
+	if ok || s != nil || c != 0 {
+		t.Fatalf("next in an Esc window = %d, %v, %v; want 0, nil, false", c, s, ok)
+	}
+}
+
 // No list of ids makes two rows read alike, however the ids share their
 // parts and however narrow the column (#385). A search for a cut that gave
 // up after a budget cut four ids alike; every cut now parts the ids by
