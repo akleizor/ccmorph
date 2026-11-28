@@ -15,7 +15,15 @@ import (
 // fakeCore writes a stub `core adapter` script answering with body.
 func fakeCore(t *testing.T, body string) string {
 	t.Helper()
-	p := filepath.Join(t.TempDir(), "core")
+	return fakeCoreNamed(t, "core", body)
+}
+
+// fakeCoreNamed is fakeCore under a chosen file name. The name is part of what
+// the process table shows: a probe of an adapter-shaped child must name its
+// stub ccmorph-core, or the row it looks for never exists (#1043).
+func fakeCoreNamed(t *testing.T, name, body string) string {
+	t.Helper()
+	p := filepath.Join(t.TempDir(), name)
 	if err := os.WriteFile(p, []byte("#!/bin/sh\n"+body+"\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}

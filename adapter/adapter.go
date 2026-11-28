@@ -291,7 +291,7 @@ type cliArgs struct {
 	probeFailed bool // --print-config only: classify failed, rows are the cache's (GH-592)
 }
 
-const usage = "usage: ccmorph-adapter [-h] [--parent-pid PARENT_PID] [--shared BASE] [--print-config] [--auto]\n" +
+const usage = "usage: ccmorph-adapter [-h] [--parent-pid PARENT_PID] [--shared BASE] [--subagent] [--print-config] [--auto]\n" +
 	"                       [--model MODEL] [--inbound-token | --inbound-token-file FILE]\n" +
 	"                       [--port PORT] profile\n"
 
@@ -338,6 +338,10 @@ func parseArgs(argv []string) *cliArgs {
 			a.parentPID = number()
 		case "--shared":
 			a.shared = value()
+		case "--subagent":
+			// The role marker a pick's started adapter carries for `ccmorph hop`
+			// to read in the process table (#1043). It is never adapter behaviour:
+			// accepted and ignored so the spawn that names the role cannot fail.
 		case "--print-config":
 			a.printConfig = true
 		case "--auto":

@@ -584,7 +584,10 @@ stdin is a pipe only the launcher keeps), and is how `ccmorph hop` names the
 profile of a session that joined an adapter it did not start
 (`util.SessionAdapter`); `Release` ends it first, under the mutex. A subagent
 pick's hold (`--subagent`) has the same lifetime but answers for the profile the
-subagent borrowed, never for the session's own, so hop ignores it. An adapter
+subagent borrowed, never for the session's own, so hop ignores it. A pick whose
+adapter no session had started also makes the launcher start one; that adapter
+carries the same `--subagent` marker in its argv, and hop ignores it the same
+way. An adapter
 whose last session was SIGKILLed notices on its own poll, under the mutex, that
 no one holds the users lock any more, removes its record and exits. `--parent-pid` stays for callers
 without sessions (the Remote Control edge, tests); `--port` runs until signalled.
