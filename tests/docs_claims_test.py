@@ -19,6 +19,10 @@ Issue #1037: the add section promised nothing is written outside the state
 root and the profile directory, while the first add seeds the shared harness
 layer and session history under `~/.claude` for every profile to link into —
 the add paragraph must name that shared home it writes.
+Issue #1050: README and the guide sold `CCMORPH_REF=main` / `update <ref>` as
+installing unreleased code, while install.sh's remote pre-check refuses every
+ref download (a GitHub ref archive carries no core binary) — every mention of
+the ref form must carry that refusal, as #1035's help already does.
 """
 import re
 from pathlib import Path
@@ -347,3 +351,81 @@ def test_guide_add_names_the_shared_home_issue_1037():
     assert re.search(r"\b(?:keeps?|preserves?|retains?|not remov(?:e|ed)|in place|stays?)\b",
                      after, re.I), (
         "the add paragraph must say uninstall retains the shared home/history")
+
+
+# GH-1050: the ref form of install and update. install.sh's remote pre-check
+# refuses every CCMORPH_REF download — "No ccmorph-core binary … nothing was
+# changed" — because a GitHub archive of a branch or tag carries only
+# `libexec/.gitkeep`; 43f30fa0 (#1035) put the same fact in the update help.
+# The syntax must stay named (it selects the ref, and `ccmorph update <ref>`
+# still parses it); what may not return is the promise that such an install
+# completes. Both halves of the printed fact must ride every paragraph that
+# names the ref form, so a reworded promise cannot slip past on wording.
+REF_FORM = re.compile(r"CCMORPH_REF|branch[- ]or[- ]tag|\bupdate\s+(?:main\b|<ref>)", re.I)
+# The false spellings landed on fbe4dcd2, pinned as regexes so the test fails
+# on that tree whatever else it finds; a reworded promise that drops them must
+# still carry the fact halves asserted below.
+FALSE_REF_PROMISE = re.compile(r"installs unreleased code|install that instead", re.I)
+REF_HAS_NO_CORE = re.compile(r"no ccmorph-core binary", re.I)
+REF_NOTHING_CHANGED = re.compile(r"nothing was changed|before anything changes", re.I)
+
+
+def test_docs_never_promise_a_ref_install_completes_issue_1050():
+    """#1050: README and the guide sold `CCMORPH_REF=main` and
+    `ccmorph update <branch-or-tag>` as installs of unreleased code, but a ref
+    archive carries no ccmorph-core binary, so install.sh refuses every such
+    download before changing anything — each of those one-liners was a
+    guaranteed refusal. Help learned the truth in #1035; nothing pinned the
+    docs, so one rule lived as two spellings. Every paragraph naming the ref
+    form must drop the completion promise, carry both halves of what
+    install.sh prints, and name the path that works for unreleased code: a
+    clone built with `make shim`."""
+    for doc in (ROOT / "README.md", GUIDE):
+        paragraphs = [para
+                      for para in re.split(r"\n[ \t]*\n", doc.read_text(encoding="utf-8"))
+                      if REF_FORM.search(para)]
+        assert paragraphs, (
+            f"{doc.relative_to(ROOT)} no longer names the ref syntax at all; the "
+            "honest fix keeps the syntax and states the refusal, it does not "
+            "delete the syntax")
+        for para in paragraphs:
+            flat = _flatten(para)
+            assert not FALSE_REF_PROMISE.search(flat), (
+                f"{doc.relative_to(ROOT)} still promises a ref install completes: {flat}")
+            assert REF_HAS_NO_CORE.search(flat), (
+                f"{doc.relative_to(ROOT)} names the ref form without saying a ref "
+                f"archive contains no ccmorph-core binary: {flat}")
+            assert REF_NOTHING_CHANGED.search(flat), (
+                f"{doc.relative_to(ROOT)} names the ref form without saying the "
+                f"refused install changes nothing: {flat}")
+            assert "make shim" in flat, (
+                f"{doc.relative_to(ROOT)} names the ref form without pointing "
+                f"unreleased code at a clone built with `make shim`: {flat}")
+
+
+def test_docs_claim_guard_checks_generic_update_ref_issue_1050(tmp_path, monkeypatch):
+    import pytest
+
+    for name in ("README.md", "docs/guide.md"):
+        copy = tmp_path / name
+        copy.parent.mkdir(parents=True, exist_ok=True)
+        copy.write_bytes((ROOT / name).read_bytes())
+    monkeypatch.setitem(globals(), "ROOT", tmp_path)
+    monkeypatch.setitem(globals(), "GUIDE", tmp_path / "docs/guide.md")
+    for filename in ("README.md", "docs/guide.md"):
+        doc = tmp_path / filename
+        original = doc.read_text(encoding="utf-8")
+        syntax = "`ccmorph update <ref>`"
+        no_core = " selects a ref archive with no ccmorph-core binary;"
+        no_change = " the installer refuses it and nothing was changed."
+        build = " For unreleased code, clone and build with `make shim`."
+        doc.write_text(original + "\n\n" + syntax + no_core + no_change + build + "\n", encoding="utf-8")
+        test_docs_never_promise_a_ref_install_completes_issue_1050()
+        for paragraph, diagnostic in (
+            (f"Run {syntax} to switch to an unreleased build.", "contains no ccmorph-core binary"),
+            (syntax + no_core + build, "refused install changes nothing"),
+        ):
+            doc.write_text(original + "\n\n" + paragraph + "\n", encoding="utf-8")
+            with pytest.raises(AssertionError, match=diagnostic):
+                test_docs_never_promise_a_ref_install_completes_issue_1050()
+        doc.write_text(original, encoding="utf-8")
