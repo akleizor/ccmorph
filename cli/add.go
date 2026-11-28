@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -200,6 +201,55 @@ var urlHostShape = regexp.MustCompile(`^[a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?(\
 // give: it carries a scheme, or it reads as a dotted host (#727).
 func looksLikeURL(s string) bool {
 	return strings.Contains(s, "://") || urlHostShape.MatchString(s)
+}
+
+// endpointRefusal names an answer that is no endpoint, so the question can be
+// asked again. The answer goes through shownEndpoint: an endpoint can carry a
+// login, and a refusal that echoes one back is a credential in the output
+// (INTENT promise 5).
+func endpointRefusal(v string) string {
+	return fmt.Sprintf("%s is not an endpoint — use http:// or https://, or blank for api.anthropic.com",
+		shownEndpoint(v))
+}
+
+// endpointAnswer is the Endpoint prompt's own verdict on its answer, given
+// before the hidden key is asked for (#1030) so a malformed endpoint re-asks
+// its own question instead of surfacing after the secret was typed for it.
+// Blank is the default the prompt names. A dotted host typed without a scheme —
+// the way the prompt itself shows "api.anthropic.com" and every provider row
+// displays its host, port and path included — takes the https scheme those
+// rows imply, so what the person sees typed and what is probed and saved are
+// one endpoint, spelled in the only form the store accepts. The answer is
+// judged after that normalization, once: whitespace anywhere inside it, a URL
+// the parser refuses, and an authority with no hostname all re-ask here,
+// whether the scheme was typed or inferred. The host is the parser's answer,
+// so `https://:8443/v1` — a port with no host — is refused like the empty
+// authority it is, and a gateway address keeps its port and path whole.
+func endpointAnswer(v string) (endpoint, hint string, ok bool) {
+	switch {
+	case v == "":
+		return "", "", true
+	case strings.HasPrefix(v, "http://"), strings.HasPrefix(v, "https://"):
+		endpoint = v
+	case urlHostShape.MatchString(v):
+		endpoint = "https://" + v
+	default:
+		return "", endpointRefusal(v), false
+	}
+	if credentialSpace(endpoint) {
+		return "", "endpoint contains whitespace — copy it again as one piece", false
+	}
+	u, err := url.Parse(endpoint)
+	if err != nil {
+		// A scheme is not a URL: a port that is no number, an escape that is
+		// no escape — the store would save text nothing can dial, and the
+		// failure would surface only after the key.
+		return "", endpointRefusal(v), false
+	}
+	if u.Hostname() == "" {
+		return "", "an endpoint needs a host — e.g. https://api.example.com, or blank for api.anthropic.com", false
+	}
+	return endpoint, "", true
 }
 
 // rollback removes a half-made profile: private state, its live lock and conf.
@@ -578,11 +628,26 @@ func (l *launcher) addAPIKey(name string) int {
 		// what was just typed folds away with its login hidden, while the
 		// value saved stays exactly what was typed; a blank answer reads
 		// as the default.
-		v, rc := uiInputShown("Endpoint (blank = api.anthropic.com): ", false, shownEndpoint)
-		if rc != 0 {
-			return 1
+		// The answer is judged here, before the hidden key is asked for: a
+		// doomed endpoint re-asks its own question instead of speaking only
+		// after the secret was typed for it (#1030).
+		for {
+			v, rc := uiInputShown("Endpoint (blank = api.anthropic.com): ", false, shownEndpoint)
+			if rc != 0 {
+				return 1
+			}
+			var hint string
+			var ok bool
+			url, hint, ok = endpointAnswer(cleanCredential(v))
+			if ok {
+				break
+			}
+			l.err(hint)
 		}
-		url = cleanCredential(v)
+		// The key prompt names the service through shownEndpoint, as every
+		// status line does: a gateway URL can carry a login or a query secret,
+		// and the endpoint keeps it while the text never shows it (#1030,
+		// INTENT promise 5).
 		prompt += " — " + shownEndpoint(url)
 	}
 	// The endpoint is asked the listing question doctor asks, in this step: a

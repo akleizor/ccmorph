@@ -10720,15 +10720,30 @@ exit 1'
   [[ "$(<"$HOME/.config/ccmorph/pwurl.conf")" == *'base_url=http://user:pw-canary835@gateway.invalid'* ]] \
     || { print -u2 -- 'the saved endpoint must keep the password the endpoint needs'; rc=1 }
   # A credential in the endpoint is judged on its own text, so a leak that drops
-  # the host is still caught. Typed without a scheme the save refuses it, but
-  # only after the check has named it.
-  for url in "http://user:$canary@$host" "http://$host/v1?key=$canary" "user:$canary@$host" "$host/v1?key=$canary"; do
+  # the host is still caught. Typed without a scheme a dotted host now takes the
+  # scheme the prompt shows and reaches the same check, named as redacted as
+  # ever (#1030 moved the refusal to the endpoint prompt, before any key).
+  for url in "http://user:$canary@$host" "http://$host/v1?key=$canary" "$host/v1?key=$canary"; do
     (( ++n ))
     out=$(print -l apikey custom "$url" sk-urlleg-not-real | ccmorph add "canary$n" 2>/dev/null)
     assert_contains "$out" 'listing not allowed (HTTP 403) — the key was not checked' \
       'the check must have run before its output is judged' || rc=1
     assert_not_contains "$out" "$canary" 'no part of a URL credential may reach stdout' || rc=1
   done
+  # Text that is neither a URL nor a host never reaches the key prompt at all:
+  # the endpoint question refuses it, and the refusal names it without its
+  # login (promise 5) — the check's redaction guard is the prompt's too.
+  (( ++n ))
+  out=$(print -l apikey custom "user:$canary@$host" | ccmorph add "canary$n" 2>&1)
+  rc_die=$?
+  (( rc_die != 0 )) || { print -u2 -- 'a non-endpoint must stop the add at its prompt'; rc=1; }
+  assert_contains "$out" '<redacted> is not an endpoint' \
+    'the refusal must name the answer without its login part' || rc=1
+  assert_not_contains "$out" 'API key for' \
+    'the refused endpoint must never reach the key prompt' || rc=1
+  assert_not_contains "$out" "$canary" 'no part of a URL credential may reach stdout' || rc=1
+  [[ ! -e "$HOME/.config/ccmorph/canary$n.conf" ]] \
+    || { print -u2 -- 'a refused endpoint must save nothing'; rc=1; }
   # The blank endpoint is Anthropic's own; a 403 on its listing is the same answer.
   out=$(print -l apikey custom '' sk-native-not-real | ccmorph add natforbid 2>&1)
   assert_contains "$out" 'api.anthropic.com: listing not allowed (HTTP 403) — the key was not checked' \
@@ -10885,6 +10900,185 @@ test_add_wrong_menu_answer_reasks_instead_of_exiting_issue_727() {
     'the unprinted More row must not send a bridged machine to an install step' || rc=1
   assert_contains "$out" 'Added bridged' \
     'the method menu must carry on after the unprinted answer' || rc=1
+  rm -rf "$test_home"
+  return $rc
+}
+
+test_add_endpoint_reasks_at_its_own_prompt_issue_1030() {
+  # Issue #1030 (recurs after #836): the Endpoint question took any text and the
+  # hidden key was pasted for it; only then the doomed endpoint spoke — "did not
+  # answer, so the API key was not checked" over the save's scheme refusal — and
+  # the whole flow was lost after the secret had been typed. The prompt now
+  # judges its own answer: a refusal names it (redacted, as every endpoint line
+  # is), the same question re-asks, and the key is asked once, for the endpoint
+  # that survived.
+  local test_home rc=0 out st
+  test_home=$(mktemp -d)
+  setup_home "$test_home"
+  export _CCMORPH_PROFILE_DIRS="$HOME/.config/ccmorph/profiles"
+  source "$CCMORPH_SOURCE"
+  # The surviving endpoint answers the listing with 200, so the completed add
+  # has no "not checked" line left: one would mean a doomed endpoint reached it.
+  write_curl_mock 'for a do printf "%s\n" "$a" >> "$HOME/curl.argv"; done
+print -- "{\"object\":\"list\",\"data\":[]}"; print -- "__CCMORPH_STATUS__200"'
+  # The issue's three doomed answers, then the dotted host the provider rows
+  # themselves display without a scheme: every refusal re-asks, every answer
+  # given stands, and the wizard finishes.
+  out=$(print -l apikey custom 'not a url' 'ftp://example.invalid' 'javascript:alert(1)' \
+    api.example.invalid sk-gw-not-real | ccmorph add ok1030 2>&1) \
+    || { print -u2 -- 're-asked endpoint answers must not lose the wizard: '"$out"; rc=1; }
+  assert_contains "$out" 'not a url is not an endpoint' \
+    'the first doomed answer must be named at the endpoint prompt' || rc=1
+  assert_contains "$out" 'ftp://example.invalid is not an endpoint' \
+    'a wrong scheme must be named and sent back to the same question' || rc=1
+  assert_contains "$out" 'javascript:alert(1) is not an endpoint' \
+    'a scheme that is no address must be refused the same way' || rc=1
+  assert_contains "$out" 'use http:// or https://' \
+    'the refusal must name the only schemes an endpoint can use' || rc=1
+  assert_not_contains "$out" 'did not answer, so the API key was not checked' \
+    'a doomed endpoint must never reach the key check' || rc=1
+  assert_not_contains "$out" 'endpoint must use http:// or https://' \
+    'the save scheme refusal must never be reached from add' || rc=1
+  # The key is asked once, for the endpoint that survived — and the scheme-less
+  # host carries the scheme the prompt shows: key question and save name the
+  # same endpoint.
+  [[ $(print -r -- "$out" | grep -c 'API key for') -eq 1 ]] \
+    || { print -u2 -- 'the hidden key prompt must be asked exactly once: '"$out"; rc=1; }
+  assert_contains "$out" 'Added ok1030 (API key → https://api.example.invalid)' \
+    'a dotted host takes the scheme the prompt rows show' || rc=1
+  [[ "$(<"$HOME/.config/ccmorph/ok1030.conf")" == *'base_url=https://api.example.invalid'* ]] \
+    || { print -u2 -- 'the saved endpoint must be the host with its scheme'; rc=1; }
+  # No probe runs for a doomed endpoint: the one listing request made is for
+  # the endpoint that survived its own question.
+  [[ $(grep -c '/v1/models' "$HOME/curl.argv") -eq 1 ]] \
+    || { print -u2 -- 'only an accepted endpoint may be probed: '"$(cat "$HOME/curl.argv")"; rc=1; }
+  assert_contains "$(<"$HOME/curl.argv")" 'https://api.example.invalid/v1/models?limit=1000' \
+    'the probe must use the endpoint that survived its prompt' || rc=1
+  # Whitespace inside an endpoint refuses the same way, and the halves are not
+  # echoed back: an endpoint can carry a login (promise 5).
+  out=$(print -l apikey custom 'http://gw .invalid' | ccmorph add wsurl 2>&1)
+  st=$?
+  (( st != 0 )) || { print -u2 -- 'EOF after a refused endpoint must still end the add'; rc=1; }
+  assert_contains "$out" 'endpoint contains whitespace' \
+    'a split endpoint must be named as split' || rc=1
+  assert_not_contains "$out" 'API key for' \
+    'the doomed endpoint must not reach the key prompt' || rc=1
+  [[ ! -e "$HOME/.config/ccmorph/wsurl.conf" ]] \
+    || { print -u2 -- 'a refused endpoint that ends in EOF must save nothing'; rc=1; }
+  # The same answer, judged after the scheme is inferred: a host-only endpoint
+  # whose path holds a Unicode space (U+00A0) passed urlHostShape's ASCII \S,
+  # so add used to take the next line as the key and refuse only at the save.
+  # The check runs on the normalized URL, so both spellings re-ask in place.
+  out=$(print -l apikey custom "api.example.invalid/a"$' '"b" https://api.example.invalid sk-nbsp-not-real \
+    | ccmorph add nbsp 2>&1) \
+    || { print -u2 -- 'an inferred-scheme space must not lose the wizard: '"$out"; rc=1; }
+  assert_contains "$out" 'endpoint contains whitespace' \
+    'a Unicode space inside an inferred-scheme endpoint must be named at its prompt' || rc=1
+  assert_contains "$out" 'API key for nbsp — https://api.example.invalid (hidden)' \
+    'the key must be asked for the corrected endpoint, not the doomed one' || rc=1
+  assert_contains "$out" 'Added nbsp (API key → https://api.example.invalid)' \
+    'the corrected endpoint must complete the add' || rc=1
+  [[ "$(<"$HOME/.config/ccmorph/nbsp.conf")" == *'base_url=https://api.example.invalid'* ]] \
+    || { print -u2 -- 'the saved endpoint must be the corrected one'; rc=1; }
+  out=$(print -l apikey custom "https://api.example.invalid/a"$' '"b" https://api.example.invalid sk-nbsp2-not-real \
+    | ccmorph add nbsp2 2>&1) \
+    || { print -u2 -- 'an explicit-scheme space must not lose the wizard: '"$out"; rc=1; }
+  assert_contains "$out" 'endpoint contains whitespace' \
+    'a Unicode space inside an explicit http(s) endpoint must be named too' || rc=1
+  assert_contains "$out" 'Added nbsp2' 'the explicit-scheme re-ask must complete the add' || rc=1
+  # Padding a paste picks up is cleaned before the answer is judged, with and
+  # without a scheme, so the cleaned endpoint is the one saved and probed.
+  out=$(print -l apikey custom '  api.example.invalid  ' sk-pad-not-real \
+    | ccmorph add pad 2>&1) \
+    || { print -u2 -- 'a space-padded endpoint must be cleaned, not lost: '"$out"; rc=1; }
+  assert_contains "$out" 'Added pad (API key → https://api.example.invalid)' \
+    'a space-padded dotted host must be cleaned to the inferred scheme' || rc=1
+  [[ "$(<"$HOME/.config/ccmorph/pad.conf")" == *'base_url=https://api.example.invalid'* ]] \
+    || { print -u2 -- 'the saved endpoint must be the cleaned one'; rc=1; }
+  out=$(print -l apikey custom '  https://api.example.invalid  ' sk-pad2-not-real \
+    | ccmorph add pad2 2>&1) \
+    || { print -u2 -- 'a space-padded explicit endpoint must be cleaned: '"$out"; rc=1; }
+  assert_contains "$out" 'Added pad2 (API key → https://api.example.invalid)' \
+    'a space-padded explicit endpoint must keep its scheme' || rc=1
+  out=$(print -l apikey custom $' 'api.example.invalid$' ' sk-npad-not-real \
+    | ccmorph add npad 2>&1) \
+    || { print -u2 -- 'a NBSP-padded endpoint must be cleaned: '"$out"; rc=1; }
+  assert_contains "$out" 'Added npad (API key → https://api.example.invalid)' \
+    'a NBSP-padded dotted host must be cleaned to the inferred scheme' || rc=1
+  out=$(print -l apikey custom $' 'https://api.example.invalid$' ' sk-npad2-not-real \
+    | ccmorph add npad2 2>&1) \
+    || { print -u2 -- 'a NBSP-padded explicit endpoint must be cleaned: '"$out"; rc=1; }
+  assert_contains "$out" 'Added npad2 (API key → https://api.example.invalid)' \
+    'a NBSP-padded explicit endpoint must complete with its scheme' || rc=1
+  # A scheme with no host is no endpoint either: the store would save a
+  # base_url nothing can dial, and the failure would surface only after the
+  # key. It re-asks here, and the parser decides what a host is.
+  out=$(print -l apikey custom 'https://' 'https:///v1' https://api.example.invalid sk-nohost-not-real \
+    | ccmorph add nohost 2>&1) \
+    || { print -u2 -- 'a hostless endpoint must not lose the wizard: '"$out"; rc=1; }
+  [[ $(print -r -- "$out" | grep -c 'an endpoint needs a host') -eq 2 ]] \
+    || { print -u2 -- 'each hostless answer must be named and re-asked: '"$out"; rc=1; }
+  assert_contains "$out" 'API key for nohost — https://api.example.invalid (hidden)' \
+    'the key must be asked only for an endpoint with a host' || rc=1
+  assert_contains "$out" 'Added nohost' 'the corrected endpoint must complete the add' || rc=1
+  [[ ! -e "$HOME/.config/ccmorph/nohost.conf" || "$(<"$HOME/.config/ccmorph/nohost.conf")" == *'base_url=https://api.example.invalid'* ]] \
+    || { print -u2 -- 'the saved endpoint must be the corrected one'; rc=1; }
+  # A scheme with no valid URL behind it is no endpoint either: a port that is
+  # no number, an escape that is no escape, and an authority with a port but no
+  # hostname all re-ask before the key, then the corrected one completes.
+  out=$(print -l apikey custom 'https://gateway.invalid:nope/v1' 'https://gateway.invalid/%zz' \
+    'https://:8443/v1' https://api.example.invalid sk-badurl-not-real \
+    | ccmorph add badurl 2>&1) \
+    || { print -u2 -- 'refused URL syntax must not lose the wizard: '"$out"; rc=1; }
+  [[ $(print -r -- "$out" | grep -c 'is not an endpoint') -eq 2 ]] \
+    || { print -u2 -- 'both invalid URLs must be named and re-asked: '"$out"; rc=1; }
+  [[ $(print -r -- "$out" | grep -c 'an endpoint needs a host') -eq 1 ]] \
+    || { print -u2 -- 'a port with no hostname must be named and re-asked: '"$out"; rc=1; }
+  assert_contains "$out" 'API key for badurl — https://api.example.invalid (hidden)' \
+    'the key must be asked only for a URL that parsed with a host' || rc=1
+  assert_contains "$out" 'Added badurl' 'the corrected endpoint must complete the add' || rc=1
+  # A scheme-less gateway keeps its port and path when the scheme is inferred,
+  # and an explicit http:// keeps the scheme it was given; the key prompt, the
+  # probe and the conf all name the corrected endpoint. The mock records argv
+  # so the probe's own URL can be read back.
+  write_curl_mock 'for a do printf "%s\n" "$a" >> "$HOME/curl.argv"; done
+print -- "{\"object\":\"list\",\"data\":[]}"; print -- "__CCMORPH_STATUS__200"'
+  out=$(print -l apikey custom 'gateway.invalid:8443/v1' sk-port-not-real \
+    | ccmorph add port 2>&1) \
+    || { print -u2 -- 'a scheme-less gateway with a port must complete: '"$out"; rc=1; }
+  assert_contains "$out" 'API key for port — https://gateway.invalid:8443/v1 (hidden)' \
+    'the key prompt must name the inferred endpoint whole' || rc=1
+  assert_contains "$out" 'Added port (API key → https://gateway.invalid:8443/v1)' \
+    'the Added line must name the inferred endpoint whole' || rc=1
+  [[ "$(<"$HOME/.config/ccmorph/port.conf")" == *'base_url=https://gateway.invalid:8443/v1'* ]] \
+    || { print -u2 -- 'the conf must keep the inferred endpoint port and path'; rc=1; }
+  assert_contains "$(<"$HOME/curl.argv")" 'https://gateway.invalid:8443/v1/models?limit=1000' \
+    'the probe must use the inferred endpoint, port and path included' || rc=1
+  out=$(print -l apikey custom 'http://plain.invalid' sk-http-not-real \
+    | ccmorph add plain 2>&1) \
+    || { print -u2 -- 'an explicit http:// endpoint must complete: '"$out"; rc=1; }
+  [[ "$(<"$HOME/.config/ccmorph/plain.conf")" == *'base_url=http://plain.invalid'* ]] \
+    || { print -u2 -- 'an explicit http:// endpoint must keep its scheme'; rc=1; }
+  # A refusal never echoes what a rejected URL carries: neither a login nor a
+  # query secret reaches the output (INTENT promise 5).
+  local canary=canary1030secret
+  for url in "ftp://user:${canary}@gateway.invalid/v1" "ftp://gateway.invalid/v1?token=${canary}"; do
+    out=$(print -l apikey custom "$url" | ccmorph add "rej$((++st))" 2>&1)
+    assert_contains "$out" 'is not an endpoint' \
+      'the wrong-scheme URL must be refused at the prompt' || rc=1
+    assert_not_contains "$out" "$canary" 'a refused URL must not echo its secret' || rc=1
+    [[ ! -e "$HOME/.config/ccmorph/rej$st.conf" ]] \
+      || { print -u2 -- 'a refused URL must save nothing'; rc=1; }
+  done
+  # An accepted scheme-less gateway keeps a query secret in the saved endpoint
+  # but never prints it: the key prompt and every status line go through
+  # shownEndpoint.
+  out=$(print -l apikey custom "gateway.invalid/v1?token=${canary}" sk-query-not-real \
+    | ccmorph add query 2>&1) \
+    || { print -u2 -- 'a scheme-less gateway with a query must complete: '"$out"; rc=1; }
+  [[ "$(<"$HOME/.config/ccmorph/query.conf")" == *"base_url=https://gateway.invalid/v1?token=${canary}"* ]] \
+    || { print -u2 -- 'the conf must keep the query the endpoint was given'; rc=1; }
+  assert_not_contains "$out" "$canary" 'the wizard must not print the query secret' || rc=1
   rm -rf "$test_home"
   return $rc
 }
@@ -13267,6 +13461,7 @@ run_test test_add_cleans_a_pasted_credential_issue_254
 run_test test_add_reports_a_rejected_key_in_the_same_step_issue_254
 run_test test_add_flags_a_malformed_token_and_checks_a_shaped_one_issue_254
 run_test test_add_wrong_menu_answer_reasks_instead_of_exiting_issue_727
+run_test test_add_endpoint_reasks_at_its_own_prompt_issue_1030
 run_test test_launch_refuses_a_key_claude_code_was_told_to_refuse
 run_test test_launch_carries_the_persons_answers_to_the_next_profile
 run_test test_hop_lands_on_the_resumed_conversation_not_the_questions

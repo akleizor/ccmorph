@@ -222,3 +222,54 @@ func TestProviderLoginFindsTheCredentialUnderABracketedRoot(t *testing.T) {
 		t.Fatalf("the written credential was not found by the scan: %v", err)
 	}
 }
+
+// The Endpoint prompt's verdict is one rule over the normalized URL (#1030):
+// a typed scheme is kept, a scheme-less gateway address gains https:// without
+// losing its port or path, and anything the parser cannot make an endpoint of
+// re-asks here — before the hidden key is ever asked for.
+func TestEndpointAnswerJudgesTheNormalizedURL(t *testing.T) {
+	for _, c := range []struct {
+		in     string
+		want   string
+		refuse string // a phrase the refusal must carry; "" accepts the answer
+	}{
+		{"", "", ""},
+		{"api.example.invalid", "https://api.example.invalid", ""},
+		{"gateway.invalid:8443/v1", "https://gateway.invalid:8443/v1", ""},
+		{"http://gateway.invalid:8443/v1", "http://gateway.invalid:8443/v1", ""},
+		{"api.example.invalid/a b", "", "contains whitespace"},
+		{"https://api.example.invalid/a b", "", "contains whitespace"},
+		{"https://gateway.invalid:nope/v1", "", "not an endpoint"},
+		{"https://gateway.invalid/%zz", "", "not an endpoint"},
+		{"https://:8443/v1", "", "needs a host"},
+		{"https://", "", "needs a host"},
+		{"https:///v1", "", "needs a host"},
+		{"ftp://gateway.invalid", "", "not an endpoint"},
+	} {
+		got, hint, ok := endpointAnswer(c.in)
+		if c.refuse == "" {
+			if !ok || got != c.want || hint != "" {
+				t.Errorf("endpointAnswer(%q) = %q, %q, %v; want %q, accepted", c.in, got, hint, ok, c.want)
+			}
+			continue
+		}
+		if ok || got != "" || !strings.Contains(hint, c.refuse) {
+			t.Errorf("endpointAnswer(%q) = %q, %q, %v; want a refusal naming %q", c.in, got, hint, ok, c.refuse)
+		}
+	}
+	// A refusal names the answer through shownEndpoint, so a login or a query
+	// secret in it never reaches the output (INTENT promise 5).
+	for _, in := range []string{
+		"ftp://user:canary-secret@gateway.invalid/v1",
+		"ftp://gateway.invalid/v1?token=canary-secret",
+		"user:canary-secret@gateway.invalid",
+	} {
+		_, hint, ok := endpointAnswer(in)
+		if ok {
+			t.Errorf("endpointAnswer(%q) accepted a non-endpoint", in)
+		}
+		if strings.Contains(hint, "canary-secret") {
+			t.Errorf("endpointAnswer(%q) echoed the secret: %q", in, hint)
+		}
+	}
+}
