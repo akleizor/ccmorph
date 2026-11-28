@@ -445,17 +445,129 @@ def test_the_window_marker_is_spelled_once_issue_544():
 # Claude Code's own directory is built on paths.Home through
 # paths.ClaudeHome: a raw $HOME join made it relative to the cwd when HOME
 # was unset (#138), and each copy was one more place to change.
-RAW_CLAUDE_HOME = re.compile(r'Getenv\("HOME"\),\s*"\.claude"')
+#
+# Issue #1065: the one-line call shape was not the whole class, and neither was
+# the exact string ".claude". A `home := os.Getenv("HOME")` two lines above the
+# join left three sites invisible to the pattern, so #1062's all-sites claim went
+# through with them in the tree; with HOME unset they migrated a planted
+# .claude-profiles out of the launch cwd and rewrote a planted plugin index there,
+# absolute installLocation turned into a path relative to the cwd. And a
+# `".claude-profiles"` operand matched nothing, because the pattern demanded the
+# closing quote: a fourth site (doctor's legacy root) sat in plain sight on one
+# line. Both shapes are named now, on the ".claude prefix.
+RAW_CLAUDE_HOME = re.compile(r'Join\(.*"\.claude')
+GETENV_HOME = re.compile(r'os\.Getenv\("HOME"\)')
+# One name on the left of an assignment: the home a $HOME read can flow into.
+ONE_NAME = re.compile(r'\w+')
+
+
+def home_names(line):
+    """Names line assigned the result of a raw $HOME read, index-matched.
+
+    `home, profiles := filepath.Clean(os.Getenv("HOME")), dir` binds home and not
+    profiles, and a read wrapped in a call binds too — a guard that only saw a
+    bare `home := os.Getenv("HOME")` is what let #1065's third site stay plain."""
+    m = re.search(r'([\w.,\s]+?)\s*:?=(?!=)\s*(.+)', line)
+    if not m or not GETENV_HOME.search(m.group(2)):
+        return []
+    names = [n.strip() for n in m.group(1).split(",")]
+    parts = [p.strip() for p in m.group(2).split(",")]
+    return [names[i] for i, part in enumerate(parts) if i < len(names) and GETENV_HOME.search(part)
+            and ONE_NAME.fullmatch(names[i])]
+
+
+def raw_home_claude_joins(text):
+    """Line numbers of text where a raw $HOME names a .claude path.
+
+    Either shape: the join reading $HOME on its own line, or a name that read
+    $HOME joined with ".claude…" or ".claude-profiles…" later in the file
+    (#1065). A comment line never counts."""
+    lines = text.splitlines()
+    hits, assigned = set(), []
+    for n, line in enumerate(lines):
+        if line.lstrip().startswith("//"):
+            continue
+        if GETENV_HOME.search(line) and RAW_CLAUDE_HOME.search(line):
+            hits.add(n + 1)
+        assigned += [(n, name) for name in home_names(line)]
+    for n, name in assigned:
+        joined = re.compile(r'Join\(\s*' + re.escape(name) + r'\s*,\s*"\.claude')
+        for later in range(n + 1, len(lines)):
+            if lines[later].lstrip().startswith("//"):
+                continue
+            if joined.search(lines[later]):
+                hits.add(later + 1)
+                break
+    return sorted(hits)
+
+
+# util/paths owns Home and ClaudeHome: it is where the join is allowed to be.
+PATHS_HOME = ROOT / "util" / "paths"
 
 
 def test_claude_home_is_built_once():
     offenders = [f"{path.relative_to(ROOT)}:{n}"
-                 for path in go_sources() if not path.name.endswith("_test.go")
-                 for n, line in enumerate(path.read_text().splitlines(), 1)
-                 if RAW_CLAUDE_HOME.search(line)]
+                 for path in go_sources()
+                 if not path.name.endswith("_test.go") and PATHS_HOME not in path.parents
+                 for n in raw_home_claude_joins(path.read_text())]
     assert not offenders, (
         "~/.claude is joined on a raw $HOME instead of paths.ClaudeHome: "
         + "; ".join(offenders))
+
+
+# The four sites #1062 left in the tree, each in the shape it had, as it read
+# with HOME unset. Re-introducing any of them fails the guard; the shapes below
+# it — the helper's own definition, a raw read that never names a .claude path,
+# a display path, and a home resolved through the helper — are what the guard
+# must leave alone, or it would refuse the code that fixes the bug.
+RAW_HOME_SITES = {
+    "secureDirs' legacy profile home": '''
+	home := os.Getenv("HOME")
+	legacyHome := filepath.Join(home, ".claude-profiles")
+''',
+    "launch's plugin index read": '''
+	home := os.Getenv("HOME")
+	for _, name := range names {
+		b, err := os.ReadFile(filepath.Join(home, ".claude", "plugins", name))
+''',
+    "the repair's join on a $HOME it was handed empty": '''
+	home := os.Getenv("HOME")
+	plugins := filepath.Join(home, ".claude", "plugins")
+''',
+    "the same read cleaned where it is read": '''
+	home, profileRoot := filepath.Clean(os.Getenv("HOME")), filepath.Clean(profileDir)
+	plugins := filepath.Join(home, ".claude", "plugins")
+''',
+    "doctor's legacy root, spelled on one line": '''
+	legacy := filepath.Join(os.Getenv("HOME"), ".claude-profiles")
+''',
+}
+
+EXEMPT_HOME_SHAPES = {
+    "paths.ClaudeHome's one definition":
+        'func ClaudeHome() string { return filepath.Join(Home(), ".claude") }\n',
+    "paths.InstallerSpelling's raw read, joined on .config":
+        'home := os.Getenv("HOME")\n\t\troot = home + "/.config"\n',
+    "doctor's ZDOTDIR rc path, a display file no one migrates":
+        'zdot = os.Getenv("HOME")\n\trcFile := filepath.Join(zdot, ".zshrc")\n',
+    "doctor's ~ spelling of that path":
+        'if home := os.Getenv("HOME"); home != "" {\n'
+        '\t\tif rest, ok := strings.CutPrefix(rcFile, home+"/"); ok {\n',
+    "a home resolved through the helper":
+        'home := paths.Home()\n\tlegacyHome := filepath.Join(home, ".claude-profiles")\n',
+    "the guard's own comment about a join":
+        '\t// filepath.Join(home, ".claude") was the old shape\n',
+}
+
+
+@pytest.mark.parametrize("shape", sorted(RAW_HOME_SITES))
+def test_a_raw_home_claude_join_is_named_issue_1065(shape):
+    assert raw_home_claude_joins(RAW_HOME_SITES[shape]), f"{shape} is no longer named"
+
+
+@pytest.mark.parametrize("shape", sorted(EXEMPT_HOME_SHAPES))
+def test_a_legitimate_home_shape_stays_exempt_issue_1065(shape):
+    assert raw_home_claude_joins(EXEMPT_HOME_SHAPES[shape]) == [], f"{shape} is named"
 
 
 # Every ps pass goes through util.psCmd, which runs it under a deadline with
