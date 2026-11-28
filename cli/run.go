@@ -663,7 +663,7 @@ func (l *launcher) runLaunch(p *launchPlan) (*relayNext, int) {
 		edge := l.nestedEdgeEnv("CLAUDE_CODE_DISABLE_ADVISOR_TOOL", "CLAUDE_CODE_MODEL_CAPABILITIES")
 		l.stopForeignBridge("", false)
 		if resume != "" {
-			l.carrySession(resume, filepath.Join(os.Getenv("HOME"), ".claude", "projects"))
+			l.carrySession(resume, filepath.Join(paths.ClaudeHome(), "projects"))
 		}
 		rcClaude = l.runClaude(append(edge, common...), args)
 		if l.forwardedSig() != 0 {
@@ -911,7 +911,7 @@ func transcriptStore(p, profileDirs string, configDirs ...string) (string, bool)
 	if err != nil {
 		return "", false
 	}
-	roots := []string{filepath.Join(os.Getenv("HOME"), ".claude", "projects")}
+	roots := []string{filepath.Join(paths.ClaudeHome(), "projects")}
 	for _, dir := range configDirs {
 		if dir != "" {
 			roots = append(roots, filepath.Join(dir, "projects"))
@@ -1011,7 +1011,7 @@ func (l *launcher) sessionFile(id string) (string, bool) {
 	if !sessionID.MatchString(id) {
 		return "", false
 	}
-	stores := []string{filepath.Join(os.Getenv("HOME"), ".claude", "projects")}
+	stores := []string{filepath.Join(paths.ClaudeHome(), "projects")}
 	more, _ := filepath.Glob(filepath.Join(globQuote(l.profileDirs), "*", "projects"))
 	for _, store := range append(stores, more...) {
 		hits, _ := filepath.Glob(filepath.Join(globQuote(store), "*", id+".jsonl"))

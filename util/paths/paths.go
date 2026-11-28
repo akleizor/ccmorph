@@ -73,6 +73,12 @@ func Home() string {
 	return home
 }
 
+// ClaudeHome is Claude Code's own directory over Home, ~/.claude: the
+// canonical settings, the shared projects store and the profile links all
+// hang off it. Built on Home, never on a raw $HOME, so an unset HOME never
+// makes it relative to the cwd (#138).
+func ClaudeHome() string { return filepath.Join(Home(), ".claude") }
+
 // ProfileRoot is where profiles and the registry live, the ladder every
 // builder of that root answers: $CCMORPH_STATE_DIR, else
 // $XDG_CONFIG_HOME/ccmorph, else ~/.config/ccmorph over Home — the ladder

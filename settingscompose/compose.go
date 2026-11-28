@@ -1397,8 +1397,7 @@ func parseArgs(args []string) (*options, string) {
 		return nil, "the following arguments are required: command"
 	}
 	o := &options{command: args[0], saved: "{}"}
-	home, _ := os.UserHomeDir()
-	o.canonical = pyPath(join(home, ".claude", "settings.json"))
+	o.canonical = pyPath(join(paths.ClaudeHome(), "settings.json"))
 	flags := []string{"--canonical", "--mapping", "--usage-hook"}
 	switch o.command {
 	case "materialize":

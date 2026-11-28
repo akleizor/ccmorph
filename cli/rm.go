@@ -192,7 +192,7 @@ func (l *launcher) removeProfileDir(name string) bool {
 	p := filepath.Join(l.profileDirs, name)
 	projects := filepath.Join(p, "projects")
 	if fi, err := os.Lstat(projects); err == nil && fi.IsDir() && !paths.IsSymlink(p) {
-		if !keepHistory(projects, filepath.Join(os.Getenv("HOME"), ".claude", "projects")) {
+		if !keepHistory(projects, filepath.Join(paths.ClaudeHome(), "projects")) {
 			l.err("kept '" + name + "': a session in its history collides with native history")
 			return false
 		}
@@ -215,7 +215,7 @@ func (l *launcher) removeProfileDir(name string) bool {
 	}
 	for _, d := range parked {
 		if fi, err := os.Lstat(d); err == nil && fi.IsDir() {
-			if !keepHistory(d, filepath.Join(os.Getenv("HOME"), ".claude", "projects")) {
+			if !keepHistory(d, filepath.Join(paths.ClaudeHome(), "projects")) {
 				l.err("kept '" + name + "': a session in its history collides with native history")
 				return false
 			}

@@ -436,6 +436,22 @@ def test_the_window_marker_is_spelled_once_issue_544():
         "the window marker's one spelling left util/modelid (#544)")
 
 
+# Claude Code's own directory is built on paths.Home through
+# paths.ClaudeHome: a raw $HOME join made it relative to the cwd when HOME
+# was unset (#138), and each copy was one more place to change.
+RAW_CLAUDE_HOME = re.compile(r'Getenv\("HOME"\),\s*"\.claude"')
+
+
+def test_claude_home_is_built_once():
+    offenders = [f"{path.relative_to(ROOT)}:{n}"
+                 for path in go_sources() if not path.name.endswith("_test.go")
+                 for n, line in enumerate(path.read_text().splitlines(), 1)
+                 if RAW_CLAUDE_HOME.search(line)]
+    assert not offenders, (
+        "~/.claude is joined on a raw $HOME instead of paths.ClaudeHome: "
+        + "; ".join(offenders))
+
+
 # #539: the response-identity Key — id, stamp and turn joined on NULs — was
 # spelled twice, writer and reader (shim's rowIdentity, quota's readRow),
 # both citing #298 and flagged in #514's handoff as belonging to that fix.

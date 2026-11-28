@@ -50,8 +50,7 @@ func edgeRoute(bridge string, port int) string {
 var rcHold = func(ctx context.Context, profile, account string) error {
 	rc, err := exec.LookPath("ccmorph-rc")
 	if err != nil {
-		home, _ := os.UserHomeDir()
-		rc = filepath.Join(home, ".local", "bin", "ccmorph-rc") // where the add-on's install.sh links it
+		rc = filepath.Join(paths.Home(), ".local", "bin", "ccmorph-rc") // where the add-on's install.sh links it
 	}
 	cmd := exec.CommandContext(ctx, rc, profile, "--as", account, "--switch", "--rehand")
 	// The deadline asks ccmorph-rc to stop (it finishes a handoff it is publishing
