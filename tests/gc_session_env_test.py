@@ -51,7 +51,7 @@ def test_delayed_session_env_survives_concurrent_sweep(sweep_dirs, tmp_path, fal
     pid = os.getpid()
     live = aged((run if fallback else tmp) / f"ccmorph-session-env.{pid}.123", b"CANARY=ready\0")
     # Reap the child before asking the sweep to check its pid.
-    with subprocess.Popen(["/bin/true"]) as child:
+    with subprocess.Popen([sys.executable, "-c", ""]) as child:
         dead_pid = child.pid
         assert child.wait(timeout=HANG_TIMEOUT) == 0
     stale = [aged(d / f"ccmorph-session-env.{dead_pid}.456") for d in (tmp, run)]
