@@ -647,3 +647,29 @@ func TestStoreKeepsTwoDifferingLinesOfAKeyItDoesNotWriteIssue1031(t *testing.T) 
 		t.Fatalf("conf:\n%s", got)
 	}
 }
+
+// base_url is the other key the issue's conf carries and the save does not
+// write: an identical repeat is one endpoint and is written once, two differing
+// endpoints stay two lines so the reader still refuses the profile (#1031).
+func TestStoreHealsAnIdenticalBaseUrlRepeatAndKeepsADifferingOneIssue1031(t *testing.T) {
+	s := newStoreEnv(t)
+	s.write(s.conf, storeConf+"\nbase_url=https://old.invalid\nmodel=m\n")
+	s.ok("seed-model-defaults", "model", StoreChange{})
+	got := s.read(s.conf)
+	if countLine(got, "base_url=https://old.invalid") != 1 {
+		t.Fatalf("an identical base_url repeat survived:\n%s", got)
+	}
+	if _, err := profile.Read(filepath.Dir(s.conf), "demo", false, profile.Defaults(), func(string) {}); err != nil {
+		t.Fatal(err)
+	}
+	s.write(s.conf, storeConf+"\nbase_url=http://y\nmodel=m\n")
+	s.ok("seed-model-defaults", "model", StoreChange{})
+	got = s.read(s.conf)
+	if countLine(got, "base_url=https://old.invalid") != 1 || countLine(got, "base_url=http://y") != 1 {
+		t.Fatalf("two differing endpoints were collapsed:\n%s", got)
+	}
+	if _, err := profile.Read(filepath.Dir(s.conf), "demo", false, profile.Defaults(), func(string) {}); err == nil ||
+		!strings.Contains(err.Error(), "duplicate key 'base_url'") {
+		t.Fatalf("the reader accepted two endpoints: %v", err)
+	}
+}
