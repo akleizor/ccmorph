@@ -265,8 +265,18 @@ func TestALoopbackTargetIsDialedDirectly(t *testing.T) {
 		t.Fatal(err)
 	}
 	resp2.Body.Close()
-	if hit := <-upstreamHits; hit != "POST http://api.anthropic.com/v1/messages?beta=true" {
-		t.Fatalf("a remote target stopped chaining the upstream: %q", hit)
+	// The upstream records the hit before it answers, so a response that came
+	// back through the proxy was already recorded: this receive cannot block.
+	// Reading the channel bare let the gate's hostile NO_PROXY='*' pass park
+	// here until go test's package timeout, taking every later test in the
+	// package with it (#958).
+	select {
+	case hit := <-upstreamHits:
+		if hit != "POST http://api.anthropic.com/v1/messages?beta=true" {
+			t.Fatalf("a remote target stopped chaining the upstream: %q", hit)
+		}
+	default:
+		t.Fatal("a remote target stopped chaining the upstream: the upstream proxy was never asked")
 	}
 }
 
