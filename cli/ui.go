@@ -110,6 +110,75 @@ func rowID(row string) string {
 	return row
 }
 
+// rowLabel is a row's name column: the text between the id and its detail,
+// or everything after the id when the row carries no detail. It is the word
+// the list prints beside the row's number — the name a typed answer may
+// repeat (#1029).
+func rowLabel(row string) string {
+	rest := row
+	if i := strings.IndexByte(row, '\t'); i >= 0 {
+		rest = row[i+1:]
+	}
+	if i := strings.IndexByte(rest, '\t'); i >= 0 {
+		return rest[:i]
+	}
+	return rest
+}
+
+// namedRows is a piped menu's name half (#1029): the printed rows an answer
+// names — id or label column whole, case folded, first; failing that, the
+// rows whose id or label carries the answer as part of its name, which is
+// what "type the number or part of the name" promises. The detail column
+// says why a row exists, not what it is called, so it is no name: "gateway"
+// at the sign-in menu stays a wrong answer (#727's rule stands). An empty
+// answer names nothing.
+func namedRows(list []string, answer string) []string {
+	if answer == "" {
+		return nil
+	}
+	needle := strings.ToLower(answer)
+	var exact, part []string
+	for _, r := range list {
+		id, label := strings.ToLower(rowID(r)), strings.ToLower(rowLabel(r))
+		switch {
+		case id == needle || label == needle:
+			exact = append(exact, r)
+		case strings.Contains(id, needle) || strings.Contains(label, needle):
+			part = append(part, r)
+		}
+	}
+	if len(exact) > 0 {
+		return exact
+	}
+	return part
+}
+
+// menuNumber is a piped menu's number half (#1029): the answer is a position
+// in the list the person can see — before and after a narrowing, so a number
+// never names a row the screen does not print under it. Any integer spelling
+// strconv.Atoi reads answers, zero padding included: the loop accepted "01" at
+// the provider menu before the name half existed, and a spelling the loop
+// always took must keep working. Out of range and non-numbers are no answer.
+func menuNumber(answer string, list []string) (int, bool) {
+	n, err := strconv.Atoi(answer)
+	if err != nil || n < 1 || n > len(list) {
+		return 0, false
+	}
+	return n - 1, true
+}
+
+// rowPrinted reports whether id is one of the rows still on screen: a menu
+// narrowed by an ambiguous answer answers only the rows it now prints, so a
+// name the wider list carried is no answer once its row is gone (#1029).
+func rowPrinted(list []string, id string) bool {
+	for _, r := range list {
+		if rowID(r) == id {
+			return true
+		}
+	}
+	return false
+}
+
 func labelWidth(rows []string, display string) int {
 	w := 0
 	for _, r := range rows {
@@ -1367,6 +1436,33 @@ func (k *keys) seqTail(stop <-chan os.Signal) (tail string, done bool, s os.Sign
 	return string(b), false, nil
 }
 
+// digitJump is the native picker's digit key (#1029, folding #1036): the key
+// names the row the piped menu prints that number beside — 1-based, within
+// the rows this list has. A digit no row wears is no jump: the pointer stays
+// where it stood, so a mis-keyed digit can never move the answer, and Enter
+// alone still decides.
+func digitJump(c, rows, selected int) int {
+	if c < '1' || c > '9' {
+		return selected
+	}
+	if n := c - '0'; n <= rows {
+		return n - 1
+	}
+	return selected
+}
+
+// pickerFooter is the native picker's key line: it names every key this loop
+// answers and no key it does not. The digit range is the one the list can
+// take — never a digit no row wears — and Home/End stay named beside it
+// because they reach the rows past nine, which no digit key can (#1029,
+// folding #1036).
+func pickerFooter(rows int) string {
+	if rows < 9 {
+		return fmt.Sprintf("↑/↓ Move · 1-%d Jump · Home/End Jump · Enter Select · Esc Cancel", rows)
+	}
+	return "↑/↓ Move · 1-9 Jump · Home/End Jump · Enter Select · Esc Cancel"
+}
+
 // native is _ccm_ui_native: an inline ↑/↓ menu on the terminal.
 func (t uiTheme) native(prompt string, rows []string, display string) (string, int) {
 	if len(rows) == 0 {
@@ -1456,7 +1552,13 @@ func (t uiTheme) native(prompt string, rows []string, display string) (string, i
 			if hidden {
 				b.WriteString(t.moreLine("↓", len(rows)-last) + "\n")
 			}
-			foot := "↑/↓ Move · Home/End Jump · Enter Select · Esc Cancel"
+			// The footer names every key this loop answers (#1029, folding
+			// #1036): a single digit jumps the pointer to that row, and the
+			// footer states the range it answers — never a digit the list
+			// cannot take. Home/End stay named beside the digits: they reach
+			// rows past nine, which no digit key can, and main advertised
+			// them.
+			foot := pickerFooter(len(rows))
 			if cut && !hidden {
 				foot = fmt.Sprintf("%d/%d · %s", selected+1, len(rows), foot)
 			}
@@ -1487,6 +1589,14 @@ func (t uiTheme) native(prompt string, rows []string, display string) (string, i
 				return
 			case 4:
 				return
+			case '1', '2', '3', '4', '5', '6', '7', '8', '9':
+				// A digit jumps the pointer to the row of that number — the
+				// row the piped list prints the number beside (#1029, folding
+				// #1036): the key that used to do nothing now shows where
+				// Enter would go, and Enter alone still decides. A digit no
+				// row wears leaves the pointer where it stood; rows past nine
+				// stay arrows' and Home/End's.
+				selected = digitJump(c, len(rows), selected)
 			case 27:
 				// A signal read inside the sequence's windows is not part of
 				// the key: it ends the menu with its own exit status, the

@@ -10,7 +10,6 @@ import (
 	"os/signal"
 	"path/filepath"
 	"regexp"
-	"strconv"
 	"strings"
 	"syscall"
 	"unicode"
@@ -70,12 +69,13 @@ func (l *launcher) add(args []string) int {
 		// names the machine's own install step.
 		rows += "\nmore\tMore sign-ins\t" + browserLogins + " (cliproxyapi)"
 	}
-	choice, ok := l.menu("native", "Sign-in method — "+name, rows, func(v string) (string, string, bool) {
-		if _, _, ok := methodAction(v, providers, haveBridge); !ok {
+	choice, ok := l.menu("native", "Sign-in method — "+name, rows, func(v string, list []string) (string, string, bool) {
+		kind, provider, ok := methodAction(v, providers, haveBridge)
+		if !ok || !rowPrinted(list, signInRow(kind, provider)) {
+			// A name the widened menu printed is no answer once a narrowing
+			// has taken its row off the screen: the answer must be the row
+			// the person can see (#1029).
 			return "", "not a sign-in method — enter a number from the list or a name", false
-		}
-		if !haveBridge && v == "4" {
-			v = "more"
 		}
 		return v, "", true
 	})
@@ -121,12 +121,23 @@ const menuTryLimit = 3
 // gateway URL ended the whole wizard. Now an answer that matches no row re-asks
 // — naming the limit it states — so every answer already given stands; the
 // deliberate ways out stay: EOF, and q, the word the numbered menu names.
-func (l *launcher) menu(mode, title, rows string, match func(string) (string, string, bool)) (string, bool) {
+//
+// The list's own words are answers, as the help promises (#1029): a number
+// names the row printed beside it, a name is a printed row's label (or its id)
+// whole case-insensitively, and part of a name answers when exactly one
+// printed row carries it. A fragment several printed rows carry narrows the
+// list to them and renumbers — the numbered menu's rule (#387), now on the
+// pipe too — and a narrowing is not a wrong answer: it consumes no try. The
+// rows still on screen reach the menu through match's second argument, so a
+// hint can price itself against what the person can see and never point at a
+// row no longer printed.
+func (l *launcher) menu(mode, title, rows string, match func(string, []string) (string, string, bool)) (string, bool) {
 	if isTTY(0) {
 		v, rc := uiSelect(mode, title, rows, "")
 		return v, rc == 0
 	}
-	themeFor(2).list(title, splitRows(rows), "labels")
+	list := splitRows(rows)
+	themeFor(2).list(title, list, "labels")
 	for wrong := 1; ; wrong++ {
 		v, rc := uiInput("> ", false)
 		if rc != 0 {
@@ -136,7 +147,30 @@ func (l *launcher) menu(mode, title, rows string, match func(string) (string, st
 			l.err("cancelled")
 			return "", false
 		}
-		answer, hint, ok := match(v)
+		answer, hint, ok := "", "", false
+		if n, numbered := menuNumber(v, list); numbered {
+			// A number is the row it stands beside on the printed list —
+			// before and after a narrowing, so renumbering can never make
+			// a number answer a row it does not name.
+			answer, hint, ok = match(rowID(list[n]), list)
+		}
+		if !ok {
+			answer, hint, ok = match(v, list)
+		}
+		if !ok {
+			matches := namedRows(list, v)
+			switch {
+			case len(matches) == 1:
+				answer, hint, ok = match(rowID(matches[0]), list)
+			case len(matches) > 1:
+				// Several printed rows carry the name: narrow to them and
+				// ask again — the shorter question the answer made (#387).
+				list = matches
+				themeFor(2).list(title, list, "labels")
+				wrong--
+				continue
+			}
+		}
 		if ok {
 			return answer, true
 		}
@@ -147,36 +181,46 @@ func (l *launcher) menu(mode, title, rows string, match func(string) (string, st
 		if hint == "" {
 			hint = "not a menu answer — enter a number from the list or a name"
 		}
-		l.err(fmt.Sprintf("%s (try %d of %d)", hint, wrong, menuTryLimit))
+		left := menuTryLimit - wrong
+		plural := "answers remain"
+		if left == 1 {
+			plural = "answer remains"
+		}
+		l.err(fmt.Sprintf("%s (wrong answer; %d more wrong %s)", hint, left, plural))
 	}
 }
 
-// methodAction is what a sign-in menu answer chooses: the row's kind and, for
-// a browser login, its provider. The old inline switch's order is kept whole —
-// the fixed rows answer first, then a provider number, then a provider name,
-// then a "sub…" prefix — so a name a provider could also answer with keeps
-// resolving to the row it always did. Only the rows the menu prints are
-// answers: the More sign-ins row exists without the bridge alone, so `more`
-// with the bridge on PATH re-asks like any unlisted word (#727).
-func methodAction(choice string, providers []string, haveBridge bool) (kind, provider string, ok bool) {
-	if !haveBridge && choice == "4" {
-		choice = "more"
+// signInRow is the id of the row a method answer names: the fixed rows carry
+// their kind as the id, a browser login carries its provider's (#1029).
+func signInRow(kind, provider string) string {
+	if kind == "provider" {
+		return provider
 	}
+	return kind
+}
+
+// methodAction is what a sign-in menu answer chooses: the row's kind and, for
+// a browser login, its provider. Numbers are no longer its concern: the menu
+// resolves one to the row printed beside it before an answer reaches this
+// (#1029), so what remains is the old inline switch's name half, in its old
+// order — the fixed rows answer first, then a provider name, then a "sub…"
+// prefix — so a name a provider could also answer with keeps resolving to the
+// row it always did. Only the rows the menu prints are answers: the More
+// sign-ins row exists without the bridge alone, so `more` with the bridge on
+// PATH re-asks like any unlisted word (#727).
+func methodAction(choice string, providers []string, haveBridge bool) (kind, provider string, ok bool) {
 	switch choice {
-	case "1", "sub", "subscription":
+	case "sub", "subscription":
 		return "sub", "", true
-	case "2", "token", "oauth_token", "oauth-token":
+	case "token", "oauth_token", "oauth-token":
 		return "token", "", true
-	case "3", "apikey", "api_key", "api-key":
+	case "apikey", "api_key", "api-key":
 		return "apikey", "", true
 	case "more":
 		if haveBridge {
 			return "", "", false
 		}
 		return "more", "", true
-	}
-	if n, err := strconv.Atoi(choice); err == nil && n >= 4 && n < 4+len(providers) {
-		return "provider", providers[n-4], true
 	}
 	for _, p := range providers {
 		if strings.EqualFold(choice, p) {
@@ -525,24 +569,38 @@ func (l *launcher) addAPIKey(name string) int {
 		}
 	}
 	rows = append(rows, "custom\tCustom endpoint\tAnthropic or any gateway URL")
-	pick, ok := l.menu("search", "Provider — "+name, strings.Join(rows, "\n"), func(v string) (string, string, bool) {
-		p := v
-		if n, err := strconv.Atoi(v); err == nil && n >= 1 && n <= len(rows) {
-			p = rowID(rows[n-1])
-		}
-		if p == "anthropic" || p == "custom" {
-			return p, "", true
-		}
-		for _, pr := range presets {
-			if pr[0] == p {
-				return p, "", true
+	pick, ok := l.menu("search", "Provider — "+name, strings.Join(rows, "\n"), func(v string, list []string) (string, string, bool) {
+		p := ""
+		switch v {
+		case "anthropic", "custom":
+			p = v
+		default:
+			for _, pr := range presets {
+				if pr[0] == v {
+					p = v
+				}
 			}
 		}
-		hint := "not a provider — enter a number from the list or a provider id"
+		if p != "" && rowPrinted(list, p) {
+			return p, "", true
+		}
+		hint := "not a provider — enter a number from the list or a name"
 		if looksLikeURL(v) {
 			// The question's own wording invites the URL; the row that takes
-			// one is pointed at by the number it is printed under (#727).
-			hint = fmt.Sprintf("unknown provider '%s' — for your own URL pick %d) Custom endpoint", v, len(rows))
+			// one is pointed at by the number it is printed under (#727) —
+			// or, after a narrowing has taken it off the screen, named with
+			// no number no printed row carries (#1029).
+			pos := 0
+			for i, r := range list {
+				if rowID(r) == "custom" {
+					pos = i + 1
+				}
+			}
+			if pos > 0 {
+				hint = fmt.Sprintf("unknown provider '%s' — for your own URL pick %d) Custom endpoint", v, pos)
+			} else {
+				hint = fmt.Sprintf("unknown provider '%s' — no row on screen takes a URL", v)
+			}
 		}
 		return "", hint, false
 	})

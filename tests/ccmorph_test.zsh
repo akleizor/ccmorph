@@ -10708,7 +10708,7 @@ test_add_wrong_menu_answer_reasks_instead_of_exiting_issue_727() {
     'a URL-shaped provider answer must point at the row that takes a URL' || rc=1
   assert_contains "$out" ') Custom endpoint' \
     'the pointer must name the Custom endpoint row' || rc=1
-  assert_contains "$out" 'try 1 of 3' \
+  assert_contains "$out" '2 more wrong answers remain' \
     'the re-ask must state its try limit' || rc=1
   assert_contains "$out" 'Added t1' \
     'the wizard must finish after the re-ask — a wrong menu answer loses no progress' || rc=1
@@ -10720,7 +10720,7 @@ test_add_wrong_menu_answer_reasks_instead_of_exiting_issue_727() {
     || { print -u2 -- 'free text at the method menu must re-ask, not exit: '"$out"; rc=1; }
   assert_contains "$out" 'not a sign-in method' \
     'a wrong method answer must name what the menu takes' || rc=1
-  assert_contains "$out" 'try 1 of 3' \
+  assert_contains "$out" '2 more wrong answers remain' \
     'the method re-ask must state its try limit' || rc=1
   assert_contains "$out" 'Added m1' 'the method menu must carry on after a wrong answer' || rc=1
   # A stream of wrong answers still ends — at the stated limit, not before:
@@ -10728,7 +10728,7 @@ test_add_wrong_menu_answer_reasks_instead_of_exiting_issue_727() {
   out=$(print -l nope nope nope nope | ccmorph add exhaust 2>&1)
   st=$?
   (( st != 0 )) || { print -u2 -- 'wrong answers past the try limit must end the add'; rc=1; }
-  assert_contains "$out" 'try 2 of 3' \
+  assert_contains "$out" '1 more wrong answer remains' \
     'every answer up to the limit must be re-asked, not the first exit' || rc=1
   [[ ! -e "$HOME/.config/ccmorph/exhaust.conf" ]] \
     || { print -u2 -- 'an exhausted menu must save nothing'; rc=1; }
@@ -10765,12 +10765,161 @@ test_add_wrong_menu_answer_reasks_instead_of_exiting_issue_727() {
   chmod +x "$HOME/bin/cliproxyapi"
   out=$(print -l more 3 anthropic sk-bridge-not-real | ccmorph add bridged 2>&1) \
     || { print -u2 -- 'with the bridge present, "more" must re-ask, not exit: '"$out"; rc=1; }
-  assert_contains "$out" 'try 1 of 3' \
+  assert_contains "$out" '2 more wrong answers remain' \
     'an answer whose row the menu does not print must re-ask' || rc=1
   assert_not_contains "$out" 'needs cliproxyapi' \
     'the unprinted More row must not send a bridged machine to an install step' || rc=1
   assert_contains "$out" 'Added bridged' \
     'the method menu must carry on after the unprinted answer' || rc=1
+  rm -rf "$test_home"
+  return $rc
+}
+
+test_add_menus_answer_with_the_names_they_print_issue_1029() {
+  # Issue #1029 (folding #1036): the piped wizard menus printed "3) API key"
+  # and "18) Custom endpoint" and refused exactly those words — only numbers
+  # and ids the screen never showed passed. An answer is now a row's name:
+  # the label the menu prints, case-insensitive, or part of one; a number
+  # names the row printed beside it, before and after a fragment several
+  # printed rows carry narrows the list to them instead of guessing (which
+  # costs no try); and a wrong answer counts itself plainly — the budget it
+  # leaves, never "try 1 of 3" (attempt 1 of 3?).
+  local test_home rc=0 out st
+  test_home=$(mktemp -d)
+  setup_home "$test_home"
+  export _CCMORPH_PROFILE_DIRS="$HOME/.config/ccmorph/profiles"
+  source "$CCMORPH_SOURCE"
+  command cp "$REPO_ROOT/share/provider-presets.tsv" "$HOME/.config/ccmorph/share/"
+  # The gateway answers nothing: every key is said not-checked and the add saves.
+  write_curl_mock 'exit 1'
+  # The issue's first step, verbatim, carried to the end: the sign-in method
+  # by the label the menu printed it under, then the key.
+  out=$(print -l 'API key' anthropic sk-m-not-real | ccmorph add lab1 2>&1) \
+    || { print -u2 -- 'the printed sign-in label must be an answer: '"$out"; rc=1; }
+  assert_contains "$out" 'Added lab1' 'the label-chosen wizard must complete' || rc=1
+  [[ "$(<"$HOME/.config/ccmorph/lab1.conf")" == *'type=apikey'* ]] \
+    || { print -u2 -- 'the API key label must select the API key method'; rc=1; }
+  # The issue's second step, verbatim: the provider by the label printed
+  # under its number, a blank endpoint, and the key.
+  out=$(print -l apikey 'Custom endpoint' '' sk-c-not-real | ccmorph add lab2 2>&1) \
+    || { print -u2 -- 'the printed provider label must be an answer: '"$out"; rc=1; }
+  assert_contains "$out" 'Added lab2' 'the Custom endpoint label must complete the wizard' || rc=1
+  # Letter case is nobody's answer enemy: the same labels, other spellings.
+  out=$(print -l 'API KEY' 'ANTHROPIC' sk-a-not-real | ccmorph add lab3 2>&1) \
+    || { print -u2 -- 'a label must be accepted whatever its case: '"$out"; rc=1; }
+  assert_contains "$out" 'Added lab3' 'the case-typed labels must complete' || rc=1
+  # Part of the name, as the help promises: one printed row carries it.
+  out=$(print -l api 'ANTHROPIC' sk-p-not-real | ccmorph add lab4 2>&1) \
+    || { print -u2 -- 'part of a name must answer the menu: '"$out"; rc=1; }
+  assert_contains "$out" 'Added lab4' 'the part-of-name wizard must complete' || rc=1
+  # Several printed rows carry the fragment: the list narrows to them and
+  # renumbers, no row is guessed, and the narrowing costs no try — then the
+  # shortened list's own numbers answer.
+  out=$(print -l apikey moonshot 1 sk-n-not-real | ccmorph add nar1 2>&1) \
+    || { print -u2 -- 'a fragment several rows carry must narrow and re-ask: '"$out"; rc=1; }
+  assert_contains "$out" 'Added nar1' 'the narrowed wizard must complete' || rc=1
+  assert_not_contains "$out" 'wrong answer' 'a narrowing is not a wrong answer' || rc=1
+  [[ "$(<"$HOME/.config/ccmorph/nar1.conf")" == *'base_url=https://api.moonshot.ai/anthropic'* ]] \
+    || { print -u2 -- 'the shortened list renumbered: 1) must name the row it prints first'; rc=1; }
+  # A narrowed list answers only the rows it still prints: after "moonshot"
+  # leaves the two Kimi rows, "anthropic" is not on screen and must re-ask —
+  # never select the provider the wider list printed it under — while the
+  # shortened list's own 1 still answers.
+  out=$(print -l apikey moonshot anthropic 1 sk-o-not-real | ccmorph add nar2 2>&1) \
+    || { print -u2 -- 'a name off the narrowed list must re-ask, then the printed number must answer: '"$out"; rc=1; }
+  assert_contains "$out" 'not a provider' \
+    'an off-screen provider name must be refused, not selected' || rc=1
+  assert_contains "$out" '2 more wrong answers remain' \
+    'the off-screen name must count as the first wrong answer' || rc=1
+  assert_contains "$out" 'Added nar2' 'the narrowed wizard must still complete' || rc=1
+  [[ "$(<"$HOME/.config/ccmorph/nar2.conf")" == *'base_url=https://api.moonshot.ai/anthropic'* ]] \
+    || { print -u2 -- 'the narrowed list must select the row it prints, not the off-screen one'; rc=1; }
+  # The same rule at the sign-in menu: after "claude" narrows to the two
+  # Claude rows, a method those rows do not print is no answer.
+  out=$(print -l claude apikey q | ccmorph add nar3 2>&1)
+  st=$?
+  (( st != 0 )) || { print -u2 -- 'a left narrowed sign-in menu must fail'; rc=1; }
+  assert_contains "$out" 'not a sign-in method' \
+    'an off-screen method name must be refused, not selected' || rc=1
+  assert_contains "$out" '2 more wrong answers remain' \
+    'an off-screen method name must count as a wrong answer' || rc=1
+  assert_contains "$out" 'cancelled' 'leaving the narrowed menu still leaves' || rc=1
+  [[ ! -e "$HOME/.config/ccmorph/nar3.conf" ]] \
+    || { print -u2 -- 'an off-screen method must save nothing'; rc=1; }
+  # A URL answer after the narrowing must not point at a Custom row the
+  # shortened list no longer prints: the hint prices itself against the list
+  # on screen, and the shortened list's own number then answers.
+  out=$(print -l apikey moonshot 'https://api.example.invalid' 1 sk-u-not-real | ccmorph add nar4 2>&1) \
+    || { print -u2 -- 'a URL after a narrowing must re-ask, then the printed number must answer: '"$out"; rc=1; }
+  assert_contains "$out" 'no row on screen takes a URL' \
+    'a narrowed list must not point at a row it no longer prints' || rc=1
+  assert_not_contains "$out" 'pick 1) Custom endpoint' \
+    'the URL hint must not name the row the wider list printed' || rc=1
+  assert_contains "$out" 'Added nar4' 'the narrowed wizard must still complete' || rc=1
+  # A number keeps every spelling the loop always took: "01" named the
+  # first provider row (Anthropic) before the name half existed (#1029).
+  out=$(print -l apikey 01 sk-z-not-real | ccmorph add pad1 2>&1) \
+    || { print -u2 -- 'a zero-padded number must still answer the menu: '"$out"; rc=1; }
+  assert_contains "$out" 'API key for pad1 — Anthropic' \
+    '01 must name the row 1 names' || rc=1
+  [[ "$(<"$HOME/.config/ccmorph/pad1.conf")" == *'type=apikey'* ]] \
+    || { print -u2 -- 'the zero-padded number must save the named provider'; rc=1; }
+  # Each miss states the budget still left, not the count already spent: the
+  # first says two remain, the second says one remains.
+  out=$(print -l nope nope nope | ccmorph add bud1 2>&1)
+  st=$?
+  (( st != 0 )) || { print -u2 -- 'wrong answers past the limit must end the add'; rc=1; }
+  assert_contains "$out" '2 more wrong answers remain' \
+    'the first miss must say two remain' || rc=1
+  assert_contains "$out" '1 more wrong answer remains' \
+    'the second miss must say one remains' || rc=1
+  assert_contains "$out" 'too many wrong answers at the menu (3) — cancelled' \
+    'the limit line must stay unchanged' || rc=1
+  [[ ! -e "$HOME/.config/ccmorph/bud1.conf" ]] \
+    || { print -u2 -- 'an exhausted menu must save nothing'; rc=1; }
+  # The same rule at the sign-in menu: "claude" is carried by two printed
+  # rows and names neither, so the list narrows to them; leaving still leaves.
+  out=$(print -l claude q | ccmorph add amb1 2>&1)
+  st=$?
+  (( st != 0 )) || { print -u2 -- 'a left ambiguous menu must fail'; rc=1; }
+  assert_contains "$out" 'Claude account' 'the narrowed list must print its first row' || rc=1
+  assert_not_contains "$out" 'wrong answer' 'a narrowing must not consume a try' || rc=1
+  assert_contains "$out" 'cancelled' 'leaving the narrowed menu still leaves' || rc=1
+  [[ ! -e "$HOME/.config/ccmorph/amb1.conf" ]] \
+    || { print -u2 -- 'a left menu must save nothing'; rc=1; }
+  # The detail column says why a row exists, not what it is called: the #727
+  # wrong-answer loop stands, with the plainly-counted miss.
+  out=$(print -l gateway q | ccmorph add gw1 2>&1)
+  st=$?
+  (( st != 0 )) || { print -u2 -- 'a detail word is not a name'; rc=1; }
+  assert_contains "$out" 'not a sign-in method' \
+    'the wrong answer must still name what the menu takes' || rc=1
+  assert_contains "$out" '2 more wrong answers remain' \
+    'the counter must say what it counts' || rc=1
+  [[ ! -e "$HOME/.config/ccmorph/gw1.conf" ]] \
+    || { print -u2 -- 'a left wrong answer must save nothing'; rc=1; }
+  # The More sign-ins row by its label, as its number already answered it:
+  # without the bridge it names the install step and saves nothing.
+  out=$(print -l 'More sign-ins' | ccmorph add morelbl 2>&1)
+  st=$?
+  (( st != 0 )) || { print -u2 -- 'the More label must stop before any login'; rc=1; }
+  assert_contains "$out" 'needs cliproxyapi' \
+    'the printed More row by its label must still name the bridge' || rc=1
+  [[ ! -e "$HOME/.config/ccmorph/morelbl.conf" ]] \
+    || { print -u2 -- 'the More label must save nothing'; rc=1; }
+  # With the bridge on PATH that row is not printed, so its label is no more
+  # an answer than the bare word was: it re-asks like any unlisted word.
+  printf '%s\n' '#!/bin/sh' \
+    'if [ "$1" = --help ]; then print -- "  -codex-login"; exit 0; fi' \
+    'exit 1' > "$HOME/bin/cliproxyapi"
+  chmod +x "$HOME/bin/cliproxyapi"
+  out=$(print -l 'More sign-ins' q | ccmorph add morebridge 2>&1)
+  st=$?
+  (( st != 0 )) || { print -u2 -- 'the unprinted More label must re-ask, not exit'; rc=1; }
+  assert_contains "$out" '2 more wrong answers remain' \
+    'an answer whose row the menu does not print must re-ask' || rc=1
+  assert_not_contains "$out" 'needs cliproxyapi' \
+    'the unprinted More label must not send a bridged machine to an install step' || rc=1
   rm -rf "$test_home"
   return $rc
 }
@@ -13153,6 +13302,7 @@ run_test test_add_cleans_a_pasted_credential_issue_254
 run_test test_add_reports_a_rejected_key_in_the_same_step_issue_254
 run_test test_add_flags_a_malformed_token_and_checks_a_shaped_one_issue_254
 run_test test_add_wrong_menu_answer_reasks_instead_of_exiting_issue_727
+run_test test_add_menus_answer_with_the_names_they_print_issue_1029
 run_test test_launch_refuses_a_key_claude_code_was_told_to_refuse
 run_test test_launch_carries_the_persons_answers_to_the_next_profile
 run_test test_hop_lands_on_the_resumed_conversation_not_the_questions
