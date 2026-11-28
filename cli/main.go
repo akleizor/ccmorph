@@ -5,6 +5,7 @@ import (
 	"github.com/akleizor/ccmorph/router"
 	"github.com/akleizor/ccmorph/util"
 	"github.com/akleizor/ccmorph/util/paths"
+	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -60,11 +61,23 @@ func (l *launcher) extraArg(verb, word string) int {
 	return 2
 }
 
-// realVerbs is every verb `ccmorph <verb>` answers to, in one list for the typo
-// hint: a word one edit away from exactly one of these is told to run it.
-var realVerbs = []string{"add", "check", "config", "context", "cred", "doctor", "get", "help", "hop",
-	"inspect", "list", "login", "models", "mv", "price", "probe", "profile", "quota", "rm", "router", "run", "set",
-	"uninstall", "update", "use", "version"}
+// unboundedVerbs are the public verbs verbArity does not count: run's words
+// after the profile are Claude Code's, probe's are context-probe's, and
+// router and price parse their own.
+var unboundedVerbs = []string{"price", "probe", "router", "run"}
+
+// retiredVerbs answer only to name the command that replaced them; they stay
+// reserved, never a profile name and never forwarded to Claude Code.
+var retiredVerbs = []string{"start", "default", "show", "creds", "secret", retiredVerb}
+
+// realVerbs is every verb `ccmorph <verb>` answers to, for the typo hint and
+// the help: a word one edit away from exactly one of these is told to run it.
+// It is built from verbArity and unboundedVerbs, so a new verb is listed once.
+var realVerbs = func() []string {
+	v := slices.Concat(slices.Collect(maps.Keys(verbArity)), unboundedVerbs)
+	slices.Sort(v)
+	return v
+}()
 
 // topFlags are the flags ccmorph itself takes before the verb.
 var topFlags = []string{"--help", "--version"}
@@ -551,7 +564,7 @@ func (l *launcher) isClaudeSubcommand(word string) bool {
 	if word == "" || ownVerbs[word] {
 		return false
 	}
-	return slices.Contains(util.ClaudeVerbs(l.claudeHelp()), word)
+	return slices.Contains(claudeVerbs(l.claudeHelp()), word)
 }
 
 // hasClaudeSubcommand is _ccm_launch_has_claude_subcommand: does the first

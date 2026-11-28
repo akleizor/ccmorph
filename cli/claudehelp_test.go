@@ -1,4 +1,4 @@
-package util
+package cli
 
 import (
 	"strings"
@@ -21,11 +21,11 @@ Commands:
 `
 
 func TestClaudeHelpParsers(t *testing.T) {
-	if got := strings.Join(ClaudeVerbs(sampleHelp), " "); got != "mcp m doctor update" {
+	if got := strings.Join(claudeVerbs(sampleHelp), " "); got != "mcp m doctor update" {
 		t.Fatalf("verbs %q", got)
 	}
 	want := map[string]string{"-d": "optional", "--debug": "optional", "-p": "flag", "--print": "flag", "--model": "value", "--system-prompt": "value"}
-	got := ClaudeOptArities(sampleHelp)
+	got := claudeOptArities(sampleHelp)
 	if len(got) != len(want) {
 		t.Fatalf("arities %v", got)
 	}

@@ -25,6 +25,7 @@ import (
 	"time"
 
 	"github.com/akleizor/ccmorph/profile"
+	"github.com/akleizor/ccmorph/settingscompose"
 	"github.com/akleizor/ccmorph/util"
 	"github.com/akleizor/ccmorph/util/paths"
 )
@@ -558,17 +559,11 @@ func (l *launcher) read(name string) (map[string]string, bool) {
 }
 
 func (l *launcher) profileLayer(name string) string {
-	d := filepath.Join(l.profileDirs, name)
-	for _, p := range []string{filepath.Join(d, "settings.profile.json"), filepath.Join(d, "cache", "settings.base.json")} {
-		if paths.Lexists(p) {
-			return filepath.Join(d, "settings.profile.json")
-		}
-	}
-	return filepath.Join(d, "settings.json")
+	return settingscompose.ProfileLayer(filepath.Join(l.profileDirs, name))
 }
 
 func (l *launcher) canonical() string {
-	return filepath.Join(paths.ClaudeHome(), "settings.json")
+	return filepath.Join(paths.ClaudeHome(), settingscompose.GeneratedFile)
 }
 
 // settingsSources is _ccm_settings_sources: canon, policy when present, profile layer.
@@ -760,7 +755,7 @@ func (l *launcher) claudeHelp() string {
 }
 
 // claudeArity is the option arity table the argv walkers read, from claudeHelp.
-func (l *launcher) claudeArity() map[string]string { return util.ClaudeOptArities(l.claudeHelp()) }
+func (l *launcher) claudeArity() map[string]string { return claudeOptArities(l.claudeHelp()) }
 
 // isTTY is whether fd is a terminal; a package var so a test can run the
 // terminal launch's branch without one. The probe is util's, the one the

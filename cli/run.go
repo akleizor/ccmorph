@@ -98,7 +98,7 @@ type launchPlan struct {
 	native     bool   // argv already came from a native re-entry
 	args       []string
 	arity      map[string]string // the option arity table, nil until something needs it
-	flags      util.LaunchFlags
+	flags      launchFlags
 	subcommand bool
 
 	explicit      string // --model as the person typed it
@@ -147,7 +147,7 @@ func (l *launcher) resolveLaunch(name string, interactive, native bool, argv []s
 		if need {
 			table = l.claudeArity()
 		}
-		parsed, err := util.ParseLaunchArgv(argv, table)
+		parsed, err := parseLaunchArgv(argv, table)
 		if err != nil {
 			l.err(err.Error())
 			return nil, 2
@@ -254,7 +254,7 @@ func (l *launcher) resolveLaunch(name string, interactive, native bool, argv []s
 			break
 		}
 	}
-	flags, err := util.ParseLaunchFlags(routed, args, table)
+	flags, err := parseLaunchFlags(routed, args, table)
 	if err != nil {
 		l.err(err.Error())
 		return nil, 2
@@ -273,7 +273,7 @@ func (l *launcher) resolveLaunch(name string, interactive, native bool, argv []s
 	// none, so it judges no route, starts no route process, and passes its
 	// arguments through untouched (INTENT promise 6, #650); the arity-aware
 	// walk (#334) tells both from a flag-shaped option value.
-	opensSession := !subcommand && !util.OpensNoSession(args, table)
+	opensSession := !subcommand && !opensNoSession(args, table)
 
 	// A gateway launch asks its endpoint first, bounded the way doctor is, so
 	// nothing after it can wait on a gateway in silence (#260). Silence ends
@@ -1489,11 +1489,11 @@ func (l *launcher) prelaunch(name string) {
 // the last projection saved (content, not timestamps; a missing copy folds).
 func (l *launcher) foldSettings(name string) bool {
 	dir := filepath.Join(l.profileDirs, name)
-	s, err := os.ReadFile(filepath.Join(dir, "settings.json"))
+	s, err := os.ReadFile(filepath.Join(dir, settingscompose.GeneratedFile))
 	if err != nil {
 		return false
 	}
-	if base, err := os.ReadFile(filepath.Join(dir, "cache", "settings.base.json")); err == nil &&
+	if base, err := os.ReadFile(filepath.Join(dir, settingscompose.BaseFile)); err == nil &&
 		strings.TrimRight(string(s), "\n") == strings.TrimRight(string(base), "\n") {
 		return false
 	}
@@ -1565,7 +1565,7 @@ func (l *launcher) usageHookFor(name, typ, usageRoute string) string {
 // adds this command unchanged. A settings file that cannot be read or parsed
 // carries no hook to keep.
 func (l *launcher) currentUsageHook(name string) string {
-	b, err := os.ReadFile(filepath.Join(l.profileDirs, name, "settings.json"))
+	b, err := os.ReadFile(filepath.Join(l.profileDirs, name, settingscompose.GeneratedFile))
 	if err != nil {
 		return ""
 	}

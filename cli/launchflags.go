@@ -1,17 +1,17 @@
-package util
+package cli
 
 import (
 	"errors"
 	"strings"
 )
 
-// LaunchFlags is what the launch needs from Claude Code's own argv: model (an
+// launchFlags is what the launch needs from Claude Code's own argv: model (an
 // explicit --model), UserModel, SkipModel, AskMissingModel, Resume, Interactive,
 // Relay (--dangerously-skip-permissions, once per occurrence), Effort (an
 // explicit --effort, UserEffort its bare presence), Resuming (any spelling that
 // resumes a conversation instead of starting one) and Drop (the 1-based indexes
 // of `--model -i` pairs to remove, highest first).
-type LaunchFlags struct {
+type launchFlags struct {
 	Model, Resume, Effort                              string
 	UserModel, SkipModel, AskMissingModel, Interactive bool
 	UserEffort, Resuming                               bool
@@ -75,12 +75,12 @@ func stepLaunch(argv []string, arity map[string]string, at int) launchStep {
 	return launchStep{wide: 1}
 }
 
-// ParseLaunchFlags reads argv with the launch flag grammar (stepLaunch): the
+// parseLaunchFlags reads argv with the launch flag grammar (stepLaunch): the
 // spellings the launch parses itself plus the option arity table. Every option
 // steps over the value it owns, so a value that looks like a flag
 // (`--system-prompt --continue`) is never read as one (#334).
-func ParseLaunchFlags(routed bool, argv []string, arity map[string]string) (LaunchFlags, error) {
-	f := LaunchFlags{AskMissingModel: true}
+func parseLaunchFlags(routed bool, argv []string, arity map[string]string) (launchFlags, error) {
+	f := launchFlags{AskMissingModel: true}
 	var drop []int
 	for i := 0; i < len(argv); i++ {
 		s := stepLaunch(argv, arity, i)
@@ -146,13 +146,13 @@ func ParseLaunchFlags(routed bool, argv []string, arity map[string]string) (Laun
 	return f, nil
 }
 
-// OpensNoSession reports an argv whose own options make Claude Code print and
+// opensNoSession reports an argv whose own options make Claude Code print and
 // exit — its version or help — instead of opening a session: the exemption the
 // native key check grants a launch with no session to kill (#255). The walk is
 // stepLaunch's: every option steps over the value it owns, so a flag-shaped
 // value (`--system-prompt --version`) is a value, never a version request
 // (#334). A nil arity table covers the spellings the launch parses itself.
-func OpensNoSession(argv []string, arity map[string]string) bool {
+func opensNoSession(argv []string, arity map[string]string) bool {
 	for i := 0; i < len(argv); i++ {
 		s := stepLaunch(argv, arity, i)
 		switch {

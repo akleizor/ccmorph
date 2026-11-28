@@ -35,10 +35,17 @@ type (
 	obj   = ordjson.Obj
 )
 
+// The profile's settings files. GeneratedFile is the settings.json Claude Code
+// reads, written by compose; LayerFile is the profile's own layer once the
+// profile is composed; BaseFile is the last generated file, the fold's base.
 const (
-	layerFile   = "settings.profile.json"
+	GeneratedFile = "settings.json"
+	LayerFile     = "settings.profile.json"
+	BaseFile      = "cache/settings.base.json"
+)
+
+const (
 	policyFile  = "settings.policy.json"
-	baseFile    = "cache/settings.base.json"
 	pendingFile = "cache/settings.base.pending.json"
 	lockFile    = "cache/.settings.lock"
 	backupsDir  = "backups"
@@ -249,8 +256,8 @@ func settle(profileDir string) {
 	if data == nil {
 		return
 	}
-	if bytes.Equal(readBytes(join(profileDir, "settings.json")), data) {
-		if err := os.Rename(pending, join(profileDir, baseFile)); err != nil {
+	if bytes.Equal(readBytes(join(profileDir, GeneratedFile)), data) {
+		if err := os.Rename(pending, join(profileDir, BaseFile)); err != nil {
 			osFail(err)
 		}
 	} else if err := os.Remove(pending); err != nil {
@@ -262,8 +269,8 @@ func settle(profileDir string) {
 // settings.json's content, never the BOM an editor prefixed the file with.
 func saveBase(profileDir string, data []byte) {
 	data = ordjson.StripBOM(data)
-	if cur := readBytes(join(profileDir, baseFile)); cur == nil || !bytes.Equal(cur, data) {
-		writeBytes(join(profileDir, baseFile), data)
+	if cur := readBytes(join(profileDir, BaseFile)); cur == nil || !bytes.Equal(cur, data) {
+		writeBytes(join(profileDir, BaseFile), data)
 	}
 }
 
@@ -1151,7 +1158,7 @@ func withLiveLock(profileDir string, held *os.File, fn func()) error {
 
 // capture is the profile layer with every edit made to settings.json since it was generated.
 func capture(profileDir string, current, canonical *obj, mapping map[string]bool) *obj {
-	layerPath, basePath := join(profileDir, layerFile), join(profileDir, baseFile)
+	layerPath, basePath := join(profileDir, LayerFile), join(profileDir, BaseFile)
 	if paths.Exists(basePath) || paths.Exists(layerPath) {
 		layer := load(layerPath)
 		if paths.Exists(basePath) && current != nil {
@@ -1190,11 +1197,11 @@ func carriesPolicy(profileDir string, policy *obj) (carried bool) {
 }
 
 func carriesPolicyUnsafe(profileDir string, policy *obj) bool {
-	_, current := readCurrent(join(profileDir, "settings.json"))
+	_, current := readCurrent(join(profileDir, GeneratedFile))
 	if current == nil {
 		return false
 	}
-	layer := load(join(profileDir, layerFile))
+	layer := load(join(profileDir, LayerFile))
 	expected := merge(policy, withoutTombstones(layer), nil)
 	applyTombstones(expected, layer)
 
@@ -1239,7 +1246,7 @@ func carriesPolicyUnsafe(profileDir string, policy *obj) bool {
 }
 
 func refuseSymlinks(profileDir string) {
-	for _, name := range []string{"settings.json", layerFile} {
+	for _, name := range []string{GeneratedFile, LayerFile} {
 		if fi, err := os.Lstat(join(profileDir, name)); err == nil && fi.Mode()&os.ModeSymlink != 0 {
 			valueFail("profile settings must be regular files")
 		}
@@ -1247,7 +1254,7 @@ func refuseSymlinks(profileDir string) {
 }
 
 func saveLayer(profileDir string, layer *obj) {
-	path := join(profileDir, layerFile)
+	path := join(profileDir, LayerFile)
 	if !paths.Exists(path) || !ordjson.Equal(load(path), layer) {
 		writeBytes(path, encode(layer))
 	}
@@ -1258,20 +1265,20 @@ func foldOnly(profileDir, canonicalPath string, mapping map[string]bool, live *o
 	err := withLiveLock(profileDir, live, func() {
 		locked(profileDir, func() {
 			settle(profileDir)
-			raw, current := readCurrent(join(profileDir, "settings.json"))
+			raw, current := readCurrent(join(profileDir, GeneratedFile))
 			layer := capture(profileDir, current, canonicalFor(profileDir, canonicalPath), mapping)
 			if afterRead != nil {
 				afterRead()
 			}
 			saveLayer(profileDir, layer)
 			// The saved copy now matches the layer, so the same edits are never folded twice.
-			if raw != nil && paths.Exists(join(profileDir, baseFile)) {
+			if raw != nil && paths.Exists(join(profileDir, BaseFile)) {
 				saveBase(profileDir, raw)
 			}
 		})
 	})
 	if err != nil {
-		valueFail("%s: %v; the settings layer was left as it was", join(profileDir, layerFile), err)
+		valueFail("%s: %v; the settings layer was left as it was", join(profileDir, LayerFile), err)
 	}
 }
 
@@ -1289,8 +1296,8 @@ func Fold(profileDir, canonicalPath string, mapping map[string]bool, live *os.Fi
 }
 
 func materialize(profileDir, canonicalPath string, saved *obj, strip, mapping map[string]bool, acwArg *string, usageHook string, live *os.File) {
-	target := join(profileDir, "settings.json")
-	basePath, pending := join(profileDir, baseFile), join(profileDir, pendingFile)
+	target := join(profileDir, GeneratedFile)
+	basePath, pending := join(profileDir, BaseFile), join(profileDir, pendingFile)
 	refuseSymlinks(profileDir)
 	done := false
 	// The generated settings.json is written whether or not the profile's live
@@ -1397,7 +1404,7 @@ func parseArgs(args []string) (*options, string) {
 		return nil, "the following arguments are required: command"
 	}
 	o := &options{command: args[0], saved: "{}"}
-	o.canonical = pyPath(join(paths.ClaudeHome(), "settings.json"))
+	o.canonical = pyPath(join(paths.ClaudeHome(), GeneratedFile))
 	flags := []string{"--canonical", "--mapping", "--usage-hook"}
 	switch o.command {
 	case "materialize":
@@ -1541,4 +1548,17 @@ func MergedView(paths []string) *ordjson.Obj {
 		return ordjson.New() // a layer too malformed to merge reads as no settings at all
 	}
 	return data
+}
+
+// ProfileLayer is the file a profile's own settings are edited in: LayerFile
+// once the profile is composed (its layer or its base exists, even as a
+// dangling link, which compose refuses rather than skips), else the
+// GeneratedFile a first run has not split yet.
+func ProfileLayer(profileDir string) string {
+	for _, name := range []string{LayerFile, BaseFile} {
+		if paths.Lexists(join(profileDir, name)) {
+			return join(profileDir, LayerFile)
+		}
+	}
+	return join(profileDir, GeneratedFile)
 }

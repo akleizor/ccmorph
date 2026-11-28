@@ -17,9 +17,9 @@ import (
 func TestMaterializeUnderTheLiveLockKeepsThePolicyAndTheLayer(t *testing.T) {
 	f := newFixture(t)
 	f.linkPolicy(t, sandbox)
-	layer := filepath.Join(f.profile, layerFile)
+	layer := filepath.Join(f.profile, LayerFile)
 	write(t, filepath.Join(f.profile, "settings.json"), `{"theme":"dark"}`)
-	write(t, filepath.Join(f.profile, baseFile), `{}`)
+	write(t, filepath.Join(f.profile, BaseFile), `{}`)
 	write(t, layer, `{"effortLevel":"high"}`)
 	lock := liveLockFor(f.profile)
 	if err := os.MkdirAll(filepath.Dir(lock), 0o700); err != nil {

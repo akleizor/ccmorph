@@ -475,6 +475,23 @@ def test_ps_runs_only_through_ps_cmd():
     assert BARE_PS.search(PS_HOME.read_text()), "psCmd left util/hop.go"
 
 
+# A profile's settings file names and the composed-or-not rule live in
+# settingscompose (GeneratedFile, LayerFile, BaseFile, ProfileLayer); cli and
+# util spelled them out and decided the layer on their own.
+SETTINGS_NAMES = ('"settings.profile.json"', '"settings.base.json"', '"cache", "settings.base.json"')
+SETTINGS_HOME = ROOT / "settingscompose" / "compose.go"
+
+
+def test_the_settings_file_names_are_spelled_once():
+    offenders = [f"{path.relative_to(ROOT)}:{n}"
+                 for path in go_sources()
+                 if not path.name.endswith("_test.go") and path != SETTINGS_HOME
+                 for n, line in enumerate(path.read_text().splitlines(), 1)
+                 if not line.lstrip().startswith("//") and any(m in line for m in SETTINGS_NAMES)]
+    assert not offenders, (
+        "a settings file name is spelled outside settingscompose: " + "; ".join(offenders))
+
+
 # #539: the response-identity Key — id, stamp and turn joined on NULs — was
 # spelled twice, writer and reader (shim's rowIdentity, quota's readRow),
 # both citing #298 and flagged in #514's handoff as belonging to that fix.
