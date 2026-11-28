@@ -447,15 +447,21 @@ func TestRetireRouteNeverSignalsAPidNotRunningTheBridge(t *testing.T) {
 
 // TestMain lets a test run this binary as a route hold: with
 // CCMORPH_TEST_HOLD_USERS set it takes routeHold's hold on that file, whatever
-// its argv says, and runs no test. It is also the fake security the keychain
-// tests put on PATH under the name "security" (GH-830): that dispatch needs
-// both variables, so an operator's env alone runs no test differently.
+// its argv says, and runs no test; started as the core's own
+// `<core> util route-hold <users> …` it runs util's route-hold with its real
+// argv, which is the shape a session's shared-adapter marker takes (#1022).
+// It is also the fake security the keychain tests put on PATH under the name
+// "security" (GH-830): that dispatch needs both variables, so an operator's env
+// alone runs no test differently.
 func TestMain(m *testing.M) {
 	if state := os.Getenv(fakeSecurityEnv); state != "" && filepath.Base(os.Args[0]) == "security" {
 		os.Exit(fakeSecurity(state, os.Args[1:], os.Stdin, os.Stdout, os.Stderr))
 	}
 	if users := os.Getenv("CCMORPH_TEST_HOLD_USERS"); users != "" {
 		os.Exit(routeHold([]string{users}, nil, os.Stdout, io.Discard))
+	}
+	if len(os.Args) > 2 && os.Args[1] == "util" && os.Args[2] == "route-hold" {
+		os.Exit(routeHold(os.Args[3:], os.Stdin, os.Stdout, os.Stderr))
 	}
 	os.Exit(m.Run())
 }
@@ -729,6 +735,125 @@ func TestEndRouteHoldSignalsOnlyTheRouteHold(t *testing.T) {
 		EndRouteHold(strconv.Itoa(h.Process.Pid), users)
 		if !waitGone(h.Process.Pid, 3e9) {
 			t.Fatal("the route's own holder must still be ended")
+		}
+	})
+}
+
+// TestRouteHoldFlag runs the real verb through a core-named copy of this test
+// binary, with CCMORPH_TEST_HOLD_USERS emptied so TestMain takes the argv
+// dispatch: the readiness byte comes before any watch, EOF ends a flagged hold,
+// the unflagged form ignores stdin and still ends on SIGTERM, and a bad or extra
+// operand is a usage error (#1022).
+func TestRouteHoldFlag(t *testing.T) {
+	core := coreCopy(t)
+	users := AdapterBase(t.TempDir(), "gw", "0123456789abcdef") + ".users"
+
+	// start runs the real verb as a child and hands back its stdout and the
+	// result of its Wait; cleanup kills a child a failed subtest left behind.
+	start := func(t *testing.T, stdin io.Reader, args ...string) (*exec.Cmd, io.Reader, <-chan error) {
+		t.Helper()
+		cmd := exec.Command(core, append([]string{"util", "route-hold"}, args...)...)
+		cmd.Env = append(os.Environ(), "CCMORPH_TEST_HOLD_USERS=")
+		cmd.Stdin = stdin
+		stdout, err := cmd.StdoutPipe()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := cmd.Start(); err != nil {
+			t.Fatal(err)
+		}
+		done := make(chan error, 1)
+		go func() { done <- cmd.Wait() }()
+		t.Cleanup(func() {
+			if cmd.ProcessState == nil {
+				cmd.Process.Kill()
+				<-done
+			}
+		})
+		return cmd, stdout, done
+	}
+	readiness := func(t *testing.T, stdout io.Reader) {
+		t.Helper()
+		one := make([]byte, 1)
+		if _, err := io.ReadFull(stdout, one); err != nil || one[0] != '1' {
+			t.Fatalf("the hold must print its readiness byte first: %v %q", err, one)
+		}
+	}
+
+	for _, tc := range []struct {
+		name string
+		args []string
+	}{
+		{"a flagged hold ends on stdin EOF", []string{users, routeHoldExitStdin}},
+		{"a subagent's flagged hold ends on stdin EOF", []string{users, routeHoldExitStdin, routeHoldSubagent}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pr, pw, err := os.Pipe()
+			if err != nil {
+				t.Fatal(err)
+			}
+			cmd, stdout, done := start(t, pr, tc.args...)
+			pr.Close() // the child holds its own read end
+			readiness(t, stdout)
+			if syscall.Kill(cmd.Process.Pid, 0) != nil {
+				t.Fatal("the hold must stay up while its stdin is open")
+			}
+			pw.Close()
+			select {
+			case err := <-done:
+				if err != nil {
+					t.Fatalf("a hold whose stdin reached EOF must exit 0: %v", err)
+				}
+			case <-time.After(10 * time.Second):
+				t.Fatal("the hold did not end when its stdin reached EOF")
+			}
+		})
+	}
+	t.Run("usage", func(t *testing.T) {
+		for _, args := range [][]string{
+			{users, "--bogus"},
+			{users, "a", "b"},
+			{users, routeHoldExitStdin, "--bogus"},
+		} {
+			cmd := exec.Command(core, append([]string{"util", "route-hold"}, args...)...)
+			cmd.Env = append(os.Environ(), "CCMORPH_TEST_HOLD_USERS=")
+			var stderr strings.Builder
+			cmd.Stderr = &stderr
+			err := cmd.Run()
+			var exit *exec.ExitError
+			if !errors.As(err, &exit) || exit.ExitCode() != 2 {
+				t.Errorf("%v: exit %v, want 2", args, err)
+			}
+			if !strings.Contains(stderr.String(), "usage: ccmorph-core util route-hold") {
+				t.Errorf("%v: stderr %q, want the usage line", args, stderr.String())
+			}
+		}
+	})
+	t.Run("an unflagged hold ignores stdin and ends on SIGTERM", func(t *testing.T) {
+		devnull, err := os.Open(os.DevNull)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer devnull.Close()
+		cmd, stdout, done := start(t, devnull, users)
+		readiness(t, stdout)
+		// EOF has long been read; only a process still running can be signalled.
+		time.Sleep(300 * time.Millisecond)
+		select {
+		case err := <-done:
+			t.Fatalf("the unflagged hold must survive stdin EOF, exited %v", err)
+		default:
+		}
+		if err := cmd.Process.Signal(syscall.SIGTERM); err != nil {
+			t.Fatal(err)
+		}
+		select {
+		case err := <-done:
+			if err != nil {
+				t.Fatalf("a signalled hold must exit 0: %v", err)
+			}
+		case <-time.After(10 * time.Second):
+			t.Fatal("the hold did not end on SIGTERM")
 		}
 	})
 }

@@ -5,6 +5,12 @@
 > predecessor — so a reader following an old entry types the command that exists
 > today. The former spelling still dispatches, undocumented.
 
+## Unreleased
+
+### Fixed
+
+- `ccmorph hop` in a session that joined a shared adapter names its profile again and answers `Already on … — nothing changed` (#1022), even when the profile sets `env.CLAUDE_CONFIG_DIR`, and a subagent pick's shared adapter never replaces the profile the session itself runs on.
+
 ## v0.5.42 — 2026-11-28
 
 ### Changed
