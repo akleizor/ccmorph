@@ -165,6 +165,49 @@ func TestGCReapsWhatAKilledLaunchLeaves(t *testing.T) {
 	}
 }
 
+// A helper delayed past the age limit still needs its live launcher's env (#1047).
+func TestGCSessionEnvHolder(t *testing.T) {
+	state, tmp := t.TempDir(), t.TempDir()
+	run := filepath.Join(state, "run")
+	if err := os.Mkdir(run, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	past := time.Now().Add(-2 * time.Minute)
+	for _, dir := range []string{tmp, run} {
+		for _, tc := range []struct {
+			name string
+			aged bool
+			keep bool
+		}{
+			{"ccmorph-session-env." + strconv.Itoa(os.Getpid()) + ".700001", true, true},
+			{"ccmorph-session-env.2147483647.700002", true, false}, // above Linux and macOS PID limits
+			{"ccmorph-session-env.2147483647.700003", false, true},
+			{"ccmorph-session-env.123456", true, false},
+			{"ccmorph-session-env.abc", true, false},
+		} {
+			t.Run(filepath.Base(dir)+"/"+tc.name, func(t *testing.T) {
+				file := filepath.Join(dir, tc.name)
+				if err := os.WriteFile(file, nil, 0o600); err != nil {
+					t.Fatal(err)
+				}
+				if tc.aged {
+					if err := os.Chtimes(file, past, past); err != nil {
+						t.Fatal(err)
+					}
+				}
+				GCStale(state, filepath.Join(state, "profiles"), tmp)
+				_, err := os.Stat(file)
+				if tc.keep && err != nil {
+					t.Fatalf("env file must stay: %v", err)
+				}
+				if !tc.keep && !os.IsNotExist(err) {
+					t.Fatalf("env file must be reaped, stat error: %v", err)
+				}
+			})
+		}
+	}
+}
+
 // A session-end record — the id of a session that just ended, read once by its
 // launcher for the resume hint — is reaped by gc-stale once it is a minute
 // old: a record that old belongs to a launcher that died before it could read

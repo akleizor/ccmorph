@@ -2027,9 +2027,11 @@ func (l *launcher) runClaude(env, args []string) int {
 }
 
 // writeEnvFile writes the NUL-joined launch env to a fresh 0600 file in dir
-// (dir "" is TMPDIR). A value can span lines (ANTHROPIC_CUSTOM_HEADERS).
+// (dir "" is TMPDIR). The name carries this launcher's pid so gc-stale spares
+// the file while the launch lives (#1047). A value can span lines
+// (ANTHROPIC_CUSTOM_HEADERS).
 func writeEnvFile(dir string, env []string) (string, error) {
-	f, err := os.CreateTemp(dir, "ccmorph-session-env.")
+	f, err := os.CreateTemp(dir, fmt.Sprintf("ccmorph-session-env.%d.*", os.Getpid()))
 	if err != nil {
 		return "", err
 	}
