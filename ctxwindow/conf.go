@@ -766,13 +766,6 @@ func (a rank) less(b rank) bool {
 	return a.key < b.key
 }
 
-// ConfLineBefore reports whether key a sorts before key b in the canonical conf
-// layout. A writer that adds keys to a conf it is about to lay out asks this, so
-// the lines it appends land where CanonicalConf will put them and the comments
-// travelling with a line keep their neighbours: appending at the end instead
-// makes the first save move a comment and the next save move it back (#1031).
-func ConfLineBefore(a, b string) bool { return confRank(a).less(confRank(b)) }
-
 // CanonicalConf lays out conf text in canonical order.
 func CanonicalConf(text string) string {
 	type entry struct {

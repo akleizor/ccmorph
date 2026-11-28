@@ -512,13 +512,19 @@ func configStoreRun(a StoreArgs, layerWrite bool, out, errw io.Writer) (int, str
 	}
 	var kept []string
 	seen := map[string]bool{}
+	written := map[string]bool{}
 	for _, line := range lines {
-		k, _, _ := strings.Cut(line, "=")
-		if changes.Has(k) {
-			continue
-		}
-		// The same key=value line twice is one fact (GH-1031); comments and differing lines stay.
-		if strings.Contains(line, "=") && !strings.HasPrefix(line, "#") {
+		k, _, hasValue := strings.Cut(line, "=")
+		if hasValue && !strings.HasPrefix(strings.TrimLeft(line, " \t\r"), "#") {
+			if v, changed := changes.Get(k); changed {
+				// Rewrite a key on its first line so its comment stays with it (#1031).
+				if !written[k] && ordjson.Truthy(v) {
+					kept = append(kept, fmt.Sprintf("%s=%v", k, v))
+					written[k] = true
+				}
+				continue
+			}
+			// Identical lines are one fact; comments and differing lines stay.
 			if seen[line] {
 				continue
 			}
@@ -526,29 +532,23 @@ func configStoreRun(a StoreArgs, layerWrite bool, out, errw io.Writer) (int, str
 		}
 		kept = append(kept, line)
 	}
-	for _, name := range changes.Keys() {
-		v, _ := changes.Get(name)
-		if !ordjson.Truthy(v) {
-			continue
+	// Put new keys before trailing comments so those comments stay at EOF.
+	// CanonicalConf can now sort each key together with its own comments.
+	at := len(kept)
+	for at > 0 {
+		bare := strings.Trim(kept[at-1], " \t\r")
+		if bare != "" && !strings.HasPrefix(bare, "#") {
+			break
 		}
-		line := fmt.Sprintf("%s=%v", name, v)
-		// Land the line where the canonical layout puts it, not at the end: a
-		// comment above a retained line travels with the next key=value line,
-		// so appending past that key's neighbours moves the comment on this
-		// save and back on the next one. The first save is the last one (#1031).
-		at := len(kept)
-		for i := len(kept) - 1; i >= 0; i-- {
-			k, _, ok := strings.Cut(kept[i], "=")
-			if !ok || strings.HasPrefix(kept[i], "#") {
-				continue // a comment or a blank line rides with the key below it
-			}
-			if !ctxwindow.ConfLineBefore(name, k) {
-				break
-			}
-			at = i
-		}
-		kept = slices.Insert(kept, at, line)
+		at--
 	}
+	var added []string
+	for _, name := range changes.Keys() {
+		if v, _ := changes.Get(name); !written[name] && ordjson.Truthy(v) {
+			added = append(added, fmt.Sprintf("%s=%v", name, v))
+		}
+	}
+	kept = slices.Insert(kept, at, added...)
 	proposed := []byte(ctxwindow.CanonicalConf(strings.Join(kept, "\n")))
 
 	type target struct {
