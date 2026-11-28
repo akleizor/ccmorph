@@ -387,3 +387,68 @@ func TestSweepScansTheAuthRootLiterally(t *testing.T) {
 		}
 	}
 }
+
+// adapterArgvOwns proves the adapter by its command's own shape. Both commands
+// that run one are known — the core's `adapter` subcommand and the older
+// `ccmorph-adapter` executable, which the zsh suite's dispatcher exec's without
+// the word `adapter` (#1020) — while a stranger that merely carries the words
+// stays unproven.
+func TestAdapterArgvOwnsTheCommandsAdapterRuns(t *testing.T) {
+	const b = "/state/auth/.gw.adapter.0123456789abcdef"
+	for _, tc := range []struct {
+		name string
+		argv []string
+		want bool
+	}{
+		{"the core's adapter subcommand", []string{"core", "adapter", "gw", "--auto", "--shared", b}, true},
+		{"a script core behind its interpreter", []string{"sh", "core", "adapter", "gw", "--auto", "--model", "m", "--shared", b}, true},
+		{"the old executable run directly", []string{"ccmorph-adapter", "gw", "--auto", "--shared", b}, true},
+		{"the old executable behind a shell", []string{"sh", "/d/ccmorph-adapter", "gw", "--auto", "--shared", b}, true},
+		{"the old executable behind the python host", []string{"python3", "/d/ccmorph-adapter", "gw", "--auto", "--model", "m", "--shared", b}, true},
+		{"a stranger carrying the pair", []string{"sh", "-c", "script", "junk", "--shared", b}, false},
+		{"a stranger carrying the whole command as positionals", []string{"sh", "-c", "script", "junk", "ccmorph-adapter", "gw", "--auto", "--shared", b}, false},
+		{"a word that merely ends in the name", []string{"sh", "/d/xccmorph-adapter", "gw", "--auto", "--shared", b}, false},
+		{"the old executable without --auto", []string{"sh", "/d/ccmorph-adapter", "gw", "--shared", b}, false},
+		{"another key's base", []string{"sh", "/d/ccmorph-adapter", "gw", "--auto", "--shared", b + "0"}, false},
+		{"no base at all", []string{"sh", "/d/ccmorph-adapter", "gw", "--auto"}, false},
+		{"nothing", nil, false},
+	} {
+		if got := adapterArgvOwns(tc.argv, b); got != tc.want {
+			t.Errorf("%s: adapterArgvOwns(%q) = %v, want %v", tc.name, tc.argv, got, tc.want)
+		}
+	}
+}
+
+// The zsh suite's core is a dispatcher that drops the `adapter` word and
+// exec's the sibling ccmorph-adapter, so the adapter's argv names no `adapter`
+// subcommand. The second session must join the first's adapter all the same,
+// and only the last Release may stop it (#1020).
+func TestAStandAloneAdapterIsJoinedAndStoppedByTheLastRelease(t *testing.T) {
+	core := fakeCore(t, `sub=$1; shift; exec "$(dirname "$0")/ccmorph-adapter" "$@"`)
+	standAlone := filepath.Join(filepath.Dir(core), "ccmorph-adapter")
+	if err := os.WriteFile(standAlone, []byte("#!/bin/sh\ntrap 'kill $!; exit 0' TERM; echo PORT=$$; sleep 60 & wait\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	root := t.TempDir()
+	conf := filepath.Join(t.TempDir(), "gw.conf")
+	os.WriteFile(conf, []byte("base_url=x\n"), 0o600)
+	a := acquire(t, core, root, "m", conf)
+	base := AdapterBase(root, "gw", AdapterKey("gw", "m", conf, core))
+	b := acquire(t, core, root, "m", conf)
+	if a.PID == 0 || a.PID != b.PID {
+		t.Fatalf("two sessions, one key: pids %d and %d", a.PID, b.PID)
+	}
+	a.Release() // the session that started it ends first
+	time.Sleep(200 * time.Millisecond)
+	if !alive(a.PID) {
+		t.Fatal("the starter's release stopped an adapter another session holds")
+	}
+	if _, err := os.Stat(base); err != nil {
+		t.Fatal("the record must stay while a session holds the adapter")
+	}
+	b.Release()
+	waitExit(t, a.PID)
+	if _, err := os.Stat(base); err == nil {
+		t.Fatal("the last release must remove the record")
+	}
+}

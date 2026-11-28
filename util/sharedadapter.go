@@ -181,19 +181,22 @@ func adapterOwns(pid int, base string) (yours, known bool) {
 }
 
 // adapterArgvOwns is whether an argv, its argument boundaries kept, is the
-// adapter command for base. What spawnAdapter runs is
-// `<core> adapter <profile> --auto [--model m] --shared <base>` — a core that
-// is a script gets the kernel's interpreter and script path in front of that,
-// so the proof is the command's own shape anywhere in argv: the adapter
-// subcommand followed by its profile operand and its `--auto` operand, and
-// that base as the exact operand of the `--shared` flag. The pair alone proves
-// nothing — an unrelated `sh -c script junk --shared <base>` carries those two
-// words as positionals the script never reads, and a sweep that stopped
-// whatever merely spelled them killed a stranger (#1020).
+// adapter command for base. Two shapes run the adapter, both proven by the
+// command's own operands: spawnAdapter's
+// `<core> adapter <profile> --auto [--model m] --shared <base>`, where a core
+// that is a script gets the kernel's interpreter and script path in front of
+// that, and the older `ccmorph-adapter <profile> ...`, which hop.go's
+// adapterProfile already names and the zsh suite's core dispatcher runs by
+// exec'ing it without the `adapter` word. Either command word is followed by
+// its profile operand and its `--auto` operand, and base must be the exact
+// operand of `--shared` after that span. The pair alone proves nothing — an
+// unrelated `sh -c script junk --shared <base>` carries those two words as
+// positionals the script never reads, and a sweep that stopped whatever
+// merely spelled them killed a stranger (#1020).
 func adapterArgvOwns(argv []string, base string) bool {
 	for i := 0; i+2 < len(argv); i++ {
-		if argv[i] != "adapter" || argv[i+2] != "--auto" {
-			continue // not this command: no subcommand, profile, --auto span
+		if !adapterCommandWord(argv, i) || argv[i+2] != "--auto" {
+			continue // not this command: no adapter word, profile, --auto span
 		}
 		for j := i + 3; j+1 < len(argv); j++ {
 			if argv[j] == "--shared" && argv[j+1] == base {
@@ -203,6 +206,17 @@ func adapterArgvOwns(argv []string, base string) bool {
 		return false
 	}
 	return false
+}
+
+// adapterCommandWord is whether argv[i] is how an adapter command is named.
+// `adapter` is the core's subcommand, at any index behind the core's own path
+// and interpreter. `ccmorph-adapter`, the older build's executable, is the
+// program itself, so only the first or second word can be it — index 0 run
+// directly, index 1 behind one interpreter. The bound keeps a stranger's
+// script from promoting a later positional into the command: the base name
+// must be exactly ccmorph-adapter, never a word that merely ends in it.
+func adapterCommandWord(argv []string, i int) bool {
+	return argv[i] == "adapter" || i <= 1 && filepath.Base(argv[i]) == "ccmorph-adapter"
 }
 
 func parseAdapterRecord(raw string) (pid int, port string, ok bool) {
