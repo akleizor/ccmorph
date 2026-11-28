@@ -134,6 +134,9 @@ To switch a running session, type in the Claude Code prompt:
 /ccmorph:hop personal
 ```
 
+Sessions you start with `ccmorph run` automatically get `/ccmorph:hop` and a
+status line naming the profile; plain `claude` does not.
+
 `! ccmorph hop personal` does the same. `/ccmorph:hop` with no profile names the
 other profiles to choose from; hopping to the profile the session already runs
 on changes nothing.
