@@ -568,7 +568,7 @@ func (l *launcher) profileLayer(name string) string {
 }
 
 func (l *launcher) canonical() string {
-	return filepath.Join(os.Getenv("HOME"), ".claude", "settings.json")
+	return filepath.Join(paths.ClaudeHome(), "settings.json")
 }
 
 // settingsSources is _ccm_settings_sources: canon, policy when present, profile layer.

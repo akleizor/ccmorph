@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"github.com/akleizor/ccmorph/agentproxy"
 	"github.com/akleizor/ccmorph/util/modelid"
+	"github.com/akleizor/ccmorph/util/paths"
 	"io"
 	"os"
 	"path/filepath"
@@ -30,8 +31,7 @@ func portableAgent(agent string) bool {
 	}
 	home := os.Getenv("CLAUDE_CONFIG_DIR")
 	if home == "" {
-		h, _ := os.UserHomeDir()
-		home = filepath.Join(h, ".claude")
+		home = paths.ClaudeHome()
 	}
 	cwd, _ := os.Getwd()
 	for _, dir := range []string{filepath.Join(home, "agents"), filepath.Join(cwd, ".claude", "agents")} {

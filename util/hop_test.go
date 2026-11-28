@@ -41,14 +41,14 @@ func TestHopTargetIsTheFirstNonShellBelowTheRelay(t *testing.T) {
 		103: {ppid: 102, comm: "-zsh"},
 		104: {ppid: 103, comm: "zsh"},
 	}
-	if got := findHopTarget(tab, 100, 104); got != 102 {
+	if got := HopTarget(tab, 100, 104); got != 102 {
 		t.Fatalf("got %d, want 102", got)
 	}
-	if got := findHopTarget(tab, 999, 104); got != 0 {
+	if got := HopTarget(tab, 999, 104); got != 0 {
 		t.Fatalf("an unrelated relay must find nothing, got %d", got)
 	}
 	tab[101] = psRow{ppid: 100, comm: "node"}
-	if got := findHopTarget(tab, 100, 104); got != 101 {
+	if got := HopTarget(tab, 100, 104); got != 101 {
 		t.Fatalf("nearest the relay wins, got %d", got)
 	}
 }
@@ -64,16 +64,16 @@ func TestHopTargetSkipsTheCoreLauncher(t *testing.T) {
 		203: {ppid: 202, comm: "zsh"},
 		204: {ppid: 203, comm: "-zsh"},
 	}
-	if got := findHopTarget(tab, 200, 204); got != 202 {
+	if got := HopTarget(tab, 200, 204); got != 202 {
 		t.Fatalf("the hop must end claude (202), not the core launcher, got %d", got)
 	}
 	tab[202] = psRow{ppid: 201, comm: "claude"}
-	if got := findHopTarget(tab, 200, 204); got != 202 {
+	if got := HopTarget(tab, 200, 204); got != 202 {
 		t.Fatalf("a bare comm name must be found too, got %d", got)
 	}
 	// A core with nothing but shells below it has no Claude Code to end.
 	tab[202] = psRow{ppid: 201, comm: "sh"}
-	if got := findHopTarget(tab, 200, 204); got != 0 {
+	if got := HopTarget(tab, 200, 204); got != 0 {
 		t.Fatalf("shells below the core are not a hop target, got %d", got)
 	}
 }
@@ -102,7 +102,7 @@ func TestSessionAdapterFindsAReparentedAdapter(t *testing.T) {
 		{10, ""},
 		{400, ""},
 	} {
-		if got := findSessionAdapter(tab, c.launcher); got != c.want {
+		if got := SessionAdapter(tab, c.launcher); got != c.want {
 			t.Fatalf("launcher %d: got %q, want %q", c.launcher, got, c.want)
 		}
 	}
@@ -126,7 +126,7 @@ func TestSessionAdapterFindsAReparentedProcessInTheRealTable(t *testing.T) {
 	if !ok || r.ppid == launcher {
 		t.Fatalf("the process must be in the table under a parent that is not the launcher, got %+v", r)
 	}
-	if got := findSessionAdapter(tab, launcher); got != "gw" {
+	if got := SessionAdapter(tab, launcher); got != "gw" {
 		t.Fatalf("a reparented adapter must be found by its --parent-pid, got %q (row %+v)", got, r)
 	}
 }
@@ -143,7 +143,7 @@ func TestSessionAdapterFindsAJoinedAdaptersHold(t *testing.T) {
 	if r := tab[hold.Process.Pid]; r.ppid != os.Getpid() {
 		t.Fatalf("the fixture hold must be this launcher's child, got %+v", r)
 	}
-	if got := findSessionAdapter(tab, os.Getpid()); got != "gw" {
+	if got := SessionAdapter(tab, os.Getpid()); got != "gw" {
 		t.Fatalf("a joined adapter must be named by its session hold, got %q", got)
 	}
 }
@@ -158,7 +158,7 @@ func TestAnAdapterInArgvWinsOverAHold(t *testing.T) {
 	for _, pid := range []int{2, 1 << 30} {
 		tab := processTable()
 		tab[pid] = psRow{ppid: os.Getpid(), args: "/x/libexec/ccmorph-core adapter eq --auto"}
-		if got := findSessionAdapter(tab, os.Getpid()); got != "eq" {
+		if got := SessionAdapter(tab, os.Getpid()); got != "eq" {
 			t.Fatalf("adapter at pid %d: got %q, want the adapter's profile", pid, got)
 		}
 	}
@@ -175,11 +175,11 @@ func TestASubagentHoldNamesNoProfile(t *testing.T) {
 	eq := AdapterBase(dir, "eq", "fedcba9876543210") + ".users"
 	// The subagent's hold is the older child: the ascending walk meets it first.
 	holdProc(t, core, eq, core, "util", "route-hold", eq, routeHoldExitStdin, routeHoldSubagent)
-	if got := findSessionAdapter(processTable(), os.Getpid()); got != "" {
+	if got := SessionAdapter(processTable(), os.Getpid()); got != "" {
 		t.Fatalf("a subagent pick's hold must name no session profile, got %q", got)
 	}
 	holdProc(t, core, gw, core, "util", "route-hold", gw, routeHoldExitStdin)
-	if got := findSessionAdapter(processTable(), os.Getpid()); got != "gw" {
+	if got := SessionAdapter(processTable(), os.Getpid()); got != "gw" {
 		t.Fatalf("the session's own hold must win over a subagent's, got %q", got)
 	}
 }
@@ -192,19 +192,19 @@ func TestARouteHoldIsNotASessionMarker(t *testing.T) {
 	core := coreCopy(t)
 	users := AdapterBase(dir, "gw", "0123456789abcdef") + ".users"
 	holdProc(t, core, users, core, "util", "route-hold", users)
-	if got := findSessionAdapter(processTable(), os.Getpid()); got != "" {
+	if got := SessionAdapter(processTable(), os.Getpid()); got != "" {
 		t.Fatalf("a route hold is not a session's adapter, got %q", got)
 	}
 	other := filepath.Join(dir, "route.users")
 	holdProc(t, core, other, core, "util", "route-hold", other, routeHoldExitStdin)
-	if got := findSessionAdapter(processTable(), os.Getpid()); got != "" {
+	if got := SessionAdapter(processTable(), os.Getpid()); got != "" {
 		t.Fatalf("a hold on a file no adapter owns names no profile, got %q", got)
 	}
 	// A subagent's flagged hold on an adapter-shaped path is still not this
 	// session's profile.
 	agent := AdapterBase(dir, "eq", "0123456789abcdef") + ".users"
 	holdProc(t, core, agent, core, "util", "route-hold", agent, routeHoldExitStdin, routeHoldSubagent)
-	if got := findSessionAdapter(processTable(), os.Getpid()); got != "" {
+	if got := SessionAdapter(processTable(), os.Getpid()); got != "" {
 		t.Fatalf("a subagent's hold is not a session marker, got %q", got)
 	}
 }

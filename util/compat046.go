@@ -61,7 +61,7 @@ func v046BridgeStop(args []string, _ io.Reader, _, _ io.Writer) int {
 	if pid < 0 {
 		pid = 0
 	}
-	BridgeStop(pid, args[1], args[2])
+	bridgeStop(pid, args[1], args[2])
 	return 0
 }
 
@@ -101,7 +101,7 @@ func v046FetchListing(args []string, in io.Reader, out, errw io.Writer) int {
 		io.WriteString(out, body)
 		return 0
 	case "models":
-		body, ok := ModelsListing(base, key, errw)
+		body, ok := modelsListing(base, key, errw)
 		if !ok {
 			return 1
 		}

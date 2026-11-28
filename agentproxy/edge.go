@@ -305,7 +305,7 @@ func (e *Edge) Take(profile string) {
 // key never waits on disk for a request (one session's profile may be idle for
 // days); --switch waits for this and removes a handoff no proxy took.
 func (e *Edge) takeAll() {
-	files, _ := filepath.Glob(filepath.Join(globQuote(e.bridge()), "switch-*.json"))
+	files, _ := filepath.Glob(filepath.Join(paths.GlobQuote(e.bridge()), "switch-*.json"))
 	for _, f := range files {
 		name := filepath.Base(f)
 		e.Take(name[len("switch-") : len(name)-len(".json")])

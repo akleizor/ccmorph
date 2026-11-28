@@ -335,7 +335,7 @@ func (l *launcher) secureDirs() bool {
 		}
 		os.Chmod(active, 0o600)
 	}
-	confs, _ := filepath.Glob(filepath.Join(globQuote(l.dir), "*.conf"))
+	confs, _ := filepath.Glob(filepath.Join(paths.GlobQuote(l.dir), "*.conf"))
 	for _, c := range confs {
 		if paths.IsSymlink(c) {
 			return false

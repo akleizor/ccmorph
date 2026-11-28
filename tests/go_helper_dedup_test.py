@@ -149,6 +149,12 @@ CONSOLIDATED = {
     "lockWithin": "paths.FlockWithin",
     "sameLockInode": "paths.LockNamesPath",
     "lockNamesFile": "paths.LockNamesPath",
+    # Forwarders that only renamed the call: the exported name is the
+    # implementation now (Deep Modules: no pure pass-through layer).
+    "globQuote": "paths.GlobQuote",
+    "findHopTarget": "util.HopTarget",
+    "findSessionAdapter": "util.SessionAdapter",
+    "procStartToken": "util.ProcStartToken",
 }
 # #422's predicates, and #520's strays beside them: the unexported spelling a
 # new copy would take, mapped to the exported definition that replaced it.
@@ -434,6 +440,39 @@ def test_the_window_marker_is_spelled_once_issue_544():
         "modelid.TrimWindowMarker (#544): " + "; ".join(offenders))
     assert '"[1m]"' in TIER_DEFINITION.read_text(), (
         "the window marker's one spelling left util/modelid (#544)")
+
+
+# Claude Code's own directory is built on paths.Home through
+# paths.ClaudeHome: a raw $HOME join made it relative to the cwd when HOME
+# was unset (#138), and each copy was one more place to change.
+RAW_CLAUDE_HOME = re.compile(r'Getenv\("HOME"\),\s*"\.claude"')
+
+
+def test_claude_home_is_built_once():
+    offenders = [f"{path.relative_to(ROOT)}:{n}"
+                 for path in go_sources() if not path.name.endswith("_test.go")
+                 for n, line in enumerate(path.read_text().splitlines(), 1)
+                 if RAW_CLAUDE_HOME.search(line)]
+    assert not offenders, (
+        "~/.claude is joined on a raw $HOME instead of paths.ClaudeHome: "
+        + "; ".join(offenders))
+
+
+# Every ps pass goes through util.psCmd, which runs it under a deadline with
+# a WaitDelay (REVIEW.md kind 16): a bare exec of ps can hang the launch on a
+# stalled table read, as util/gc.go's overlay scan could.
+BARE_PS = re.compile(r'exec\.Command(?:Context)?\([^)]*"ps"')
+PS_HOME = ROOT / "util" / "hop.go"
+
+
+def test_ps_runs_only_through_ps_cmd():
+    offenders = [f"{path.relative_to(ROOT)}:{n}"
+                 for path in go_sources()
+                 if not path.name.endswith("_test.go") and path != PS_HOME
+                 for n, line in enumerate(path.read_text().splitlines(), 1)
+                 if BARE_PS.search(line)]
+    assert not offenders, "ps is run outside util.psCmd: " + "; ".join(offenders)
+    assert BARE_PS.search(PS_HOME.read_text()), "psCmd left util/hop.go"
 
 
 # #539: the response-identity Key — id, stamp and turn joined on NULs — was

@@ -500,14 +500,14 @@ func ReadPrivateRegular(path string, limit int64, owner int) ([]byte, bool) {
 	return readRegular(path, limit, owner, true)
 }
 
-// ReadOwnedRegular reads path only when it names a regular file this account
+// readOwnedRegular reads path only when it names a regular file this account
 // owns. The transcript reader follows ccmorph's own carried-session link to
 // the file first, and requires the bytes to be this account's; it does not
 // apply a shared-TMPDIR record's group/other policy, because a transcript's
 // bits are the writer's umask and Claude Code may leave them group-writable —
 // such a transcript is still a valid conversation for a hop or a model
 // recovery (#410). The read is whole: a conversation's length is the user's.
-func ReadOwnedRegular(path string, limit int64, owner int) ([]byte, bool) {
+func readOwnedRegular(path string, limit int64, owner int) ([]byte, bool) {
 	return readRegular(path, limit, owner, false)
 }
 
@@ -548,7 +548,7 @@ func transcript(path string) (recs []*ordjson.Obj, ok bool) {
 	if err != nil {
 		return nil, false
 	}
-	b, ok := ReadOwnedRegular(real, 0, os.Geteuid())
+	b, ok := readOwnedRegular(real, 0, os.Geteuid())
 	if !ok || !utf8.Valid(b) {
 		return nil, false
 	}

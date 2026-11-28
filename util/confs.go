@@ -8,11 +8,6 @@ import (
 	"github.com/akleizor/ccmorph/util/paths"
 )
 
-// GlobQuote is paths.GlobQuote under the name #848's callers already use.
-func GlobQuote(path string) string {
-	return paths.GlobQuote(path)
-}
-
 // ValidConfs is every profile conf under dir, in Glob order: one whose name
 // profile's one gate accepts, and not a symlink. The keychain migration and
 // the router's profile list shared this rule as two hand-written copies under
@@ -21,7 +16,7 @@ func GlobQuote(path string) string {
 // confNames is deliberately unfiltered (zsh parity, cli/verbs.go) and keeps
 // its own scan.
 func ValidConfs(dir string) []string {
-	confs, _ := filepath.Glob(filepath.Join(GlobQuote(dir), "*.conf"))
+	confs, _ := filepath.Glob(filepath.Join(paths.GlobQuote(dir), "*.conf"))
 	var valid []string
 	for _, conf := range confs {
 		if profile.ValidProfileName(strings.TrimSuffix(filepath.Base(conf), ".conf")) && !paths.IsSymlink(conf) {

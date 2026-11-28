@@ -663,7 +663,7 @@ func (l *launcher) runLaunch(p *launchPlan) (*relayNext, int) {
 		edge := l.nestedEdgeEnv("CLAUDE_CODE_DISABLE_ADVISOR_TOOL", "CLAUDE_CODE_MODEL_CAPABILITIES")
 		l.stopForeignBridge("", false)
 		if resume != "" {
-			l.carrySession(resume, filepath.Join(os.Getenv("HOME"), ".claude", "projects"))
+			l.carrySession(resume, filepath.Join(paths.ClaudeHome(), "projects"))
 		}
 		rcClaude = l.runClaude(append(edge, common...), args)
 		if l.forwardedSig() != 0 {
@@ -911,14 +911,14 @@ func transcriptStore(p, profileDirs string, configDirs ...string) (string, bool)
 	if err != nil {
 		return "", false
 	}
-	roots := []string{filepath.Join(os.Getenv("HOME"), ".claude", "projects")}
+	roots := []string{filepath.Join(paths.ClaudeHome(), "projects")}
 	for _, dir := range configDirs {
 		if dir != "" {
 			roots = append(roots, filepath.Join(dir, "projects"))
 		}
 	}
 	if profileDirs != "" {
-		more, _ := filepath.Glob(filepath.Join(globQuote(profileDirs), "*", "projects"))
+		more, _ := filepath.Glob(filepath.Join(paths.GlobQuote(profileDirs), "*", "projects"))
 		roots = append(roots, more...)
 	}
 	var spelled, resolved []string
@@ -1011,10 +1011,10 @@ func (l *launcher) sessionFile(id string) (string, bool) {
 	if !sessionID.MatchString(id) {
 		return "", false
 	}
-	stores := []string{filepath.Join(os.Getenv("HOME"), ".claude", "projects")}
-	more, _ := filepath.Glob(filepath.Join(globQuote(l.profileDirs), "*", "projects"))
+	stores := []string{filepath.Join(paths.ClaudeHome(), "projects")}
+	more, _ := filepath.Glob(filepath.Join(paths.GlobQuote(l.profileDirs), "*", "projects"))
 	for _, store := range append(stores, more...) {
-		hits, _ := filepath.Glob(filepath.Join(globQuote(store), "*", id+".jsonl"))
+		hits, _ := filepath.Glob(filepath.Join(paths.GlobQuote(store), "*", id+".jsonl"))
 		for _, h := range hits {
 			if paths.IsFile(h) {
 				if real, err := filepath.EvalSymlinks(h); err == nil {
@@ -1049,7 +1049,7 @@ func (l *launcher) carrySession(id, dst string) bool {
 	if !sessionID.MatchString(id) {
 		return false
 	}
-	hits, _ := filepath.Glob(filepath.Join(globQuote(dst), "*", id+".jsonl"))
+	hits, _ := filepath.Glob(filepath.Join(paths.GlobQuote(dst), "*", id+".jsonl"))
 	for _, h := range hits {
 		if paths.IsFile(h) {
 			return true
@@ -1122,10 +1122,10 @@ func (l *launcher) migrateContextState() bool {
 // credential that secureDirs moves to the Keychain.
 func (l *launcher) legacyContextState() (legacy []string, plain bool) {
 	legacy = []string{filepath.Join(l.dir, "model-registry"), filepath.Join(l.dir, "model-registry.conf")}
-	g1, _ := filepath.Glob(filepath.Join(globQuote(l.profileDirs), "*", "cache", "context-window"))
-	g2, _ := filepath.Glob(filepath.Join(globQuote(l.dir), "*.conf.lock"))
+	g1, _ := filepath.Glob(filepath.Join(paths.GlobQuote(l.profileDirs), "*", "cache", "context-window"))
+	g2, _ := filepath.Glob(filepath.Join(paths.GlobQuote(l.dir), "*.conf.lock"))
 	legacy = append(append(legacy, g1...), g2...)
-	confs, _ := filepath.Glob(filepath.Join(globQuote(l.dir), "*.conf"))
+	confs, _ := filepath.Glob(filepath.Join(paths.GlobQuote(l.dir), "*.conf"))
 	inline := false
 	for _, c := range confs {
 		b, err := os.ReadFile(c)

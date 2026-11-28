@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/akleizor/ccmorph/util"
+	"github.com/akleizor/ccmorph/util/paths"
 )
 
 // The Remote Control edge's routing rules that need no request: which words
@@ -140,7 +141,7 @@ func routeEdge(edges, route string) map[string]any {
 // to: how many edges under edges serve, and that edge's record with its start
 // added, or nil unless exactly one serves and its start can be read.
 func switchEdge(edges string) (int, map[string]any) {
-	files, _ := filepath.Glob(filepath.Join(globQuote(edges), "*.json"))
+	files, _ := filepath.Glob(filepath.Join(paths.GlobQuote(edges), "*.json"))
 	sort.Strings(files)
 	var live []map[string]any
 	for _, f := range files {
@@ -157,10 +158,6 @@ func switchEdge(edges string) (int, map[string]any) {
 	}
 	live[0]["started"] = started
 	return 1, live[0]
-}
-
-func globQuote(s string) string {
-	return strings.NewReplacer(`\`, `\\`, `*`, `\*`, `?`, `\?`, `[`, `\[`).Replace(s)
 }
 
 // lostEndpointNote is the per-turn line when the word names profile target and

@@ -40,7 +40,7 @@ func legacyPath(state string) string {
 
 func cacheRoot() string {
 	root := filepath.Join(StateDir(), "profiles")
-	home, _ := os.UserHomeDir()
+	home := paths.Home()
 	// Pre-migration cache recovery: an unmoved legacy home (a real directory,
 	// not the link the move leaves) still holds the caches, even once a
 	// models.json has created the new root.

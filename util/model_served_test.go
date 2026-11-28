@@ -188,7 +188,7 @@ func TestContextServedGivesUpOnARouteThatDoesNotAnswer(t *testing.T) {
 		// definition, so apart from the bounds each names, the warning's ask
 		// is the models verb's own.
 		full := fakeCurl(t, `{"data":[{"id":"served-target"}]}`, 0)
-		ModelsListing("http://proxy.invalid", "k", io.Discard)
+		modelsListing("http://proxy.invalid", "k", io.Discard)
 		modelsLine, _ := os.ReadFile(filepath.Join(full, "request"))
 		bounded := fakeCurl(t, `{"data":[{"id":"served-target"}]}`, 0)
 		if got := ContextServed("served-target", "apikey", "http://proxy.invalid", "", "k"); got != ServedYes {
@@ -261,7 +261,7 @@ func TestModelServedWordsUncertaintyAndAbsence(t *testing.T) {
 func TestModelsListingRequestShape(t *testing.T) {
 	dir := fakeCurl(t, `{"has_more":true,"data":[{"id":"alpha-chat"}]}`, 0)
 	t.Setenv("HTTPS_PROXY", "http://127.0.0.1:47999")
-	body, ok := ModelsListing("http://proxy.invalid", "test-key", io.Discard)
+	body, ok := modelsListing("http://proxy.invalid", "test-key", io.Discard)
 	if !ok || !strings.Contains(body, "alpha-chat") {
 		t.Fatalf("the first catalogue page must stay usable: %q %v", body, ok)
 	}
@@ -323,7 +323,7 @@ func TestModelsAnswerReadsTheRefusedStatus(t *testing.T) {
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			fakeCurl(t, catalogue, c.rc, c.stderr)
-			body, status, ok := ModelsAnswer("http://proxy.invalid", "test-key")
+			body, status, _, ok := modelsAnswer("http://proxy.invalid", "test-key", false)
 			if ok != c.wantOK || status != c.wantStatus {
 				t.Fatalf("got ok=%v status=%d, want ok=%v status=%d", ok, status, c.wantOK, c.wantStatus)
 			}

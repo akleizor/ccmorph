@@ -112,7 +112,7 @@ func TestBridgeStartsServesAndStops(t *testing.T) {
 	}
 	pid, _ := strconv.Atoi(got["PID"])
 	pgid, groupErr := syscall.Getpgid(pid)
-	BridgeStop(pid, got["TMPDIR"], auth)
+	bridgeStop(pid, got["TMPDIR"], auth)
 	if resp.Header.Get("X-Job-Tagged") != "" {
 		t.Error("a shared bridge must not carry the starter's dispatch cleanup tag")
 	}

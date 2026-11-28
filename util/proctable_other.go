@@ -13,12 +13,15 @@ import (
 // sysctlProcessTable is the darwin reader; elsewhere the ps path is all there is.
 func sysctlProcessTable() (map[int]psRow, bool) { return nil, false }
 
-// procStartToken is the kernel's own mark of when pid started: this boot's id
+// ProcStartToken is the kernel's own mark of when pid started: this boot's id
 // and the process's start in clock ticks since boot, field 22 of
 // /proc/<pid>/stat. Ticks since boot are not the wall clock, so no step moves
 // them, and the boot id keeps a later boot's process apart. False where there
 // is no /proc, or the pid is gone.
-func procStartToken(pid int) (string, bool) {
+// Exported for a caller that keeps a process's identity in a record (#926:
+// the rc-hosts supervisor stamps its pid and start into hosted.json), which
+// must treat false as "not this process", never as a match.
+func ProcStartToken(pid int) (string, bool) {
 	boot, err := os.ReadFile("/proc/sys/kernel/random/boot_id")
 	if err != nil {
 		return "", false

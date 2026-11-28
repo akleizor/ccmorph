@@ -69,7 +69,7 @@ func ProfileOK(profiles, name string) bool {
 		return false
 	}
 	dir := filepath.Join(profiles, name)
-	canonical := filepath.Join(os.Getenv("HOME"), ".claude")
+	canonical := paths.ClaudeHome()
 	if !paths.IsDir(dir) || paths.IsSymlink(dir) || !paths.IsFile(dir+"/config.json") || !paths.IsFile(dir+"/.claude.json") {
 		return false
 	}
@@ -125,7 +125,7 @@ func setupProfile(profiles, name, kind string, withoutLive bool, log, errf func(
 		return false
 	}
 	dir := filepath.Join(profiles, name)
-	canonical := filepath.Join(os.Getenv("HOME"), ".claude")
+	canonical := paths.ClaudeHome()
 	if paths.IsSymlink(dir) || paths.IsSymlink(canonical) {
 		return fail("refusing symlinked profile state for '" + name + "'")
 	}
