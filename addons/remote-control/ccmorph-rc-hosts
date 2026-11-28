@@ -2402,12 +2402,13 @@ class Switcher:
         self.base = None                 # the switch word when this ask arrived, or as we last wrote it
         self.done = self.recorded()      # the ask last applied, across supervisor restarts
         self.proc = None                 # the one running `ccmorph-rc <word> --switch`
-        self.proc_for = None             # (its word, whether it applies the ask)
+        self.proc_for = None             # (its word, whether it applies the ask, re-hand context)
         self.backoff, self.next_try = BACKOFF_MIN, 0.0
         self.said = None                 # the last waiting line, logged once
         self.failure = None              # the last OSError logged, so a lasting refusal is one line
         self.failed = {}                 # word -> sequence number of its last failed re-hand
         self.fails = 0                   # the last number handed out of self.failed
+        self.not_held = {}               # word -> (edge identity, word set) at re-hand dispatch
 
     @staticmethod
     def recorded():
@@ -2451,9 +2452,9 @@ class Switcher:
             self.base = live_word()
             self.backoff, self.next_try, self.said = BACKOFF_MIN, 0.0, None
 
-    def dispatch(self, word: str, applies: bool) -> None:
+    def dispatch(self, word: str, applies: bool, context=None) -> None:
         self.proc = start_switch(word, rehand=not applies)   # a re-hand writes no word
-        self.proc_for, self.said = (word, applies), None
+        self.proc_for, self.said = (word, applies, context), None
         log(f"inference: bringing up {word}" if applies else f"inference: re-handing {word} to the live edge")
 
     def edge(self):
@@ -2479,7 +2480,7 @@ class Switcher:
             rc = self.proc.poll()
             if rc is None:
                 return                       # one child at a time; nothing writes meanwhile
-            word, applies = self.proc_for
+            word, applies, context = self.proc_for
             self.proc = self.proc_for = None
             if rc == 0:
                 self.backoff, self.next_try = BACKOFF_MIN, 0.0
@@ -2496,8 +2497,9 @@ class Switcher:
                     self.fails += 1
                     self.failed[word] = self.fails
                 if not applies and rc == REHAND_NOT_HELD:
-                    # The word has its own live edge now: nothing here to hand over,
-                    # and no backoff to hold the other words up.
+                    # Park this word for the context it was tried in, without
+                    # backing off other words or marking a replacement edge.
+                    self.not_held[word] = context
                     self.fail(("rehand-not-held", word), f"inference: {word} has its own edge; not re-handed here")
                 else:
                     self.next_try = now + self.backoff
@@ -2602,15 +2604,21 @@ class Switcher:
         words = [w for w in words if w not in (None, "account", "route") and SWITCH_WORD.fullmatch(w)]
         self.failed = {w: k for w, k in self.failed.items() if w in words}   # a word nothing names keeps no mark
         if not words:
+            self.not_held.clear()
             return
         n, edge = self.edge()
         if n != 1:
+            self.not_held.clear()
             self.say(f"inference: {words[0]} waits for exactly one live shared edge to hold its endpoint ({n} live)")
             return
+        identity = (int(edge["pid"]), str(edge["started"])) if edge is not None else None
+        context = (identity, frozenset(words))
+        self.not_held = {w: tried for w, tried in self.not_held.items() if tried == context}
         unheld = [w for w in words if not self.held(w, edge)]
         self.failed = {w: k for w, k in self.failed.items() if w in unheld}
+        unheld = [w for w in unheld if w not in self.not_held]
         if unheld:
-            self.dispatch(min(unheld, key=lambda w: self.failed.get(w, 0)), applies=False)
+            self.dispatch(min(unheld, key=lambda w: self.failed.get(w, 0)), applies=False, context=context)
             return
         self.said = None
 

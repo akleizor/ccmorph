@@ -5863,6 +5863,61 @@ def test_a_rehand_of_a_word_with_its_own_edge_sets_no_backoff(tmp_path, monkeypa
     assert m.REHAND_NOT_HELD == m.rc_module().REHAND_NOT_HELD   # one exit code on both sides
 
 
+@pytest.mark.parametrize("change", ["new-pid", "reused-pid", "word-set"])
+def test_a_rehand_waits_for_a_change_when_the_word_has_its_own_edge(tmp_path, monkeypatch, change):
+    m = load()
+    w = _switcher(m, monkeypatch, tmp_path)
+    w.edge("gateway", 500)
+    m.INFERENCE.write_text("route\n")
+    m.WANTED.write_text("\n")
+    m.SESSION_WORDS.mkdir(parents=True, exist_ok=True)
+    (m.SESSION_WORDS / "cse_a").write_text("gateway\n")
+    sw = m.Switcher()
+    sw.reload("")
+
+    sw.tend(0)
+    assert [c.word for c in w.children] == ["gateway"]
+    w.finish(w.children[-1], rc_=m.REHAND_NOT_HELD)
+    for t in range(1, 7):
+        if t == 3:
+            (m.SESSION_WORDS / "cse_b").write_text("gateway\n")  # same set, another session
+        sw.tend(t)
+        if w.children[-1].rc is None:
+            w.finish(w.children[-1], rc_=m.REHAND_NOT_HELD)
+    assert [c.word for c in w.children] == ["gateway"]
+
+    expected = ["gateway"]
+    t = 7
+    if change == "word-set":
+        (m.SESSION_WORDS / "cse_b").write_text("kimi\n")
+        sw.tend(t)
+        expected.append("kimi")  # the new word is not delayed
+        assert [c.word for c in w.children] == expected
+        w.finish(w.children[-1])
+        t += 1
+    else:
+        w.edge("gateway", None)
+        w.edge("gateway", 500 if change == "reused-pid" else 501)
+    sw.tend(t)
+    expected.append("gateway")
+    assert [c.word for c in w.children] == expected
+    w.finish(w.children[-1], rc_=m.REHAND_NOT_HELD)
+    if change == "reused-pid":
+        # The just-finished child answered for the old start, not the replacement.
+        w.edge("gateway", 500)
+        t += 1
+        sw.tend(t)
+        expected.append("gateway")
+        assert [c.word for c in w.children] == expected
+        w.finish(w.children[-1], rc_=m.REHAND_NOT_HELD)
+    for tick in range(t + 1, t + 7):
+        sw.tend(tick)
+        if w.children[-1].rc is None:
+            w.finish(w.children[-1], rc_=m.REHAND_NOT_HELD)
+    assert [c.word for c in w.children] == expected
+    assert all(c.rehand for c in w.children)
+
+
 def test_a_word_whose_rehand_fails_and_is_named_no_more_forgets_its_mark(tmp_path, monkeypatch):
     """GH-977 edge: when a session's file is gone, no word names that profile any
     more; its failure mark must not outlive it and order a later word behind a
