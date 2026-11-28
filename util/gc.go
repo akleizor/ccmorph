@@ -2,7 +2,9 @@ package util
 
 import (
 	"context"
+	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -192,18 +194,24 @@ func GCStale(state, profiles, tmp string) {
 		}
 	}
 	var live *string
-	unknown := false // the one scan stalled: nothing can be told apart
+	unknown := false // the one scan cannot be told apart from no scan: it stalled, or its table was discarded
 	alive := func(needle string) bool {
 		if unknown {
 			return true
 		}
 		if live == nil {
-			// A failed scan names nothing, so every old candidate is reaped.
-			// A scan past gcScanLimit cannot tell, so it keeps them all for
-			// the next launch: the launch never waits on a stalled ps (#185).
+			// A scan whose ps exited non-zero is a failed scan: it names
+			// nothing, so every old candidate is reaped. A scan past
+			// gcScanLimit cannot tell, so it keeps them all for the next
+			// launch: the launch never waits on a stalled ps (#185). A
+			// pass that exits 0 but pays the pipe grace — a grandchild
+			// inherited the pipe, psCmd's own #449 — cannot tell either:
+			// exec returns ErrWaitDelay and discards the complete table
+			// with it, and reaping on information thrown away would take
+			// a live session's overlay and bridge dir (#1064).
 			ctx, cancel := context.WithTimeout(context.Background(), gcScanLimit)
 			raw, err := psCmd(ctx, "-axo", "command").Output()
-			unknown = ctx.Err() != nil
+			unknown = ctx.Err() != nil || errors.Is(err, exec.ErrWaitDelay)
 			cancel()
 			if unknown {
 				return true
