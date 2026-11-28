@@ -23,9 +23,12 @@ sh -c "$(curl -fsSL https://github.com/akleizor/ccmorph/releases/latest/download
 Run outside a source tree, `install.sh` downloads the latest release's tarball
 (`releases/latest/download/ccmorph.tar.gz`), unpacks it in a temporary directory
 and runs the installer from there, which then takes the same path as a clone.
-`CCMORPH_REF` (a branch or tag) downloads the GitHub archive of that ref instead
-— `CCMORPH_REF=main` for unreleased code — and `CCMORPH_INSTALL_URL` replaces
-the whole tarball URL, for a mirror or a local file. It needs `curl` or `wget`,
+`CCMORPH_REF` (a branch or tag) selects the GitHub archive of that ref instead
+— `CCMORPH_REF=main` for unreleased code — but a ref archive contains no
+ccmorph-core binary, so the installer refuses the download before anything
+changes: nothing was changed. To run unreleased code, clone and build
+(`make shim`). `CCMORPH_INSTALL_URL` replaces the whole tarball URL, for a
+mirror or a local file. It needs `curl` or `wget`,
 and `tar`. The `sh -c "$(curl ...)"` form keeps
 the terminal attached, so the optional installs below can ask. Piping
 (`curl -fsSL ... | sh`) works too, but there is no terminal to ask on: the
@@ -101,8 +104,12 @@ terminal, where the bare command works.
 
 A Homebrew install updates with `brew upgrade ccmorph` and is removed with
 `brew uninstall ccmorph`; `ccmorph update` and `ccmorph uninstall` refuse it and
-print those commands. For a clone or one-liner install, run `ccmorph update` (the latest release; add a branch or tag to install that instead), run the
-one-line install again, or run `./install.sh` from a fresh clone. A git checkout is
+print those commands. For a clone or one-liner install, run `ccmorph update` (the latest release); a branch or tag
+may be named (`ccmorph update main`), but that archive contains no ccmorph-core
+binary, so it is refused before anything changes: nothing was changed; the way to
+unreleased code is a clone built with `make shim`. You can also run the
+one-line install again, or run `./install.sh` from a clone that has run
+`make shim`. A git checkout is
 updated with git; `ccmorph update` refuses it. **It is an
 update, not a reinstall** — it replaces the runtime scripts and never touches
 your profiles' settings or credentials, or `local.sh`.
