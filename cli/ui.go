@@ -110,6 +110,49 @@ func rowID(row string) string {
 	return row
 }
 
+// rowLabel is a row's name column: the text between the id and its detail,
+// or everything after the id when the row carries no detail. It is the word
+// the list prints beside the row's number — the name a typed answer may
+// repeat (#1029).
+func rowLabel(row string) string {
+	rest := row
+	if i := strings.IndexByte(row, '\t'); i >= 0 {
+		rest = row[i+1:]
+	}
+	if i := strings.IndexByte(rest, '\t'); i >= 0 {
+		return rest[:i]
+	}
+	return rest
+}
+
+// namedRows is a piped menu's name half (#1029): the printed rows an answer
+// names — id or label column whole, case folded, first; failing that, the
+// rows whose id or label carries the answer as part of its name, which is
+// what "type the number or part of the name" promises. The detail column
+// says why a row exists, not what it is called, so it is no name: "gateway"
+// at the sign-in menu stays a wrong answer (#727's rule stands). An empty
+// answer names nothing.
+func namedRows(list []string, answer string) []string {
+	if answer == "" {
+		return nil
+	}
+	needle := strings.ToLower(answer)
+	var exact, part []string
+	for _, r := range list {
+		id, label := strings.ToLower(rowID(r)), strings.ToLower(rowLabel(r))
+		switch {
+		case id == needle || label == needle:
+			exact = append(exact, r)
+		case strings.Contains(id, needle) || strings.Contains(label, needle):
+			part = append(part, r)
+		}
+	}
+	if len(exact) > 0 {
+		return exact
+	}
+	return part
+}
+
 func labelWidth(rows []string, display string) int {
 	w := 0
 	for _, r := range rows {
@@ -1456,7 +1499,14 @@ func (t uiTheme) native(prompt string, rows []string, display string) (string, i
 			if hidden {
 				b.WriteString(t.moreLine("↓", len(rows)-last) + "\n")
 			}
-			foot := "↑/↓ Move · Home/End Jump · Enter Select · Esc Cancel"
+			// The footer names every key this loop answers (#1029, folding
+			// #1036): a single digit jumps the pointer to that row, and the
+			// footer states the range it answers — never a digit the list
+			// cannot take. Home/End stay for lists longer than nine rows.
+			foot := "↑/↓ Move · 1-9 Jump · Enter Select · Esc Cancel"
+			if len(rows) < 9 {
+				foot = fmt.Sprintf("↑/↓ Move · 1-%d Jump · Enter Select · Esc Cancel", len(rows))
+			}
 			if cut && !hidden {
 				foot = fmt.Sprintf("%d/%d · %s", selected+1, len(rows), foot)
 			}
@@ -1487,6 +1537,16 @@ func (t uiTheme) native(prompt string, rows []string, display string) (string, i
 				return
 			case 4:
 				return
+			case '1', '2', '3', '4', '5', '6', '7', '8', '9':
+				// A digit jumps the pointer to the row of that number — the
+				// row the piped list prints the number beside (#1029, folding
+				// #1036): the key that used to do nothing now shows where
+				// Enter would go, and Enter alone still decides. A digit no
+				// row wears leaves the pointer where it stood; rows past nine
+				// stay arrows' and Home/End's.
+				if n := int(c - '0'); n <= len(rows) {
+					selected = n - 1
+				}
 			case 27:
 				// A signal read inside the sequence's windows is not part of
 				// the key: it ends the menu with its own exit status, the

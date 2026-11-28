@@ -1844,6 +1844,55 @@ class PickerTTYTest(unittest.TestCase):
         self.assertEqual(self.field('eps', 'base_url'), 'https://api.deepseek.com/anthropic')
         self.assertIn('Next: ccmorph run eps', out)
 
+    def test_sign_in_picker_answers_typed_digits_issue_1029(self):
+        """#1029, folding #1036: a digit typed at the real-terminal sign-in
+        picker names the row the piped menu prints it beside — it moves the
+        pointer, and Enter takes the row the digit named. The issue's typed
+        '3\\r' must reach the API-key path, not the default Claude account's
+        silent browser sign-in (whose captured `claude logout` answers only
+        "logout failed"); the footer names the keys the picker answers."""
+        env = self.env()
+        stub = self.tmp / 'bin' / 'claude'
+        stub.write_text('#!/bin/sh\nexit 1\n')  # any account sign-in fails here
+        stub.chmod(0o755)
+        rc, out, missed = run_pty('ccmorph add pick3', env, [
+            (b'Sign-in method', b'3\r'),   # jump to "API key", Enter takes it
+            (b'Select [1-', b'1\n'),       # the numbered provider list: Anthropic
+            (b'API key for', b'sk-digit-not-real\n'),
+        ])
+        self.assertIsNone(missed, out)
+        self.assertEqual(rc, 0, out)
+        self.assertNotIn('logout failed', out)  # the default row was never taken
+        self.assertIn('pick3 (API key', out)
+        self.assertEqual(self.field('pick3', 'type'), 'apikey')
+        self.assertNotIn('sk-digit-not-real', out)
+        # The footer names the keys the picker answers, with the digit range
+        # this list actually has (no bridge: four rows).
+        self.assertRegex(out, r'1-4 Jump · Enter Select')
+
+    def test_sign_in_digit_out_of_range_moves_nothing_issue_1029(self):
+        """#1029: a digit no printed row wears leaves the picker exactly where
+        it stood — an unanswerable key selects nothing, cancels nothing, and
+        signs no one in. Pressed after an in-range digit it must not undo that
+        jump either: '3' then '9' then Enter takes the row 3 named (API key),
+        while on the unfixed picker, which ignores both digits, the same keys
+        take the default row and its browser sign-in."""
+        env = self.env()
+        stub = self.tmp / 'bin' / 'claude'
+        stub.write_text('#!/bin/sh\nexit 1\n')  # any account sign-in fails here
+        stub.chmod(0o755)
+        rc, out, missed = run_pty('ccmorph add pick9', env, [
+            (b'Sign-in method', b'39\r'),  # 3 jumps to API key; 9 wears no row
+            (b'Select [1-', b'q\n'),       # stop here: reaching this prompt is the proof
+        ])
+        self.assertIsNone(missed, out)
+        self.assertNotEqual(rc, 0)  # q cancelled the provider menu
+        # The receipt names the row 3 moved to, and no account sign-in ran:
+        # the out-of-range digit left the pointer where the jump put it.
+        self.assertIn('Sign-in method — pick9 › API key', '\n'.join(screen(out)))
+        self.assertNotIn('logout failed', out)
+        self.assertFalse((self.state / 'pick9.conf').exists())
+
     def test_typing_anthropic_ranks_the_anthropic_row_first(self):
         real_fzf = shutil.which('fzf')
         if not real_fzf:
