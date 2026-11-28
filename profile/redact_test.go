@@ -57,6 +57,17 @@ func TestRedactURLNeverPrintsTheUserinfo(t *testing.T) {
 		{"userinfo with no scheme", "alice:pa/ss@proxy:3128", "<redacted>", true},
 		{"plain proxy", "http://Proxy:3128", "http://proxy:3128", true},
 		{"IPv6 proxy", "http://[::1]:3128", "http://[::1]:3128", true},
+		// The path's own escapes name the route: /team%2Fone is not
+		// /team/one, so masking a login must not rewrite one into the
+		// other (#1038).
+		{"escaped route survives masking", "https://gw.example.invalid/team%2Fone", "https://gw.example.invalid/team%2Fone", true},
+		{"escaped route survives the login cut", "https://bob:pw@gw.example.invalid/team%2Fone", "https://gw.example.invalid/team%2Fone", true},
+		{"literal route survives masking", "https://gw.example.invalid/café", "https://gw.example.invalid/café", true},
+		{"literal route survives the login cut", "https://bob:" + "redact-canary" + "@gw.example.invalid/café", "https://gw.example.invalid/café", true},
+		{"already-escaped route stays escaped", "https://gw.example.invalid/caf%C3%A9", "https://gw.example.invalid/caf%C3%A9", true},
+		{"lowercase escape kept", "https://gw.example.invalid/a%2fb", "https://gw.example.invalid/a%2fb", true},
+		{"space and pipe kept", "https://gw.example.invalid/a b|c", "https://gw.example.invalid/a b|c", true},
+		{"literal route loses only its query", "https://gw.example.invalid/café?key=x", "https://gw.example.invalid/café", true},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
