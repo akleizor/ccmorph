@@ -376,7 +376,9 @@ func (l *launcher) config(args []string) int {
 	}
 	if section != "defaults" && typ == "apikey" {
 		shown, _ := nativeBase(endpoint)
-		answer, ok := l.configAsk("Endpoint ["+shown+"]: ", false)
+		// The keep-current echo is a rendering, not the stored value: the
+		// masked line is shown, the saved one kept (GH-1038).
+		answer, ok := l.configAsk("Endpoint ["+shownEndpoint(shown)+"]: ", false)
 		if !ok {
 			return 1
 		}
@@ -442,7 +444,7 @@ func (l *launcher) config(args []string) int {
 	if section != "defaults" {
 		if typ == "apikey" {
 			shown, _ := nativeBase(endpoint)
-			say("Endpoint: " + shown)
+			say("Endpoint: " + shownEndpoint(shown))
 		}
 		say("Credential: hidden")
 	}

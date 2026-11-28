@@ -577,11 +577,10 @@ func (l *launcher) addAPIKey(name string) int {
 			return 1
 		}
 		url = cleanCredential(v)
-		service := url
-		if service == "" {
-			service = "api.anthropic.com"
-		}
-		prompt += " — " + service
+		// The header names the service through the same masking rule every
+		// endpoint line uses (GH-1038): what was just typed is echoed back
+		// with its login hidden, and a blank answer reads as the default.
+		prompt += " — " + shownEndpoint(url)
 	}
 	// The endpoint is asked the listing question doctor asks, in this step: a
 	// key it refuses is named here and asked for again, not saved as Added and
@@ -649,12 +648,15 @@ func (l *launcher) addAPIKey(name string) int {
 	return 0
 }
 
-// shownEndpoint is an endpoint as add prints it: never with the login or the
-// query a URL can carry (INTENT promise 5). A URL with a scheme is RedactURL's
-// to answer. One typed without a scheme is refused by the save, but only after
-// the key check has named it, so it names no host once it holds an @, a ? or a
-// #; a bare host or host:port is shown as typed. Blank is the default endpoint,
-// spelled the way the endpoint question spells it.
+// shownEndpoint is an endpoint as every human-facing line prints it — add's
+// own, the profile menu's, list's, inspect's and config's (GH-1038): never
+// with the login or the query a URL can carry (INTENT promise 5). A URL with a
+// scheme is RedactURL's to answer. One typed without a scheme is refused by
+// the save, but only after the key check has named it, so it names no host
+// once it holds an @, a ? or a #; a bare host or host:port is shown as typed.
+// Blank is the default endpoint, spelled the way the endpoint question spells
+// it. A scripted read (get base_url, get --json) is not a rendering: like the
+// api_key itself it answers with the stored value.
 func shownEndpoint(url string) string {
 	switch {
 	case url == "":

@@ -3674,6 +3674,41 @@ test_add_apikey_native_endpoint_skips_adapter() {
   return $rc
 }
 
+# GH-1038: a password typed into the endpoint URL was hidden in the Added
+# line and doctor but printed in full by the key prompt's header, `list` and
+# `inspect` — the lines a person pastes into a bug report or a screenshot.
+# One masking rule (the add's own shownEndpoint/RedactURL) answers every
+# rendering; the scripted read (get base_url) keeps answering the stored
+# value, like api_key.
+test_endpoint_password_never_printed_gh_1038() {
+  local test_home rc=0 out
+  local pw='{{SECRET_g8t1v7x2m4qe}}'
+  local url="https://bob:${pw}@gw.example.invalid/y"
+  test_home=$(mktemp -d)
+  setup_home "$test_home"
+  source "$CCMORPH_SOURCE"
+  command cp "$REPO_ROOT/share/provider-presets.tsv" "$HOME/.config/ccmorph/share/"
+  out=$(ccmorph add pw <<< "3
+custom
+${url}
+sk-pw
+" 2>&1) || rc=1
+  assert_not_contains "$out" "$pw" 'the key prompt must not echo the endpoint password' || rc=1
+  assert_contains "$out" 'https://gw.example.invalid/y' 'add must still name the endpoint it masks' || rc=1
+  out=$(ccmorph list 2>&1) || rc=1
+  assert_not_contains "$out" "$pw" 'list must hide the endpoint password' || rc=1
+  assert_contains "$out" 'https://gw.example.invalid/y' 'list must still name the host and path' || rc=1
+  out=$(ccmorph inspect pw 2>&1) || rc=1
+  assert_not_contains "$out" "$pw" 'inspect must hide the endpoint password' || rc=1
+  assert_contains "$out" 'gw.example.invalid/y' 'inspect must still name the host and path' || rc=1
+  [[ "$(ccmorph get pw base_url)" == "$url" ]] || {
+    print -u2 -- 'get base_url must keep answering the saved endpoint verbatim'
+    rc=1
+  }
+  rm -rf "$test_home"
+  return $rc
+}
+
 
 # The auto-detect probe decides on the RESPONSE BODY, not on the status alone,
 # and these four cases are why. Each one shipped uncovered and each was wrong:
@@ -13273,6 +13308,7 @@ run_test test_add_never_asks_how_to_reach_the_endpoint
 run_test test_add_apikey_preset_fills_endpoint_and_tiers
 run_test test_add_apikey_lists_anthropic_first
 run_test test_add_apikey_native_endpoint_skips_adapter
+run_test test_endpoint_password_never_printed_gh_1038
 run_test test_add_apikey_model_level_404_is_native
 # add does not persist adapter decisions; launch performs automatic compatibility handling.
 run_test test_help_teaches_credential_type_not_gateway_shape
