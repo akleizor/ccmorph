@@ -1064,9 +1064,14 @@ Omit the profile to list every profile.`},
 		"each session gets a delegate tool and Agent hooks: free profiles first, then\n" +
 		"the subscription furthest behind its pace, then paid API keys; inside a\n" +
 		"profile, the cheapest model that fits the task's kind and tier.\n" +
-		"status lists each profile's class and pace. dispatch \"<task>\" runs a task\n" +
-		"where the router picks; with --dry-run it only shows that pick. report\n" +
-		"checks the last day's routes. Its settings live in:\n" +
+		"status lists each profile's class and pace, and a legend under the table\n" +
+		"defines both. dispatch \"<task>\" runs a task where the router picks; with\n" +
+		"--dry-run it only shows that pick, and names the route it reserved. report\n" +
+		"checks the last day's routes, shows each one's verdict, and lists the route\n" +
+		"ids accept takes. accept ID pass|fail records whether a run's effect held:\n" +
+		"a merged PR, a passing test. record it once that is known; a second accept\n" +
+		"replaces the first. --by SIGNAL names what vouches for it (merged, tests,\n" +
+		"a reviewer's name). Its settings live in:\n" +
 		"  ~/.config/ccmorph/router.json"},
 	"use": {"ccmorph use [profile|-i]", "Set the default without launching. No argument shows the current default."},
 	"inspect": {"ccmorph inspect [profile|-i]", `Show effective settings and their sources, never the stored credential.

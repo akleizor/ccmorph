@@ -86,6 +86,11 @@ func Main(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		}
 		if verb == "on" {
 			fmt.Fprintln(stdout, "Router on. New sessions route subagents; open sessions keep running as they started.")
+			// Routing across no profiles is no routing at all (GH-1032): say
+			// so where the promise was just made, and how to change it.
+			if len(profileNames()) == 0 {
+				fmt.Fprintln(stdout, "No profiles yet, so the router has nothing to route. Add one with ccmorph add.")
+			}
 		} else {
 			fmt.Fprintln(stdout, "Router off. New sessions start without it.")
 		}
@@ -150,6 +155,23 @@ func needsValueNotOption(stderr io.Writer, flag, other string) int {
 	return 2
 }
 
+// A profile with no pace says which kind of none it is (GH-971): a
+// subscription or budget the router paces has simply not been read yet, while
+// every other class is never paced at all. The bare "no reading" read as a
+// fault in either case.
+const (
+	notPaced        = "not quota-paced"
+	awaitingReading = "no quota reading yet"
+)
+
+// noPace is the pace cell of a profile with no reading to print.
+func noPace(p Profile) string {
+	if p.Class == "subscription" || p.Class == "budget" {
+		return awaitingReading
+	}
+	return notPaced
+}
+
 func status(stdout, stderr io.Writer) int {
 	c, err := LoadConfig()
 	if err != nil {
@@ -163,6 +185,10 @@ func status(stdout, stderr io.Writer) int {
 	fmt.Fprintf(stdout, "Router %s (%s)\n", state, ConfigPath())
 	ps, notes := Profiles(c, false, false, nil)
 	now := nowSec()
+	if len(ps) > 0 {
+		fmt.Fprintf(stdout, "  %-12s %-12s %s\n", "profile", "class", "pace")
+	}
+	notPacedRow, awaitingRow := false, false
 	for _, p := range ps {
 		mark := ""
 		switch {
@@ -173,23 +199,44 @@ func status(stdout, stderr io.Writer) int {
 		case p.UnavailableUntil > now:
 			mark = " unavailable"
 		}
-		// A profile with no pace says which kind of none it is (GH-971): a
-		// subscription or budget the router paces has simply not been read
-		// yet, while every other class is never paced at all. The bare "no
-		// reading" read as a fault in either case.
-		pace := "not quota-paced"
-		if p.Class == "subscription" || p.Class == "budget" {
-			pace = "no quota reading yet"
-		}
+		pace := noPace(p)
 		if len(p.Windows) > 0 {
 			pace = fmt.Sprintf("slack %+.1f points", Slack(p, now, ""))
+		} else {
+			switch pace {
+			case notPaced:
+				notPacedRow = true
+			case awaitingReading:
+				awaitingRow = true
+			}
 		}
 		fmt.Fprintf(stdout, "  %-12s %-12s %s%s\n", p.Name, p.Class, pace, mark)
 	}
 	for _, n := range notes {
 		fmt.Fprintln(stdout, "  note: "+n)
 	}
+	if len(ps) > 0 {
+		statusLegend(stdout, notPacedRow, awaitingRow)
+	}
 	return 0
+}
+
+// statusLegend defines the words status's table prints, so the table reads
+// without the source (GH-1032). A pace phrase is defined only when a row
+// printed it: a table of API keys says nothing about a reading nobody waits for.
+func statusLegend(w io.Writer, notPacedRow, awaitingRow bool) {
+	fmt.Fprintln(w, "legend: class is free (no plan), subscription (a paid plan), budget (a")
+	fmt.Fprintln(w, "  monthly cap) or api (a key billed per call). A pace in points is how far a")
+	fmt.Fprintln(w, "  profile runs ahead of its own pace: larger is more room. A trailing")
+	fmt.Fprintln(w, "  reserved, disabled or unavailable means the router skips it: reserved keeps")
+	fmt.Fprintln(w, "  it for you alone, disabled is off, unavailable is in a backoff after a")
+	fmt.Fprintln(w, "  failure.")
+	if notPacedRow {
+		fmt.Fprintln(w, "  not quota-paced: the class has no plan to pace.")
+	}
+	if awaitingRow {
+		fmt.Fprintln(w, "  no quota reading yet: none has been fetched since the router was turned on.")
+	}
 }
 
 func task(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
@@ -313,15 +360,27 @@ func task(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "ccmorph: router:", err)
 		return 1
 	}
+	// A dry-run still reserves its pick, and names it on screen: the route ID
+	// accept takes was printed nowhere (GH-1032). --id records it under the
+	// caller's own name, the promise --id already made in its help line.
+	id := ""
 	if d.Pick != nil {
-		reserve(newID("route"), d, r.Prompt, nil)
+		id = newID("route")
+		var caller Row
+		if r.ID != "" {
+			caller = Row{"caller_id": r.ID}
+		}
+		reserve(id, d, r.Prompt, caller)
+		if r.ID != "" {
+			id = r.ID // the name accept and report take
+		}
 	}
 	if asJSON {
 		e := json.NewEncoder(stdout)
 		e.SetIndent("", "  ")
 		_ = e.Encode(d)
 	} else {
-		show(stdout, d, explain)
+		show(stdout, d, explain, id)
 	}
 	if d.Pick == nil {
 		return 3
@@ -329,9 +388,13 @@ func task(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	return 0
 }
 
-func show(w io.Writer, d Decision, explain bool) {
+func show(w io.Writer, d Decision, explain bool, id string) {
 	if p := d.Pick; p != nil {
 		fmt.Fprintf(w, "→ %s · %s · effort %s\n  %s / %s · %s · slack %.1f points\n", p.Profile, p.Model, p.Effort, d.Task.Kind, d.Task.Tier, p.Class, p.Slack)
+		if id != "" {
+			fmt.Fprintf(w, "  reserved as %s; once its effect is known, record it:\n", id)
+			fmt.Fprintf(w, "    ccmorph router accept %s pass|fail\n", id)
+		}
 	} else {
 		fmt.Fprintln(w, "no available profile serves this task's family and tier")
 	}
@@ -391,7 +454,10 @@ func accept(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 	if !found {
-		fmt.Fprintf(stderr, "ccmorph: router: no route %s in the ledger\n", id)
+		// "the ledger" was named where no screen located it or listed it
+		// (GH-1032): give the file and the command that prints its ids.
+		fmt.Fprintf(stderr, "ccmorph: router: no route %s in the ledger (%s)\n", id, ledgerPath())
+		fmt.Fprintln(stderr, "ccmorph: router: route ids are printed by ccmorph router report")
 		return 1
 	}
 	fmt.Fprintf(stdout, "Route %s: accepted %s.\n", words[0], words[1])
@@ -440,7 +506,7 @@ func report(args []string, stdout, stderr io.Writer) int {
 	now := nowSec()
 	fmt.Fprintln(stdout, "profile      calls slack (points)")
 	for _, p := range ps {
-		slack := "unknown"
+		slack := noPace(p)
 		if len(p.Windows) > 0 {
 			slack = fmt.Sprintf("%.1f", Slack(p, now, ""))
 		}
@@ -495,8 +561,71 @@ func report(args []string, stdout, stderr io.Writer) int {
 	for _, f := range slices.Compact(failures) {
 		fmt.Fprintln(stdout, "FAIL: "+f)
 	}
+	reportLegend(stdout)
+	recentRoutes(stdout, rows)
 	if len(failures) > 0 {
 		return 1
 	}
 	return 0
+}
+
+// reportLegend defines report's columns and both ways a profile has no slack
+// reading, so the table reads without the source (GH-1032).
+func reportLegend(w io.Writer) {
+	fmt.Fprintln(w, "legend: calls is the routes this profile took in the window; slack (points) is")
+	fmt.Fprintln(w, "  how far a subscription runs ahead of its own pace, larger is more room.")
+	fmt.Fprintln(w, "  not quota-paced means the class is never paced; no quota reading yet means")
+	fmt.Fprintln(w, "  none has been fetched since the router was turned on.")
+}
+
+// recentRoutes names the newest routes, newest first, with the route ID
+// accept takes and the verdict it recorded — the ledger and its IDs were on
+// no screen before (GH-1032). Ten routes settle what was just run; the
+// ledger's path is the rest.
+func recentRoutes(w io.Writer, rows []Row) {
+	sorted := slices.Clone(rows)
+	slices.SortStableFunc(sorted, func(a, b Row) int {
+		at, _ := a["ts"].(float64)
+		bt, _ := b["ts"].(float64)
+		switch {
+		case at > bt:
+			return -1
+		case at < bt:
+			return 1
+		}
+		return 0
+	})
+	fmt.Fprintln(w, "recent routes, newest first (the ids ccmorph router accept takes):")
+	fmt.Fprintln(w, "  pass|fail records whether the run's effect held; --by SIGNAL names it.")
+	if len(sorted) == 0 {
+		fmt.Fprintln(w, "  none in this window")
+	}
+	for _, r := range sorted[:min(10, len(sorted))] {
+		fmt.Fprintf(w, "  %s  %s/%s  %s/%s  %s\n", routeName(r), r["profile"], r["model"], r["kind"], r["tier"], acceptedWord(r))
+	}
+	fmt.Fprintln(w, "ledger: "+ledgerPath())
+}
+
+// routeName is the id accept takes: the caller's own --id when the row has
+// one, else the route's own.
+func routeName(r Row) string {
+	if id, ok := r["caller_id"].(string); ok && id != "" {
+		return id
+	}
+	return fmt.Sprint(r["id"])
+}
+
+// acceptedWord is what accept recorded for the route, or that none has.
+func acceptedWord(r Row) string {
+	word := "not accepted"
+	if pass, ok := r["accepted"].(bool); ok {
+		word = "accepted fail"
+		if pass {
+			word = "accepted pass"
+		}
+	}
+	if by, ok := r["accepted_by"].(string); ok && by != "" {
+		word += " (by " + by + ")"
+	}
+	return word
 }
