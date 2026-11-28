@@ -1904,6 +1904,9 @@ func (l *launcher) reachGateway(name, base, key, via string) (why string, down b
 		return "", false
 	}
 	l.err(listingFailureWhy(name, profile.RedactURL(base), 0, r.Why))
+	// GH-1041: remember the sentence this launch just said, so the adapter's
+	// death on the same route adds the route check without repeating it.
+	l.reachNamed = r.Why
 	if r.Waited {
 		fmt.Fprintf(os.Stderr, "  Check the route: ccmorph doctor %s\n", name)
 	}
@@ -1948,8 +1951,15 @@ func (l *launcher) adapterStart(name, model string) bool {
 		// death or a timeout still gets plain words first when the cause is the
 		// route itself (#286), then the one command that diagnoses the route.
 		if !sa.Refused {
-			if why := l.routeRefusal(name); why != "" {
-				fmt.Fprintln(os.Stderr, "  "+why+".")
+			// GH-1041: when this launch's reach check just named the cause in
+			// its plain sentence, the adapter died on that same route; asking
+			// it again only to print the identical sentence under the
+			// readiness line showed the one cause twice. The check line and
+			// the log still follow.
+			if l.reachNamed == "" {
+				if why := l.routeRefusal(name); why != "" {
+					fmt.Fprintln(os.Stderr, "  "+why+".")
+				}
 			}
 			fmt.Fprintln(os.Stderr, "  Check the route: ccmorph doctor "+name)
 		}

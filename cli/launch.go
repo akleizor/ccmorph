@@ -48,6 +48,10 @@ type launcher struct {
 	sharedAdapter           *util.SharedAdapter
 	adapterProfile          string
 	adapterPort             string
+	// reachNamed is the route cause this launch's own reach check already put
+	// on the screen in its sentence (GH-1041); the adapter's death on the same
+	// route must not re-probe it and print the identical sentence a second time.
+	reachNamed string
 	providerPID, providerTD string
 	providerAuth            string
 	providerHolder          string

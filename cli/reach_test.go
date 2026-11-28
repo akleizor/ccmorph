@@ -95,6 +95,35 @@ func TestRunGivesUpOnASilentGatewayWithAProgressLine(t *testing.T) {
 	}
 }
 
+// GH-1041: on a refused port the launch said the reach cause plain, then the
+// adapter died on that same route and the launch re-probed it just to print
+// the identical sentence re-indented under 'adapter exited before readiness'.
+// The cause is named once; the death, the route check and the log follow.
+func TestRunNamesARefusedCauseOnceWhenTheAdapterDiesOnIt(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	launchCurl(t, "printf '%s\\n' 'curl: (7) Failed to connect to 127.0.0.1 port 9: Connection refused' >&2; exit 7")
+	cause := "could not reach 'http://127.0.0.1:9' — connection refused: 127.0.0.1 port 9"
+	state, profiles := gatewayProfile(t, "gw1041", "type=apikey\nbase_url=http://127.0.0.1:9\napi_key=k")
+	libexec := t.TempDir()
+	if err := os.WriteFile(filepath.Join(libexec, "ccmorph-core"),
+		[]byte("#!/bin/sh\nif [ \"$1\" = adapter ]; then exit 1; fi\nexit 0\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	rc, out := launchAs(t, false, state, profiles, libexec, "gw1041", nil)
+	if rc == 0 {
+		t.Fatalf("rc 0 on a refused gateway: %s", out)
+	}
+	if n := strings.Count(out, cause); n != 1 {
+		t.Fatalf("the cause was named %d times, want exactly once:\n%s", n, out)
+	}
+	if !strings.Contains(out, "adapter exited before readiness") {
+		t.Fatalf("the adapter's death must still be said:\n%s", out)
+	}
+	if !strings.Contains(out, "  Check the route: ccmorph doctor gw1041") {
+		t.Fatalf("the route check must still follow:\n%s", out)
+	}
+}
+
 // GH-260: a refused gateway is named once, in plain words, and the launch goes
 // on the way it always has. In a terminal with no saved model the picker used
 // to open on that gateway and end on a different sentence than the
