@@ -15,6 +15,10 @@ committed to the repo, so every `scripts/` path the document names must exist.
 Issue #609: f6210cf moved pytest into pyproject.toml's default uv test group,
 and INTENT.md's Checks, the guide and ARCHITECTURE.md still taught
 `python3 -m pytest`, which no longer finds pytest.
+Issue #1037: the add section promised nothing is written outside the state
+root and the profile directory, while the first add seeds the shared harness
+layer and session history under `~/.claude` for every profile to link into —
+the add paragraph must name that shared home it writes.
 """
 import re
 from pathlib import Path
@@ -276,3 +280,70 @@ def test_docs_name_both_state_roots_issue_731():
             f"{name} no longer names the profile root's variable")
         assert re.search(r"CCMORPH_STATE_DIR[^.]*\bdoes not move\b", flat), (
             f"{name} does not say CCMORPH_STATE_DIR leaves the receipts where they are")
+
+
+# #1037: what the add paragraph is allowed to promise, and what it must name.
+ADD_PROMPT_MARKER = "asks which kind of profile"
+# The exclusive shape of the old promise ("Nothing is written outside the
+# state root and the profile directory"): any sentence that bounds ALL of
+# add's writes to a named set of roots, whatever set it names.
+EXCLUSIVE_WRITE_PROMISE = re.compile(r"nothing (?:else )?is written outside", re.I)
+# `~/.claude` as its own path token. The lookahead rejects every near-match
+# path that is a different file or directory — `~/.claude.json` (the settings
+# file), `~/.claude-extra`, the legacy `~/.claude-profiles` — by excluding
+# word characters, dots and hyphens after the name; only a real path boundary
+# still counts: a deeper path under the home (`~/.claude/projects`) and the
+# home itself followed by prose or nothing.
+SHARED_HOME = re.compile(r"~/\.claude(?![\w.\-])")
+
+
+def _add_paragraph(text):
+    """The paragraph that walks a person through `ccmorph add`: the blank-line
+    block carrying the add prompt flow. Paragraph-scoped, so a `~/.claude`
+    mention elsewhere in the guide — the uninstall passage, the sharing
+    section — cannot stand in for what the add promise itself says."""
+    for para in re.split(r"\n[ \t]*\n", text):
+        if ADD_PROMPT_MARKER in para:
+            return _flatten(para)
+    raise AssertionError(f"docs/guide.md has no paragraph containing {ADD_PROMPT_MARKER!r}")
+
+
+def test_guide_add_names_the_shared_home_issue_1037():
+    """#1037: the add section promised "Nothing is written outside
+    ~/.config/ccmorph and the profile directory" while the first add creates
+    the shared harness layer and session history under ~/.claude that every
+    profile links into (util/setup.go). The paragraph must both drop the
+    exclusive promise and name the shared home — each half on its own: a
+    paragraph that names ~/.claude beside the old promise fails as surely as
+    one that drops the promise while naming only ~/.claude.json, another
+    path that native claude shares but that is not the home.
+    The uninstall clause must agree with the guide's uninstall passage and
+    with install.sh: uninstall removes the command, RETAINS the shared home
+    and names the session history it keeps — and it does not leave the home
+    untouched, because it repairs plugin index paths under ~/.claude/plugins
+    (install.sh, util/misc.go), so an untouched phrasing passes only beside
+    that repair named."""
+    para = _add_paragraph(GUIDE.read_text(encoding="utf-8"))
+    assert not EXCLUSIVE_WRITE_PROMISE.search(para), (
+        "docs/guide.md's add paragraph still bounds all of add's writes to a "
+        "named set of roots, while the first add seeds the shared Claude Code "
+        "home ~/.claude")
+    assert SHARED_HOME.search(para), (
+        "docs/guide.md's add paragraph names no shared Claude Code home; the "
+        "first add creates the shared layer and session history under ~/.claude")
+    _, verb, after = para.partition("uninstall")
+    assert verb, "docs/guide.md's add paragraph says nothing about uninstall"
+    assert re.search(r"\b(?:names?|lists?|reports?)\b.{0,80}"
+                     r"\b(?:session history|history\.jsonl|transcripts)\b", after, re.I), (
+        "the add paragraph must say uninstall reports the shared session history")
+    untouched = re.search(r"\bleaves?\b.{0,65}\b(?:alone|untouched|unmodified|unchanged)\b"
+                          r"|\b(?:does not|doesn.t|never) (?:write|touch|change|modify)\b",
+                          after, re.I)
+    repair = re.search(r"\b(?:repairs?|normalizes?|rewrites?|updates?)\b.{0,35}\bplugin index\b",
+                       after, re.I)
+    assert not untouched or repair, (
+        "uninstall does change the shared home when it repairs the plugin "
+        "index; the add paragraph may claim it untouched only beside that repair")
+    assert re.search(r"\b(?:keeps?|preserves?|retains?|not remov(?:e|ed)|in place|stays?)\b",
+                     after, re.I), (
+        "the add paragraph must say uninstall retains the shared home/history")
