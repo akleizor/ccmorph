@@ -4,6 +4,9 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"reflect"
+	"regexp"
+	"sort"
 	"strings"
 	"testing"
 
@@ -331,4 +334,344 @@ func TestHelpAllWrapsALongDescriptionUnderItsOwnColumn(t *testing.T) {
 	if want := strings.Repeat(" ", col) + "state"; lines[row+1] != want {
 		t.Errorf("rm row continues with %q, want %q", lines[row+1], want)
 	}
+}
+
+// GH-1034: the overview list printed its own spelling of every command's
+// arguments and taught login, models, get, set, cred (and use on the short
+// page) as demanding a profile that their pages and parsers leave optional.
+// Each row now carries the command's own page synopsis. overviewSynopsis reads
+// that line from the page, so get and set are checked as printed and not
+// through usageTopics' empty map fields. The whole label must stand as the row:
+// the label inside a longer label, a description or a footer is not a row, and
+// the vocabulary is driven from realVerbs — not from the rows that survived —
+// so a command dropped from either overview fails here.
+func TestHelpOverviewCarriesTheSynopsisOfEveryCommand(t *testing.T) {
+	t.Setenv("PATH", t.TempDir())
+	short, all := helpPage(t, "", 0), helpPage(t, "all", 0)
+	shortW, allW := helpPage(t, "", 80), helpPage(t, "all", 80)
+	// The short page's everyday set, named here so a row dropped from the
+	// short page fails this test rather than hiding in the all-page match.
+	everyday := map[string]bool{"run": true, "hop": true, "add": true, "list": true,
+		"quota": true, "use": true, "config": true, "inspect": true, "doctor": true}
+	for _, topic := range realVerbs {
+		switch {
+		case topic == "help" || topic == "version":
+			continue // the footer's own lines cover these two
+		case topic == "run":
+			continue // shown per use; TestHelpOverviewStillTeachesEveryRunUse
+		}
+		usage := overviewSynopsis(t, topic)
+		if !overviewHasRow(all, usage) {
+			t.Errorf("help all does not carry %s's page synopsis %q as a full row label:\n%s", topic, usage, all)
+		}
+		if !overviewHasRow(allW, usage) {
+			t.Errorf("help all at 80 columns does not carry %s's synopsis %q:\n%s", topic, usage, allW)
+		}
+		if everyday[topic] && (!overviewHasRow(short, usage) || !overviewHasRow(shortW, usage)) {
+			t.Errorf("help (short page) does not carry %s's synopsis %q:\n%s", topic, usage, short)
+		}
+	}
+	// The shapes the issue read off the screen, plus the --json and [options]
+	// syntax a substring match would miss, pinned exactly as printed.
+	for _, want := range []string{
+		"ccmorph login [profile|-i]",
+		"ccmorph models [profile] [--filtered|--filtered-json]",
+		"ccmorph get [profile] [model|effort|base_url|api_key|--json]",
+		"ccmorph set [profile] [model|effort] [value]",
+		"ccmorph cred [profile]",
+		"ccmorph price <model>... [--json]",
+		"ccmorph check <profile> <model> [--json]",
+		"ccmorph probe [profile] [options]",
+	} {
+		if !overviewHasRow(all, want) {
+			t.Errorf("help all does not print %q as a row:\n%s", want, all)
+		}
+	}
+	// The rows are exactly the vocabulary: every verb but the two the footer
+	// covers on help all, and exactly the everyday set on the short page.
+	wantAll := []string{}
+	wantShort := []string{}
+	for _, v := range realVerbs {
+		if v == "help" || v == "version" {
+			continue
+		}
+		wantAll = append(wantAll, v)
+		if everyday[v] {
+			wantShort = append(wantShort, v)
+		}
+	}
+	sort.Strings(wantAll)
+	sort.Strings(wantShort)
+	if got := rowVerbs(all); !reflect.DeepEqual(got, wantAll) {
+		t.Errorf("help all teaches %v, want the full vocabulary %v", got, wantAll)
+	}
+	if got := rowVerbs(short); !reflect.DeepEqual(got, wantShort) {
+		t.Errorf("help (short page) teaches %v, want the everyday set %v", got, wantShort)
+	}
+}
+
+// GH-1034: the five list lines the walk read plus use on the short page held
+// the required brackets their commands never demanded. These exact stale
+// shapes are the regression pin; the generation checked above keeps every
+// other command out of the class.
+func TestHelpOverviewNoLongerDemandsOptionalProfiles(t *testing.T) {
+	t.Setenv("PATH", t.TempDir())
+	for _, topic := range []string{"", "all"} {
+		page := helpPage(t, topic, 0)
+		for _, stale := range []string{
+			"ccmorph login <profile>",
+			"ccmorph models <profile>",
+			"ccmorph get <profile> <field",
+			"ccmorph set <profile> <model",
+			"ccmorph cred <profile>",
+			"ccmorph use <profile>",
+		} {
+			if strings.Contains(page, stale) {
+				t.Errorf("help %q still prints the stale required shape %q:\n%s", topic, stale, page)
+			}
+		}
+	}
+}
+
+// GH-1034 kept run as the one command shown per use: each row is one whole
+// invocation whose brackets are true for that use, the three together name
+// every everyday use, and none teaches a profile as required to launch.
+func TestHelpOverviewStillTeachesEveryRunUse(t *testing.T) {
+	t.Setenv("PATH", t.TempDir())
+	for _, topic := range []string{"", "all"} {
+		for _, width := range []int{0, 80} {
+			page := helpPage(t, topic, width)
+			for _, row := range []string{"ccmorph run", "ccmorph run <profile>", "ccmorph run -i"} {
+				if !overviewHasRow(page, row) {
+					t.Errorf("help %q at width %d lost the run row %q:\n%s", topic, width, row, page)
+				}
+			}
+		}
+	}
+}
+
+// GH-1034: the map is the same map before and after the first profile exists
+// — a saved profile changes the footer's Start here line (an example, not a
+// row), never the commands on offer.
+func TestHelpOverviewRowsDoNotDependOnSavedProfiles(t *testing.T) {
+	t.Setenv("PATH", t.TempDir())
+	empty, saved := t.TempDir(), t.TempDir()
+	if err := os.WriteFile(filepath.Join(saved, "work.conf"), []byte("type=apikey\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, topic := range []string{"", "all"} {
+		fresh := helpPageFrom(t, &launcher{dir: empty}, topic, 0)
+		after := helpPageFrom(t, &launcher{dir: saved}, topic, 0)
+		if !strings.Contains(fresh, "Start here: ccmorph add work") {
+			t.Errorf("help %q with no profile does not say where to start:\n%s", topic, fresh)
+		}
+		if strings.Contains(after, "Start here") {
+			t.Errorf("help %q with a saved profile still sends a started reader to a first profile:\n%s", topic, after)
+		}
+		if got, want := overviewRows(after), overviewRows(fresh); !reflect.DeepEqual(got, want) {
+			t.Errorf("help %q teaches different rows once a profile exists:\n got %q\nwant %q", topic, got, want)
+		}
+	}
+}
+
+// GH-1034 "each line names every use": a row is its synopsis plus description,
+// and rows taught less than their own pages do. login sold one of the three
+// uses (and must not claim replacing a key, which the page sends to config),
+// and never said the Claude-account re-login happens in its browser; hop hid
+// that running it bare lists the profiles to choose from; add hid the
+// long-lived Claude token a script signs in with; use hid that running bare
+// shows the current default; context hid reading a limit; probe said a flat
+// "no inference" although measuring is opt-in, not absent. The named-word
+// patterns are the reader's, not phrases only this test knows: listing is a
+// list/show/name/see/display/print verb with what it lists, the token is the
+// word token, and the browser must sit on the same side of no semicolon or
+// comma as the Claude account it belongs to. Checked whitespace-normalized at
+// both widths, where the 80-column row wraps its description under the label
+// column.
+var (
+	hopListingUse = regexp.MustCompile(`(?i)\b(?:list|show|name|see|display|print)\w*\b`)
+	hopListedSet  = regexp.MustCompile(`(?i)\b(?:choices|options|destinations|profiles)\b`)
+	addTokenUse   = regexp.MustCompile(`(?i)\btokens?\b`)
+	browserReauth = regexp.MustCompile(`\b(?:browser|web sign[ -]?in)\b[^;,]*\bClaude\b|\bClaude\b[^;,]*\b(?:browser|web sign[ -]?in)\b`)
+)
+
+func TestHelpRowsNameTheUsesTheirPagesTeach(t *testing.T) {
+	t.Setenv("PATH", t.TempDir())
+	for _, width := range []int{0, 80} {
+		short, all := helpPage(t, "", width), helpPage(t, "all", width)
+		login := overviewRowText(t, all, "ccmorph login [profile|-i]", width)
+		for _, use := range []string{"Claude account", "provider account", "refused API key"} {
+			if !strings.Contains(login, use) {
+				t.Errorf("width %d: the login row hides a use, no %q in %q", width, use, login)
+			}
+		}
+		if !browserReauth.MatchString(login) {
+			t.Errorf("width %d: the login row never names the browser the Claude re-login runs in: %q", width, login)
+		}
+		if strings.Contains(login, "replace") {
+			t.Errorf("width %d: the login row claims a use the page sends to config: %q", width, login)
+		}
+		for _, page := range []string{short, all} {
+			hopRow := overviewRowText(t, page, "ccmorph hop [profile]", width)
+			if !hopListingUse.MatchString(hopRow) || !hopListedSet.MatchString(hopRow) {
+				t.Errorf("width %d: the hop row does not name the profiles bare listing shows: %q", width, hopRow)
+			}
+			addRow := overviewRowText(t, page, "ccmorph add <profile>", width)
+			if !addTokenUse.MatchString(addRow) {
+				t.Errorf("width %d: the add row hides the long-lived Claude token for scripts/CI: %q", width, addRow)
+			}
+		}
+		for _, page := range []string{short, all} {
+			row := overviewRowText(t, page, "ccmorph use [profile|-i]", width)
+			if !strings.Contains(row, "no argument shows the current default") {
+				t.Errorf("width %d: the use row does not teach what running bare does: %q", width, row)
+			}
+		}
+		ctx := overviewRowText(t, all, "ccmorph context <profile> <model> [tokens|auto]", width)
+		for _, w := range []string{"Read", "set", "automatic"} {
+			if !strings.Contains(ctx, w) {
+				t.Errorf("width %d: the context row hides a use, no %q in %q", width, w, ctx)
+			}
+		}
+		probe := overviewRowText(t, all, "ccmorph probe [profile] [options]", width)
+		if !strings.Contains(probe, "opt-in") {
+			t.Errorf("width %d: the probe row does not separate the default lookup from opted-in measuring: %q", width, probe)
+		}
+		if strings.Contains(all, "no inference") {
+			t.Errorf("width %d: the overview still sells probe's default as an unconditional guarantee:\n%s", width, all)
+		}
+	}
+}
+
+// GH-1034: the overview borrows each page's synopsis string, never the page.
+// Rendering a detail body for the list would drag the add page's bridge probe
+// into every `ccmorph help`: with a cliproxyapi installed the overview must
+// not run it, while the add page still names the installed providers.
+func TestHelpOverviewNeverRunsTheProviderBridge(t *testing.T) {
+	dir := t.TempDir()
+	marker := filepath.Join(dir, "bridge-ran")
+	// The stub writes its witness with the shell's own ":" and a redirection:
+	// no PATH lookup. The test narrows PATH to this one directory, so a
+	// `touch` in here is never found and the witness would stay silent whether
+	// or not the bridge ran — a check that cannot fail.
+	script := "#!/bin/sh\n: > '" + marker + "'\n"
+	for _, p := range []string{"claude", "antigravity", "codex", "devin", "kimi-ai", "kimi", "meta", "xai"} {
+		script += "echo '  -" + p + "-login'\n"
+	}
+	if err := os.WriteFile(filepath.Join(dir, "cliproxyapi"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir)
+
+	// Prove the witness live before trusting its silence: the add page is the
+	// one page that must probe an installed bridge, so its body must leave the
+	// marker. A marker that never lands cannot testify that the overviews were
+	// quiet.
+	if page := helpPage(t, "add", 0); !strings.Contains(page, "Antigravity") {
+		t.Fatalf("help add stopped naming the installed bridge's providers:\n%s", page)
+	}
+	if _, err := os.Stat(marker); err != nil {
+		t.Fatalf("help add did not run the installed cliproxyapi (%s not created): %v", marker, err)
+	}
+
+	// Now the silence means something: neither overview may recreate it.
+	if err := os.Remove(marker); err != nil {
+		t.Fatal(err)
+	}
+	for _, topic := range []string{"", "all"} {
+		page := helpPage(t, topic, 0)
+		if strings.Contains(page, "cliproxyapi") || strings.Contains(page, "Antigravity") {
+			t.Errorf("help %q carries the installed bridge's provider list:\n%s", topic, page)
+		}
+		if _, err := os.Stat(marker); err == nil {
+			t.Errorf("help %q ran the cliproxyapi on PATH", topic)
+		}
+	}
+}
+
+// overviewSynopsis is the Usage line a topic's own page prints at width 0.
+func overviewSynopsis(t *testing.T, topic string) string {
+	t.Helper()
+	line := strings.SplitN(helpPage(t, topic, 0), "\n", 2)[0]
+	usage, ok := strings.CutPrefix(line, "Usage: ")
+	if !ok || !strings.HasPrefix(usage, "ccmorph ") {
+		t.Fatalf("help %q does not open with a Usage line: %q", topic, line)
+	}
+	return usage
+}
+
+// gridRowLine reports whether line is the row grid prints for exactly this
+// label. grid pads the label to its 32-column field and separates it from the
+// description with one space, so a row's label is followed by 33-len(label)
+// spaces before anything else; a label longer than the field stands alone on
+// its row, description under the column. Requiring that gap — not just any
+// space — is what stops a shorter label from being witnessed inside a longer
+// one: "ccmorph list" must not be found in a row whose label became
+// "ccmorph list [--json]" (GH-1034, review).
+func gridRowLine(line, label string) bool {
+	if len(label) > 32 {
+		return line == "  "+label
+	}
+	return strings.HasPrefix(line, "  "+label+strings.Repeat(" ", 33-len(label)))
+}
+
+// overviewHasRow reports whether page carries label as a whole row label: the
+// label alone on its row (its description sits under the column) or the label
+// followed by nothing but grid spacing and the description.
+func overviewHasRow(page, label string) bool {
+	for _, line := range strings.Split(page, "\n") {
+		if gridRowLine(line, label) {
+			return true
+		}
+	}
+	return false
+}
+
+// overviewRows is the overview's command rows: every line opening with the
+// grid's two-space label column.
+func overviewRows(page string) []string {
+	var rows []string
+	for _, line := range strings.Split(page, "\n") {
+		if strings.HasPrefix(line, "  ccmorph ") {
+			rows = append(rows, line)
+		}
+	}
+	return rows
+}
+
+// rowVerbs is the sorted set of verbs the overview rows teach.
+func rowVerbs(page string) []string {
+	seen := map[string]bool{}
+	var verbs []string
+	for _, line := range overviewRows(page) {
+		fields := strings.Fields(line)
+		if len(fields) < 2 || seen[fields[1]] {
+			continue
+		}
+		seen[fields[1]] = true
+		verbs = append(verbs, fields[1])
+	}
+	sort.Strings(verbs)
+	return verbs
+}
+
+// overviewRowText is one row's label and full description as one
+// whitespace-normalized string: a description that sits under a too-long
+// label, or wraps into continuation lines at the column the grid reserves
+// (2 + 32 + 1), reads back as the sentence the row teaches.
+func overviewRowText(t *testing.T, page, label string, width int) string {
+	t.Helper()
+	lines := strings.Split(page, "\n")
+	for i, line := range lines {
+		if !gridRowLine(line, label) {
+			continue
+		}
+		text := line
+		for j := i + 1; j < len(lines) && strings.HasPrefix(lines[j], strings.Repeat(" ", 2+32+1)); j++ {
+			text += " " + lines[j]
+		}
+		return strings.Join(strings.Fields(text), " ")
+	}
+	t.Fatalf("no %q row on the %d-column overview:\n%s", label, width, page)
+	return ""
 }
